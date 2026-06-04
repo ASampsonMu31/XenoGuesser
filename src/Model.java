@@ -1,6 +1,7 @@
-import gmaths.*;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.*;
+
+import gmaths.*;
 
 public class Model {
   

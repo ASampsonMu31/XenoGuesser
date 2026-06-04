@@ -1,9 +1,10 @@
-import gmaths.*;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
+
+import gmaths.*;
 
 public class XenoGuesser_GLEventListener implements GLEventListener {
   

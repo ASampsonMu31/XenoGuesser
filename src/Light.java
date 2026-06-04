@@ -1,8 +1,9 @@
-import gmaths.*;
 import java.nio.*;
 import com.jogamp.common.nio.*;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
+
+import gmaths.*;
   
 public class Light {
   

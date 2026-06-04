@@ -1,7 +1,8 @@
-import gmaths.*;
 import java.nio.*;
 import com.jogamp.common.nio.*;
 import com.jogamp.opengl.*;
+
+import gmaths.*;
 
 public class Mesh {
   
