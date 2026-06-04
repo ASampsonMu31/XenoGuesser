@@ -46,6 +46,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int lastChunkZ = Integer.MAX_VALUE;
 
   private MapPanel minimap;
+  private GameHUD gameHUD; // --- FIXED: Added missing HUD reference field ---
 
   // --- Depth Pre-Pass FBO Fields ---
   private int[] depthFBO = new int[1];
@@ -53,6 +54,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int currentWidth = 1024;  // Fallback initial window dimensions
   private int currentHeight = 768;
   
+  // Add these fields to the class containing your render method:
+  private float fpsSmoothing = 0.95f; // Keeps the numbers readable and smooth
+  private double smoothedFps = 60.0;  // Seed with 60 initially
+
   public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
     this.camera = camera;
     this.keyboard = keyboard;
@@ -62,6 +67,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     
     this.camera.setPosition(new Vec3(0f, 5f, 15f));
     this.camera.setTarget(new Vec3(0f, 0f, 0f));
+  }
+
+  // --- FIXED: Added missing setter method for HUD ---
+  public void setGameHUD(GameHUD gameHUD) {
+    this.gameHUD = gameHUD;
   }
 
   @Override
@@ -219,7 +229,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(1.0f, 0.3f, 0.3f),  
-        32.0f                        
+        32.0f                                
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
@@ -354,14 +364,24 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     // --- YOUR GAME FREEZE LOGIC PROBABLY LIVES HERE ---
-    // If you have something like: if (isGameFrozen) return; 
-    // Make sure it sits BELOW the minimap check above!
 
     double elapsedTime = getSeconds() - startTime;
     double deltaTime = elapsedTime - lastElapsedTime;
     lastElapsedTime = elapsedTime;
 
     if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
+
+    // --- CALCULATE TRUE GAME ENGINE FPS ---
+    if (deltaTime > 0) {
+        double instantFps = 1.0 / deltaTime;
+        // Blend a tiny chunk of the instant FPS with our running history
+        smoothedFps = (smoothedFps * fpsSmoothing) + (instantFps * (1.0f - fpsSmoothing));
+        
+        // Push the calculated number over to your Swing HUD panel 
+        if (this.gameHUD != null) {
+            this.gameHUD.setGameFps((int) Math.round(smoothedFps));
+        }
+    }
 
     boolean moveW = keyboard.w;
     boolean moveS = keyboard.s;
@@ -418,12 +438,19 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glEnable(GL3.GL_DEPTH_TEST);
     gl.glEnable(GL3.GL_CULL_FACE);
 
-    // Swap shaders temporarily to use the lightweight depth pipeline 
+    // 1. Bind the depth shader ONCE
+    depthPrePassShader.use(gl);
+    
+    // 2. Extract common camera matrices outside the loop
+    Mat4 view = camera.getViewMatrix();
+    Mat4 projection = camera.getPerspectiveMatrix(); // check if named getProjectionMatrix() if compilation fails
+    Mat4 viewProjection = Mat4.multiply(projection, view); // VP matrix
+
+    // 3. Render all chunks structurally, passing the combined VP matrix down
     for (Model plane : chunkCache.values()) { 
-        plane.setShader(depthPrePassShader);
-        plane.render(gl, ambientLight, nightProportion); 
-        plane.setShader(terrainShader); // Immediately swap back for full color shading
+        plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
     }
+    
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
 
     // ========================================================
@@ -456,7 +483,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glDisable(GL.GL_BLEND);
 
     // --- LANDSCAPE PASS ---
+    // 2. Bind the terrain shader ONCE for all chunks
+    terrainShader.use(gl);
+    
     for (Model plane : chunkCache.values()) { 
+        // Use the standard rendering route here
         plane.render(gl, ambientLight, nightProportion); 
     }
 

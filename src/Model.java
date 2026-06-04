@@ -95,9 +95,41 @@ public class Model {
     }
     renderer.render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion, camera);
   }
+
+  public void renderWithShader(GL3 gl, Shader alternativeShader, Vec3 ambientLight, float nightProportion) {
+    if (mesh == null) return;
+    
+    // Convert your Mat4 modelMatrix into the flat float[] using Dr. Maddock's exact method
+    float[] matrixValues = this.modelMatrix.toFloatArrayForGLSL(); 
+    
+    // Pass the raw float array to your shader's existing method
+    alternativeShader.setFloatArray(gl, "model", matrixValues);
+    
+    // Draw the mesh structure
+    mesh.render(gl);
+  }
   
   private boolean mesh_null() {
     return (mesh==null);
+  }
+
+  public void renderDepthPass(GL3 gl, Shader alternativeShader, Mat4 viewProjection) {
+    if (mesh == null) return;
+    
+    // 1. Calculate the final Model-View-Projection matrix for this specific chunk mesh
+    // MVP = Projection * View * Model
+    Mat4 mvpMatrix = Mat4.multiply(viewProjection, this.modelMatrix);
+    
+    // 2. Convert both matrices to GLSL flat arrays using Dr. Maddock's native method
+    float[] modelValues = this.modelMatrix.toFloatArrayForGLSL();
+    float[] mvpValues = mvpMatrix.toFloatArrayForGLSL();
+    
+    // 3. Upload them into the uniform variables expected by vs_standard.txt
+    alternativeShader.setFloatArray(gl, "model", modelValues);
+    alternativeShader.setFloatArray(gl, "mvpMatrix", mvpValues);
+    
+    // 4. Draw the mesh geometry raw
+    mesh.render(gl);
   }
   
 }

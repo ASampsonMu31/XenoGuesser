@@ -111,10 +111,15 @@ public class XenoGuesser extends JFrame {
     
     glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
 
+    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
+
     GameHUD gameHUD = new GameHUD();
-    // Inside XenoGuesser.java (or wherever your HUD is setup)
+
+    // --- FIXED: Inject the HUD reference into the OpenGL loop instance ---
+    glEventListener.setGameHUD(gameHUD); 
+
     MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise);
-    
+
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
