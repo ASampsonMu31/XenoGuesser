@@ -1,0 +1,71 @@
+#version 330 core
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 aTexCoord;
+in float ViewDistance; 
+
+out vec4 fragColor;
+
+struct Light {
+  vec3 position;
+  vec3 diffuse;
+  vec3 specular;
+};
+
+struct Material {
+  vec3 ambient;
+  vec3 diffuse;
+  vec3 specular;
+  float shininess;
+}; 
+
+uniform sampler2D diffuse_texture;
+uniform vec3 viewPos;
+
+uniform int numLights;
+uniform Light lights[64];
+uniform Material material;
+uniform vec2 scale; // We will pass vec2(150.0, 150.0) from Java, or hardcode it below
+uniform vec3 ambientLight;
+
+void main() {
+  // FIX 1: Explicitly define a multiplier. 
+  // If your Java code isn't setting 'scale' properly yet, you can change 'scale' to 'vec2(150.0, 150.0)' right here!
+  vec2 scaledUV = aTexCoord * scale; 
+
+  // FIX 2: Apply the scaled UVs to the ambient pass so they match perfectly
+  vec3 ambient = ambientLight * texture(diffuse_texture, scaledUV).rgb;
+  vec3 norm = normalize(aNormal);
+  vec3 viewDir = normalize(viewPos - aPos);
+
+  vec3 totalDiffuse = vec3(0.0);
+  vec3 totalSpecular = vec3(0.0);
+
+  for (int i = 0; i < numLights; i++) {
+    Light light = lights[i];
+    vec3 lightDir = normalize(light.position - aPos);  
+    float diff = max(dot(norm, lightDir), 0.0);
+    
+    // FIX 3: Cleaned up lookup using our matching scaled coordinates
+    totalDiffuse += light.diffuse * diff * texture(diffuse_texture, scaledUV).rgb;
+    
+    vec3 reflectDir = reflect(-lightDir, norm);  
+    float spec = pow(max(dot(viewDir, reflectDir), 0.0), material.shininess);
+    totalSpecular += light.specular * spec * material.specular;
+  }
+
+  vec3 result = ambient + totalDiffuse + totalSpecular;
+
+  // --- Fog Modification Section ---
+  float fogStart = 1800.0;
+  float fogEnd = 2400.0; 
+  vec3 fogColor = vec3(0.15, 0.15, 0.15); 
+
+  float fogFactor = (fogEnd - ViewDistance) / (fogEnd - fogStart);
+  fogFactor = clamp(fogFactor, 0.0, 1.0); 
+
+  vec3 finalColorWithFog = mix(fogColor, result, fogFactor);
+
+  fragColor = vec4(finalColorWithFog, 1.0);
+}

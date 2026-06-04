@@ -1,0 +1,71 @@
+#version 330 core
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 aTexCoord;
+in float ViewDistance;
+
+out vec4 fragColor;
+
+uniform vec3 viewPos;
+uniform float seaLevelHeight;
+uniform vec2 windowSize;
+
+uniform sampler2D diffuse_texture;     
+uniform sampler2D terrainDepthTexture; 
+
+float nearPlane = 10.0;
+float farPlane = 2500.0;
+
+float linearizeDepth(float rawDepth) {
+    float zNDC = rawDepth * 2.0 - 1.0; 
+    return (2.0 * nearPlane * farPlane) / (farPlane + nearPlane - zNDC * (farPlane - nearPlane));
+}
+
+void main() {
+    // 1. Calculate perspective view directions
+    vec3 viewDir = normalize(viewPos - aPos);
+    
+    // 2. Fetch screen-space texturing UVs
+    vec2 screenUV = gl_FragCoord.xy / windowSize;
+    
+    // 3. Extract linearized distance to the hidden ocean floor
+    float rawDepth = texture(terrainDepthTexture, screenUV).r;
+    float landDistance = linearizeDepth(rawDepth);
+    
+    // 4. Extract linearized distance to the water surface using your native layout
+    float waterDistance = ViewDistance;
+    
+    // 5. Compute vertical thickness boundaries
+    float totalThickness = max(landDistance - waterDistance, 0.0);
+    
+    // 6. Project path length using the viewing ray angle relative to vertical surface
+    float cosTheta = dot(viewDir, vec3(0.0, 1.0, 0.0));
+    cosTheta = max(abs(cosTheta), 0.0001); // Prevent division-by-zero
+    
+    float actualRayPathLength = totalThickness / cosTheta;
+
+    // Restored back to 0.18 to keep your preferred shoreline depth gradient intact
+    float stretchedPathLength = actualRayPathLength * 0.18;
+
+    // 7. Light absorption calculation (Beer's Law)
+    vec3 absorptionCoefficients = vec3(0.015, 0.005, 0.001);
+    vec3 transparencyFactor = exp(-stretchedPathLength * absorptionCoefficients);
+
+    // FIXED: Multiplier dropped from 0.04 down to 0.01. 
+    // This zooms out the texture map, making the individual water details significantly larger.
+    vec2 worldUV = aPos.xz * 0.01; 
+    vec3 waterSurfaceTex = texture(diffuse_texture, worldUV).rgb;
+
+    // Colors adjusted for smooth, deep absorption appearance
+    vec3 shallowColorTint = vec3(0.0, 0.65, 0.75);
+    vec3 deepOceanColor = vec3(0.02, 0.15, 0.38);  
+    
+    vec3 waterBaseColor = mix(deepOceanColor, mix(shallowColorTint, waterSurfaceTex, transparencyFactor), transparencyFactor);
+
+    // 8. Dynamic alpha handling obeying standard absorption curves
+    float opacity = 1.0 - transparencyFactor.g; 
+    opacity = clamp(opacity, 0.35, 1.0); 
+
+    fragColor = vec4(waterBaseColor, opacity);
+}

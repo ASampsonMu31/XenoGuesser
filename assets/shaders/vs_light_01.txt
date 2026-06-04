@@ -1,0 +1,13 @@
+#version 330 core
+
+layout (location = 0) in vec3 position;
+layout (location = 2) in vec2 texCoord; // Capture UV coordinates from TwoTriangles mesh
+
+out vec2 TexCoords;
+
+uniform mat4 mvpMatrix;
+
+void main() {
+  gl_Position = mvpMatrix * vec4(position, 1.0);
+  TexCoords = texCoord; // Pass texture map coordinates along to the fragment shader
+}

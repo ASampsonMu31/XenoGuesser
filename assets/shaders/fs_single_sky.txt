@@ -1,0 +1,11 @@
+#version 330 core
+
+in vec2 aTexCoord;
+out vec4 fragColor;
+
+// Just one single texture map containing your sky and sun
+uniform sampler2D diffuse_texture;  
+
+void main() {
+    fragColor = texture(diffuse_texture, aTexCoord);
+}
