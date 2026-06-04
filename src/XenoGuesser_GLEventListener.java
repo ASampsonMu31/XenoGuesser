@@ -103,8 +103,16 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
   @Override
   public void display(GLAutoDrawable drawable) {
-    GL3 gl = drawable.getGL().getGL3();
-    render(gl);
+      GL3 gl = drawable.getGL().getGL3();
+      
+      // As soon as resetMapState() turns this false, this block is skipped, 
+      // and the 3D game drops right back into the rendering pipeline seamlessly.
+      if (minimap != null && minimap.isFullScreenRevealMode()) {
+          gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+          return; 
+      }
+      
+      render(gl);
   }
 
   @Override
@@ -333,11 +341,21 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   }
 
   private void render(GL3 gl) {
+    // 1. ALWAYS check for the next round request before ANY "freeze" logic short-circuits this method
     if (minimap != null && minimap.isNextRoundRequested()) {
         minimap.clearNextRoundRequest();
+        
+        // FIX: Re-initialize the UI visual states back to mini-mode
+        minimap.resetMapState(); 
+        
+        // 2. Clear out your OpenGL resources and set up the new round positions
         resetToNextRound(gl);
         return;
     }
+
+    // --- YOUR GAME FREEZE LOGIC PROBABLY LIVES HERE ---
+    // If you have something like: if (isGameFrozen) return; 
+    // Make sure it sits BELOW the minimap check above!
 
     double elapsedTime = getSeconds() - startTime;
     double deltaTime = elapsedTime - lastElapsedTime;

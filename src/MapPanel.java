@@ -16,6 +16,7 @@ import java.awt.event.MouseEvent;
 import java.awt.RenderingHints;
 import java.awt.BasicStroke;
 import java.awt.Stroke;
+import java.awt.Font;
 import java.awt.FontMetrics;
 
 public class MapPanel extends JPanel {
@@ -61,10 +62,28 @@ public class MapPanel extends JPanel {
     private boolean isFullScreenReveal = false; 
     private int currentMapSize = 150; 
 
+    // --- BUBBLE WRITING ANIMATION TRACKING ---
+    private int targetRoundScore = 0;
+    private int currentDisplayScore = 0;
+    private boolean shouldDrawScoreText = false;
+    
+    // Smooth cinematic progression trackers
+    private long phaseStartTime = 0;
+    private float slamProgress = 0.0f;
+    private float currentScoreScale = 1.0f;
+    
+    private static final long LINGER_DURATION_MS = 500; 
+    private static final long SLAM_DURATION_MS = 250;   
+
+    private int visualMapX = 0;
+    private int visualMapY = 0;
+
     // --- TIMED CINEMATIC SEQUENCE STATES ---
     private enum RevealPhase {
         SHOW_PLAYER_PIN,
-        SHOW_ALL_RESULTS
+        SHOW_ALL_RESULTS,
+        LINGER,
+        SLAM_TO_HUD
     }
     private RevealPhase currentPhase = RevealPhase.SHOW_PLAYER_PIN;
     private Timer revealTimer;
@@ -75,7 +94,7 @@ public class MapPanel extends JPanel {
     private boolean nextRoundRequested = false;
 
     private GameHUD gameHUD;
-    private XenoGuesser mainApp; // Added back to allow communication with the frame state tracker
+    private XenoGuesser mainApp; 
 
     public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
         this.totalRegionWidth = totalRegionWidth;
@@ -107,7 +126,7 @@ public class MapPanel extends JPanel {
                 int clickX = e.getX();
                 int clickY = e.getY();
 
-                if (isFullScreenReveal && currentPhase == RevealPhase.SHOW_ALL_RESULTS) {
+                if (isFullScreenReveal && (currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD)) {
                     if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                         System.out.println("Next Round triggered!");
                         
@@ -115,6 +134,7 @@ public class MapPanel extends JPanel {
                             MapPanel.this.gameHUD.advanceRound();
                         }
                         
+                        MapPanel.this.resetMapState(); 
                         MapPanel.this.nextRoundRequested = true; 
                         return;
                     }
@@ -122,15 +142,16 @@ public class MapPanel extends JPanel {
 
                 if (isGuessed) return;
 
-                int mapLeft = BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET;
-                int mapTop = BORDER_SIZE;
+                int mapLeft = visualMapX;
+                int mapTop = visualMapY;
                 int mapRight = mapLeft + currentMapSize;
                 int mapBottom = mapTop + currentMapSize;
 
                 if (clickX >= mapLeft && clickX < mapRight && clickY >= mapTop && clickY < mapBottom) {
-                    int localizedX = clickX - (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
-                    int localizedY = clickY - BORDER_SIZE;
+                    int localizedX = clickX - visualMapX;
+                    int localizedY = clickY - visualMapY;
                     float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
+                    // ... rest of your code remains the same
                     
                     pinX = (int) (localizedX * scaleToCore);
                     pinY = (int) (localizedY * scaleToCore);
@@ -152,7 +173,7 @@ public class MapPanel extends JPanel {
                     if (getParent() != null) {
                         currentMapSize = (int)(getParent().getHeight() * 0.60f); 
                     } else {
-                        currentMapSize = 550; // Fallback
+                        currentMapSize = 550; 
                     }
                     
                     updateGeometryLayouts();
@@ -185,12 +206,17 @@ public class MapPanel extends JPanel {
         this.isHovered = false;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN; 
         this.lineProgress = 0.0f;
+        
+        this.currentDisplayScore = 0;
+        this.shouldDrawScoreText = false;
+        this.currentScoreScale = 1.0f;
+        this.slamProgress = 0.0f;
 
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
             this.currentMapSize = Math.min(750, Math.max(300, parentHeight - 160)); 
         } else {
-            this.currentMapSize = 650; 
+            this.currentMapSize = 650;
         }
 
         if (this.mainApp != null) {
@@ -200,20 +226,68 @@ public class MapPanel extends JPanel {
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
 
-        final float lineRevealSpeed = 0.04f; 
+        final float lineRevealSpeed = 0.05f; 
+        
+        // --- TIME-BASED TRACKING CONFIGURATION ---
+        final long COUNT_UP_DURATION_MS = 500; // Exact time the score count-up should take (e.g., half a second)
+        final long[] countUpStartTime = {-1};  // Holds the exact timestamp when the score phase begins
 
-        revealTimer = new Timer(30, e -> {
+        revealTimer = new Timer(16, e -> {
             if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
                 lineProgress += lineRevealSpeed;
                 if (lineProgress >= 1.0f) {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
-                    revealTimer.stop(); 
-                    
                     calculateAndApplyScore();
-                    
+                    shouldDrawScoreText = true;
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
+                }
+            } 
+            else if (currentPhase == RevealPhase.SHOW_ALL_RESULTS) {
+                // Initialize timestamps on the very first frame of this phase
+                if (countUpStartTime[0] == -1) {
+                    countUpStartTime[0] = System.currentTimeMillis();
+                }
+
+                long elapsed = System.currentTimeMillis() - countUpStartTime[0];
+                float t = (float) elapsed / COUNT_UP_DURATION_MS;
+
+                if (t >= 1.0f) {
+                    // Time's up! Hard cap it to the final score and move on
+                    currentDisplayScore = targetRoundScore;
+                    currentPhase = RevealPhase.LINGER;
+                    phaseStartTime = System.currentTimeMillis();
+                } else {
+                    // Smooth quadratic ease-out curve applied purely over time elapsed
+                    float easeOutRatio = 1.0f - (1.0f - t) * (1.0f - t); 
+                    currentDisplayScore = (int) (targetRoundScore * easeOutRatio);
+                }
+            } 
+            else if (currentPhase == RevealPhase.LINGER) {
+                long elapsed = System.currentTimeMillis() - phaseStartTime;
+                if (elapsed >= LINGER_DURATION_MS) {
+                    currentPhase = RevealPhase.SLAM_TO_HUD;
+                    phaseStartTime = System.currentTimeMillis();
+                }
+            } 
+            else if (currentPhase == RevealPhase.SLAM_TO_HUD) {
+                long elapsed = System.currentTimeMillis() - phaseStartTime;
+                float t = (float) elapsed / SLAM_DURATION_MS;
+                
+                if (t >= 1.0f) {
+                    t = 1.0f;
+                    slamProgress = 1.0f;
+                    currentScoreScale = 0.0f;
+                    shouldDrawScoreText = false; 
+                    
+                    if (this.gameHUD != null) {
+                        this.gameHUD.addScore(targetRoundScore);
+                    }
+                    revealTimer.stop(); 
+                } else {
+                    slamProgress = t;
+                    currentScoreScale = 1.0f - (t * 0.9f); 
                 }
             }
             repaint();
@@ -231,28 +305,38 @@ public class MapPanel extends JPanel {
     }
 
     public void updateGeometryLayouts() {
-        boolean needsExtraSpace = (isHovered && !isFullScreenReveal) || isFullScreenReveal;
-        int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
-        
-        // FIXED: Restored +2 width to account for polygon right-edge metrics (mapFrameW + 2)
-        int panelWidth = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET + 2;
-        int panelHeight = currentMapSize + (BORDER_SIZE * 2) + bottomSpace;
-        
-        // FIXED: Compensate for the layout positioning gap. 
-        // The small map requires a +2 adjustment to push the frame up into layout alignment.
-        if (needsExtraSpace) {
-            panelHeight += 1;
+        if (isFullScreenReveal && getParent() != null) {
+            // Expand the panel to fill the entire parent container so the score can fly anywhere
+            this.setPreferredSize(getParent().getSize());
+            this.setSize(getParent().getSize());
+            
+            // Center the actual map graphic inside this newly expanded full-size panel
+            this.visualMapX = (getWidth() - currentMapSize) / 2;
+            this.visualMapY = (getHeight() - currentMapSize) / 2;
+            
+            // Reposition the button relative to the centered map graphic
+            this.btnWidth = currentMapSize;
+            this.btnHeight = 40;
+            this.btnX = visualMapX;
+            this.btnY = visualMapY + currentMapSize + BORDER_SIZE + 7;
         } else {
-            panelHeight += 2;
+            // Fallback to your original compact layout when not revealing results
+            boolean needsExtraSpace = isHovered;
+            int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
+            
+            int panelWidth = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET + 2;
+            int panelHeight = currentMapSize + (BORDER_SIZE * 2) + bottomSpace;
+            
+            this.setPreferredSize(new Dimension(panelWidth, panelHeight));
+            
+            this.visualMapX = BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET;
+            this.visualMapY = BORDER_SIZE;
+            
+            this.btnWidth = panelWidth - 24;
+            this.btnHeight = 40;
+            this.btnX = (panelWidth - btnWidth) / 2;
+            this.btnY = currentMapSize + (BORDER_SIZE * 2) + 7;
         }
-        
-        this.setPreferredSize(new Dimension(panelWidth, panelHeight));
-        this.setBorder(new EmptyBorder(BORDER_SIZE, BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET, BORDER_SIZE + bottomSpace, BORDER_SIZE));
-
-        this.btnWidth = panelWidth - 24;
-        this.btnHeight = 40;
-        this.btnX = (panelWidth - btnWidth) / 2;
-        this.btnY = currentMapSize + (BORDER_SIZE * 2) + 7;
     }
 
     private void triggerParentLayoutUpdate() {
@@ -270,47 +354,71 @@ public class MapPanel extends JPanel {
         try {
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
 
             int frameW = getWidth();
             int frameH = getHeight();
 
-            g2d.setBackground(new Color(0, 0, 0, 0));
-            g2d.clearRect(0, 0, frameW, frameH);
-            g2d.setClip(0, 0, frameW, frameH);
+            // --- BACKGROUND HANDLING ---
+            if (isFullScreenReveal) {
+                // Force fill the canvas with your beautiful pale yellow sky backdrop
+                g2d.setColor(new Color(245, 235, 195)); // Soft pale sky yellow (Adjust RGB values to match your exact hex color)
+                g2d.fillRect(0, 0, frameW, frameH);
+            } else {
+                // Compact minimap / Hovered medium map mode: Fill the local panel bounds with your original solid tray gray
+                g2d.setColor(trayGrey);
+                g2d.fillRect(0, 0, frameW, frameH);
+            }
 
-            g2d.setColor(trayGrey);
-            g2d.fillRect(0, 0, frameW, frameH);
+            // --- VISUAL FRAME POSITION SETUP ---
+            int mapX = (this.visualMapX != 0) ? this.visualMapX : (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
+            int mapY = (this.visualMapY != 0) ? this.visualMapY : BORDER_SIZE;
 
             float[] fractions = {0.0f, 0.5f, 1.0f};
             Color[] colors = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
 
             int mapFrameH = currentMapSize + (BORDER_SIZE * 2);
-            int mapFrameW = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET;
-            int startX = HORIZONTAL_SHUFFLE_OFFSET;
+            int mapFrameW = currentMapSize + (BORDER_SIZE * 2);
+            int startX = mapX - BORDER_SIZE;
+            int startY = mapY - BORDER_SIZE;
             
+            // --- RENDER COMPONENT OUTER BORDER FRAMES ---
             Polygon topFrame = new Polygon();
-            topFrame.addPoint(startX, 0); topFrame.addPoint(mapFrameW + 2, 0); topFrame.addPoint(mapFrameW - BORDER_SIZE + 2, BORDER_SIZE); topFrame.addPoint(BORDER_SIZE + startX, BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, 0), new Point2D.Float(startX, BORDER_SIZE), fractions, colors));
+            topFrame.addPoint(startX, startY); 
+            topFrame.addPoint(startX + mapFrameW + 2, startY); 
+            topFrame.addPoint(startX + mapFrameW - BORDER_SIZE + 2, startY + BORDER_SIZE); 
+            topFrame.addPoint(startX + BORDER_SIZE, startY + BORDER_SIZE);
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY), new Point2D.Float(startX, startY + BORDER_SIZE), fractions, colors));
             g2d.fill(topFrame);
 
             Polygon bottomFrame = new Polygon();
-            bottomFrame.addPoint(BORDER_SIZE + startX, mapFrameH - BORDER_SIZE); bottomFrame.addPoint(mapFrameW - BORDER_SIZE + 2, mapFrameH - BORDER_SIZE); bottomFrame.addPoint(mapFrameW + 2, mapFrameH); bottomFrame.addPoint(startX, mapFrameH);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, mapFrameH - BORDER_SIZE), new Point2D.Float(startX, mapFrameH), fractions, colors));
+            bottomFrame.addPoint(startX + BORDER_SIZE, startY + mapFrameH - BORDER_SIZE); 
+            bottomFrame.addPoint(startX + mapFrameW - BORDER_SIZE + 2, startY + mapFrameH - BORDER_SIZE); 
+            bottomFrame.addPoint(startX + mapFrameW + 2, startY + mapFrameH); 
+            bottomFrame.addPoint(startX, startY + mapFrameH);
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY + mapFrameH - BORDER_SIZE), new Point2D.Float(startX, startY + mapFrameH), fractions, colors));
             g2d.fill(bottomFrame);
 
             Polygon leftFrame = new Polygon();
-            leftFrame.addPoint(startX, 0); leftFrame.addPoint(BORDER_SIZE + startX, BORDER_SIZE); leftFrame.addPoint(BORDER_SIZE + startX, mapFrameH - BORDER_SIZE); leftFrame.addPoint(startX, mapFrameH);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, 0), new Point2D.Float(BORDER_SIZE + startX, 0), fractions, colors));
+            leftFrame.addPoint(startX, startY); 
+            leftFrame.addPoint(startX + BORDER_SIZE, startY + BORDER_SIZE); 
+            leftFrame.addPoint(startX + BORDER_SIZE, startY + mapFrameH - BORDER_SIZE); 
+            leftFrame.addPoint(startX, startY + mapFrameH);
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY), new Point2D.Float(startX + BORDER_SIZE, startY), fractions, colors));
             g2d.fill(leftFrame);
 
             Polygon rightFrame = new Polygon();
-            rightFrame.addPoint(mapFrameW - BORDER_SIZE, BORDER_SIZE); rightFrame.addPoint(mapFrameW + 2, 0); rightFrame.addPoint(mapFrameW + 2, mapFrameH); rightFrame.addPoint(mapFrameW - BORDER_SIZE, mapFrameH - BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(mapFrameW - BORDER_SIZE, 0), new Point2D.Float(mapFrameW + 2, 0), fractions, colors));
+            rightFrame.addPoint(startX + mapFrameW - BORDER_SIZE, startY + BORDER_SIZE); 
+            rightFrame.addPoint(startX + mapFrameW + 2, startY); 
+            rightFrame.addPoint(startX + mapFrameW + 2, startY + mapFrameH); 
+            rightFrame.addPoint(startX + mapFrameW - BORDER_SIZE, startY + mapFrameH - BORDER_SIZE);
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX + mapFrameW - BORDER_SIZE, startY), new Point2D.Float(startX + mapFrameW + 2, startY), fractions, colors));
             g2d.fill(rightFrame);
 
-            Insets insets = getInsets();
-            g2d.drawImage(mapImage, insets.left, insets.top, currentMapSize, currentMapSize, null);
+            // Draw Map Context Frame centered dynamically
+            g2d.drawImage(mapImage, mapX, mapY, currentMapSize, currentMapSize, null);
 
+            // --- GUESSED BUTTON GRAPHICS INTERACTION ---
             if (isHovered && !isFullScreenReveal) {
                 g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
                 g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
@@ -330,15 +438,16 @@ public class MapPanel extends JPanel {
                 g2d.drawString(btnText, textX, textY);
             }
 
+            // --- MAP PINS & RENDERING GRAPHICS TRACKER ---
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
 
                 float scaleFromCore = (float) currentMapSize / mapImage.getWidth();
-                int displayPinX = BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET + (int) (pinX * scaleFromCore);
-                int displayPinY = BORDER_SIZE + (int) (pinY * scaleFromCore);
+                int displayPinX = mapX + (int) (pinX * scaleFromCore);
+                int displayPinY = mapY + (int) (pinY * scaleFromCore);
 
-                int displayGoalX = BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET + (int) (goalX * scaleFromCore);
-                int displayGoalY = BORDER_SIZE + (int) (goalY * scaleFromCore);
+                int displayGoalX = mapX + (int) (goalX * scaleFromCore);
+                int displayGoalY = mapY + (int) (goalY * scaleFromCore);
 
                 if (isFullScreenReveal) {
                     int targetLineX = displayPinX + (int) ((displayGoalX - displayPinX) * lineProgress);
@@ -368,7 +477,7 @@ public class MapPanel extends JPanel {
                 g2d.setColor(new Color(30, 30, 30));
                 g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
 
-                if (isFullScreenReveal && currentPhase == RevealPhase.SHOW_ALL_RESULTS) {
+                if (isFullScreenReveal && (currentPhase != RevealPhase.SHOW_PLAYER_PIN)) {
                     int flagPoleLength = 22;
 
                     g2d.setColor(Color.LIGHT_GRAY);
@@ -389,7 +498,7 @@ public class MapPanel extends JPanel {
                 }
 
                 if (isFullScreenReveal) {
-                    boolean resultsReady = (currentPhase == RevealPhase.SHOW_ALL_RESULTS);
+                    boolean resultsReady = (currentPhase != RevealPhase.SHOW_PLAYER_PIN);
                     
                     g2d.setColor(resultsReady ? btnNextRoundBlue : btnDisabledGrey);
                     g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
@@ -409,6 +518,47 @@ public class MapPanel extends JPanel {
                     int textY = btnY + (btnHeight + stringHeight) / 2 - 2;
                     g2d.drawString(endText, textX, textY);
                 }
+
+                // --- RENDER ARCADE BUBBLE SCORE WRITING OVERLAY ---
+                if (shouldDrawScoreText) {
+                    String pointsStr = String.format("%,d", currentDisplayScore);
+                    
+                    float baseBubbleFontSize = currentMapSize * 0.15f; 
+                    float dynamicFontSize = baseBubbleFontSize * currentScoreScale;
+                    
+                    if (dynamicFontSize > 2f) {
+                        g2d.setFont(new Font("Arial Black", Font.BOLD, (int) dynamicFontSize));
+                        FontMetrics scoreFm = g2d.getFontMetrics();
+                        
+                        int textW = scoreFm.stringWidth(pointsStr);
+                        int textH = scoreFm.getAscent();
+                        
+                        int centerMapX = mapX + (currentMapSize / 2);
+                        int centerMapY = mapY + (currentMapSize / 2);
+                        
+                        int targetHUDX = isFullScreenReveal ? 40 : (-getX() + 30);
+                        int targetHUDY = isFullScreenReveal ? 50 : (-getY() + 45);
+                        
+                        int drawX = (int) (centerMapX + (targetHUDX - centerMapX) * slamProgress) - (textW / 2);
+                        int drawY = (int) (centerMapY + (targetHUDY - centerMapY) * slamProgress) + (textH / 2);
+                        
+                        int baseOutline = Math.max(3, (int)(baseBubbleFontSize * 0.08f));
+                        int outlineThickness = Math.max(1, (int)(baseOutline * currentScoreScale));
+                        
+                        g2d.setColor(new Color(50, 50, 52, 230)); 
+                        
+                        for (int xOffset = -outlineThickness; xOffset <= outlineThickness; xOffset++) {
+                            for (int yOffset = -outlineThickness; yOffset <= outlineThickness; yOffset++) {
+                                if (xOffset * xOffset + yOffset * yOffset <= outlineThickness * outlineThickness) {
+                                    g2d.drawString(pointsStr, drawX + xOffset, drawY + yOffset);
+                                }
+                            }
+                        }
+                        
+                        g2d.setColor(Color.WHITE);
+                        g2d.drawString(pointsStr, drawX, drawY);
+                    }
+                }
             }
         } finally {
             g2d.dispose(); 
@@ -423,6 +573,13 @@ public class MapPanel extends JPanel {
         this.currentMapSize = 150; 
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
+        
+        this.targetRoundScore = 0;
+        this.currentDisplayScore = 0;
+        this.shouldDrawScoreText = false;
+        this.phaseStartTime = 0;
+        this.slamProgress = 0.0f;
+        this.currentScoreScale = 1.0f;
         
         if (this.mainApp != null) {
             this.mainApp.unlockWindowDragging();
@@ -456,11 +613,9 @@ public class MapPanel extends JPanel {
         if (score < 0) score = 0;
         if (score > 5000) score = 5000;
 
-        if (this.gameHUD != null) {
-            this.gameHUD.addScore(score);
-        }
+        this.targetRoundScore = score;
 
-        System.out.println("Round Completed! Distance: " + realWorldDistance + " | Score Awarded: " + score);
+        System.out.println("Round Completed! Distance: " + realWorldDistance + " | Score Calculated: " + score);
     }
 
     public void setGameHUD(GameHUD hud) {

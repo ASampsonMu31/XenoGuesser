@@ -10,17 +10,15 @@ public class GameHUD extends JPanel {
     private final int MAX_ROUNDS = 20;
     private int totalAccumulatedScore = 0;
 
-    // UI Colors matching your premium dark aesthetic
-    private final Color cardBackground = new Color(0, 0, 0); // Solid black panel
+    private final Color cardBackground = new Color(0, 0, 0); 
     private final Color textGold = new Color(240, 190, 60);
     private final Color textWhite = new Color(245, 245, 245);
     
-    // Completely uniform bold font across all text items
     private final Font uniformFont = new Font("SansSerif", Font.BOLD, 15);
 
     public GameHUD() {
-        this.setOpaque(true); // Sharp square corners allow safe optimization back to true opaque layout
-        this.setSize(220, 95);  // Strict bounds for its static footprint
+        this.setOpaque(true); 
+        this.setSize(220, 95);  
     }
 
     /**
@@ -53,25 +51,20 @@ public class GameHUD extends JPanel {
             int w = getWidth();
             int h = getHeight();
 
-            // 1. Draw Background Card Panel (Fills entire component area with sharp square edges)
             g2d.setColor(cardBackground);
             g2d.fillRect(0, 0, w, h);
 
-            // 2. Draw Soft Outer Border Glow
             g2d.setColor(new Color(255, 255, 255, 30));
             g2d.drawRect(0, 0, w - 1, h - 1);
 
-            // Set uniform font globally for text operations
             g2d.setFont(uniformFont);
 
-            // 3. Render Round Counter Text (Uppercase casing)
             g2d.setColor(new Color(180, 180, 180));
             g2d.drawString("ROUND:", 20, 38);
             
             g2d.setColor(textGold);
             g2d.drawString(currentRound + " / " + MAX_ROUNDS, 150, 38);
 
-            // 4. Render Cumulative Point Strings (Consistent font sizes, styling, and uppercase casing)
             g2d.setColor(new Color(180, 180, 180));
             g2d.drawString("TOTAL SCORE:", 20, 68);
 
