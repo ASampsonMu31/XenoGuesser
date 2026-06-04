@@ -5,7 +5,7 @@ import com.jogamp.common.nio.Buffers;
 public class WorldMap {
     private int textureId;
     // FIXED: Upgraded resolution to your exact 400x400 pixel specification
-    private final int MAP_RES = 400; 
+    private final int MAP_RES = 750;
 
     public WorldMap(GL3 gl, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
         generateMapTexture(gl, totalRegionWidth, seaLevelHeight, noise);

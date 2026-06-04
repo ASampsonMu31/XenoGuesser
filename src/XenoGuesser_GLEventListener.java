@@ -32,6 +32,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private Material terrainMaterial;
   private Mat4 globalModelMatrix;
 
+  // --- Optimization: Dedicated Depth Pre-Pass Shader ---
+  private Shader depthPrePassShader;
+
   private final float PHYSICAL_CHUNK_SIZE = 100.0f; 
   private final int VIEW_DISTANCE = 24; 
   private PerlinNoise worldNoise;
@@ -94,7 +97,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     Mat4 perspectiveMatrix = Mat4Transform.perspective(45, aspect, 10.0f, farClippingPlane);
     camera.setPerspectiveMatrix(perspectiveMatrix);
 
-    // Recreate Depth Framebuffer to match the active window canvas size
+    // Recreate Depth Framebuffer to match the active fullscreen window canvas size
     createDepthFramebuffer(gl, width, height);
   }
 
@@ -139,7 +142,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // 3. Attach Depth Map object structurally to our custom Framebuffer target configuration
     gl.glFramebufferTexture2D(GL3.GL_FRAMEBUFFER, GL3.GL_DEPTH_ATTACHMENT, GL3.GL_TEXTURE_2D, depthTexture[0], 0);
     
-    // Instruct OpenGL explicitly that we are not tracking color buffer buffers during this pass
+    // Instruct OpenGL explicitly that we are not tracking color buffers during this pass
     gl.glDrawBuffer(GL3.GL_NONE);
     gl.glReadBuffer(GL3.GL_NONE);
 
@@ -194,6 +197,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     chunkCache = new HashMap<>();
 
     terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
+    
+    // Initialize the high-performance Depth Pre-pass shader
+    depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
+
     terrainMaterial = new Material(new Vec3(0.1f, 0.5f, 0.91f), new Vec3(0.1f, 0.5f, 0.91f), new Vec3(0.4f, 0.2f, 0.2f), 4.0f);
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     terrainRenderer = new Renderer();
@@ -385,25 +392,28 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     ambientLight = Vec3.multiply(new Vec3(0.4f, 0.38f, 0.35f),
       Math.max((float)Math.sin(sunAngle) * lights[0].getBrightnessProportion(), 0.05f));
 
-    // ==========================================
-    // PASS 1: RENDER TERRAIN DEPTH ONLY TO FBO
-    // ==========================================
+    // ========================================================
+    // PASS 1: HIGH-PERFORMANCE DEPTH PRE-PASS TO FRAMEBUFFER
+    // ========================================================
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
-    gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); // Only clear depth context
+    gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
     gl.glEnable(GL3.GL_DEPTH_TEST);
     gl.glEnable(GL3.GL_CULL_FACE);
 
+    // Swap shaders temporarily to use the lightweight depth pipeline 
     for (Model plane : chunkCache.values()) { 
+        plane.setShader(depthPrePassShader);
         plane.render(gl, ambientLight, nightProportion); 
+        plane.setShader(terrainShader); // Immediately swap back for full color shading
     }
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
 
-    // ==========================================
-    // PASS 2: RENDER COMPLETE SCENE TO SCREEN
-    // ==========================================
+    // ========================================================
+    // PASS 2: RENDER COMPLETE LIGHT SCENE TO CANVAS SCREEN
+    // ========================================================
     gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
 
-    // --- SKYBOX & BACKGROUND PASS ---
+    // --- SKYBOX PASS ---
     gl.glDisable(GL.GL_DEPTH_TEST); 
     gl.glDisable(GL.GL_CULL_FACE); 
 
@@ -417,7 +427,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glEnable(GL.GL_CULL_FACE);
     gl.glEnable(GL.GL_DEPTH_TEST);
 
-    // Sun Quad Render Pass
+    // --- SUN PASS ---
     gl.glEnable(GL.GL_BLEND);
     gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
     gl.glDepthMask(false);
@@ -427,12 +437,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glDepthMask(true);
     gl.glDisable(GL.GL_BLEND);
 
-    // Render Visible Terrain Chunks to screen canvas 
+    // --- LANDSCAPE PASS ---
     for (Model plane : chunkCache.values()) { 
         plane.render(gl, ambientLight, nightProportion); 
     }
 
-    // Render Ocean Surface Plane with active tracking parameters bound
+    // --- OCEAN BLENDING PASS ---
     gl.glEnable(GL.GL_BLEND);
     gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
 
@@ -446,7 +456,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
     waterShader.setVec2(gl, "windowSize", new Vec2((float)currentWidth, (float)currentHeight));
 
-    // Bind Depth Pre-pass map to Texture Unit 1 (leaving Unit 0 for diffuse maps)
+    // Bind depth texture to Texture Unit 1
     gl.glActiveTexture(GL3.GL_TEXTURE1);
     gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
     waterShader.setInt(gl, "terrainDepthTexture", 1);

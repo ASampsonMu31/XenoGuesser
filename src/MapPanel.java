@@ -72,10 +72,10 @@ public class MapPanel extends JPanel {
     // --- GRADUAL LINE REVEAL TRACKING ---
     private float lineProgress = 0.0f; 
 
-
     private boolean nextRoundRequested = false;
 
     private GameHUD gameHUD;
+    private XenoGuesser mainApp; // Added back to allow communication with the frame state tracker
 
     public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
         this.totalRegionWidth = totalRegionWidth;
@@ -111,11 +111,9 @@ public class MapPanel extends JPanel {
                     if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                         System.out.println("Next Round triggered!");
                         
-                        // --- HOOK 2: ADVANCE CURRENT ROUND ---
                         if (MapPanel.this.gameHUD != null) {
                             MapPanel.this.gameHUD.advanceRound();
                         }
-                        // -------------------------------------
                         
                         MapPanel.this.nextRoundRequested = true; 
                         return;
@@ -150,7 +148,13 @@ public class MapPanel extends JPanel {
             public void mouseEntered(MouseEvent e) {
                 if (!isHovered && !isFullScreenReveal) {
                     isHovered = true;
-                    currentMapSize = 300;
+                    
+                    if (getParent() != null) {
+                        currentMapSize = (int)(getParent().getHeight() * 0.60f); 
+                    } else {
+                        currentMapSize = 550; // Fallback
+                    }
+                    
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
                 }
@@ -167,7 +171,7 @@ public class MapPanel extends JPanel {
 
                 if (isHovered) {
                     isHovered = false;
-                    currentMapSize = 150;
+                    currentMapSize = 150; 
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
                 }
@@ -184,9 +188,13 @@ public class MapPanel extends JPanel {
 
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
-            this.currentMapSize = Math.max(400, parentHeight - 120); 
+            this.currentMapSize = Math.min(750, Math.max(300, parentHeight - 160)); 
         } else {
-            this.currentMapSize = 600; 
+            this.currentMapSize = 650; 
+        }
+
+        if (this.mainApp != null) {
+            this.mainApp.lockWindowDragging();
         }
 
         updateGeometryLayouts();
@@ -202,9 +210,7 @@ public class MapPanel extends JPanel {
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
                     revealTimer.stop(); 
                     
-                    // --- HOOK 1: COMPUTE AND DISPATCH SCORE ---
                     calculateAndApplyScore();
-                    // ------------------------------------------
                     
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
@@ -228,13 +234,24 @@ public class MapPanel extends JPanel {
         boolean needsExtraSpace = (isHovered && !isFullScreenReveal) || isFullScreenReveal;
         int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
         
-        this.setPreferredSize(new Dimension(currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET + 2, currentMapSize + (BORDER_SIZE * 2) + bottomSpace + 1));
+        // FIXED: Restored +2 width to account for polygon right-edge metrics (mapFrameW + 2)
+        int panelWidth = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET + 2;
+        int panelHeight = currentMapSize + (BORDER_SIZE * 2) + bottomSpace;
+        
+        // FIXED: Compensate for the layout positioning gap. 
+        // The small map requires a +2 adjustment to push the frame up into layout alignment.
+        if (needsExtraSpace) {
+            panelHeight += 1;
+        } else {
+            panelHeight += 2;
+        }
+        
+        this.setPreferredSize(new Dimension(panelWidth, panelHeight));
         this.setBorder(new EmptyBorder(BORDER_SIZE, BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET, BORDER_SIZE + bottomSpace, BORDER_SIZE));
 
-        int totalWidth = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET;
-        this.btnWidth = totalWidth - 24;
+        this.btnWidth = panelWidth - 24;
         this.btnHeight = 40;
-        this.btnX = (totalWidth - btnWidth) / 2;
+        this.btnX = (panelWidth - btnWidth) / 2;
         this.btnY = currentMapSize + (BORDER_SIZE * 2) + 7;
     }
 
@@ -267,7 +284,6 @@ public class MapPanel extends JPanel {
             float[] fractions = {0.0f, 0.5f, 1.0f};
             Color[] colors = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
 
-            // --- 1. FRAMES ---
             int mapFrameH = currentMapSize + (BORDER_SIZE * 2);
             int mapFrameW = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET;
             int startX = HORIZONTAL_SHUFFLE_OFFSET;
@@ -292,11 +308,9 @@ public class MapPanel extends JPanel {
             g2d.setPaint(new LinearGradientPaint(new Point2D.Float(mapFrameW - BORDER_SIZE, 0), new Point2D.Float(mapFrameW + 2, 0), fractions, colors));
             g2d.fill(rightFrame);
 
-            // --- 2. DRAW MAP IMAGE ---
             Insets insets = getInsets();
             g2d.drawImage(mapImage, insets.left, insets.top, currentMapSize, currentMapSize, null);
 
-            // --- 3. DRAW CUSTOM GUESS BUTTON ---
             if (isHovered && !isFullScreenReveal) {
                 g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
                 g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
@@ -316,7 +330,6 @@ public class MapPanel extends JPanel {
                 g2d.drawString(btnText, textX, textY);
             }
 
-            // --- 4. RENDER TIMED MAP RESULTS ---
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
 
@@ -327,7 +340,6 @@ public class MapPanel extends JPanel {
                 int displayGoalX = BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET + (int) (goalX * scaleFromCore);
                 int displayGoalY = BORDER_SIZE + (int) (goalY * scaleFromCore);
 
-                // --- DOTTED LINE ---
                 if (isFullScreenReveal) {
                     int targetLineX = displayPinX + (int) ((displayGoalX - displayPinX) * lineProgress);
                     int targetLineY = displayPinY + (int) ((displayGoalY - displayPinY) * lineProgress);
@@ -339,7 +351,6 @@ public class MapPanel extends JPanel {
                     g2d.setStroke(originalStroke);
                 }
 
-                // --- RED PLAYER PIN ---
                 int pinLength = 16;       
                 int headDiameter = 12;    
                 int headRadius = headDiameter / 2;
@@ -357,7 +368,6 @@ public class MapPanel extends JPanel {
                 g2d.setColor(new Color(30, 30, 30));
                 g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
 
-                // --- GOAL FLAG ---
                 if (isFullScreenReveal && currentPhase == RevealPhase.SHOW_ALL_RESULTS) {
                     int flagPoleLength = 22;
 
@@ -378,7 +388,6 @@ public class MapPanel extends JPanel {
                     g2d.draw(flagPoly);
                 }
 
-                // --- NEXT ROUND BUTTON ---
                 if (isFullScreenReveal) {
                     boolean resultsReady = (currentPhase == RevealPhase.SHOW_ALL_RESULTS);
                     
@@ -415,6 +424,10 @@ public class MapPanel extends JPanel {
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         
+        if (this.mainApp != null) {
+            this.mainApp.unlockWindowDragging();
+        }
+
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
         repaint();
@@ -429,16 +442,13 @@ public class MapPanel extends JPanel {
     }
 
     private void calculateAndApplyScore() {
-        // Determine raw pixel error gap
         double deltaX = pinX - goalX;
         double deltaY = pinY - goalY;
         double pixelDistance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
-        // Map pixel gap to world coordinate metrics
         float mapWidthPixels = mapImage.getWidth();
         double realWorldDistance = (pixelDistance / mapWidthPixels) * totalRegionWidth;
 
-        // Apply GeoGuessr Exponential Decay Formula with an optimized casual divisor (5.0f)
         double maxDiagonalDistance = Math.sqrt(2.0) * totalRegionWidth;
         double kConstant = maxDiagonalDistance / 14.0f; 
         int score = (int) Math.round(5000.0 * Math.exp(-realWorldDistance / kConstant));
@@ -446,7 +456,6 @@ public class MapPanel extends JPanel {
         if (score < 0) score = 0;
         if (score > 5000) score = 5000;
 
-        // Send the score straight to your persistent overlay element
         if (this.gameHUD != null) {
             this.gameHUD.addScore(score);
         }
@@ -456,5 +465,9 @@ public class MapPanel extends JPanel {
 
     public void setGameHUD(GameHUD hud) {
         this.gameHUD = hud;
+    }
+
+    public void setMainApp(XenoGuesser mainApp) {
+        this.mainApp = mainApp;
     }
 }
