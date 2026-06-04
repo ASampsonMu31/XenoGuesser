@@ -6,10 +6,10 @@
     "configurations": [
         {
             "type": "java",
-            "name": "XenoGuessr",
+            "name": "XenoGuesser",
             "request": "launch",
-            "mainClass": "XenoGuessr",
-            "projectName": "XenoGuessr_3a874ae8",
+            "mainClass": "XenoGuesser",
+            "projectName": "XenoGuesser_3a874ae8",
             "vmArgs": "--add-exports java.base/java.lang=ALL-UNNAMED --add-exports java.desktop/sun.java2d=ALL-UNNAMED --add-exports java.desktop/sun.awt=ALL-UNNAMED"
         },
         {

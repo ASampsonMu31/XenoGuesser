@@ -5,7 +5,7 @@ import java.util.Map;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 
-public class XenoGuessr_GLEventListener implements GLEventListener {
+public class XenoGuesser_GLEventListener implements GLEventListener {
   
   private Camera camera;
   private MyKeyboardInput keyboard;
@@ -49,7 +49,7 @@ public class XenoGuessr_GLEventListener implements GLEventListener {
   private int currentWidth = 1024;  // Fallback initial window dimensions
   private int currentHeight = 768;
   
-  public XenoGuessr_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
+  public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
     this.camera = camera;
     this.keyboard = keyboard;
     this.worldNoise = sharedNoise;

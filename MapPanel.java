@@ -242,7 +242,7 @@ public class MapPanel extends JPanel {
         if (getParent() instanceof JLayeredPane) {
             JLayeredPane layeredPane = (JLayeredPane) getParent();
             java.awt.Rectangle oldBounds = this.getBounds();
-            XenoGuessr.updateMinimapBounds(layeredPane, this);
+            XenoGuesser.updateMinimapBounds(layeredPane, this);
             layeredPane.repaint(oldBounds);
         }
     }

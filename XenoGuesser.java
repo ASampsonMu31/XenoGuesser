@@ -7,7 +7,7 @@ import com.jogamp.opengl.*;
 import com.jogamp.opengl.awt.GLCanvas; 
 import com.jogamp.opengl.util.FPSAnimator;
 
-public class XenoGuessr extends JFrame {
+public class XenoGuesser extends JFrame {
   
   private static final boolean IS_DEVELOPMENT_MODE = false; 
 
@@ -15,11 +15,11 @@ public class XenoGuessr extends JFrame {
   private static final int HEIGHT = 768;
   private static final Dimension dimension = new Dimension(WIDTH, HEIGHT);
   private GLCanvas canvas; 
-  private XenoGuessr_GLEventListener glEventListener;
+  private XenoGuesser_GLEventListener glEventListener;
   private final FPSAnimator animator;
 
   public static void main(String[] args) {
-    XenoGuessr b1 = new XenoGuessr("XenoGuessr");
+    XenoGuesser b1 = new XenoGuesser("XenoGuesser");
     b1.getContentPane().setPreferredSize(dimension);
     b1.pack();
     b1.setVisible(true);
@@ -44,7 +44,7 @@ public class XenoGuessr extends JFrame {
     layeredPane.repaint();
   }
 
-  public XenoGuessr(String textForTitleBar) {
+  public XenoGuesser(String textForTitleBar) {
     super(textForTitleBar);
     
     this.getContentPane().setBackground(Color.BLACK);
@@ -70,9 +70,9 @@ public class XenoGuessr extends JFrame {
     float physicalChunkSize = 100.0f;
     float totalRegionWidth = (viewDistance * physicalChunkSize) * 50.0f;
     
-    float seaLevelHeight = XenoGuessr_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
+    float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
     
-    glEventListener = new XenoGuessr_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
+    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
 
     // Create HUD first, then minimap so they can connect seamlessly
     GameHUD gameHUD = new GameHUD();
