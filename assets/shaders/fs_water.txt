@@ -14,6 +14,12 @@ uniform vec2 windowSize;
 uniform sampler2D diffuse_texture;     
 uniform sampler2D terrainDepthTexture; 
 
+// --- UPDATED: Passing the actual Sun Position ---
+uniform vec3 sunPos;         // World-space position of your sun light object
+uniform vec3 lightSpecular;  // Color/Intensity of the sun's light (e.g., vec3(1.0, 1.0, 0.9))
+uniform vec3 matSpecular;    // Specular property of water (From Java: vec3(1.0, 0.3, 0.3))
+uniform float matShininess;  // Reflection sharpness exponent (From Java: 32.0)
+
 float nearPlane = 10.0;
 float farPlane = 2500.0;
 
@@ -67,5 +73,24 @@ void main() {
     float opacity = 1.0 - transparencyFactor.g; 
     opacity = clamp(opacity, 0.35, 1.0); 
 
-    fragColor = vec4(waterBaseColor, opacity);
+    // --- 9. CORRECTED: Blinn-Phong Specular Reflection Math ---
+    // Flat sea-level plane normal points straight up
+    vec3 normal = vec3(0.0, 1.0, 0.0); 
+    
+    // FIXED: Calculate the true vector pointing FROM the fragment TO the sun position
+    vec3 lightDir = normalize(sunPos - aPos);
+    
+    // Calculate the Halfway Vector (H) between the light source and the camera view
+    vec3 halfwayDir = normalize(lightDir + viewDir);
+    
+    // Compute the specular strength factor
+    float specFactor = pow(max(dot(normal, halfwayDir), 0.0), matShininess);
+    
+    // Combine light color, material reflectance properties, and the calculated intensity
+    vec3 specularHighlight = lightSpecular * matSpecular * specFactor;
+
+    // Add the bright sun specular reflection onto your absorption base color
+    vec3 finalColor = waterBaseColor + specularHighlight;
+
+    fragColor = vec4(finalColor, opacity);
 }

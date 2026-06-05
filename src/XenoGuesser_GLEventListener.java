@@ -24,6 +24,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private float seaLevelHeight;
   private Model waterPlaneModel;
   private Shader waterShader;
+  private Material waterMaterial; // --- FIXED: Promoted to class field to fix the resolution error ---
 
   private Model skyModel;
 
@@ -219,17 +220,24 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // Initialize the high-performance Depth Pre-pass shader
     depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
 
-    terrainMaterial = new Material(new Vec3(0.1f, 0.5f, 0.91f), new Vec3(0.1f, 0.5f, 0.91f), new Vec3(0.4f, 0.2f, 0.2f), 4.0f);
+    terrainMaterial = new Material(
+    new Vec3(1.0f, 1.0f, 1.0f),  // Ambient: Neutral white (no texture tinting)
+    new Vec3(1.0f, 1.0f, 1.0f),  // Diffuse: Neutral white (no texture tinting)
+    new Vec3(0.1f, 0.1f, 0.1f),  // Specular: Dull, low gray so dirt isn't intensely shiny
+    4.0f                         // Shininess
+);
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     terrainRenderer = new Renderer();
     globalModelMatrix = new Mat4(1);
 
     waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
-    Material waterMaterial = new Material(
+    
+    // Assigned directly to the class field instead of keeping it locally scoped
+    waterMaterial = new Material(
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
-        new Vec3(1.0f, 0.3f, 0.3f),  
-        32.0f                                
+        new Vec3(3.5f, 0.4f, 0.4f),
+        2048f                                        
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
@@ -363,8 +371,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         return;
     }
 
-    // --- YOUR GAME FREEZE LOGIC PROBABLY LIVES HERE ---
-
     double elapsedTime = getSeconds() - startTime;
     double deltaTime = elapsedTime - lastElapsedTime;
     lastElapsedTime = elapsedTime;
@@ -443,7 +449,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     
     // 2. Extract common camera matrices outside the loop
     Mat4 view = camera.getViewMatrix();
-    Mat4 projection = camera.getPerspectiveMatrix(); // check if named getProjectionMatrix() if compilation fails
+    Mat4 projection = camera.getPerspectiveMatrix(); 
     Mat4 viewProjection = Mat4.multiply(projection, view); // VP matrix
 
     // 3. Render all chunks structurally, passing the combined VP matrix down
@@ -483,11 +489,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glDisable(GL.GL_BLEND);
 
     // --- LANDSCAPE PASS ---
-    // 2. Bind the terrain shader ONCE for all chunks
     terrainShader.use(gl);
     
     for (Model plane : chunkCache.values()) { 
-        // Use the standard rendering route here
         plane.render(gl, ambientLight, nightProportion); 
     }
 
@@ -504,6 +508,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     waterShader.use(gl);
     waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
     waterShader.setVec2(gl, "windowSize", new Vec2((float)currentWidth, (float)currentHeight));
+
+    // Dynamic Lighting & Material Uniform Setup
+    waterShader.setVec3(gl, "sunPos", sunPos);
+    waterShader.setVec3(gl, "lightSpecular", new Vec3(1.0f, 1.0f, 1.0f));
+    
+    // Now compiles perfectly since waterMaterial is a valid field
+    waterShader.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
+    waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
 
     // Bind depth texture to Texture Unit 1
     gl.glActiveTexture(GL3.GL_TEXTURE1);
