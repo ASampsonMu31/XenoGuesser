@@ -10,7 +10,7 @@ import com.jogamp.opengl.util.FPSAnimator;
 
 public class XenoGuesser extends JFrame {
   
-  private static final boolean IS_DEVELOPMENT_MODE = false; 
+  private static final boolean IS_DEVELOPMENT_MODE = true; 
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -102,6 +102,8 @@ public class XenoGuesser extends JFrame {
     
     long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
+
+    System.out.println(worldSeed);
     
     int viewDistance = 24;
     float physicalChunkSize = 100.0f;

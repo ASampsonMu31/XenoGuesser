@@ -522,6 +522,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
     waterShader.setInt(gl, "terrainDepthTexture", 1);
 
+    waterShader.setFloat(gl, "time", (float)elapsedTime);
+
     waterPlaneModel.setModelMatrix(waterMatrix);
     waterPlaneModel.render(gl, ambientLight, nightProportion);
 
