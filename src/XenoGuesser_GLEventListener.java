@@ -30,7 +30,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private Model skyModel;
 
   private Shader terrainShader;
-  private Renderer terrainRenderer; // This will handle our rendering work safely
+  private Renderer terrainRenderer; 
   private Material terrainMaterial;
   private Mat4 globalModelMatrix;
 
@@ -46,11 +46,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int lastFace = -1;
   private int lastChunkX = Integer.MAX_VALUE;
   private int lastChunkZ = Integer.MAX_VALUE;
-
-  // Track neighboring face state to preserve chunks on transitions
-  private int previousFace = -1;
-  private int prevChunkX = Integer.MAX_VALUE;
-  private int prevChunkZ = Integer.MAX_VALUE;
 
   private MapPanel minimap;
   private GameHUD gameHUD; 
@@ -225,7 +220,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     terrainMaterial = new Material(new Vec3(0.1f, 0.5f, 0.91f), new Vec3(0.1f, 0.5f, 0.91f), new Vec3(0.1f, 0.1f, 0.1f), 8.0f);
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     
-    // Set up our terrain renderer instance and scale mapping
     terrainRenderer = new Renderer();
     float textureTilingInterval = 4.0f;
     terrainRenderer.setScale(new Vec2(PHYSICAL_CHUNK_SIZE / textureTilingInterval, PHYSICAL_CHUNK_SIZE / textureTilingInterval));
@@ -300,9 +294,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       lastFace = -1;
       lastChunkX = Integer.MAX_VALUE;
       lastChunkZ = Integer.MAX_VALUE;
-      previousFace = -1;
-      prevChunkX = Integer.MAX_VALUE;
-      prevChunkZ = Integer.MAX_VALUE;
       smoothedCameraRadius = -1.0f;
 
       if (minimap != null) {
@@ -311,45 +302,67 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       spawnPlayerOnSphere(gl);
   }
 
+  /**
+   * Helper function to reconstruct the 3D position vector on the surface 
+   * of the sphere for any given chunk identifier across any cube face.
+   */
+  private Vec3 getChunkSphericalCenter(int face, int cx, int cz, float planetRadius) {
+    float centerX = cx * PHYSICAL_CHUNK_SIZE;
+    float centerZ = cz * PHYSICAL_CHUNK_SIZE;
+    Vec3 cubePt = new Vec3(0, 0, 0);
+    
+    switch (face) {
+        case 0: cubePt = new Vec3(centerX, planetRadius, centerZ); break;
+        case 1: cubePt = new Vec3(centerX, -planetRadius, -centerZ); break;
+        case 2: cubePt = new Vec3(-planetRadius, centerZ, centerX); break;
+        case 3: cubePt = new Vec3(planetRadius, centerZ, -centerX); break;
+        case 4: cubePt = new Vec3(centerX, centerZ, planetRadius); break;
+        case 5: cubePt = new Vec3(-centerX, centerZ, -planetRadius); break;
+    }
+    Vec3 norm = Vec3.normalize(cubePt);
+    return Vec3.multiply(norm, planetRadius);
+  }
+
   private void updateVisibleChunks(GL3 gl) {
     Map<String, Integer> requiredChunksWithLod = new HashMap<>();
+    
+    Vec3 finalNorm = Vec3.normalize(camera.getPosition());
+    Vec3 playerSurfacePos = Vec3.multiply(finalNorm, PlanetConfig.planetRadius);
 
-    // 1. Gather required chunks for the current active grid face
-    for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-        for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
-            
-            int deltaX = Math.abs(cx - lastChunkX);
-            int deltaZ = Math.abs(cz - lastChunkZ);
-            int chunkRingDistance = Math.max(deltaX, deltaZ);
+    // 1. Scan local neighborhood on all 6 faces to cleanly solve edge/pole boundaries
+    for (int faceIdx = 0; faceIdx < 6; faceIdx++) {
+        Vec3 faceCoords = mapRadialToFacePlane(faceIdx, finalNorm, PlanetConfig.planetRadius);
+        int centerChunkX = (int) Math.floor((faceCoords.x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+        int centerChunkZ = (int) Math.floor((faceCoords.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
 
-            int currentSegments;
-            if (chunkRingDistance > 4)       currentSegments = 6;   
-            else if (chunkRingDistance > 2)  currentSegments = 16;  
-            else                             currentSegments = 32;  
+        for (int cz = centerChunkZ - VIEW_DISTANCE; cz <= centerChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = centerChunkX - VIEW_DISTANCE; cx <= centerChunkX + VIEW_DISTANCE; cx++) {
+                Vec3 chunkCenter = getChunkSphericalCenter(faceIdx, cx, cz, PlanetConfig.planetRadius);
+                
+                // Pure 3D distance check safely independent of mapping projections
+                float dx = playerSurfacePos.x - chunkCenter.x;
+                float dy = playerSurfacePos.y - chunkCenter.y;
+                float dz = playerSurfacePos.z - chunkCenter.z;
+                float distance = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-            String key = lastFace + "_" + cx + "_" + cz;
-            requiredChunksWithLod.put(key, currentSegments);
-        }
-    }
+                float maxRenderDistance = (VIEW_DISTANCE + 0.5f) * PHYSICAL_CHUNK_SIZE;
+                if (distance <= maxRenderDistance) {
+                    int currentSegments;
+                    if (distance > 4.0f * PHYSICAL_CHUNK_SIZE)       currentSegments = 6;   
+                    else if (distance > 2.0f * PHYSICAL_CHUNK_SIZE)  currentSegments = 16;  
+                    else                                             currentSegments = 32;  
 
-    // 2. Retain chunks from the neighboring historical face if they exist in the cache
-    if (previousFace != -1) {
-        for (int cz = prevChunkZ - VIEW_DISTANCE; cz <= prevChunkZ + VIEW_DISTANCE; cz++) {
-            for (int cx = prevChunkX - VIEW_DISTANCE; cx <= prevChunkX + VIEW_DISTANCE; cx++) {
-                String key = previousFace + "_" + cx + "_" + cz;
-                if (chunkCache.containsKey(key)) {
-                    Model cachedModel = chunkCache.get(key);
-                    int existingSegments = 6;
-                    if (cachedModel.name.endsWith("seg32")) existingSegments = 32;
-                    else if (cachedModel.name.endsWith("seg16")) existingSegments = 16;
-                    
-                    requiredChunksWithLod.put(key, existingSegments);
+                    String key = faceIdx + "_" + cx + "_" + cz;
+                    // If a chunk falls near overlaps, preserve the higher detail LOD
+                    if (!requiredChunksWithLod.containsKey(key) || requiredChunksWithLod.get(key) < currentSegments) {
+                        requiredChunksWithLod.put(key, currentSegments);
+                    }
                 }
             }
         }
     }
 
-    // Clean up expired cache items cleanly
+    // 2. Clean up expired cache items seamlessly
     Iterator<Map.Entry<String, Model>> iterator = chunkCache.entrySet().iterator();
     while (iterator.hasNext()) {
         Map.Entry<String, Model> entry = iterator.next();
@@ -361,7 +374,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
     }
 
-    List<String> staleLodKeys = new ArrayList<>();
+    // 3. Build new or updated LOD chunks
     for (Map.Entry<String, Integer> target : requiredChunksWithLod.entrySet()) {
         String key = target.getKey();
         int targetSegments = target.getValue();
@@ -376,17 +389,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             Model cachedModel = chunkCache.get(key);
             if (!cachedModel.name.endsWith("seg" + targetSegments)) {
                 if (cachedModel.mesh != null) cachedModel.mesh.dispose(gl);
-                staleLodKeys.add(key); 
                 mustBuild = true;
             }
         } else {
             mustBuild = true;
         }
-
-        for (String staleKey : staleLodKeys) {
-            chunkCache.remove(staleKey);
-        }
-        staleLodKeys.clear();
 
         if (mustBuild) {
             float dynamicScale = PHYSICAL_CHUNK_SIZE / (float) targetSegments;
@@ -456,13 +463,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     int currentChunkZ = (int) Math.floor((activeFaceCoords.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
 
     if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || currentFace != lastFace) {
-        if (currentFace != lastFace) {
-            previousFace = lastFace;
-            prevChunkX = lastChunkX;
-            prevChunkZ = lastChunkZ;
-        }
         lastFace = currentFace;
         lastChunkX = currentChunkX;
+        currentChunkZ = currentChunkZ;
         lastChunkZ = currentChunkZ;
         updateVisibleChunks(gl); 
     }
@@ -482,15 +485,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glFrontFace(GL3.GL_CCW);
     Mat4 viewProjection = Mat4.multiply(camera.getPerspectiveMatrix(), camera.getViewMatrix());
 
-    // --- PASS 1: FIXED DEPTH PRE-PASS ---
+    // --- PASS 1: DEPTH PRE-PASS ---
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
     gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
     gl.glEnable(GL3.GL_DEPTH_TEST);
     gl.glEnable(GL3.GL_CULL_FACE);
 
     depthPrePassShader.use(gl);
-    for (Map.Entry<String, Model> entry : chunkCache.entrySet()) { 
-        Model plane = entry.getValue();
+    for (Model plane : chunkCache.values()) { 
         Mat4 activeModelMatrix = plane.getModelMatrix(); 
         depthPrePassShader.setMat4(gl, "model", activeModelMatrix);
         Mat4 mvpMatrix = Mat4.multiply(viewProjection, activeModelMatrix);
@@ -523,8 +525,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glDisable(GL.GL_BLEND);
 
     // --- LANDSCAPE ---
-    for (Map.Entry<String, Model> entry : chunkCache.entrySet()) { 
-        Model plane = entry.getValue();
+    for (Model plane : chunkCache.values()) { 
         terrainRenderer.render(gl, plane.mesh, plane.getModelMatrix(), terrainShader, terrainMaterial, lights, ambientLight, nightProportion, camera);
     }
 
