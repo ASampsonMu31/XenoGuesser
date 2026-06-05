@@ -131,5 +131,9 @@ public class Model {
     // 4. Draw the mesh geometry raw
     mesh.render(gl);
   }
+
+  public Mat4 getModelMatrix() {
+    return modelMatrix;
+  }
   
 }

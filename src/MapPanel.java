@@ -96,24 +96,45 @@ public class MapPanel extends JPanel {
     private GameHUD gameHUD;
     private XenoGuesser mainApp; 
 
-    public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
+    // --- UPDATED CONSTRUCTOR WITH MERCATOR PROJECTION ---
+    public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise, float seedX, float seedY, float seedZ) {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
 
         this.setOpaque(false);
 
-        for (int z = 0; z < maxMapHeight; z++) {
-            for (int x = 0; x < maxMapWidth; x++) {
-                float worldX = ((float) x / maxMapWidth) * totalRegionWidth - halfRegion;
-                float worldZ = ((float) z / maxMapHeight) * totalRegionWidth - halfRegion;
+        // Mercator boundary at roughly +/- 85.0511 degrees to keep the map image square
+        float maxMercatorY = (float) Math.log(Math.tan(Math.PI / 4.0 + Math.toRadians(85.05113) / 2.0));
 
-                float terrainHeight = TerrainMesh.getLayeredHeight(worldX, worldZ, noise);
+        for (int z = 0; z < maxMapHeight; z++) {
+            // 1. Normalize vertical pixel position to range [-1, 1]
+            float v = ((float) z / maxMapHeight) * 2.0f - 1.0f;
+            float mercatorY = v * maxMercatorY;
+            
+            // 2. Inverse Mercator calculation: extract Latitude (phi)
+            float phi = (float) (2.0 * Math.atan(Math.exp(mercatorY)) - Math.PI / 2.0);
+            float cosPhi = (float) Math.cos(phi);
+
+            for (int x = 0; x < maxMapWidth; x++) {
+                // 3. Normalize horizontal pixel position to range [-1, 1] and get Longitude (theta)
+                float u = ((float) x / maxMapWidth) * 2.0f - 1.0f;
+                float theta = u * (float) Math.PI;
+
+                // 4. Transform angles into a 3D unit radial direction vector matching your sphere setup
+                float rx = cosPhi * (float) Math.cos(theta);
+                float ry = (float) Math.sin(phi); 
+                float rz = cosPhi * (float) Math.sin(theta);
+                
+                gmaths.Vec3 radialDir = new gmaths.Vec3(rx, ry, rz);
+
+                // 5. Query your 3D spherical terrain generator using seed shifts
+                float terrainHeight = TerrainMesh.getLayeredHeight3D(radialDir, seedX, seedY, seedZ, noise);
 
                 if (terrainHeight > seaLevelHeight) {
-                    mapImage.setRGB(x, z, new Color(92, 64, 45).getRGB());  
+                    mapImage.setRGB(x, z, new Color(92, 64, 45).getRGB());  // LAND: Earthy Brown
                 } else {
-                    mapImage.setRGB(x, z, new Color(25, 80, 160).getRGB()); 
+                    mapImage.setRGB(x, z, new Color(25, 80, 160).getRGB()); // WATER: Ocean Blue
                 }
             }
         }
@@ -151,7 +172,6 @@ public class MapPanel extends JPanel {
                     int localizedX = clickX - visualMapX;
                     int localizedY = clickY - visualMapY;
                     float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
-                    // ... rest of your code remains the same
                     
                     pinX = (int) (localizedX * scaleToCore);
                     pinY = (int) (localizedY * scaleToCore);
@@ -299,9 +319,30 @@ public class MapPanel extends JPanel {
         return this.isFullScreenReveal; 
     }
 
-    public void setPlayerSpawnLocation(float spawnX, float spawnZ) {
-        this.goalX = (int) (((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth());
-        this.goalY = (int) (((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight());
+    public void setPlayerSpawnLocation(float spawnX, float spawnY, float spawnZ) {
+        // 1. Normalize the 3D position vector
+        float length = (float) Math.sqrt(spawnX * spawnX + spawnY * spawnY + spawnZ * spawnZ);
+        float nx = spawnX / length;
+        float ny = spawnY / length;
+        float nz = spawnZ / length;
+
+        // 2. Extract spherical coordinates (Longitude & Latitude)
+        float theta = (float) Math.atan2(nz, nx); // Longitude range: [-PI, PI]
+        float phi = (float) Math.asin(ny);        // Latitude range: [-PI/2, PI/2]
+
+        // 3. Convert Longitude back to horizontal map coordinate U [0, 1]
+        float u = (theta + (float) Math.PI) / (2.0f * (float) Math.PI);
+
+        // 4. Convert Latitude back to Mercator Y coordinate V [0, 1]
+        float maxMercatorY = (float) Math.log(Math.tan(Math.PI / 4.0 + Math.toRadians(85.05113) / 2.0));
+        float mercatorY = (float) Math.log(Math.tan(Math.PI / 4.0 + phi / 2.0));
+        float v = (mercatorY + maxMercatorY) / (2.0f * maxMercatorY);
+        // Invert V because image coordinate (0,0) starts at the top left
+        v = 1.0f - v; 
+
+        // 5. Assign pixel location boundaries
+        this.goalX = (int) (u * mapImage.getWidth());
+        this.goalY = (int) (v * mapImage.getHeight());
     }
 
     public void updateGeometryLayouts() {

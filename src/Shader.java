@@ -65,6 +65,11 @@ public class Shader {
     int location = gl.glGetUniformLocation(ID, name);
     gl.glUniformMatrix4fv(location, 1, false, f, 0);
   }
+
+  public void setMat4(GL3 gl, String name, Mat4 matrix) {
+    int location = gl.glGetUniformLocation(ID, name);
+    gl.glUniformMatrix4fv(location, 1, false, matrix.toFloatArrayForGLSL(), 0);
+  }
   
   /* I declare that the modifications here are my own work based on setVec3 */
   public void setVec2(GL3 gl, String name, Vec2 v) {
@@ -106,5 +111,4 @@ public class Shader {
       System.err.println("[error] Unable to link program");
     return program.program();
   }
-
 }

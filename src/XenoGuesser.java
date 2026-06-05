@@ -101,6 +101,9 @@ public class XenoGuesser extends JFrame {
     MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
     
     long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();
+
+    PlanetConfig.generateNewPlanet();
+    
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
     
     int viewDistance = 24;
@@ -111,14 +114,22 @@ public class XenoGuesser extends JFrame {
     
     glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
 
-    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
-
     GameHUD gameHUD = new GameHUD();
 
     // --- FIXED: Inject the HUD reference into the OpenGL loop instance ---
     glEventListener.setGameHUD(gameHUD); 
 
-    MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise);
+    // --- FIXED: Pass 3D Seed offsets from the event listener into the Mercator generator ---
+    MapPanel minimap = new MapPanel(
+        750, 
+        750, 
+        totalRegionWidth, 
+        seaLevelHeight, 
+        worldNoise,
+        glEventListener.getSeedOffsetX(),
+        glEventListener.getSeedOffsetY(),
+        glEventListener.getSeedOffsetZ()
+    );
 
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
@@ -143,7 +154,7 @@ public class XenoGuesser extends JFrame {
 
     layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);   
     layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);  
-    layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);    
+    layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);     
 
     // FIXED: Extra fallback loop to block layout jittering during native window state shifts
     this.addComponentListener(new ComponentAdapter() {

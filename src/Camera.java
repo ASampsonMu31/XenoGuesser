@@ -12,24 +12,18 @@ public class Camera {
   public static final Vec3 DEFAULT_UP = new Vec3(0, 1, 0);
 
   public final float KEYBOARD_SPEED = 1.0f;
-  
-  // Preserved at 100f to match your drag inputs scaling factor
-  public final float MOUSE_SPEED = 100f;
+  public final float MOUSE_SPEED = 100.0f;
   
   private Vec3 position;
   private Vec3 target;
   private Vec3 up;
-  private Vec3 worldUp; // Stays permanently locked as your global sky axis
+  private Vec3 worldUp; // Dynamically updates to match the current planet surface normal
   private Vec3 front;
   private Vec3 right;
-  
-  private float yaw;
-  private float pitch;
   
   private Mat4 perspective;
 
   public Camera(Vec3 position, Vec3 target, Vec3 up) {
-    // Lock down worldUp immediately upon creation so it never drifts
     this.worldUp = new Vec3(up);
     this.worldUp.normalize();
     setupCamera(position, target);
@@ -42,7 +36,6 @@ public class Camera {
     front = Vec3.subtract(target, position);
     front.normalize();
     
-    calculateYawPitch(front);
     updateCameraVectors();
   }
   
@@ -50,27 +43,60 @@ public class Camera {
     return new Vec3(position);
   }
   
-  // FIX: Directly updates positions and recomputes matrices without touching or corrupting worldUp
+  public Vec3 getTarget() {
+    return new Vec3(target);
+  }
+
+  public Vec3 getFront() {
+    return new Vec3(front);
+  }
+  
+  // Safely moves position while preserving current look vectors across the sphere
   public void setPosition(Vec3 p) {
     this.position = new Vec3(p);
-    front = Vec3.subtract(target, position);
-    front.normalize();
-    calculateYawPitch(front);
+    this.target = Vec3.add(this.position, this.front);
     updateCameraVectors();
   }
   
-  // FIX: Directly updates target and recomputes matrices without touching or corrupting worldUp
+  // Safely sets look targets and re-aligns local space frame
   public void setTarget(Vec3 t) {
     this.target = new Vec3(t);
     front = Vec3.subtract(t, position);
     front.normalize();
-    calculateYawPitch(front);
     updateCameraVectors();
   }
 
-  private void calculateYawPitch(Vec3 v) {
-    yaw = (float) Math.toDegrees(Math.atan2(v.z, v.x));
-    pitch = (float) Math.toDegrees(Math.asin(v.y));
+  public void setWorldUp(Vec3 newWorldUp) {
+    newWorldUp.normalize();
+    
+    // 1. If this is the first frame or worldUp isn't initialized, baseline it
+    if (this.worldUp == null) {
+        this.worldUp = new Vec3(newWorldUp);
+        return;
+    }
+
+    // 2. Calculate the actual axis of curvature
+    Vec3 rotationAxis = Vec3.crossProduct(this.worldUp, newWorldUp);
+    float axisLen = rotationAxis.length();
+    
+    // CRITICAL: Lower the threshold to 1e-7 to capture microscopic frame steps
+    if (axisLen > 0.0000001f) {
+        rotationAxis.normalize();
+        float dot = Vec3.dotProduct(this.worldUp, newWorldUp);
+        dot = Math.max(-1.0f, Math.min(1.0f, dot)); 
+        float angleDegrees = (float) Math.toDegrees(Math.acos(dot));
+        
+        // Tilt look direction and local frame downward over the planet edge
+        this.front = rotateVectorAroundAxis(this.front, rotationAxis, angleDegrees);
+        this.up = rotateVectorAroundAxis(this.up, rotationAxis, angleDegrees);
+    }
+    
+    // 3. Update the persistent reference state for the next frame's comparison
+    this.worldUp = new Vec3(newWorldUp);
+    
+    // Recompute local horizontal spaces cleanly
+    right = Vec3.crossProduct(front, worldUp);
+    right.normalize();
   }
 
   public Mat4 getViewMatrix() {
@@ -89,10 +115,13 @@ public class Camera {
   public void updatePosition(boolean w, boolean a, boolean s, boolean d, float deltaTime) {
     Vec3 movementDirection = new Vec3(0, 0, 0);
 
-    Vec3 flatFront = new Vec3(front.x, 0.0f, front.z);
+    // Project front/right vectors onto the localized planet horizon surface plane
+    float frontDot = Vec3.dotProduct(front, worldUp);
+    Vec3 flatFront = Vec3.subtract(front, Vec3.multiply(worldUp, frontDot));
     flatFront.normalize();
     
-    Vec3 flatRight = new Vec3(right.x, 0.0f, right.z);
+    float rightDot = Vec3.dotProduct(right, worldUp);
+    Vec3 flatRight = Vec3.subtract(right, Vec3.multiply(worldUp, rightDot));
     flatRight.normalize();
 
     if (w) movementDirection.add(flatFront);
@@ -109,29 +138,26 @@ public class Camera {
     }
   }
 
+  // Pure vector-space mouse updates avoiding flat Euler angles/gimbal lock entirely
   public void updateYawPitch(float deltaX, float deltaY) {
-    yaw += (deltaX * MOUSE_SPEED);
-    pitch += (deltaY * MOUSE_SPEED);
+    // 1. Look Left/Right: Rotate front vector around current ground normal
+    front = rotateVectorAroundAxis(front, worldUp, -deltaX * MOUSE_SPEED);
     
-    if (pitch > 89.0f) pitch = 89.0f;
-    else if (pitch < -89.0f) pitch = -89.0f;
+    // CRITICAL FIX: Recompute the right vector IMMEDIATELY after yawing
+    // so the pitch rotation happens around the fresh, updated horizon axis!
+    right = Vec3.crossProduct(front, worldUp);
+    right.normalize();
     
-    updateFront();
+    // 2. Look Up/Down: Rotate front vector around local horizon side-axis (right)
+    Vec3 proposedFront = rotateVectorAroundAxis(front, right, -deltaY * MOUSE_SPEED);
+    
+    // Safety check: Clamp pitch to avoid full inversion or camera flipping
+    float dot = Vec3.dotProduct(proposedFront, worldUp);
+    if (Math.abs(dot) < 0.95f) { 
+        front = proposedFront;
+    }
+    
     updateCameraVectors();
-  }
-  
-  private void updateFront() {
-    double cy, cp, sy, sp;
-    cy = Math.cos(Math.toRadians(yaw));
-    sy = Math.sin(Math.toRadians(yaw));
-    cp = Math.cos(Math.toRadians(pitch));
-    sp = Math.sin(Math.toRadians(pitch));
-    
-    front.x = (float) (cy * cp);
-    front.y = (float) (sp);
-    front.z = (float) (sy * cp);
-    front.normalize();
-    target = Vec3.add(position, front);
   }
   
   private void updateCameraVectors() {  
@@ -141,9 +167,23 @@ public class Camera {
     up.normalize();
   }
 
-  public void setHeight(float newY) {
-    this.position.y = newY;
-    this.target = Vec3.add(this.position, this.front);
-}
+  // Rodrigues' Rotation Formula implementation for safe vector transformations
+  private Vec3 rotateVectorAroundAxis(Vec3 v, Vec3 axis, float angleDegrees) {
+    float angleRadians = (float) Math.toRadians(angleDegrees);
+    float cosTheta = (float) Math.cos(angleRadians);
+    float sinTheta = (float) Math.sin(angleRadians);
+    
+    Vec3 term1 = Vec3.multiply(v, cosTheta);
+    Vec3 term2 = Vec3.multiply(Vec3.crossProduct(axis, v), sinTheta);
+    Vec3 term3 = Vec3.multiply(axis, Vec3.dotProduct(axis, v) * (1.0f - cosTheta));
+    
+    Vec3 sum = Vec3.add(term1, term2);
+    return Vec3.normalize(Vec3.add(sum, term3));
+  }
 
+  // Changes the camera's absolute position on the sphere without altering look vectors 
+  public void setRawPosition(Vec3 newPos) {
+      this.position = new Vec3(newPos);
+      // Do NOT recalculate target or front here; let the existing front vector remain intact.
+  }
 }
