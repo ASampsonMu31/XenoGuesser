@@ -97,7 +97,7 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.awt.noerasebackground", "true"); 
     // ... rest of constructor setup ...
     
-    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP);
+    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, IS_DEVELOPMENT_MODE);
     MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
     
     long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();

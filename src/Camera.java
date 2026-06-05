@@ -11,7 +11,7 @@ public class Camera {
   public static final Vec3 DEFAULT_TARGET = new Vec3(0, 0, 0);
   public static final Vec3 DEFAULT_UP = new Vec3(0, 1, 0);
 
-  public final float KEYBOARD_SPEED = 1.0f;
+  public final float KEYBOARD_SPEED;
   
   // Preserved at 100f to match your drag inputs scaling factor
   public final float MOUSE_SPEED = 100f;
@@ -28,11 +28,17 @@ public class Camera {
   
   private Mat4 perspective;
 
-  public Camera(Vec3 position, Vec3 target, Vec3 up) {
+  public Camera(Vec3 position, Vec3 target, Vec3 up, boolean IS_DEVELOPMENT_MODE) {
     // Lock down worldUp immediately upon creation so it never drifts
     this.worldUp = new Vec3(up);
     this.worldUp.normalize();
     setupCamera(position, target);
+    if (IS_DEVELOPMENT_MODE) {
+      KEYBOARD_SPEED = 60.0f;
+    }
+    else {
+      KEYBOARD_SPEED = 15.0f;
+    }
   }
   
   private void setupCamera(Vec3 position, Vec3 target) {
@@ -102,7 +108,7 @@ public class Camera {
 
     if (w || a || s || d) {
       movementDirection.normalize();
-      float currentSpeed = 15.0f * deltaTime; 
+      float currentSpeed = KEYBOARD_SPEED * deltaTime; 
       Vec3 velocity = Vec3.multiply(movementDirection, currentSpeed);
       
       position.add(velocity);

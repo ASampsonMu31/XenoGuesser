@@ -236,7 +236,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     waterMaterial = new Material(
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
-        new Vec3(3.5f, 0.4f, 0.4f),
+        new Vec3(10.5f, 0.4f, 0.4f),
         2048f                                        
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
