@@ -65,8 +65,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int grassChunkCoordVBO = 0; 
   private int totalGrassInstances = 0;
   
-  private final int GRASS_VIEW_DISTANCE = 7; 
+  private final int GRASS_VIEW_DISTANCE = 20; 
   private final int GRASS_PER_CHUNK = 300; 
+
+  // --- Optimized Zero-Allocation VRAM Streaming Fields ---
+  private java.nio.FloatBuffer persistentGrassBuffer;
+  private int currentGrassGPUCapacityFloats = 0;
 
   public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
     this.camera = camera;
@@ -226,7 +230,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(1.0f, 1.0f, 1.0f), 
         new Vec3(1.0f, 1.0f, 1.0f), 
         new Vec3(0.1f, 0.1f, 0.1f), 
-        4.0f                                                                                                                                                                                                                                                                                                        
+        4.0f                                                                                                                                                                                                                                                                                                                
     );
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     terrainRenderer = new Renderer();
@@ -238,7 +242,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(10.5f, 0.4f, 0.4f),
-        2048f                                                                                                                                                                                                                                                                                                                                                                                                                                           
+        2048f                                                                                                                                                                                                                                                                                                               
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
@@ -261,21 +265,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     grassShader = new Shader(gl, "assets/shaders/vs_grass_instanced.txt", "assets/shaders/fs_grass_instanced.txt");
 
     float[] grassVertices = {
-        // Quad 1 (Facing Front-Back) - Position (X,Y,Z), UV (U,V)
+        // Position (X,Y,Z), UV (U,V)
         -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
          0.8f, 0.0f,  0.0f,  1.0f, 0.0f,
          0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
         -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
          0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
-        -0.8f, 4.8f,  0.0f,  0.0f, 1.0f,
-
-        // Quad 2 (Rotated 90 degrees around Y axis)
-         0.0f, 0.0f, -0.8f,  0.0f, 0.0f,
-         0.0f, 0.0f,  0.8f,  1.0f, 0.0f,
-         0.0f, 4.8f,  0.8f,  1.0f, 1.0f,
-         0.0f, 0.0f, -0.8f,  0.0f, 0.0f,
-         0.0f, 4.8f,  0.8f,  1.0f, 1.0f,
-         0.0f, 4.8f, -0.8f,  0.0f, 1.0f
+        -0.8f, 4.8f,  0.0f,  0.0f, 1.0f
     };
 
     int[] tempBuffers = new int[2];
@@ -337,7 +333,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     lastChunkX = (int) Math.floor((spawnX + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
     lastChunkZ = (int) Math.floor((spawnZ + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
     
-    // FIX: Pass true here to force immediate generation on player spawn
     updateVisibleChunks(gl, true);
   }
 
@@ -359,7 +354,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       spawnPlayerAtRandomLocation(gl);
   }
 
-  // FIX: Added the forceImmediate parameter to bypass time-slice checks when necessary
   private void updateVisibleChunks(GL3 gl, boolean forceImmediate) {
     Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
@@ -419,11 +413,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
     }
 
-    // =========================================================================
-    // --- AMORTIZED / STAGGERED FOLIAGE GENERATION PIPELINE ---
-    // =========================================================================
-    
-    // 1. Clean out extra-distant caches
     Map<String, Boolean> activeGrassKeys = new HashMap<>();
     for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
         for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
@@ -432,18 +421,16 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
     grassCache.keySet().retainAll(activeGrassKeys.keySet());
 
-    // 2. Load missing chunks with time budgeting
-    ArrayList<Float> consolidatedGrassCoords = new ArrayList<>();
     totalGrassInstances = 0;
     boolean generatedThisFrame = false; 
 
+    // Look ahead to calculate exactly how many instances we're building
     for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
         for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
             String key = cx + "_" + cz;
             float[] chunkGrassData = grassCache.get(key);
 
             if (chunkGrassData == null) {
-                // FIX: If forceImmediate is active, we bypass the single-chunk restriction completely
                 if (generatedThisFrame && !forceImmediate) {
                     continue; 
                 }
@@ -482,27 +469,39 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 grassCache.put(key, chunkGrassData);
                 generatedThisFrame = true; 
             }
-
-            for (float val : chunkGrassData) {
-                consolidatedGrassCoords.add(val);
-            }
             totalGrassInstances += (chunkGrassData.length / 3);
         }
     }
 
-    // 3. Perform the dynamic buffer data copy pass
     if (totalGrassInstances > 0) {
-        float[] coordData = new float[consolidatedGrassCoords.size()];
-        for (int i = 0; i < consolidatedGrassCoords.size(); i++) {
-            coordData[i] = consolidatedGrassCoords.get(i);
+        int requiredFloats = totalGrassInstances * 3;
+
+        // FIXED: Only resize/reallocate the buffer store if layout capacity expanded
+        if (persistentGrassBuffer == null || requiredFloats > currentGrassGPUCapacityFloats) {
+            currentGrassGPUCapacityFloats = (int) (requiredFloats * 1.2f); // 20% safety pad
+            persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
+            
+            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+            gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
         }
 
+        persistentGrassBuffer.clear();
+
+        // Load coordinate points seamlessly straight into our persistent direct byte allocation
+        for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+                String key = cx + "_" + cz;
+                float[] chunkGrassData = grassCache.get(key);
+                if (chunkGrassData != null) {
+                    persistentGrassBuffer.put(chunkGrassData);
+                }
+            }
+        }
+        persistentGrassBuffer.flip();
+
+        // FIXED: Stream into existing allocated GPU Memory space cleanly without dropping VRAM blocks
         gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
-        java.nio.FloatBuffer bufferData = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(coordData.length);
-        bufferData.put(coordData, 0, coordData.length);
-        bufferData.rewind();
-        
-        gl.glBufferData(GL3.GL_ARRAY_BUFFER, coordData.length * 4L, bufferData, GL3.GL_DYNAMIC_DRAW);
+        gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
         gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
     }
   }
@@ -563,7 +562,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))) {
         lastChunkX = currentChunkX;
         lastChunkZ = currentChunkZ;
-        // FIX: Pass false here to enable background progressive updates during ordinary gameplay movement
         updateVisibleChunks(gl, false);
     }
 
@@ -653,7 +651,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       grassShader.setInt(gl, "grassTexture", 0);
 
       gl.glBindVertexArray(grassVAO);
-      gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 12, totalGrassInstances);
+      gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 6, totalGrassInstances);
       gl.glBindVertexArray(0);
 
       gl.glEnable(GL.GL_CULL_FACE); 
