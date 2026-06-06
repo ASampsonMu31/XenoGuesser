@@ -28,7 +28,7 @@ uniform float time;
 const float SHALLOW_OPACITY_FLOOR = 0.09;  // Visibility minimum right at the sand line (0.0 to 1.0)
 const float EDGE_FADE_DISTANCE    = 0.5;  // Distance over which the absolute shoreline edge zeroes out
 const float DEPTH_FALLOFF_SPEED   = 0.20;  // Scales how fast shallows transition to dark deep ocean
-const float RIPPLE_SPEED = 0.05;
+const float RIPPLE_SPEED = 0.04;
 // =========================================================================
 
 float nearPlane = 10.0;
