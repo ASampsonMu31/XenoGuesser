@@ -4,27 +4,25 @@ out vec4 fragColor;
 
 uniform sampler2D grassTexture;
 uniform vec3 ambientLight;
-uniform vec3 sunDir; 
-uniform vec3 sunColor;
 
 void main() {
     vec4 texColor = texture(grassTexture, TexCoords);
     
-    // Strict cut-off point for transparent PNG borders 
-    if (texColor.a < 0.25) {
+    // 1. Drop completely transparent background pixels safely
+    if (texColor.a < 0.05) {
         discard;
     }
     
-    // Upward normal vector for soft ground lighting distribution
-    vec3 fakeNormal = vec3(0.0, 1.0, 0.0); 
-    vec3 lightDir = normalize(sunDir);
+    // 2. Purely Ambient Lighting Calculation
+    // We clamp the light modifier to a reasonable range to prevent extreme darks/brights
+    vec3 finalLight = clamp(4*ambientLight, 0.0, 1.5);
     
-    // Half-Lambert calculation to keep shaded grass visible on non-lit faces
-    float diff = dot(fakeNormal, lightDir) * 0.5 + 0.5;
-    vec3 diffuseLight = sunColor * diff;
+    // 3. Alpha-to-Coverage distance preservation math
+    // Smooths out and stabilizes the fine texture details as they shrink away from the camera
+    float adjustedAlpha = texColor.a;
+    adjustedAlpha = (adjustedAlpha - 0.5) / max(fwidth(adjustedAlpha), 0.0001) + 0.5;
+    adjustedAlpha = clamp(adjustedAlpha, 0.0, 1.0);
     
-    vec3 finalLight = ambientLight + diffuseLight;
-    finalLight = clamp(finalLight, 0.0, 1.5);
-    
-    fragColor = vec4(texColor.rgb * finalLight, texColor.a);
+    // Final output combining texture color, flat ambient light, and filtered alpha
+    fragColor = vec4(texColor.rgb * finalLight, adjustedAlpha);
 }

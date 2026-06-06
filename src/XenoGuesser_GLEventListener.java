@@ -65,7 +65,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int grassChunkCoordVBO = 0; 
   private int totalGrassInstances = 0;
   
-  private final int GRASS_VIEW_DISTANCE = 20; 
+  private final int GRASS_VIEW_DISTANCE = 24; 
   private final int GRASS_PER_CHUNK = 300; 
 
   // --- Optimized Zero-Allocation VRAM Streaming Fields ---
@@ -252,7 +252,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     waterPlaneModel = new Model("ocean_surface", waterMesh, waterModelMatrix, waterShader, waterMaterial, waterRenderer, lights, camera);
 
     // --- Instanced Grass Geometry Setup with Mipmapping ---
-    textures.add(gl, "grass_atlas", "assets/textures/grass.png");
+    textures.add(gl, "grass_atlas", "assets/textures/grass2.png");
     
     Texture grassTex = textures.get("grass_atlas");
     grassTex.bind(gl);
@@ -573,8 +573,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     else if (degSunAngle < twighlightZoneSize) { nightProportion = ((twighlightZoneSize - degSunAngle) / twighlightZoneSize); }
     else { nightProportion = 0f; }
 
-    ambientLight = Vec3.multiply(new Vec3(0.4f, 0.38f, 0.35f),
-      Math.max((float)Math.sin(sunAngle) * lights[0].getBrightnessProportion(), 0.05f));
+    ambientLight = new Vec3(0.2f, 0.2f, 0.2f);
 
     // --- PASS 1: DEPTH PRE-PASS ---
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
@@ -631,6 +630,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       
       gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "view"), 1, false, camera.getViewMatrix().toFloatArrayForGLSL(), 0);
       gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "projection"), 1, false, camera.getPerspectiveMatrix().toFloatArrayForGLSL(), 0);
+      Vec3 camPos = camera.getPosition();
+      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos.x, camPos.y, camPos.z);
+      
       gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
       gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
 
