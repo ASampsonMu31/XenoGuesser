@@ -72,6 +72,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private java.nio.FloatBuffer persistentGrassBuffer;
   private int currentGrassGPUCapacityFloats = 0;
 
+  private CompassHUD compassHUD;
+
   public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
     this.camera = camera;
     this.keyboard = keyboard;
@@ -575,6 +577,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     ambientLight = new Vec3(0.2f, 0.2f, 0.2f);
 
+
+    if (this.compassHUD != null) {
+        Vec3 cameraLookDir = camera.getForwardDirection(); 
+        this.compassHUD.updateHeading(cameraLookDir);
+    }
+
     // --- PASS 1: DEPTH PRE-PASS ---
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
     gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
@@ -723,6 +731,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
   public void setMinimap(MapPanel minimap) {
     this.minimap = minimap;
+  }
+
+  public void setCompassHUD(CompassHUD compassHUD) {
+    this.compassHUD = compassHUD;
   }
 
   private Model makeSkybox(GL3 gl, String fragmentPath, Texture skyTexture) {

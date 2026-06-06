@@ -55,6 +55,10 @@ public class Camera {
   public Vec3 getPosition() {
     return new Vec3(position);
   }
+
+  public Vec3 getForwardDirection() {
+    return new Vec3(front);
+  }
   
   // FIX: Directly updates positions and recomputes matrices without touching or corrupting worldUp
   public void setPosition(Vec3 p) {
