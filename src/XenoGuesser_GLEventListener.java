@@ -1,6 +1,7 @@
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.ArrayList;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 
@@ -15,6 +16,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
   private TextureLibrary textures;
   private Map<String, Model> chunkCache;
+  private Map<String, float[]> grassCache; 
   
   private Light[] lights;
   private Vec3 ambientLight;
@@ -24,7 +26,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private float seaLevelHeight;
   private Model waterPlaneModel;
   private Shader waterShader;
-  private Material waterMaterial; // --- FIXED: Promoted to class field to fix the resolution error ---
+  private Material waterMaterial; 
 
   private Model skyModel;
 
@@ -33,7 +35,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private Material terrainMaterial;
   private Mat4 globalModelMatrix;
 
-  // --- Optimization: Dedicated Depth Pre-Pass Shader ---
   private Shader depthPrePassShader;
 
   private final float PHYSICAL_CHUNK_SIZE = 100.0f; 
@@ -47,17 +48,25 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int lastChunkZ = Integer.MAX_VALUE;
 
   private MapPanel minimap;
-  private GameHUD gameHUD; // --- FIXED: Added missing HUD reference field ---
+  private GameHUD gameHUD; 
 
-  // --- Depth Pre-Pass FBO Fields ---
   private int[] depthFBO = new int[1];
   private int[] depthTexture = new int[1];
-  private int currentWidth = 1024;  // Fallback initial window dimensions
+  private int currentWidth = 1024;  
   private int currentHeight = 768;
   
-  // Add these fields to the class containing your render method:
-  private float fpsSmoothing = 0.95f; // Keeps the numbers readable and smooth
-  private double smoothedFps = 60.0;  // Seed with 60 initially
+  private float fpsSmoothing = 0.95f; 
+  private double smoothedFps = 60.0;  
+
+  // --- Fully GPU-Driven Instanced Grass Rendering Fields ---
+  private Shader grassShader;
+  private int grassVAO = 0;
+  private int grassVBO = 0;
+  private int grassChunkCoordVBO = 0; 
+  private int totalGrassInstances = 0;
+  
+  private final int GRASS_VIEW_DISTANCE = 7; 
+  private final int GRASS_PER_CHUNK = 300; 
 
   public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
     this.camera = camera;
@@ -70,7 +79,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     this.camera.setTarget(new Vec3(0f, 0f, 0f));
   }
 
-  // --- FIXED: Added missing setter method for HUD ---
   public void setGameHUD(GameHUD gameHUD) {
     this.gameHUD = gameHUD;
   }
@@ -108,7 +116,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     Mat4 perspectiveMatrix = Mat4Transform.perspective(45, aspect, 10.0f, farClippingPlane);
     camera.setPerspectiveMatrix(perspectiveMatrix);
 
-    // Recreate Depth Framebuffer to match the active fullscreen window canvas size
     createDepthFramebuffer(gl, width, height);
   }
 
@@ -116,8 +123,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   public void display(GLAutoDrawable drawable) {
       GL3 gl = drawable.getGL().getGL3();
       
-      // As soon as resetMapState() turns this false, this block is skipped, 
-      // and the 3D game drops right back into the rendering pipeline seamlessly.
       if (minimap != null && minimap.isFullScreenRevealMode()) {
           gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
           return; 
@@ -132,23 +137,25 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     for (Model model : chunkCache.values()) {
         if (model.mesh != null) model.mesh.dispose(gl);
     }
-    // Clean up FBO resources allocation safely
+
+    if (grassVAO != 0) {
+        gl.glDeleteVertexArrays(1, new int[]{grassVAO}, 0);
+        gl.glDeleteBuffers(2, new int[]{grassVBO, grassChunkCoordVBO}, 0);
+    }
+    
     gl.glDeleteFramebuffers(1, depthFBO, 0);
     gl.glDeleteTextures(1, depthTexture, 0);
   }
 
   private void createDepthFramebuffer(GL3 gl, int width, int height) {
-    // Delete old configurations if reshaping
     if (depthFBO[0] != 0) {
         gl.glDeleteFramebuffers(1, depthFBO, 0);
         gl.glDeleteTextures(1, depthTexture, 0);
     }
 
-    // 1. Generate Framebuffer
     gl.glGenFramebuffers(1, depthFBO, 0);
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
 
-    // 2. Generate Texture Target to house the raw non-linear depth values
     gl.glGenTextures(1, depthTexture, 0);
     gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
     gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_DEPTH_COMPONENT32F, width, height, 0, GL3.GL_DEPTH_COMPONENT, GL3.GL_FLOAT, null);
@@ -158,14 +165,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_CLAMP_TO_EDGE);
     gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE);
 
-    // 3. Attach Depth Map object structurally to our custom Framebuffer target configuration
     gl.glFramebufferTexture2D(GL3.GL_FRAMEBUFFER, GL3.GL_DEPTH_ATTACHMENT, GL3.GL_TEXTURE_2D, depthTexture[0], 0);
     
-    // Instruct OpenGL explicitly that we are not tracking color buffers during this pass
     gl.glDrawBuffer(GL3.GL_NONE);
     gl.glReadBuffer(GL3.GL_NONE);
 
-    // Verify system stability configuration state context
     if (gl.glCheckFramebufferStatus(GL3.GL_FRAMEBUFFER) != GL3.GL_FRAMEBUFFER_COMPLETE) {
         System.err.println("Critical Error: Depth Framebuffer Configuration Failed.");
     }
@@ -207,37 +211,34 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     
     m.setFullDiffuse(1.0f, 0.95f, 0.95f);  
     m.setFullSpecular(1.0f, 0.0f, 0.0f);   
-    m.setDimmedDiffuseSpecular(1f);
     l.setMaterial(m);
     lights[0] = l;
 
     skyModel = makeSkybox(gl, "assets/shaders/fs_single_sky.txt", textures.get("sky"));
     
     chunkCache = new HashMap<>();
+    grassCache = new HashMap<>(); 
 
     terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
-    
-    // Initialize the high-performance Depth Pre-pass shader
     depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
 
     terrainMaterial = new Material(
-    new Vec3(1.0f, 1.0f, 1.0f),  // Ambient: Neutral white (no texture tinting)
-    new Vec3(1.0f, 1.0f, 1.0f),  // Diffuse: Neutral white (no texture tinting)
-    new Vec3(0.1f, 0.1f, 0.1f),  // Specular: Dull, low gray so dirt isn't intensely shiny
-    4.0f                         // Shininess
-);
+        new Vec3(1.0f, 1.0f, 1.0f), 
+        new Vec3(1.0f, 1.0f, 1.0f), 
+        new Vec3(0.1f, 0.1f, 0.1f), 
+        4.0f                                                                                                                                                                                                                                                                                                        
+    );
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     terrainRenderer = new Renderer();
     globalModelMatrix = new Mat4(1);
 
     waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
     
-    // Assigned directly to the class field instead of keeping it locally scoped
     waterMaterial = new Material(
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(10.5f, 0.4f, 0.4f),
-        2048f                                        
+        2048f                                                                                                                                                                                                                                                                                                                                                                                                                                           
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
@@ -246,8 +247,65 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     Mesh waterMesh = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);  
     waterPlaneModel = new Model("ocean_surface", waterMesh, waterModelMatrix, waterShader, waterMaterial, waterRenderer, lights, camera);
 
-    createDepthFramebuffer(gl, currentWidth, currentHeight);
+    // --- Instanced Grass Geometry Setup with Mipmapping ---
+    textures.add(gl, "grass_atlas", "assets/textures/grass.png");
+    
+    Texture grassTex = textures.get("grass_atlas");
+    grassTex.bind(gl);
+    gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST_MIPMAP_LINEAR);
+    gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST);
+    gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE);
+    gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE);
+    gl.glGenerateMipmap(GL.GL_TEXTURE_2D);
+
+    grassShader = new Shader(gl, "assets/shaders/vs_grass_instanced.txt", "assets/shaders/fs_grass_instanced.txt");
+
+    float[] grassVertices = {
+        // Quad 1 (Facing Front-Back) - Position (X,Y,Z), UV (U,V)
+        -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
+         0.8f, 0.0f,  0.0f,  1.0f, 0.0f,
+         0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
+        -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
+         0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
+        -0.8f, 4.8f,  0.0f,  0.0f, 1.0f,
+
+        // Quad 2 (Rotated 90 degrees around Y axis)
+         0.0f, 0.0f, -0.8f,  0.0f, 0.0f,
+         0.0f, 0.0f,  0.8f,  1.0f, 0.0f,
+         0.0f, 4.8f,  0.8f,  1.0f, 1.0f,
+         0.0f, 0.0f, -0.8f,  0.0f, 0.0f,
+         0.0f, 4.8f,  0.8f,  1.0f, 1.0f,
+         0.0f, 4.8f, -0.8f,  0.0f, 1.0f
+    };
+
+    int[] tempBuffers = new int[2];
+    gl.glGenVertexArrays(1, tempBuffers, 0);
+    grassVAO = tempBuffers[0];
+    gl.glBindVertexArray(grassVAO);
+
+    gl.glGenBuffers(1, tempBuffers, 0);
+    grassVBO = tempBuffers[0];
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassVBO);
+    java.nio.FloatBuffer geoBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(grassVertices);
+    gl.glBufferData(GL3.GL_ARRAY_BUFFER, grassVertices.length * 4L, geoBuffer, GL3.GL_STATIC_DRAW);
+
+    gl.glEnableVertexAttribArray(0); 
+    gl.glVertexAttribPointer(0, 3, GL3.GL_FLOAT, false, 5 * 4, 0);
+    gl.glEnableVertexAttribArray(1); 
+    gl.glVertexAttribPointer(1, 2, GL3.GL_FLOAT, false, 5 * 4, 3 * 4);
+
+    gl.glGenBuffers(1, tempBuffers, 0);
+    grassChunkCoordVBO = tempBuffers[0];
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+    
+    gl.glEnableVertexAttribArray(2);
+    gl.glVertexAttribPointer(2, 3, GL3.GL_FLOAT, false, 3 * 4, 0);
+    gl.glVertexAttribDivisor(2, 1); 
+
+    gl.glBindVertexArray(0);
+
     spawnPlayerAtRandomLocation(gl);
+    createDepthFramebuffer(gl, currentWidth, currentHeight);
   }
 
   private void spawnPlayerAtRandomLocation(GL3 gl) {
@@ -279,7 +337,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     lastChunkX = (int) Math.floor((spawnX + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
     lastChunkZ = (int) Math.floor((spawnZ + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
     
-    updateVisibleChunks(gl);
+    // FIX: Pass true here to force immediate generation on player spawn
+    updateVisibleChunks(gl, true);
   }
 
   public void resetToNextRound(GL3 gl) {
@@ -287,9 +346,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
           if (model.mesh != null) model.mesh.dispose(gl);
       }
       chunkCache.clear();
+      grassCache.clear(); 
 
       lastChunkX = Integer.MAX_VALUE;
       lastChunkZ = Integer.MAX_VALUE;
+      totalGrassInstances = 0; 
 
       if (minimap != null) {
           minimap.resetMapState(); 
@@ -298,7 +359,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       spawnPlayerAtRandomLocation(gl);
   }
 
-  private void updateVisibleChunks(GL3 gl) {
+  // FIX: Added the forceImmediate parameter to bypass time-slice checks when necessary
+  private void updateVisibleChunks(GL3 gl, boolean forceImmediate) {
     Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
     for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
@@ -356,17 +418,99 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             chunkCache.put(key, chunkModel);
         }
     }
+
+    // =========================================================================
+    // --- AMORTIZED / STAGGERED FOLIAGE GENERATION PIPELINE ---
+    // =========================================================================
+    
+    // 1. Clean out extra-distant caches
+    Map<String, Boolean> activeGrassKeys = new HashMap<>();
+    for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+        for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+            activeGrassKeys.put(cx + "_" + cz, true);
+        }
+    }
+    grassCache.keySet().retainAll(activeGrassKeys.keySet());
+
+    // 2. Load missing chunks with time budgeting
+    ArrayList<Float> consolidatedGrassCoords = new ArrayList<>();
+    totalGrassInstances = 0;
+    boolean generatedThisFrame = false; 
+
+    for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+        for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+            String key = cx + "_" + cz;
+            float[] chunkGrassData = grassCache.get(key);
+
+            if (chunkGrassData == null) {
+                // FIX: If forceImmediate is active, we bypass the single-chunk restriction completely
+                if (generatedThisFrame && !forceImmediate) {
+                    continue; 
+                }
+
+                ArrayList<Float> tempChunkCoords = new ArrayList<>();
+                float chunkMinX = (cx * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
+                float chunkMinZ = (cz * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
+
+                for (int i = 0; i < GRASS_PER_CHUNK; i++) {
+                    long bladeSeed = worldSeed 
+                                ^ ((long) cx * 73731703L) 
+                                ^ ((long) cz * 19349663L) 
+                                ^ ((long) i * 2147483647L);
+
+                    double pseudoRandomValue1 = Math.sin(bladeSeed * 12.9898) * 43758.5453123;
+                    double pseudoRandomValue2 = Math.cos(bladeSeed * 78.2330) * 43758.5453123;
+
+                    double rand1 = Math.abs(pseudoRandomValue1) % 1.0;
+                    double rand2 = Math.abs(pseudoRandomValue2) % 1.0;
+
+                    float worldX = chunkMinX + (float)(rand1 * PHYSICAL_CHUNK_SIZE);
+                    float worldZ = chunkMinZ + (float)(rand2 * PHYSICAL_CHUNK_SIZE);
+                    float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+
+                    if (worldY > seaLevelHeight + 0.1f) {
+                        tempChunkCoords.add(worldX);
+                        tempChunkCoords.add(worldY);
+                        tempChunkCoords.add(worldZ);
+                    }
+                }
+
+                chunkGrassData = new float[tempChunkCoords.size()];
+                for (int idx = 0; idx < tempChunkCoords.size(); idx++) {
+                    chunkGrassData[idx] = tempChunkCoords.get(idx);
+                }
+                grassCache.put(key, chunkGrassData);
+                generatedThisFrame = true; 
+            }
+
+            for (float val : chunkGrassData) {
+                consolidatedGrassCoords.add(val);
+            }
+            totalGrassInstances += (chunkGrassData.length / 3);
+        }
+    }
+
+    // 3. Perform the dynamic buffer data copy pass
+    if (totalGrassInstances > 0) {
+        float[] coordData = new float[consolidatedGrassCoords.size()];
+        for (int i = 0; i < consolidatedGrassCoords.size(); i++) {
+            coordData[i] = consolidatedGrassCoords.get(i);
+        }
+
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+        java.nio.FloatBuffer bufferData = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(coordData.length);
+        bufferData.put(coordData, 0, coordData.length);
+        bufferData.rewind();
+        
+        gl.glBufferData(GL3.GL_ARRAY_BUFFER, coordData.length * 4L, bufferData, GL3.GL_DYNAMIC_DRAW);
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
+    }
   }
 
   private void render(GL3 gl) {
-    // 1. ALWAYS check for the next round request before ANY "freeze" logic short-circuits this method
     if (minimap != null && minimap.isNextRoundRequested()) {
         minimap.clearNextRoundRequest();
-        
-        // FIX: Re-initialize the UI visual states back to mini-mode
         minimap.resetMapState(); 
-        
-        // 2. Clear out your OpenGL resources and set up the new round positions
         resetToNextRound(gl);
         return;
     }
@@ -377,13 +521,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
-    // --- CALCULATE TRUE GAME ENGINE FPS ---
     if (deltaTime > 0) {
         double instantFps = 1.0 / deltaTime;
-        // Blend a tiny chunk of the instant FPS with our running history
         smoothedFps = (smoothedFps * fpsSmoothing) + (instantFps * (1.0f - fpsSmoothing));
         
-        // Push the calculated number over to your Swing HUD panel 
         if (this.gameHUD != null) {
             this.gameHUD.setGameFps((int) Math.round(smoothedFps));
         }
@@ -419,10 +560,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     int currentChunkX = (int) Math.floor((camera.getPosition().x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
     int currentChunkZ = (int) Math.floor((camera.getPosition().z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
 
-    if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ) {
+    if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))) {
         lastChunkX = currentChunkX;
         lastChunkZ = currentChunkZ;
-        updateVisibleChunks(gl);
+        // FIX: Pass false here to enable background progressive updates during ordinary gameplay movement
+        updateVisibleChunks(gl, false);
     }
 
     float sunAngle = (float)Math.atan2(sunPos.y, sunPos.x);
@@ -436,35 +578,26 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     ambientLight = Vec3.multiply(new Vec3(0.4f, 0.38f, 0.35f),
       Math.max((float)Math.sin(sunAngle) * lights[0].getBrightnessProportion(), 0.05f));
 
-    // ========================================================
-    // PASS 1: HIGH-PERFORMANCE DEPTH PRE-PASS TO FRAMEBUFFER
-    // ========================================================
+    // --- PASS 1: DEPTH PRE-PASS ---
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
     gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
     gl.glEnable(GL3.GL_DEPTH_TEST);
     gl.glEnable(GL3.GL_CULL_FACE);
 
-    // 1. Bind the depth shader ONCE
     depthPrePassShader.use(gl);
     
-    // 2. Extract common camera matrices outside the loop
     Mat4 view = camera.getViewMatrix();
     Mat4 projection = camera.getPerspectiveMatrix(); 
-    Mat4 viewProjection = Mat4.multiply(projection, view); // VP matrix
+    Mat4 viewProjection = Mat4.multiply(projection, view); 
 
-    // 3. Render all chunks structurally, passing the combined VP matrix down
     for (Model plane : chunkCache.values()) { 
         plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
     }
     
     gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
 
-    // ========================================================
-    // PASS 2: RENDER COMPLETE LIGHT SCENE TO CANVAS SCREEN
-    // ========================================================
+    // --- PASS 2: MAIN FORWARD DRAW ---
     gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
-
-    // --- SKYBOX PASS ---
     gl.glDisable(GL.GL_DEPTH_TEST); 
     gl.glDisable(GL.GL_CULL_FACE); 
 
@@ -478,7 +611,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glEnable(GL.GL_CULL_FACE);
     gl.glEnable(GL.GL_DEPTH_TEST);
 
-    // --- SUN PASS ---
     gl.glEnable(GL.GL_BLEND);
     gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
     gl.glDepthMask(false);
@@ -488,14 +620,46 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glDepthMask(true);
     gl.glDisable(GL.GL_BLEND);
 
-    // --- LANDSCAPE PASS ---
     terrainShader.use(gl);
-    
     for (Model plane : chunkCache.values()) { 
         plane.render(gl, ambientLight, nightProportion); 
     }
+    
+    // --- INSTANCED FOLIAGE RENDERING PASS ---
+    if (totalGrassInstances > 0) {
+      gl.glDisable(GL.GL_CULL_FACE); 
 
-    // --- OCEAN BLENDING PASS ---
+      grassShader.use(gl);
+      
+      gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "view"), 1, false, camera.getViewMatrix().toFloatArrayForGLSL(), 0);
+      gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "projection"), 1, false, camera.getPerspectiveMatrix().toFloatArrayForGLSL(), 0);
+      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
+      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
+
+      gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "grassPerChunk"), GRASS_PER_CHUNK);
+      gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "worldSeed"), (int)(worldSeed & 0xFFFF));
+
+      Vec3 camPosForSun = camera.getPosition();
+      Vec3 direction = new Vec3(sunPos.x - camPosForSun.x, sunPos.y - camPosForSun.y, sunPos.z - camPosForSun.z);
+      float len = (float)Math.sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+      if (len > 0.0f) {
+          direction = new Vec3(direction.x / len, direction.y / len, direction.z / len);
+      }
+      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunDir"), direction.x, direction.y, direction.z);
+      gl.glUniform1f(gl.glGetUniformLocation(grassShader.getID(), "time"), (float)elapsedTime);
+
+      gl.glActiveTexture(GL3.GL_TEXTURE0);
+      textures.get("grass_atlas").bind(gl);
+      grassShader.setInt(gl, "grassTexture", 0);
+
+      gl.glBindVertexArray(grassVAO);
+      gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 12, totalGrassInstances);
+      gl.glBindVertexArray(0);
+
+      gl.glEnable(GL.GL_CULL_FACE); 
+    }
+
+    // --- OCEAN PASS ---
     gl.glEnable(GL.GL_BLEND);
     gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
 
@@ -509,15 +673,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
     waterShader.setVec2(gl, "windowSize", new Vec2((float)currentWidth, (float)currentHeight));
 
-    // Dynamic Lighting & Material Uniform Setup
     waterShader.setVec3(gl, "sunPos", sunPos);
     waterShader.setVec3(gl, "lightSpecular", new Vec3(1.0f, 1.0f, 1.0f));
     
-    // Now compiles perfectly since waterMaterial is a valid field
     waterShader.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
     waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
 
-    // Bind depth texture to Texture Unit 1
     gl.glActiveTexture(GL3.GL_TEXTURE1);
     gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
     waterShader.setInt(gl, "terrainDepthTexture", 1);
@@ -571,6 +732,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     Shader shader = new Shader(gl, "assets/shaders/vs_standard.txt", fragmentPath);
     Material material = new Material(new Vec3(0f, 0f, 0f), new Vec3(0f, 0f, 0f));
     material.setDiffuseMap(skyTexture);
+    
     Renderer renderer = new Renderer();
     return new Model(name, mesh, modelMatrix, shader, material, renderer, lights, camera);
   }
