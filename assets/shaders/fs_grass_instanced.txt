@@ -1,28 +1,57 @@
 #version 330 core
+
 in vec2 TexCoords;
+in vec3 fWorldPos;
+
 out vec4 fragColor;
 
 uniform sampler2D grassTexture;
+uniform sampler2D skyTexture; 
 uniform vec3 ambientLight;
+uniform vec3 cameraPos;  
+uniform mat4 skyRotation;
+
+const float PI = 3.14159265359;
 
 void main() {
     vec4 texColor = texture(grassTexture, TexCoords);
     
-    // 1. Drop completely transparent background pixels safely
     if (texColor.a < 0.05) {
         discard;
     }
     
-    // 2. Purely Ambient Lighting Calculation
-    // We clamp the light modifier to a reasonable range to prevent extreme darks/brights
-    vec3 finalLight = clamp(3*ambientLight, 0.0, 1.5);
+    vec3 finalLight = clamp(3.0 * ambientLight, 0.0, 1.5);
+    vec3 baseGrassColor = texColor.rgb * finalLight;
     
-    // 3. Alpha-to-Coverage distance preservation math
-    // Smooths out and stabilizes the fine texture details as they shrink away from the camera
     float adjustedAlpha = texColor.a;
     adjustedAlpha = (adjustedAlpha - 0.5) / max(fwidth(adjustedAlpha), 0.0001) + 0.5;
     adjustedAlpha = clamp(adjustedAlpha, 0.0, 1.0);
     
-    // Final output combining texture color, flat ambient light, and filtered alpha
-    fragColor = vec4(texColor.rgb * finalLight, adjustedAlpha);
+    // --- PERFECT SKY-SPHERE INVERSION TRANSFORM ---
+    float radialDistance = length(cameraPos - fWorldPos);
+    vec3 worldLookDir = normalize(fWorldPos - cameraPos);
+    mat3 invSkyRot = transpose(mat3(skyRotation));
+    vec3 localSkyDir = invSkyRot * worldLookDir;
+    
+    // Mathematically reversing InsideSphere.java's parametric layout
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) {
+        theta += 2.0 * PI;
+    }
+    float u = theta / (2.0 * PI);
+    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+    
+    vec3 dynamicSkyColor = texture(skyTexture, vec2(u, v)).rgb;
+
+    // --- CUBIC DISTANCE BLENDING ---
+    float fogStart = 1000.0;
+    float fogEnd = 2200.0; 
+
+    float fogFactor = (fogEnd - radialDistance) / (fogEnd - fogStart);
+    fogFactor = clamp(fogFactor, 0.0, 1.0); 
+    fogFactor = smoothstep(0.0, 1.0, fogFactor);
+
+    vec3 finalColorWithFog = mix(dynamicSkyColor, baseGrassColor, fogFactor);
+
+    fragColor = vec4(finalColorWithFog, adjustedAlpha);
 }

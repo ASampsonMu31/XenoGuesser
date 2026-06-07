@@ -38,7 +38,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private Shader depthPrePassShader;
 
   private final float PHYSICAL_CHUNK_SIZE = 100.0f; 
-  private final int VIEW_DISTANCE = 24; 
+  private final int VIEW_DISTANCE = 22; 
   private PerlinNoise worldNoise;
   private long worldSeed; 
 
@@ -69,7 +69,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int grassChunkCoordVBO = 0; 
   private int totalGrassInstances = 0;
   
-  private final int GRASS_VIEW_DISTANCE = 24; 
+  private final int GRASS_VIEW_DISTANCE = 21;
   private final int GRASS_PER_CHUNK = 300; 
 
   // --- Optimized Zero-Allocation VRAM Streaming Fields ---
@@ -101,7 +101,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   public void init(GLAutoDrawable drawable) {
     GL3 gl = drawable.getGL().getGL3();
     
-    gl.glClearColor(0.92f, 0.85f, 0.65f, 1.0f); 
+    gl.glClearColor(0.976f, 0.725f, 0.043f, 1.0f); // Rich Orangey-Yellow Sky
     gl.glClearDepth(1.0f);
     
     gl.glEnable(GL.GL_DEPTH_TEST);
@@ -126,7 +126,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glViewport(0, 0, width, height);
     
     float aspect = (float) width / (float) height;
-    float farClippingPlane = 2500.0f; 
+    float farClippingPlane = 3000.0f; 
     Mat4 perspectiveMatrix = Mat4Transform.perspective(45, aspect, 10.0f, farClippingPlane);
     camera.setPerspectiveMatrix(perspectiveMatrix);
 
@@ -550,223 +550,257 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   }
 
   private void render(GL3 gl) {
-    if (minimap != null && minimap.isNextRoundRequested()) {
-        minimap.clearNextRoundRequest();
-        minimap.resetMapState(); 
-        resetToNextRound(gl);
-        return;
-    }
+      if (minimap != null && minimap.isNextRoundRequested()) {
+          minimap.clearNextRoundRequest();
+          minimap.resetMapState(); 
+          resetToNextRound(gl);
+          return;
+      }
 
-    double elapsedTime = getSeconds() - startTime;
-    double deltaTime = elapsedTime - lastElapsedTime;
-    lastElapsedTime = elapsedTime;
+      double elapsedTime = getSeconds() - startTime;
+      double deltaTime = elapsedTime - lastElapsedTime;
+      lastElapsedTime = elapsedTime;
 
-    if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
+      if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
-    if (deltaTime > 0) {
-        double instantFps = 1.0 / deltaTime;
-        smoothedFps = (smoothedFps * fpsSmoothing) + (instantFps * (1.0f - fpsSmoothing));
-        
-        if (this.gameHUD != null) {
-            this.gameHUD.setGameFps((int) Math.round(smoothedFps));
-        }
-    }
+      if (deltaTime > 0) {
+          double instantFps = 1.0 / deltaTime;
+          smoothedFps = (smoothedFps * fpsSmoothing) + (instantFps * (1.0f - fpsSmoothing));
+          
+          if (this.gameHUD != null) {
+              this.gameHUD.setGameFps((int) Math.round(smoothedFps));
+          }
+      }
 
-    boolean moveW = keyboard.w;
-    boolean moveS = keyboard.s;
-    boolean moveA = keyboard.a;
-    boolean moveD = keyboard.d;
+      boolean moveW = keyboard.w;
+      boolean moveS = keyboard.s;
+      boolean moveA = keyboard.a;
+      boolean moveD = keyboard.d;
 
-    if (moveW && moveS) { moveW = false; moveS = false; }
-    if (moveA && moveD) { moveA = false; moveD = false; }
+      if (moveW && moveS) { moveW = false; moveS = false; }
+      if (moveA && moveD) { moveA = false; moveD = false; }
 
-    if (minimap != null && minimap.isFullScreenRevealMode()) {
-        camera.updatePosition(false, false, false, false, (float)deltaTime);
-    } else {
-        camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime);
-    }
+      if (minimap != null && minimap.isFullScreenRevealMode()) {
+          camera.updatePosition(false, false, false, false, (float)deltaTime);
+      } else {
+          camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime);
+      }
 
-    Vec3 currentPos = camera.getPosition();
-    float rawGroundHeight = TerrainMesh.getLayeredHeight(currentPos.x, currentPos.z, worldNoise);
-    float targetCameraHeight = rawGroundHeight + playerEyeHeight;
+      Vec3 currentPos = camera.getPosition();
+      float rawGroundHeight = TerrainMesh.getLayeredHeight(currentPos.x, currentPos.z, worldNoise);
+      float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
-    float dynamicSmoothingFactor = 5.0f * (float)deltaTime;
-    if (dynamicSmoothingFactor > 1.0f) dynamicSmoothingFactor = 1.0f;
+      float dynamicSmoothingFactor = 6.0f * (float)deltaTime;
+      if (dynamicSmoothingFactor > 1.0f) dynamicSmoothingFactor = 1.0f;
 
-    float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
-    camera.setHeight(smoothedHeight);
+      float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
+      camera.setHeight(smoothedHeight);
 
-    lights[0].setPosition(getSunPosition());
-    Vec3 sunPos = lights[0].getPosition();
+      lights[0].setPosition(getSunPosition());
+      Vec3 sunPos = lights[0].getPosition();
 
-    int currentChunkX = (int) Math.floor((camera.getPosition().x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-    int currentChunkZ = (int) Math.floor((camera.getPosition().z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+      int currentChunkX = (int) Math.floor((camera.getPosition().x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+      int currentChunkZ = (int) Math.floor((camera.getPosition().z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
 
-    if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))) {
-        lastChunkX = currentChunkX;
-        lastChunkZ = currentChunkZ;
-        updateVisibleChunks(gl, false);
-    }
+      if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))) {
+          lastChunkX = currentChunkX;
+          lastChunkZ = currentChunkZ;
+          updateVisibleChunks(gl, false);
+      }
 
-    float sunAngle = (float)Math.atan2(sunPos.y - currentPos.y, sunPos.x - currentPos.x);
-    float degSunAngle = (float)Math.toDegrees(sunAngle);
-    float twilightZoneSize = 30f;
-    if (degSunAngle < 0f) { nightProportion = 1f; }
-    else if (degSunAngle > 180f - twilightZoneSize) { nightProportion = (degSunAngle - (180f - twilightZoneSize)) / twilightZoneSize; }
-    else if (degSunAngle < twilightZoneSize) { nightProportion = ((twilightZoneSize - degSunAngle) / twilightZoneSize); }
-    else { nightProportion = 0f; }
+      float sunAngle = (float)Math.atan2(sunPos.y - currentPos.y, sunPos.x - currentPos.x);
+      float degSunAngle = (float)Math.toDegrees(sunAngle);
+      float twilightZoneSize = 30f;
+      if (degSunAngle < 0f) { nightProportion = 1f; }
+      else if (degSunAngle > 180f - twilightZoneSize) { nightProportion = (degSunAngle - (180f - twilightZoneSize)) / twilightZoneSize; }
+      else if (degSunAngle < twilightZoneSize) { nightProportion = ((twilightZoneSize - degSunAngle) / twilightZoneSize); }
+      else { nightProportion = 0f; }
 
-    float dayR = 0.40f, dayG = 0.38f, dayB = 0.35f; 
-    float nightR = 0.08f, nightG = 0.08f, nightB = 0.12f; 
-    
-    float currentR = dayR + nightProportion * (nightR - dayR);
-    float currentG = dayG + nightProportion * (nightG - dayG);
-    float currentB = dayB + nightProportion * (nightB - dayB);
-    
-    ambientLight = new Vec3(currentR, currentG, currentB);
+      float dayR = 0.40f, dayG = 0.38f, dayB = 0.35f; 
+      float nightR = 0.08f, nightG = 0.08f, nightB = 0.12f; 
+      
+      float currentR = dayR + nightProportion * (nightR - dayR);
+      float currentG = dayG + nightProportion * (nightG - dayG);
+      float currentB = dayB + nightProportion * (nightB - dayB);
+      
+      ambientLight = new Vec3(currentR, currentG, currentB);
 
-    if (this.compassHUD != null) {
-        Vec3 cameraLookDir = camera.getForwardDirection(); 
-        this.compassHUD.updateHeading(cameraLookDir);
-    }
+      float skyDayR = 0.976f, skyDayG = 0.725f, skyDayB = 0.043f;
+      float skyNightR = 0.05f, skyNightG = 0.05f, skyNightB = 0.08f; 
+      
+      float curSkyR = skyDayR + nightProportion * (skyNightR - skyDayR);
+      float curSkyG = skyDayG + nightProportion * (skyNightG - skyDayG);
+      float curSkyB = skyDayB + nightProportion * (skyNightB - skyDayB);
+      Vec3 skyColor = new Vec3(curSkyR, curSkyG, curSkyB);
 
-    // --- PASS 1: DEPTH PRE-PASS ---
-    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
-    gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
-    gl.glEnable(GL3.GL_DEPTH_TEST);
-    gl.glEnable(GL3.GL_CULL_FACE);
+      if (this.compassHUD != null) {
+          Vec3 cameraLookDir = camera.getForwardDirection(); 
+          this.compassHUD.updateHeading(cameraLookDir);
+      }
 
-    depthPrePassShader.use(gl);
-    
-    Mat4 view = camera.getViewMatrix();
-    Mat4 projection = camera.getPerspectiveMatrix(); 
-    Mat4 viewProjection = Mat4.multiply(projection, view); 
+      // CRITICAL: Change this string to whatever your sky texture is registered as!
+      String skyTextureKey = "sky"; 
 
-    for (Model plane : chunkCache.values()) { 
-        plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
-    }
-    
-    gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+      // --- PASS 1: DEPTH PRE-PASS ---
+      gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
+      gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
+      gl.glEnable(GL3.GL_DEPTH_TEST);
+      gl.glEnable(GL3.GL_CULL_FACE);
 
-    // --- PASS 2: MAIN FORWARD DRAW ---
-    gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
-    gl.glDisable(GL.GL_DEPTH_TEST); 
-    gl.glDisable(GL.GL_CULL_FACE); 
+      depthPrePassShader.use(gl);
+      
+      Mat4 view = camera.getViewMatrix();
+      Mat4 projection = camera.getPerspectiveMatrix(); 
+      Mat4 viewProjection = Mat4.multiply(projection, view); 
 
-    // 1. Replicate the sun's orbital angle calculations in degrees
-    float sunProgress = timeOfDay - (float)Math.floor(timeOfDay);
-    float sunAngleDeg = 10.0f + sunProgress * (170.0f - 10.0f);
+      for (Model plane : chunkCache.values()) { 
+          plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
+      }
+      
+      gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
 
-    // 2. Replicate the sun's latitude and seasonal tilt calculations in degrees
-    Vec3 camPosForSky = camera.getPosition();
-    float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
-    float maxMapEdgeZ = totalPlayableRegion / 2.0f;
-    
-    float latitudeFactor = camPosForSky.z / maxMapEdgeZ;
-    if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
-    if (latitudeFactor < -1.0f) latitudeFactor = -1.0f;
-    
-    float latitudeAngleDeg = -latitudeFactor * 35.0f;
-    float tiltAngleDeg = latitudeAngleDeg + currentSeasonalTiltDegrees;
-
-    // 3. Build the rotation matrix to orient the skybox towards the sun
-    // We add 90 degrees to the Z rotation to swing the "bottom" gradient up to match the sun's starting axis
-    Mat4 skyRotation = Mat4Transform.rotateAroundX(tiltAngleDeg);
-    skyRotation = Mat4.multiply(skyRotation, Mat4Transform.rotateAroundZ(sunAngleDeg + 90.0f));
-
-    // 4. Combine translations, rotations, and scaling (applied right-to-left)
-    Mat4 skyTransform = Mat4Transform.translate(camera.getPosition());
-    skyTransform = Mat4.multiply(skyTransform, skyRotation);
-    skyTransform = Mat4.multiply(skyTransform, Mat4Transform.scale(2400.0f, 2400.0f, 2400.0f));
-
-    skyModel.setModelMatrix(skyTransform);
-    skyModel.render(gl, ambientLight, nightProportion);
-
-    gl.glEnable(GL.GL_CULL_FACE);
-    gl.glEnable(GL.GL_DEPTH_TEST);
-
-    gl.glEnable(GL.GL_BLEND);
-    gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
-    gl.glDepthMask(false);
-    
-    lights[0].render(gl); 
-    
-    gl.glDepthMask(true);
-    gl.glDisable(GL.GL_BLEND);
-
-    terrainShader.use(gl);
-    for (Model plane : chunkCache.values()) { 
-        plane.render(gl, ambientLight, nightProportion); 
-    }
-    
-    // --- INSTANCED FOLIAGE RENDERING PASS ---
-    if (totalGrassInstances > 0) {
+      // --- PASS 2: MAIN FORWARD DRAW ---
+      gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
+      gl.glDisable(GL.GL_DEPTH_TEST); 
       gl.glDisable(GL.GL_CULL_FACE); 
 
-      grassShader.use(gl);
-      
-      gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "view"), 1, false, camera.getViewMatrix().toFloatArrayForGLSL(), 0);
-      gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "projection"), 1, false, camera.getPerspectiveMatrix().toFloatArrayForGLSL(), 0);
-      Vec3 camPos1 = camera.getPosition();
-      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos1.x, camPos1.y, camPos1.z);
-      
-      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
-      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
+      float sunProgress = timeOfDay - (float)Math.floor(timeOfDay);
+      float sunAngleDeg = 10.0f + sunProgress * (170.0f - 10.0f);
 
-      gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "grassPerChunk"), GRASS_PER_CHUNK);
-      gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "worldSeed"), (int)(worldSeed & 0xFFFF));
+      Vec3 camPosForSky = camera.getPosition();
+      float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
+      float maxMapEdgeZ = totalPlayableRegion / 2.0f;
+      
+      float latitudeFactor = camPosForSky.z / maxMapEdgeZ;
+      if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
+      if (latitudeFactor < -1.0f) latitudeFactor = -1.0f;
+      
+      float latitudeAngleDeg = -latitudeFactor * 35.0f;
+      float tiltAngleDeg = latitudeAngleDeg + currentSeasonalTiltDegrees;
 
-      Vec3 camPosForSun = camera.getPosition();
-      Vec3 direction = new Vec3(sunPos.x - camPosForSun.x, sunPos.y - camPosForSun.y, sunPos.z - camPosForSun.z);
-      float len = (float)Math.sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
-      if (len > 0.0f) {
-          direction = new Vec3(direction.x / len, direction.y / len, direction.z / len);
+      Mat4 skyRotation = Mat4Transform.rotateAroundX(tiltAngleDeg);
+      skyRotation = Mat4.multiply(skyRotation, Mat4Transform.rotateAroundZ(sunAngleDeg + 90.0f));
+
+      Mat4 skyTransform = Mat4Transform.translate(camera.getPosition());
+      skyTransform = Mat4.multiply(skyTransform, skyRotation);
+      skyTransform = Mat4.multiply(skyTransform, Mat4Transform.scale(2400.0f, 2400.0f, 2400.0f));
+      
+      skyModel.setModelMatrix(skyTransform);
+      skyModel.render(gl, ambientLight, nightProportion);
+
+      gl.glEnable(GL.GL_CULL_FACE);
+      gl.glEnable(GL.GL_DEPTH_TEST);
+
+      gl.glEnable(GL.GL_BLEND);
+      gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
+      gl.glDepthMask(false);
+      lights[0].render(gl); 
+      gl.glDepthMask(true);
+      gl.glDisable(GL.GL_BLEND);
+
+      // --- TERRAIN PASS ---
+      terrainShader.use(gl);
+      terrainShader.setVec3(gl, "skyColor", skyColor);
+      gl.glUniformMatrix4fv(gl.glGetUniformLocation(terrainShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+
+      if (textures.get(skyTextureKey) != null) {
+          gl.glActiveTexture(GL3.GL_TEXTURE2);
+          textures.get(skyTextureKey).bind(gl); 
+          terrainShader.setInt(gl, "skyTexture", 2);
       }
-      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunDir"), direction.x, direction.y, direction.z);
-      gl.glUniform1f(gl.glGetUniformLocation(grassShader.getID(), "time"), (float)elapsedTime);
 
-      gl.glActiveTexture(GL3.GL_TEXTURE0);
-      textures.get("grass_atlas").bind(gl);
-      grassShader.setInt(gl, "grassTexture", 0);
+      for (Model plane : chunkCache.values()) { 
+          plane.render(gl, ambientLight, nightProportion); 
+      }
+      
+      // --- INSTANCED FOLIAGE RENDERING PASS ---
+      if (totalGrassInstances > 0) {
+        gl.glDisable(GL.GL_CULL_FACE); 
 
-      gl.glBindVertexArray(grassVAO);
-      gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 6, totalGrassInstances);
-      gl.glBindVertexArray(0);
+        grassShader.use(gl);
+        
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "view"), 1, false, camera.getViewMatrix().toFloatArrayForGLSL(), 0);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "projection"), 1, false, camera.getPerspectiveMatrix().toFloatArrayForGLSL(), 0);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        
+        Vec3 camPos1 = camera.getPosition();
+        gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos1.x, camPos1.y, camPos1.z);
+        gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
+        gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
+        gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "skyColor"), skyColor.x, skyColor.y, skyColor.z);
 
-      gl.glEnable(GL.GL_CULL_FACE); 
-    }
+        gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "grassPerChunk"), GRASS_PER_CHUNK);
+        gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "worldSeed"), (int)(worldSeed & 0xFFFF));
 
-    // --- OCEAN PASS ---
-    gl.glEnable(GL.GL_BLEND);
-    gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
+        Vec3 camPosForSun = camera.getPosition();
+        Vec3 direction = new Vec3(sunPos.x - camPosForSun.x, sunPos.y - camPosForSun.y, sunPos.z - camPosForSun.z);
+        float len = (float)Math.sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
+        if (len > 0.0f) {
+            direction = new Vec3(direction.x / len, direction.y / len, direction.z / len);
+        }
+        gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunDir"), direction.x, direction.y, direction.z);
+        gl.glUniform1f(gl.glGetUniformLocation(grassShader.getID(), "time"), (float)elapsedTime);
 
-    Vec3 camPos = camera.getPosition();
-    float waterCoverageSize = PHYSICAL_CHUNK_SIZE * VIEW_DISTANCE * 2.0f;
+        if (textures.get(skyTextureKey) != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get(skyTextureKey).bind(gl);
+            grassShader.setInt(gl, "skyTexture", 2);
+        }
 
-    Mat4 waterMatrix = Mat4Transform.translate(camPos.x, seaLevelHeight - 0.05f, camPos.z);
-    waterMatrix = Mat4.multiply(waterMatrix, Mat4Transform.scale(waterCoverageSize, 1.0f, waterCoverageSize));
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
+        textures.get("grass_atlas").bind(gl);
+        grassShader.setInt(gl, "grassTexture", 0);
 
-    waterShader.use(gl);
-    waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
-    waterShader.setVec2(gl, "windowSize", new Vec2((float)currentWidth, (float)currentHeight));
+        gl.glBindVertexArray(grassVAO);
+        gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 6, totalGrassInstances);
+        gl.glBindVertexArray(0);
 
-    waterShader.setVec3(gl, "sunPos", sunPos);
-    waterShader.setVec3(gl, "lightSpecular", new Vec3(1.0f, 1.0f, 1.0f));
-    
-    waterShader.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
-    waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
+        gl.glEnable(GL.GL_CULL_FACE); 
+      }
 
-    gl.glActiveTexture(GL3.GL_TEXTURE1);
-    gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
-    waterShader.setInt(gl, "terrainDepthTexture", 1);
+      // --- OCEAN PASS ---
+      gl.glEnable(GL.GL_BLEND);
+      gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
 
-    waterShader.setFloat(gl, "time", (float)elapsedTime);
+      Vec3 camPos = camera.getPosition();
+      float waterCoverageSize = PHYSICAL_CHUNK_SIZE * VIEW_DISTANCE * 2.0f;
 
-    waterPlaneModel.setModelMatrix(waterMatrix);
-    waterPlaneModel.render(gl, ambientLight, nightProportion);
+      Mat4 waterMatrix = Mat4Transform.translate(camPos.x, seaLevelHeight - 0.05f, camPos.z);
+      waterMatrix = Mat4.multiply(waterMatrix, Mat4Transform.scale(waterCoverageSize, 1.0f, waterCoverageSize));
 
-    gl.glDisable(GL.GL_BLEND);
+      waterShader.use(gl);
+      waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
+      waterShader.setVec2(gl, "windowSize", new Vec2((float)currentWidth, (float)currentHeight));
+
+      waterShader.setVec3(gl, "sunPos", sunPos);
+      waterShader.setVec3(gl, "lightSpecular", new Vec3(1.0f, 1.0f, 1.0f));
+      
+      waterShader.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
+      waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
+
+      waterShader.setVec3(gl, "ambientLight", ambientLight);
+      waterShader.setVec3(gl, "skyColor", skyColor);
+      gl.glUniformMatrix4fv(gl.glGetUniformLocation(waterShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+
+      if (textures.get(skyTextureKey) != null) {
+          gl.glActiveTexture(GL3.GL_TEXTURE2);
+          textures.get(skyTextureKey).bind(gl);
+          waterShader.setInt(gl, "skyTexture", 2);
+      }
+
+      gl.glActiveTexture(GL3.GL_TEXTURE1);
+      gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
+      waterShader.setInt(gl, "terrainDepthTexture", 1);
+
+      waterShader.setFloat(gl, "time", (float)elapsedTime);
+
+      waterPlaneModel.setModelMatrix(waterMatrix);
+      waterPlaneModel.render(gl, ambientLight, nightProportion);
+
+      gl.glDisable(GL.GL_BLEND);
   }
+
+  // END OF RENDER!!!!!!!!!!
 
   private double getSeconds() {
     return System.currentTimeMillis() / 1000.0;

@@ -13,6 +13,7 @@ import gmaths.Vec3;
 public class CompassHUD extends JPanel {
     
     private float currentYawRadians = 0.0f;
+    
     private final int size = 120; // Internal size of the compass face area
     private static final int BORDER_SIZE = 10; // Frame thickness matching map panel
     
@@ -23,6 +24,7 @@ public class CompassHUD extends JPanel {
 
     public CompassHUD() {
         this.setOpaque(false); // Let custom paint control background geometry boundary blocks
+        this.setVisible(false); // CRITICAL: Start completely hidden until round data loads in
         
         // Compute full component space constraints including surrounding border offsets
         int panelWidth = size + (BORDER_SIZE * 2);
@@ -33,6 +35,12 @@ public class CompassHUD extends JPanel {
     
     public void updateHeading(Vec3 cameraForwardDirection) {
         this.currentYawRadians = (float) Math.atan2(cameraForwardDirection.x, cameraForwardDirection.z);
+        
+        // Unhide the panel only once a valid camera heading has been fed in
+        if (!this.isVisible()) {
+            this.setVisible(true);
+        }
+        
         repaint();
     }
     

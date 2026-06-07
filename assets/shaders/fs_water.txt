@@ -3,7 +3,7 @@
 in vec3 aPos;
 in vec3 aNormal;
 in vec2 aTexCoord;
-in float ViewDistance;
+in float PlanarDepth;
 
 out vec4 fragColor;
 
@@ -13,23 +13,22 @@ uniform vec2 windowSize;
 
 uniform sampler2D diffuse_texture;     
 uniform sampler2D terrainDepthTexture; 
+uniform sampler2D skyTexture; 
 
-// --- Passing the actual Sun Position ---
-uniform vec3 sunPos;         // World-space position of your sun light object
-uniform vec3 lightSpecular;  // Color/Intensity of the sun's light
-uniform vec3 matSpecular;    // Specular property of water
-uniform float matShininess;  // Reflection sharpness exponent
+uniform vec3 sunPos;         
+uniform vec3 lightSpecular;  
+uniform vec3 matSpecular;    
+uniform float matShininess;  
 
 uniform float time;
+uniform vec3 ambientLight;   
+uniform mat4 skyRotation;
 
-// =========================================================================
-//  TWEAKABLE TRANSPARENCY & DEPTH CONTROLS
-// =========================================================================
-const float SHALLOW_OPACITY_FLOOR = 0.09;  // Visibility minimum right at the sand line (0.0 to 1.0)
-const float EDGE_FADE_DISTANCE    = 0.5;  // Distance over which the absolute shoreline edge zeroes out
-const float DEPTH_FALLOFF_SPEED   = 0.20;  // Scales how fast shallows transition to dark deep ocean
-const float RIPPLE_SPEED = 0.04;
-// =========================================================================
+const float SHALLOW_OPACITY_FLOOR = 0.09;  
+const float EDGE_FADE_DISTANCE    = 0.5;   
+const float DEPTH_FALLOFF_SPEED   = 0.20;  
+const float RIPPLE_SPEED          = 0.04;
+const float PI                    = 3.14159265359;
 
 float nearPlane = 10.0;
 float farPlane = 2500.0;
@@ -40,86 +39,86 @@ float linearizeDepth(float rawDepth) {
 }
 
 void main() {
-    // 1. Calculate perspective view directions
     vec3 viewDir = normalize(viewPos - aPos);
-    
-    // 2. Fetch screen-space texturing UVs
     vec2 screenUV = gl_FragCoord.xy / windowSize;
     
-    // 3. Extract linearized distance to the hidden ocean floor
     float rawDepth = texture(terrainDepthTexture, screenUV).r;
     float landDistance = linearizeDepth(rawDepth);
+    float waterDistance = PlanarDepth;
     
-    // 4. Extract linearized distance to the water surface using your native layout
-    float waterDistance = ViewDistance;
-    
-    // 5. Compute vertical thickness boundaries
     float totalThickness = max(landDistance - waterDistance, 0.0);
     
-    // 6. Project path length using the viewing ray angle relative to vertical surface
     float cosTheta = dot(viewDir, vec3(0.0, 1.0, 0.0));
-    cosTheta = max(abs(cosTheta), 0.0001); // Prevent division-by-zero
+    cosTheta = max(abs(cosTheta), 0.0001);
     
     float actualRayPathLength = totalThickness / cosTheta;
-
-    // Uses your tweakable constant for overall shoreline depth scaling
     float stretchedPathLength = actualRayPathLength * DEPTH_FALLOFF_SPEED;
 
-    // 7. Light absorption calculation (Beer's Law)
     vec3 absorptionCoefficients = vec3(0.015, 0.005, 0.001);
     vec3 transparencyFactor = exp(-stretchedPathLength * absorptionCoefficients);
 
-    // --- CLEANED & FIXED: 4-Way Symmetric Absolute Zero Drift ---
     vec2 worldUV1 = (aPos.xz * 0.010) + vec2(0.0, time * RIPPLE_SPEED);
-    vec2 worldUV2 = (aPos.xz * 0.011) + vec2(0.0, -time * RIPPLE_SPEED*1.01);
-    vec2 worldUV3 = (aPos.xz * 0.009) + vec2(time * RIPPLE_SPEED*1.02, 0.0);
-    vec2 worldUV4 = (aPos.xz * 0.010) + vec2(-time * RIPPLE_SPEED*1.03, 0.0);
+    vec2 worldUV2 = (aPos.xz * 0.011) + vec2(0.0, -time * RIPPLE_SPEED * 1.01);
+    vec2 worldUV3 = (aPos.xz * 0.009) + vec2(time * RIPPLE_SPEED * 1.02, 0.0);
+    vec2 worldUV4 = (aPos.xz * 0.010) + vec2(-time * RIPPLE_SPEED * 1.03, 0.0);
     
     vec3 tex1 = texture(diffuse_texture, worldUV1).rgb;
     vec3 tex2 = texture(diffuse_texture, worldUV2).rgb;
     vec3 tex3 = texture(diffuse_texture, worldUV3).rgb;
     vec3 tex4 = texture(diffuse_texture, worldUV4).rgb;
 
-    // High-contrast contrast pair matching
     vec3 combinedTex = (tex1 * tex2) + (tex3 * tex4);
     vec3 waterSurfaceTex = clamp(combinedTex * 1.5, 0.0, 1.0);
 
-    // Base coloration tones
     vec3 shallowColorTint = vec3(0.0, 0.50, 0.60);
     vec3 deepOceanColor = vec3(0.01, 0.10, 0.30);  
     
-    // Smoothed Color Transition using a scalar factor
     float factor = transparencyFactor.g;
     vec3 shallowWaterBlend = mix(shallowColorTint, waterSurfaceTex, factor);
     vec3 waterBaseColor = mix(deepOceanColor, shallowWaterBlend, factor);
 
-    // --- 8. FIXED: Tweakable Opacity Distribution ---
-    // Cleans up the dry land perimeter over a highly customizable edge zone
     float edgeFade = clamp(totalThickness / EDGE_FADE_DISTANCE, 0.0, 1.0);
-    
-    // Scales dynamically from your custom shallow visibility limit up to solid deep water
     float baseOpacity = mix(SHALLOW_OPACITY_FLOOR, 1.0, 1.0 - factor);
-    
-    // Combine base transparency curve with edge shielding
     float opacity = baseOpacity * edgeFade;
 
-    // --- 9. Blinn-Phong Specular Reflection Math ---
     vec3 normal = vec3(0.0, 1.0, 0.0); 
-    
-    // Calculate the true vector pointing FROM the fragment TO the sun position
     vec3 lightDir = normalize(sunPos - aPos);
-    
-    // Calculate the Halfway Vector (H) between the light source and the camera view
     vec3 halfwayDir = normalize(lightDir + viewDir);
     
-    // Compute the specular strength factor
     float specFactor = pow(max(dot(normal, halfwayDir), 0.0), matShininess);
-    
-    // Combine light color, material reflectance properties, and the calculated intensity
     vec3 specularHighlight = lightSpecular * matSpecular * specFactor;
 
-    // Add the bright sun specular reflection onto your absorption base color
-    vec3 finalColor = waterBaseColor + specularHighlight;
+    vec3 baseWaterColorWithSpecular = waterBaseColor + specularHighlight;
 
-    fragColor = vec4(finalColor, opacity);
+    // --- PERFECT SKY-SPHERE INVERSION TRANSFORM ---
+    float radialDistance = length(viewPos - aPos);
+    vec3 worldLookDir = normalize(aPos - viewPos);
+    mat3 invSkyRot = transpose(mat3(skyRotation));
+    vec3 localSkyDir = invSkyRot * worldLookDir;
+    
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) {
+        theta += 2.0 * PI;
+    }
+    float u = theta / (2.0 * PI);
+    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+    
+    vec3 dynamicSkyColor = texture(skyTexture, vec2(u, v)).rgb;
+
+    // --- CUBIC DISTANCE BLENDING ---
+    float fogStart = 1000.0;
+    float fogEnd = 2200.0; 
+
+    float fogFactor = (fogEnd - radialDistance) / (fogEnd - fogStart);
+    fogFactor = clamp(fogFactor, 0.0, 1.0); 
+    fogFactor = smoothstep(0.0, 1.0, fogFactor);
+
+    vec3 finalColorWithFog = mix(dynamicSkyColor, baseWaterColorWithSpecular, fogFactor);
+
+    // --- CRITICAL ALPHA FIX FOR DISTANT WATER ---
+    // As fogFactor goes to 0.0 (maximum fog at a distance), opacity must force-climb to 1.0
+    // This prevents the sky-colored fog pixels from rendering as transparent cutouts.
+    float finalOpacity = mix(1.0, opacity, fogFactor);
+
+    fragColor = vec4(finalColorWithFog, finalOpacity);
 }

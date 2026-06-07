@@ -10,7 +10,7 @@ import com.jogamp.opengl.util.FPSAnimator;
 
 public class XenoGuesser extends JFrame {
   
-  private static final boolean IS_DEVELOPMENT_MODE = true; 
+  private static final boolean IS_DEVELOPMENT_MODE = false; 
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -69,9 +69,6 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.awt.noerasebackground", "true"); 
     System.setProperty("sun.java2d.noddraw", "true");
     
-    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, IS_DEVELOPMENT_MODE);
-    MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
-    
     long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
     
@@ -80,6 +77,10 @@ public class XenoGuesser extends JFrame {
     float totalRegionWidth = (viewDistance * physicalChunkSize) * 50.0f;
     
     float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
+    
+    // FIXED: Passed seaLevelHeight directly into the camera object constructor here
+    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, IS_DEVELOPMENT_MODE, seaLevelHeight);
+    MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
     
     glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
 
@@ -92,6 +93,12 @@ public class XenoGuesser extends JFrame {
     glEventListener.setMinimap(minimap);
 
     compassHUD = new CompassHUD();
+    
+    // Explicitly seed the exact initial bottom-left position matching the frame size
+    int initialCompassW = compassHUD.getPreferredSize().width;
+    int initialCompassH = compassHUD.getPreferredSize().height;
+    compassHUD.setBounds(0, screenSize.height - initialCompassH - 2, initialCompassW, initialCompassH);
+    
     layeredPane.add(compassHUD, JLayeredPane.MODAL_LAYER);
     glEventListener.setCompassHUD(compassHUD);
 
@@ -140,7 +147,7 @@ public class XenoGuesser extends JFrame {
           updateMinimapBounds(layeredPane, minimap);
           gameHUD.setBounds(0, 0, gameHUD.getWidth(), gameHUD.getHeight());
           
-          // FIXED: Squeezes the framed compass absolutely into the bottom left corner (x=0)
+          // Squeezes the framed compass absolutely into the bottom left corner (x=0)
           int compassW = compassHUD.getPreferredSize().width;
           int compassH = compassHUD.getPreferredSize().height;
           compassHUD.setBounds(0, paneHeight - compassH - 2, compassW, compassH);
