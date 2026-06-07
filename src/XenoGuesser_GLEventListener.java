@@ -50,6 +50,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private MapPanel minimap;
   private GameHUD gameHUD; 
 
+  // --- Seasonal Simulation Fields ---
+  private float planetAxialTiltDegrees;
+  private float currentSeasonalTiltDegrees;
+
   private int[] depthFBO = new int[1];
   private int[] depthTexture = new int[1];
   private int currentWidth = 1024;  
@@ -83,6 +87,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     
     this.camera.setPosition(new Vec3(0f, 5f, 15f));
     this.camera.setTarget(new Vec3(0f, 0f, 0f));
+
+    // Generate the overall planetary axial tilt once per world seed (Earth-like range roughly 20-26 degrees)
+    java.util.Random seedRand = new java.util.Random(worldSeed);
+    this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
   }
 
   public void setGameHUD(GameHUD gameHUD) {
@@ -185,12 +193,42 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
   private Vec3 getSunPosition() {
     float sunDistance = 2350.0f; 
-    if (timeOfDay > 1) { timeOfDay -= 1; }
+    
+    float progress = timeOfDay - (float)Math.floor(timeOfDay);
+    
+    // ADJUSTED ARC: Allowed the sun to drop much lower towards the horizon line
+    float minAngleRad = (float)Math.toRadians(10.0);
+    float maxAngleRad = (float)Math.toRadians(170.0);
+    float currentAngleRad = minAngleRad + progress * (maxAngleRad - minAngleRad);
+    
     Vec3 cameraPosition = camera.getPosition();
-    float x = cameraPosition.x + sunDistance * (float)(Math.sin(2 * Math.PI * timeOfDay + Math.PI));
-    float y = cameraPosition.y + sunDistance * (float)(Math.cos(2 * Math.PI * timeOfDay + Math.PI));
-    float z = cameraPosition.z;
-    return new Vec3(x, y, z);
+    
+    float localX = sunDistance * (float)Math.cos(currentAngleRad);
+    float localY = sunDistance * (float)Math.sin(currentAngleRad); 
+    float localZ = 0.0f;
+    
+    float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
+    float maxMapEdgeZ = totalPlayableRegion / 2.0f;
+    
+    float latitudeFactor = cameraPosition.z / maxMapEdgeZ;
+    if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
+    if (latitudeFactor < -1.0f) latitudeFactor = -1.0f;
+    
+    float maxTiltRadians = (float)Math.toRadians(35.0);
+    float latitudeAngle = -latitudeFactor * maxTiltRadians; 
+    
+    // Apply hidden seasonal variable as an orbit plane shift translation
+    float seasonalTiltRadians = (float)Math.toRadians(currentSeasonalTiltDegrees);
+    float tiltAngle = latitudeAngle + seasonalTiltRadians;
+    
+    float cosTilt = (float)Math.cos(tiltAngle);
+    float sinTilt = (float)Math.sin(tiltAngle);
+    
+    float worldX = cameraPosition.x + localX;
+    float worldY = cameraPosition.y + (localY * cosTilt - localZ * sinTilt);
+    float worldZ = cameraPosition.z + (localY * sinTilt + localZ * cosTilt);
+    
+    return new Vec3(worldX, worldY, worldZ);
   }
 
   private void initialise(GL3 gl) {
@@ -207,7 +245,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     ambientLight = new Vec3(0.4f, 0.38f, 0.35f); 
     nightProportion = 0.0f;
-    timeOfDay = 0.35f;
+    
+    timeOfDay = 0.5f; // default overwritten but there foor if necessary
 
     lights = new Light[1];
     float lightSize = 275.0f; 
@@ -232,7 +271,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(1.0f, 1.0f, 1.0f), 
         new Vec3(1.0f, 1.0f, 1.0f), 
         new Vec3(0.1f, 0.1f, 0.1f), 
-        4.0f                                                                                                                                                                                                                                                                                                                
+        4.0f                                                                                                                                                                                                                                                                                                                                        
     );
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     terrainRenderer = new Renderer();
@@ -244,7 +283,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(10.5f, 0.4f, 0.4f),
-        2048f                                                                                                                                                                                                                                                                                                               
+        2048f                                                                                                                                                                                                                                                                                                                                        
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
@@ -324,6 +363,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             foundDryLand = true;
         }
     }
+
+    this.timeOfDay = dynamicRand.nextFloat();
+
+    // Sinusoidally calculate seasonal orbital variation depending on specific round spawn
+    float seasonalPhase = dynamicRand.nextFloat() * (float)(2.0 * Math.PI);
+    this.currentSeasonalTiltDegrees = this.planetAxialTiltDegrees * (float)Math.sin(seasonalPhase);
 
     if (this.minimap != null) {
         this.minimap.setPlayerSpawnLocation(spawnX, spawnZ);
@@ -426,7 +471,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     totalGrassInstances = 0;
     boolean generatedThisFrame = false; 
 
-    // Look ahead to calculate exactly how many instances we're building
     for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
         for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
             String key = cx + "_" + cz;
@@ -478,9 +522,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     if (totalGrassInstances > 0) {
         int requiredFloats = totalGrassInstances * 3;
 
-        // FIXED: Only resize/reallocate the buffer store if layout capacity expanded
         if (persistentGrassBuffer == null || requiredFloats > currentGrassGPUCapacityFloats) {
-            currentGrassGPUCapacityFloats = (int) (requiredFloats * 1.2f); // 20% safety pad
+            currentGrassGPUCapacityFloats = (int) (requiredFloats * 1.2f); 
             persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
             
             gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
@@ -489,7 +532,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         persistentGrassBuffer.clear();
 
-        // Load coordinate points seamlessly straight into our persistent direct byte allocation
         for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
                 String key = cx + "_" + cz;
@@ -501,7 +543,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
         persistentGrassBuffer.flip();
 
-        // FIXED: Stream into existing allocated GPU Memory space cleanly without dropping VRAM blocks
         gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
         gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
         gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
@@ -567,16 +608,22 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         updateVisibleChunks(gl, false);
     }
 
-    float sunAngle = (float)Math.atan2(sunPos.y, sunPos.x);
+    float sunAngle = (float)Math.atan2(sunPos.y - currentPos.y, sunPos.x - currentPos.x);
     float degSunAngle = (float)Math.toDegrees(sunAngle);
-    float twighlightZoneSize = 30f;
+    float twilightZoneSize = 30f;
     if (degSunAngle < 0f) { nightProportion = 1f; }
-    else if (degSunAngle > 180f - twighlightZoneSize) { nightProportion = (degSunAngle - (180f - twighlightZoneSize)) / twighlightZoneSize; }
-    else if (degSunAngle < twighlightZoneSize) { nightProportion = ((twighlightZoneSize - degSunAngle) / twighlightZoneSize); }
+    else if (degSunAngle > 180f - twilightZoneSize) { nightProportion = (degSunAngle - (180f - twilightZoneSize)) / twilightZoneSize; }
+    else if (degSunAngle < twilightZoneSize) { nightProportion = ((twilightZoneSize - degSunAngle) / twilightZoneSize); }
     else { nightProportion = 0f; }
 
-    ambientLight = new Vec3(0.2f, 0.2f, 0.2f);
-
+    float dayR = 0.40f, dayG = 0.38f, dayB = 0.35f; 
+    float nightR = 0.08f, nightG = 0.08f, nightB = 0.12f; 
+    
+    float currentR = dayR + nightProportion * (nightR - dayR);
+    float currentG = dayG + nightProportion * (nightG - dayG);
+    float currentB = dayB + nightProportion * (nightB - dayB);
+    
+    ambientLight = new Vec3(currentR, currentG, currentB);
 
     if (this.compassHUD != null) {
         Vec3 cameraLookDir = camera.getForwardDirection(); 
@@ -606,12 +653,34 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     gl.glDisable(GL.GL_DEPTH_TEST); 
     gl.glDisable(GL.GL_CULL_FACE); 
 
-    Mat4 skyTransform = Mat4.multiply(
-        Mat4Transform.translate(camera.getPosition()),
-        Mat4Transform.scale(2400.0f, 2400.0f, 2400.0f) 
-    );
+    // 1. Replicate the sun's orbital angle calculations in degrees
+    float sunProgress = timeOfDay - (float)Math.floor(timeOfDay);
+    float sunAngleDeg = 10.0f + sunProgress * (170.0f - 10.0f);
+
+    // 2. Replicate the sun's latitude and seasonal tilt calculations in degrees
+    Vec3 camPosForSky = camera.getPosition();
+    float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
+    float maxMapEdgeZ = totalPlayableRegion / 2.0f;
+    
+    float latitudeFactor = camPosForSky.z / maxMapEdgeZ;
+    if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
+    if (latitudeFactor < -1.0f) latitudeFactor = -1.0f;
+    
+    float latitudeAngleDeg = -latitudeFactor * 35.0f;
+    float tiltAngleDeg = latitudeAngleDeg + currentSeasonalTiltDegrees;
+
+    // 3. Build the rotation matrix to orient the skybox towards the sun
+    // We add 90 degrees to the Z rotation to swing the "bottom" gradient up to match the sun's starting axis
+    Mat4 skyRotation = Mat4Transform.rotateAroundX(tiltAngleDeg);
+    skyRotation = Mat4.multiply(skyRotation, Mat4Transform.rotateAroundZ(sunAngleDeg + 90.0f));
+
+    // 4. Combine translations, rotations, and scaling (applied right-to-left)
+    Mat4 skyTransform = Mat4Transform.translate(camera.getPosition());
+    skyTransform = Mat4.multiply(skyTransform, skyRotation);
+    skyTransform = Mat4.multiply(skyTransform, Mat4Transform.scale(2400.0f, 2400.0f, 2400.0f));
+
     skyModel.setModelMatrix(skyTransform);
-    skyModel.render(gl, ambientLight, nightProportion); 
+    skyModel.render(gl, ambientLight, nightProportion);
 
     gl.glEnable(GL.GL_CULL_FACE);
     gl.glEnable(GL.GL_DEPTH_TEST);
@@ -638,8 +707,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       
       gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "view"), 1, false, camera.getViewMatrix().toFloatArrayForGLSL(), 0);
       gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "projection"), 1, false, camera.getPerspectiveMatrix().toFloatArrayForGLSL(), 0);
-      Vec3 camPos = camera.getPosition();
-      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos.x, camPos.y, camPos.z);
+      Vec3 camPos1 = camera.getPosition();
+      gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos1.x, camPos1.y, camPos1.z);
       
       gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
       gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
@@ -724,8 +793,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     if (targetIndex >= heightSamples.size()) targetIndex = heightSamples.size() - 1;
     
     float calculatedSeaLevel = heightSamples.get(targetIndex);
-    System.out.println("Global Target Ocean Coverage: " + (waterProportion * 100f) + "%");
-    System.out.println("Locked Global Sea Level Height: " + calculatedSeaLevel);
     return calculatedSeaLevel;
   }
 

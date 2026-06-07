@@ -15,7 +15,7 @@ void main() {
     
     // 2. Purely Ambient Lighting Calculation
     // We clamp the light modifier to a reasonable range to prevent extreme darks/brights
-    vec3 finalLight = clamp(4*ambientLight, 0.0, 1.5);
+    vec3 finalLight = clamp(3*ambientLight, 0.0, 1.5);
     
     // 3. Alpha-to-Coverage distance preservation math
     // Smooths out and stabilizes the fine texture details as they shrink away from the camera

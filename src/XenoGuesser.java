@@ -74,7 +74,6 @@ public class XenoGuesser extends JFrame {
     
     long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
-    System.out.println("World Seed Context: " + worldSeed);
     
     int viewDistance = 24;
     float physicalChunkSize = 100.0f;

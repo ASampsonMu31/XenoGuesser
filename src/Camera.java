@@ -123,8 +123,8 @@ public class Camera {
     yaw += (deltaX * MOUSE_SPEED);
     pitch += (deltaY * MOUSE_SPEED);
     
-    if (pitch > 89.0f) pitch = 89.0f;
-    else if (pitch < -89.0f) pitch = -89.0f;
+    if (pitch > 85.0f) pitch = 85.0f;
+    else if (pitch < -85.0f) pitch = -85.0f;
     
     updateFront();
     updateCameraVectors();
