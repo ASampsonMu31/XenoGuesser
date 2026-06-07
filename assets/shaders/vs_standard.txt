@@ -7,7 +7,7 @@ layout (location = 2) in vec2 texCoord;
 out vec3 aPos;
 out vec3 aNormal;
 out vec2 aTexCoord;
-out float ViewDistance; 
+out float PlanarDepth;
 
 uniform mat4 model;
 uniform mat4 mvpMatrix;
@@ -15,8 +15,8 @@ uniform mat4 mvpMatrix;
 void main() {
     gl_Position = mvpMatrix * vec4(position, 1.0);
     
-    // Exact perspective distance from camera face
-    ViewDistance = gl_Position.w; 
+    // Exact forward-facing depth used by water screen-space thickness calculations
+    PlanarDepth = gl_Position.w; 
     
     aPos = vec3(model * vec4(position, 1.0f));
     aNormal = mat3(transpose(inverse(model))) * normal;  

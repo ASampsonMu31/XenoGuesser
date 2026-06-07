@@ -128,7 +128,6 @@ public class MapPanel extends JPanel {
 
                 if (isFullScreenReveal && (currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD)) {
                     if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                        System.out.println("Next Round triggered!");
                         
                         if (MapPanel.this.gameHUD != null) {
                             MapPanel.this.gameHUD.advanceRound();
@@ -614,8 +613,6 @@ public class MapPanel extends JPanel {
         if (score > 5000) score = 5000;
 
         this.targetRoundScore = score;
-
-        System.out.println("Round Completed! Distance: " + realWorldDistance + " | Score Calculated: " + score);
     }
 
     public void setGameHUD(GameHUD hud) {

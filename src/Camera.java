@@ -27,17 +27,21 @@ public class Camera {
   private float pitch;
   
   private Mat4 perspective;
+  
+  // Stored sea level variable populated by the procedural world values
+  private final float seaLevelHeight;
 
-  public Camera(Vec3 position, Vec3 target, Vec3 up, boolean IS_DEVELOPMENT_MODE) {
+  public Camera(Vec3 position, Vec3 target, Vec3 up, boolean IS_DEVELOPMENT_MODE, float seaLevelHeight) {
     // Lock down worldUp immediately upon creation so it never drifts
     this.worldUp = new Vec3(up);
     this.worldUp.normalize();
+    this.seaLevelHeight = seaLevelHeight; // Save the dynamic sea level map constraint
     setupCamera(position, target);
     if (IS_DEVELOPMENT_MODE) {
       KEYBOARD_SPEED = 60.0f;
     }
     else {
-      KEYBOARD_SPEED = 15.0f;
+      KEYBOARD_SPEED = 60.0f;
     }
   }
   
@@ -54,6 +58,10 @@ public class Camera {
   
   public Vec3 getPosition() {
     return new Vec3(position);
+  }
+
+  public Vec3 getForwardDirection() {
+    return new Vec3(front);
   }
   
   // FIX: Directly updates positions and recomputes matrices without touching or corrupting worldUp
@@ -109,8 +117,18 @@ public class Camera {
     if (w || a || s || d) {
       movementDirection.normalize();
       float currentSpeed = KEYBOARD_SPEED * deltaTime; 
-      Vec3 velocity = Vec3.multiply(movementDirection, currentSpeed);
+      // DYNAMIC WATER SLOWDOWN
+      if (this.position.y - 20 < seaLevelHeight) {
+          float depth = seaLevelHeight - (this.position.y - 20);
+          float depthFactor = depth / 10.0f;
+          if (depthFactor > 1.0f) {
+              depthFactor = 1.0f;
+          }
+          float speedMultiplier = 1.0f - (depthFactor * 0.5f);
+          currentSpeed *= speedMultiplier;
+      }
       
+      Vec3 velocity = Vec3.multiply(movementDirection, currentSpeed);
       position.add(velocity);
     }
   }
@@ -119,8 +137,8 @@ public class Camera {
     yaw += (deltaX * MOUSE_SPEED);
     pitch += (deltaY * MOUSE_SPEED);
     
-    if (pitch > 89.0f) pitch = 89.0f;
-    else if (pitch < -89.0f) pitch = -89.0f;
+    if (pitch > 85.0f) pitch = 85.0f;
+    else if (pitch < -85.0f) pitch = -85.0f;
     
     updateFront();
     updateCameraVectors();
@@ -150,6 +168,5 @@ public class Camera {
   public void setHeight(float newY) {
     this.position.y = newY;
     this.target = Vec3.add(this.position, this.front);
-}
-
+  }
 }

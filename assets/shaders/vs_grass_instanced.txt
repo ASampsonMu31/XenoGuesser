@@ -1,17 +1,15 @@
 #version 330 core
 
-// Per-vertex data (the basic flat quad mesh)
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec2 aTexCoords;
-
-// Per-instance data (passed via grassChunkCoordVBO)
 layout (location = 2) in vec3 aInstancePos; 
 
 out vec2 TexCoords;
+out vec3 fWorldPos;
 
 uniform mat4 view;
 uniform mat4 projection;
-uniform vec3 cameraPos; // Passed from Java to ensure rock-solid precision
+uniform vec3 cameraPos; 
 uniform float time;
 uniform int worldSeed;
 
@@ -24,29 +22,25 @@ void main() {
     modifiedUV.x = (aTexCoords.x * 0.5) + (textureSelect * 0.5);
     TexCoords = modifiedUV;
 
-    // 2. STABLE CYLINDRICAL BILLBOARDING (Jitter Fix)
-    // Construct billboard direction relative to this specific instance position using the raw camera position
+    // 2. STABLE CYLINDRICAL BILLBOARDING
     vec3 dirToCamera = cameraPos - aInstancePos;
-    dirToCamera.y = 0.0; // Force lock to the horizontal ground plane
+    dirToCamera.y = 0.0; 
     dirToCamera = normalize(dirToCamera);
 
-    // Calculate precision-stable perpendicular right vector
     vec3 billboardRight = vec3(-dirToCamera.z, 0.0, dirToCamera.x);
     vec3 billboardUp    = vec3(0.0, 1.0, 0.0); 
 
-    // Combine into final world space position
     vec3 worldPosition = aInstancePos 
                        + billboardRight * aPos.x 
                        + billboardUp * aPos.y;
 
-    // 3. ZERO-POP WIND ANIMATION (Re-stream Fix)
+    // 3. ZERO-POP WIND ANIMATION
     if (aPos.y > 0.1) { 
-        // Swap out gl_InstanceID for a spatial hash based on the blade's real world location
         float spatialOffset = sin(dot(aInstancePos.xz, vec2(12.9898, 78.233))) * float(worldSeed);
         float sway = sin(time * 2.5 + spatialOffset) * 0.15;
         worldPosition += billboardRight * sway; 
     }
 
-    // 4. FINAL CLIP-SPACE TRANSFORMATION
+    fWorldPos = worldPosition; 
     gl_Position = projection * view * vec4(worldPosition, 1.0);
 }

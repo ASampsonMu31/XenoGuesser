@@ -10,17 +10,17 @@ import com.jogamp.opengl.util.FPSAnimator;
 
 public class XenoGuesser extends JFrame {
   
-  private static final boolean IS_DEVELOPMENT_MODE = true; 
+  private static final boolean IS_DEVELOPMENT_MODE = false; 
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
   private final FPSAnimator animator;
 
-  // --- WINDOW DRAG LOCK STATES ---
   private boolean isWindowLocked = false;
   private Point lockedWindowPosition = null;
-  
   private Point permanentWindowPosition = null;
+
+  private CompassHUD compassHUD;
 
   public static void main(String[] args) {
     SwingUtilities.invokeLater(new Runnable() {
@@ -33,44 +33,19 @@ public class XenoGuesser extends JFrame {
     });
   }
 
-  public static void updateMinimapBounds(JLayeredPane layeredPane, MapPanel minimap) {
-      int w = layeredPane.getWidth();
-      int h = layeredPane.getHeight();
-      
-      Dimension minimapSize = minimap.getPreferredSize();
-      int panelWidth = minimapSize.width;
-      int panelHeight = minimapSize.height;
-      
-      if (minimap.isFullScreenRevealMode()) {
-          minimap.setBounds((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
-      } else {
-          // FIX: Reverted to w - panelWidth. The minimap now safely blankets 
-          // the 2-pixel buffer zone where the GL canvas is no longer rendering.
-          minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
-      }
-      
-      layeredPane.revalidate();
-      layeredPane.repaint();
-  }
-
   public XenoGuesser(String textForTitleBar) {
     super(textForTitleBar);
     
     this.setUndecorated(false); 
     this.setResizable(false);
     
-    // FIXED: Query screen dimensions and lock ALL size parameters.
-    // This stops the OS from resizing or collapsing the frame if a drag is attempted.
     Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
     this.setSize(screenSize.width, screenSize.height);
     this.setMinimumSize(screenSize);
     this.setMaximumSize(screenSize);
     this.setLocationRelativeTo(null); 
-    
-    // Natively maximize the window layout bounds
     this.setExtendedState(JFrame.MAXIMIZED_BOTH);
     
-    // FIXED: Intercepts the OS 'restore down' event on drag and instantly forces re-maximization
     this.addWindowStateListener(new WindowStateListener() {
         @Override
         public void windowStateChanged(WindowEvent e) {
@@ -80,30 +55,22 @@ public class XenoGuesser extends JFrame {
         }
     });
     
-    // ... inside XenoGuesser constructor ...
     this.getContentPane().setBackground(Color.BLACK);
-    this.setBackground(Color.BLACK); // FIX: Forces native frame peer background to black
+    this.setBackground(Color.BLACK); 
     
     JLayeredPane layeredPane = new JLayeredPane();
-    layeredPane.setOpaque(true);     // FIX: Turns on rendering for the pane's background
-    layeredPane.setBackground(Color.BLACK);
+    layeredPane.setOpaque(false); 
     this.setContentPane(layeredPane);
     
     GLCapabilities glcapabilities = new GLCapabilities(GLProfile.get(GLProfile.GL3));
-    
     canvas = new GLCanvas(glcapabilities); 
-    canvas.setBackground(Color.BLACK); // FIX: Prevents the canvas peer from flashing white
+    canvas.setBackground(Color.BLACK); 
     
     System.setProperty("sun.awt.noerasebackground", "true"); 
-    // ... rest of constructor setup ...
-    
-    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, IS_DEVELOPMENT_MODE);
-    MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
+    System.setProperty("sun.java2d.noddraw", "true");
     
     long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
-
-    System.out.println(worldSeed);
     
     int viewDistance = 24;
     float physicalChunkSize = 100.0f;
@@ -111,20 +78,29 @@ public class XenoGuesser extends JFrame {
     
     float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
     
-    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
-
+    // FIXED: Passed seaLevelHeight directly into the camera object constructor here
+    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, IS_DEVELOPMENT_MODE, seaLevelHeight);
+    MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
+    
     glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
 
     GameHUD gameHUD = new GameHUD();
-
-    // --- FIXED: Inject the HUD reference into the OpenGL loop instance ---
     glEventListener.setGameHUD(gameHUD); 
 
     MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise);
-
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
+
+    compassHUD = new CompassHUD();
+    
+    // Explicitly seed the exact initial bottom-left position matching the frame size
+    int initialCompassW = compassHUD.getPreferredSize().width;
+    int initialCompassH = compassHUD.getPreferredSize().height;
+    compassHUD.setBounds(0, screenSize.height - initialCompassH - 2, initialCompassW, initialCompassH);
+    
+    layeredPane.add(compassHUD, JLayeredPane.MODAL_LAYER);
+    glEventListener.setCompassHUD(compassHUD);
 
     canvas.addGLEventListener(glEventListener);
     canvas.addMouseMotionListener(new MyMouseInput(camera, minimap)); 
@@ -145,9 +121,8 @@ public class XenoGuesser extends JFrame {
 
     layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);   
     layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);  
-    layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);    
+    layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);       
 
-    // FIXED: Extra fallback loop to block layout jittering during native window state shifts
     this.addComponentListener(new ComponentAdapter() {
         @Override
         public void componentMoved(ComponentEvent e) {
@@ -163,27 +138,32 @@ public class XenoGuesser extends JFrame {
     });
 
     layeredPane.addComponentListener(new ComponentAdapter() {
-        @Override
-        public void componentResized(ComponentEvent e) {
-            // FIX: Pull the canvas 2 pixels away from BOTH the right and bottom edges.
-            // Combined with the black backgrounds above, any rounding gaps are completely blacked out.
-            canvas.setBounds(0, 0, layeredPane.getWidth() - 2, layeredPane.getHeight() - 2);
-            
-            updateMinimapBounds(layeredPane, minimap);
-            gameHUD.setBounds(0, 0, gameHUD.getWidth(), gameHUD.getHeight());
-            
-            if (permanentWindowPosition == null) {
-                permanentWindowPosition = getLocation();
-            }
-        }
+      @Override
+      public void componentResized(ComponentEvent e) {
+          int paneWidth = layeredPane.getWidth();
+          int paneHeight = layeredPane.getHeight();
+          
+          canvas.setBounds(0, 0, paneWidth - 2, paneHeight - 2);
+          updateMinimapBounds(layeredPane, minimap);
+          gameHUD.setBounds(0, 0, gameHUD.getWidth(), gameHUD.getHeight());
+          
+          // Squeezes the framed compass absolutely into the bottom left corner (x=0)
+          int compassW = compassHUD.getPreferredSize().width;
+          int compassH = compassHUD.getPreferredSize().height;
+          compassHUD.setBounds(0, paneHeight - compassH - 2, compassW, compassH);
+          
+          if (permanentWindowPosition == null) {
+              permanentWindowPosition = getLocation();
+          }
+      }
     });
     
-  addWindowListener(new WindowAdapter() {
-    @Override
-    public void windowClosing(WindowEvent e) {
-      shutdownGame();
-    }
-  });
+    addWindowListener(new WindowAdapter() {
+      @Override
+      public void windowClosing(WindowEvent e) {
+        shutdownGame();
+      }
+    });
 
     animator = new FPSAnimator(canvas, 60);
     animator.start();
@@ -217,6 +197,23 @@ public class XenoGuesser extends JFrame {
         }
     }).start();
   }
+
+  public static void updateMinimapBounds(JLayeredPane layeredPane, MapPanel minimap) {
+      int w = layeredPane.getWidth();
+      int h = layeredPane.getHeight();
+      
+      Dimension minimapSize = minimap.getPreferredSize();
+      int panelWidth = minimapSize.width;
+      int panelHeight = minimapSize.height;
+      
+      if (minimap.isFullScreenRevealMode()) {
+          minimap.setBounds((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
+      } else {
+          minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
+      }
+      layeredPane.revalidate();
+      layeredPane.repaint();
+  }
 }
 
 class MyMouseInput extends MouseMotionAdapter {
@@ -232,7 +229,6 @@ class MyMouseInput extends MouseMotionAdapter {
   @Override
   public void mouseDragged(MouseEvent e) {
     Point ms = e.getPoint();
-    
     if (minimap != null && minimap.isFullScreenRevealMode()) {
       lastpoint = ms; 
       return; 
