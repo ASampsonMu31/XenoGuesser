@@ -2,9 +2,9 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.ArrayList;
+import java.awt.image.BufferedImage;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
-
 import gmaths.*;
 
 public class XenoGuesser_GLEventListener implements GLEventListener {
@@ -39,6 +39,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
   private final float PHYSICAL_CHUNK_SIZE = 100.0f; 
   private final int VIEW_DISTANCE = 22; 
+
+  private final float TOTAL_REGION_WIDTH = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
+
   private PerlinNoise worldNoise;
   private long worldSeed; 
 
@@ -70,13 +73,25 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private int totalGrassInstances = 0;
   
   private final int GRASS_VIEW_DISTANCE = 21;
-  private final int GRASS_PER_CHUNK = 300; 
+  private final int MAX_GRASS_LIMIT = 800;
+  private final float GRASS_BASE_ABUNDANCE;
+  private final float GRASS_ABUNDANCE_POWER;
 
   // --- Optimized Zero-Allocation VRAM Streaming Fields ---
   private java.nio.FloatBuffer persistentGrassBuffer;
   private int currentGrassGPUCapacityFloats = 0;
 
   private CompassHUD compassHUD;
+
+  // --- ECOSYSTEM SPAWNING MANAGER DATA ---
+  private SpawningManager spawningManager;
+
+  // Reusable configurations for grass spawning rules
+  private SpawningManager.SpawningFactor grassTemperateFactor;
+  private SpawningManager.SpawningFactor grassMoistureFactor;
+  private SpawningManager.SpawningFactor grassPatchNoiseFactor;
+
+  private boolean isDebugModeActive = false;
 
   public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
     this.camera = camera;
@@ -88,9 +103,33 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     this.camera.setPosition(new Vec3(0f, 5f, 15f));
     this.camera.setTarget(new Vec3(0f, 0f, 0f));
 
-    // Generate the overall planetary axial tilt once per world seed (Earth-like range roughly 20-26 degrees)
+    // Generate the overall planetary axial tilt once per world seed
     java.util.Random seedRand = new java.util.Random(worldSeed);
     this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
+
+    // =========================================================================
+    // ECOSYSTEM SPAWNING MANAGER INITIALIZATION
+    // =========================================================================
+    // TOTAL_REGION_WIDTH, MAX_MAP_WIDTH, MAX_MAP_HEIGHT, and PHYSICAL_CHUNK_SIZE 
+    // are assumed to be accessible constants within this scope.
+    
+    // 1. Instantiate our central manager
+    this.spawningManager = new SpawningManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
+
+    // 2. Precalculate the distance field maps (the BFS solver) once per game session load
+    this.spawningManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE
+    );
+
+    float GRASS_TEMP_MEAN = 0.4f;
+    float GRASS_TEMP_STD_DEV = 0.5f;
+    int GRASS_WATER_MEAN = 0;
+    float GRASS_WATER_STD_DEV = 40.0f;
+    float GRASS_NOISE_SCALE = 0.2f;
+    this.GRASS_BASE_ABUNDANCE = 500f;
+    this.GRASS_ABUNDANCE_POWER = 1.2f;
+    this.grassTemperateFactor  = this.spawningManager.createFloraTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
+    this.grassMoistureFactor   = this.spawningManager.createFloraWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
+    this.grassPatchNoiseFactor = this.spawningManager.createNoiseMap(GRASS_NOISE_SCALE, false);
   }
 
   public void setGameHUD(GameHUD gameHUD) {
@@ -207,8 +246,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     float localY = sunDistance * (float)Math.sin(currentAngleRad); 
     float localZ = 0.0f;
     
-    float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
-    float maxMapEdgeZ = totalPlayableRegion / 2.0f;
+    float maxMapEdgeZ = TOTAL_REGION_WIDTH / 2.0f;
     
     float latitudeFactor = cameraPosition.z / maxMapEdgeZ;
     if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
@@ -231,7 +269,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     return new Vec3(worldX, worldY, worldZ);
   }
 
-  private void initialise(GL3 gl) {
+private void initialise(GL3 gl) {
     textures = new TextureLibrary();
     textures.add(gl, "dirt_diffuse", "assets/textures/dirt_diffuse.png");
     textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
@@ -246,7 +284,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     ambientLight = new Vec3(0.4f, 0.38f, 0.35f); 
     nightProportion = 0.0f;
     
-    timeOfDay = 0.5f; // default overwritten but there foor if necessary
+    timeOfDay = 0.5f;
 
     lights = new Light[1];
     float lightSize = 275.0f; 
@@ -271,7 +309,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(1.0f, 1.0f, 1.0f), 
         new Vec3(1.0f, 1.0f, 1.0f), 
         new Vec3(0.1f, 0.1f, 0.1f), 
-        4.0f                                                                                                                                                                                                                                                                                                                                        
+        4.0f                                                                                                                                                                                
     );
     terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
     terrainRenderer = new Renderer();
@@ -283,7 +321,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(0.01f, 0.31f, 0.55f),  
         new Vec3(10.5f, 0.4f, 0.4f),
-        2048f                                                                                                                                                                                                                                                                                                                                        
+        2048f                                                                                                                                                                                
     );
     waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
@@ -306,7 +344,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     grassShader = new Shader(gl, "assets/shaders/vs_grass_instanced.txt", "assets/shaders/fs_grass_instanced.txt");
 
     float[] grassVertices = {
-        // Position (X,Y,Z), UV (U,V)
         -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
          0.8f, 0.0f,  0.0f,  1.0f, 0.0f,
          0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
@@ -345,10 +382,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     createDepthFramebuffer(gl, currentWidth, currentHeight);
   }
 
+
   private void spawnPlayerAtRandomLocation(GL3 gl) {
     java.util.Random dynamicRand = new java.util.Random();
-    float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
-    float halfRegion = totalPlayableRegion / 2.0f;
+    float halfRegion = TOTAL_REGION_WIDTH / 2.0f;
     
     float spawnX = 0.0f;
     float spawnZ = 0.0f;
@@ -356,8 +393,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     boolean foundDryLand = false;
 
     while (!foundDryLand) {
-        spawnX = (dynamicRand.nextFloat() * totalPlayableRegion) - halfRegion;
-        spawnZ = (dynamicRand.nextFloat() * totalPlayableRegion) - halfRegion;
+        spawnX = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
+        spawnZ = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
         terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(spawnX, spawnZ, worldNoise);
         if (terrainHeightAtSpawn > seaLevelHeight) {
             foundDryLand = true;
@@ -481,30 +518,44 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                     continue; 
                 }
 
+                int dynamicGrassAttempts = spawningManager.evaluateMultiplicativeCount(
+                    cx, cz, PHYSICAL_CHUNK_SIZE, 
+                    GRASS_BASE_ABUNDANCE,
+                    GRASS_ABUNDANCE_POWER,
+                    MAX_GRASS_LIMIT,
+                    this.grassTemperateFactor,
+                    this.grassMoistureFactor,
+                    this.grassPatchNoiseFactor
+                );
+
                 ArrayList<Float> tempChunkCoords = new ArrayList<>();
-                float chunkMinX = (cx * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
-                float chunkMinZ = (cz * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
+                
+                // Only run generation loops if environmental factors allow items to grow here
+                if (dynamicGrassAttempts > 0) {
+                    float chunkMinX = (cx * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
+                    float chunkMinZ = (cz * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
 
-                for (int i = 0; i < GRASS_PER_CHUNK; i++) {
-                    long bladeSeed = worldSeed 
-                                ^ ((long) cx * 73731703L) 
-                                ^ ((long) cz * 19349663L) 
-                                ^ ((long) i * 2147483647L);
+                    for (int i = 0; i < dynamicGrassAttempts; i++) {
+                        long bladeSeed = worldSeed 
+                                    ^ ((long) cx * 73731703L) 
+                                    ^ ((long) cz * 19349663L) 
+                                    ^ ((long) i * 2147483647L);
 
-                    double pseudoRandomValue1 = Math.sin(bladeSeed * 12.9898) * 43758.5453123;
-                    double pseudoRandomValue2 = Math.cos(bladeSeed * 78.2330) * 43758.5453123;
+                        double pseudoRandomValue1 = Math.sin(bladeSeed * 12.9898) * 43758.5453123;
+                        double pseudoRandomValue2 = Math.cos(bladeSeed * 78.2330) * 43758.5453123;
 
-                    double rand1 = Math.abs(pseudoRandomValue1) % 1.0;
-                    double rand2 = Math.abs(pseudoRandomValue2) % 1.0;
+                        double rand1 = Math.abs(pseudoRandomValue1) % 1.0;
+                        double rand2 = Math.abs(pseudoRandomValue2) % 1.0;
 
-                    float worldX = chunkMinX + (float)(rand1 * PHYSICAL_CHUNK_SIZE);
-                    float worldZ = chunkMinZ + (float)(rand2 * PHYSICAL_CHUNK_SIZE);
-                    float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+                        float worldX = chunkMinX + (float)(rand1 * PHYSICAL_CHUNK_SIZE);
+                        float worldZ = chunkMinZ + (float)(rand2 * PHYSICAL_CHUNK_SIZE);
+                        float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
 
-                    if (worldY > seaLevelHeight + 0.1f) {
-                        tempChunkCoords.add(worldX);
-                        tempChunkCoords.add(worldY);
-                        tempChunkCoords.add(worldZ);
+                        if (worldY > seaLevelHeight + 0.1f) {
+                            tempChunkCoords.add(worldX);
+                            tempChunkCoords.add(worldY);
+                            tempChunkCoords.add(worldZ);
+                        }
                     }
                 }
 
@@ -729,7 +780,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
         gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "skyColor"), skyColor.x, skyColor.y, skyColor.z);
 
-        gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "grassPerChunk"), GRASS_PER_CHUNK);
         gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "worldSeed"), (int)(worldSeed & 0xFFFF));
 
         Vec3 camPosForSun = camera.getPosition();
@@ -831,7 +881,22 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   }
 
   public void setMinimap(MapPanel minimap) {
-    this.minimap = minimap;
+      this.minimap = minimap;
+
+      if (this.isDebugModeActive) {
+          BufferedImage grassMapSnapshot = this.spawningManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, 
+              PHYSICAL_CHUNK_SIZE, 
+              true,
+              GRASS_ABUNDANCE_POWER,
+              this.grassTemperateFactor, 
+              this.grassMoistureFactor, 
+              this.grassPatchNoiseFactor
+          );
+          
+          this.minimap.setHeatmapOverlay(grassMapSnapshot);
+          this.minimap.setHeatmapVisible(true);
+      }
   }
 
   public void setCompassHUD(CompassHUD compassHUD) {
