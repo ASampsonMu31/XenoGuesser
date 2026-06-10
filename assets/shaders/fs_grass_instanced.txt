@@ -30,7 +30,7 @@ void main() {
     float biasedPhenotype = fColorPhenotype;
     
     // Mix equation color blending
-    vec3 proceduralGrassColor = mix(darkGreen, lightBrown, biasedPhenotype);
+    vec3 proceduralGrassColor = mix(lightBrown, darkGreen, biasedPhenotype);
     
     vec3 finalLight = clamp(3.0 * ambientLight, 0.0, 1.5);
     vec3 baseGrassColor = proceduralGrassColor * finalLight;

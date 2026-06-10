@@ -93,21 +93,20 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private RegionalGenerationManager.GenerationFactor grassHeightNoiseFactor;
   private RegionalGenerationManager.GenerationFactor grassColorNoiseFactor;
 
-  private final boolean IS_DEBUG_MODE_ACTIVE = true;
-  private final DebugView ACTIVE_MODE = DebugView.ABUNDANCE;
+  private final boolean IS_DEBUG_MODE_ACTIVE;
+  private final XenoGuesser.DebugView ACTIVE_MODE;
 
-  public enum DebugView {
-    ABUNDANCE,
-    HEIGHT,
-    COLOR,
-    TEMPERATURE,
-    MOISTURE,
-    GRASS_PATCH_NOISE,
-    GRASS_HEIGHT_NOISE,
-    GRASS_COLOR_NOISE,
-  }
-
-  public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed, float totalRegionWidth, float physicalChunkSize) {
+  public XenoGuesser_GLEventListener(
+      Camera camera,
+      MyKeyboardInput keyboard,
+      PerlinNoise sharedNoise,
+      float sharedSeaLevel,
+      long sharedSeed,
+      float totalRegionWidth,
+      float physicalChunkSize,
+      boolean isDebugModeActive,
+      XenoGuesser.DebugView activeMode) {
+        
     this.camera = camera;
     this.keyboard = keyboard;
     this.worldNoise = sharedNoise;
@@ -115,6 +114,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     this.worldSeed = sharedSeed; 
     this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
     this.TOTAL_REGION_WIDTH = totalRegionWidth;
+    this.IS_DEBUG_MODE_ACTIVE = isDebugModeActive;
+    this.ACTIVE_MODE = activeMode;
     
     this.camera.setPosition(new Vec3(0f, 5f, 15f));
     this.camera.setTarget(new Vec3(0f, 0f, 0f));
@@ -583,45 +584,55 @@ private void initialise(GL3 gl) {
 
                       for (int i = 0; i < dynamicGrassAttempts; i++) {
                           long bladeSeed = worldSeed 
-                                      ^ ((long) cx * 73731703L) 
-                                      ^ ((long) cz * 19349663L) 
-                                      ^ ((long) i * 2147483647L);
+                                  ^ ((long) cx * 73731703L) 
+                                  ^ ((long) cz * 19349663L) 
+                                  ^ ((long) i * 2147483647L);
 
                           double pVal1 = Math.sin(bladeSeed * 12.9898) * 43758.5453123;
                           double pVal2 = Math.cos(bladeSeed * 78.2330) * 43758.5453123;
                           double pVal3 = Math.sin(bladeSeed * 34.1245) * 54321.1243141;
+                          double pVal4 = Math.cos(bladeSeed * 95.4321) * 67891.9876543;
 
                           float rand1 = (float)(Math.abs(pVal1) % 1.0);
                           float rand2 = (float)(Math.abs(pVal2) % 1.0);
                           float rand3 = (float)(Math.abs(pVal3) % 1.0);
+                          float rand4 = (float)(Math.abs(pVal4) % 1.0);
 
                           float worldX = chunkMinX + (rand1 * PHYSICAL_CHUNK_SIZE);
                           float worldZ = chunkMinZ + (rand2 * PHYSICAL_CHUNK_SIZE);
                           float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+                          
                           if (worldY > seaLevelHeight + 0.1f) {
-                              // 1. Pipeline calculation using shared evaluation engine (fixes multiplicative crushing)
                               float structuralHeightBase = this.regionalManager.evaluateFactorsBlended(cx, cz, worldX, worldZ, 1.0f,
-                                  this.grassTemperateFactor,
-                                  this.grassMoistureFactor,
-                                  this.grassHeightNoiseFactor // <-- Fixed: Reads local private field
+                                  this.grassTemperateFactor, this.grassMoistureFactor, this.grassHeightNoiseFactor
                               );
-                                                
-                              float structuralColorBase = this.regionalManager.evaluateFactorsBlended(cx, cz, worldX, worldZ, 1.0f,
-                                  this.grassTemperateFactor, 
-                                  this.grassMoistureFactor,
-                                  this.grassColorNoiseFactor // <-- Fixed: Reads local private field
+                                                                              
+                              float structuralColorBase = this.regionalManager.evaluateFactorsMultiplicative(cx, cz, worldX, worldZ, 1.0f,
+                                  this.grassTemperateFactor, this.grassMoistureFactor, this.grassColorNoiseFactor
                               );
 
-                              // 2. Compute Structural Height Jitter 
-                              float climateHeightTarget = 0.4f + structuralHeightBase * (1.7f - 0.4f); // Linear mix replacement
-                              float heightJitter = 0.75f + (rand3 * 0.5f); 
-                              float finalBladeHeight = Math.max(0.25f, Math.min(2.4f, climateHeightTarget * heightJitter));
+                              // --- TRUE GAUSSIAN COLOR AND HEIGHT PHENOTYPE SHIFTS ---
+                              // Box-Muller transform converts uniform variables (rand3, rand4) into a Normal Distribution
+                              float u1 = Math.max(0.0001f, rand3); // Guard log(0) from producing NaN
+                              float u2 = rand4;
+                              
+                              // Extract two completely independent standard normal values from a single transformation step
+                              float logTerm = (float) Math.sqrt(-2.0 * Math.log(u1));
+                              float standardNormalColor = (float) (logTerm * Math.cos(2.0 * Math.PI * u2));
+                              float standardNormalHeight = (float) (logTerm * Math.sin(2.0 * Math.PI * u2));
+                              
+                              // 1. Process Gaussian Color Variation Around Mean
+                              float colorStandardDeviation = 0.05f;
+                              float colorJitter = standardNormalColor * colorStandardDeviation;
+                              float finalColorPhenotype = Math.max(0.0f, Math.min(1.0f, structuralColorBase + colorJitter));
 
-                              // 3. Compute Color Phenotype Shifts
-                              float scaledColorBase = structuralColorBase * 0.90f; // Soft cap to preserve top range headroom
-                              float finalColorPhenotype = Math.max(0.0f, Math.min(1.0f, scaledColorBase + (rand1 * 0.25f)));
+                              // 2. Process Gaussian Height Variation Around Mean
+                              float climateHeightTarget = 0.4f + structuralHeightBase * (1.7f - 0.4f);
+                              float heightStandardDeviation = 0.15f; // Spread variance (15% variation around local mean target)
+                              float heightJitter = standardNormalHeight * heightStandardDeviation;
+                              float finalBladeHeight = Math.max(0.25f, Math.min(2.4f, climateHeightTarget + heightJitter));
 
-                              // 4. Sequential packing configuration (Stride Window = 5)
+                              // Sequential packing configuration
                               rawChunkBuffer[writeIdx++] = worldX;
                               rawChunkBuffer[writeIdx++] = worldY;
                               rawChunkBuffer[writeIdx++] = worldZ;
@@ -968,7 +979,7 @@ private void initialise(GL3 gl) {
               this.grassTemperateFactor, this.grassMoistureFactor, this.grassHeightNoiseFactor
           );
           case COLOR -> this.regionalManager.generateHeatmap(
-              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.MULTIPLICATIVE, 1.0f,
               this.grassTemperateFactor, this.grassMoistureFactor, this.grassColorNoiseFactor
           );
           case TEMPERATURE -> this.regionalManager.generateHeatmap(
@@ -979,7 +990,7 @@ private void initialise(GL3 gl) {
               TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
               this.grassMoistureFactor
           );
-          default -> this.regionalManager.generateHeatmap(
+          case ABUNDANCE -> this.regionalManager.generateHeatmap(
               TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.MULTIPLICATIVE, GRASS_ABUNDANCE_POWER,
               this.grassTemperateFactor, this.grassMoistureFactor, this.grassPatchNoiseFactor
           );

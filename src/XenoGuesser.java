@@ -11,6 +11,8 @@ import com.jogamp.opengl.util.FPSAnimator;
 public class XenoGuesser extends JFrame {
   
   private static final boolean IS_DETERMINISTIC_MODE = true;
+  private static final boolean IS_DEBUG_MODE_ACTIVE = true;
+  private static final DebugView ACTIVE_MODE = DebugView.COLOR;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -21,6 +23,17 @@ public class XenoGuesser extends JFrame {
   private Point permanentWindowPosition = null;
 
   private CompassHUD compassHUD;
+
+  public enum DebugView {
+    ABUNDANCE,
+    HEIGHT,
+    COLOR,
+    TEMPERATURE,
+    MOISTURE,
+    GRASS_PATCH_NOISE,
+    GRASS_HEIGHT_NOISE,
+    GRASS_COLOR_NOISE,
+  }
 
   public static void main(String[] args) {
     SwingUtilities.invokeLater(new Runnable() {
@@ -83,7 +96,17 @@ public class XenoGuesser extends JFrame {
     
     physicalChunkSize = 100f;
 
-    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed, totalRegionWidth, physicalChunkSize);
+    glEventListener = new XenoGuesser_GLEventListener(
+      camera,
+      keyboardInput,
+      worldNoise,
+      seaLevelHeight,
+      worldSeed,
+      totalRegionWidth,
+      physicalChunkSize,
+      IS_DEBUG_MODE_ACTIVE,
+      ACTIVE_MODE
+    );
 
     GameHUD gameHUD = new GameHUD();
     glEventListener.setGameHUD(gameHUD); 
