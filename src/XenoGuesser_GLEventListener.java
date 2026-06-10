@@ -37,10 +37,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
   private Shader depthPrePassShader;
 
-  private final float PHYSICAL_CHUNK_SIZE = 100.0f; 
+  private final float PHYSICAL_CHUNK_SIZE; 
   private final int VIEW_DISTANCE = 22; 
 
-  private final float TOTAL_REGION_WIDTH = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
+  private final float TOTAL_REGION_WIDTH;
 
   private PerlinNoise worldNoise;
   private long worldSeed; 
@@ -84,21 +84,37 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   private CompassHUD compassHUD;
 
   // --- ECOSYSTEM SPAWNING MANAGER DATA ---
-  private SpawningManager spawningManager;
+  private RegionalGenerationManager regionalManager;
 
   // Reusable configurations for grass spawning rules
-  private SpawningManager.SpawningFactor grassTemperateFactor;
-  private SpawningManager.SpawningFactor grassMoistureFactor;
-  private SpawningManager.SpawningFactor grassPatchNoiseFactor;
+  private RegionalGenerationManager.GenerationFactor grassTemperateFactor;
+  private RegionalGenerationManager.GenerationFactor grassMoistureFactor;
+  private RegionalGenerationManager.GenerationFactor grassPatchNoiseFactor;
+  private RegionalGenerationManager.GenerationFactor grassHeightNoiseFactor;
+  private RegionalGenerationManager.GenerationFactor grassColorNoiseFactor;
 
-  private boolean isDebugModeActive = false;
+  private final boolean IS_DEBUG_MODE_ACTIVE = true;
+  private final DebugView ACTIVE_MODE = DebugView.ABUNDANCE;
 
-  public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed) {
+  public enum DebugView {
+    ABUNDANCE,
+    HEIGHT,
+    COLOR,
+    TEMPERATURE,
+    MOISTURE,
+    GRASS_PATCH_NOISE,
+    GRASS_HEIGHT_NOISE,
+    GRASS_COLOR_NOISE,
+  }
+
+  public XenoGuesser_GLEventListener(Camera camera, MyKeyboardInput keyboard, PerlinNoise sharedNoise, float sharedSeaLevel, long sharedSeed, float totalRegionWidth, float physicalChunkSize) {
     this.camera = camera;
     this.keyboard = keyboard;
     this.worldNoise = sharedNoise;
     this.seaLevelHeight = sharedSeaLevel;
     this.worldSeed = sharedSeed; 
+    this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
+    this.TOTAL_REGION_WIDTH = totalRegionWidth;
     
     this.camera.setPosition(new Vec3(0f, 5f, 15f));
     this.camera.setTarget(new Vec3(0f, 0f, 0f));
@@ -113,23 +129,35 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // TOTAL_REGION_WIDTH, MAX_MAP_WIDTH, MAX_MAP_HEIGHT, and PHYSICAL_CHUNK_SIZE 
     // are assumed to be accessible constants within this scope.
     
-    // 1. Instantiate our central manager
-    this.spawningManager = new SpawningManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
+    // 1. Instantiate our central world manager
+    this.regionalManager = new RegionalGenerationManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
 
     // 2. Precalculate the distance field maps (the BFS solver) once per game session load
-    this.spawningManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE
-    );
+    this.regionalManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE);
+
+    // --- ECOSYSTEM INITIALIZATION EXCERPT ---
 
     float GRASS_TEMP_MEAN = 0.4f;
     float GRASS_TEMP_STD_DEV = 0.5f;
     int GRASS_WATER_MEAN = 0;
-    float GRASS_WATER_STD_DEV = 40.0f;
-    float GRASS_NOISE_SCALE = 0.2f;
-    this.GRASS_BASE_ABUNDANCE = 500f;
-    this.GRASS_ABUNDANCE_POWER = 1.2f;
-    this.grassTemperateFactor  = this.spawningManager.createFloraTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
-    this.grassMoistureFactor   = this.spawningManager.createFloraWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
-    this.grassPatchNoiseFactor = this.spawningManager.createNoiseMap(GRASS_NOISE_SCALE, false);
+    float GRASS_WATER_STD_DEV = 80.0f;
+
+    float GRASS_DENSITY_SCALE = 2e-5f;
+    float GRASS_VARIATION_SCALE = 1e-5f;
+
+    this.GRASS_BASE_ABUNDANCE = 700f;
+    this.GRASS_ABUNDANCE_POWER = 2.0f;
+
+    // Shared climate preference maps (used for density AND phenotypic properties)
+    this.grassTemperateFactor = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
+    this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
+
+    // Density/Spawning Layout track
+    this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
+
+    // NEW: Distinct, low-frequency variation factor tracks
+    this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
+    this.grassColorNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
   }
 
   public void setGameHUD(GameHUD gameHUD) {
@@ -140,7 +168,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
   public void init(GLAutoDrawable drawable) {
     GL3 gl = drawable.getGL().getGL3();
     
-    gl.glClearColor(0.976f, 0.725f, 0.043f, 1.0f); // Rich Orangey-Yellow Sky
+    gl.glClearColor(0.976f, 0.725f, 0.043f, 1.0f); // Sky Colour
     gl.glClearDepth(1.0f);
     
     gl.glEnable(GL.GL_DEPTH_TEST);
@@ -343,6 +371,8 @@ private void initialise(GL3 gl) {
 
     grassShader = new Shader(gl, "assets/shaders/vs_grass_instanced.txt", "assets/shaders/fs_grass_instanced.txt");
 
+    // ... [Previous texture, light, and model setup code remains exactly the same]
+
     float[] grassVertices = {
         -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
          0.8f, 0.0f,  0.0f,  1.0f, 0.0f,
@@ -368,19 +398,34 @@ private void initialise(GL3 gl) {
     gl.glEnableVertexAttribArray(1); 
     gl.glVertexAttribPointer(1, 2, GL3.GL_FLOAT, false, 5 * 4, 3 * 4);
 
+    // --- INSTANCED ATTRIBUTES LAYOUT CONFIGURATION ---
     gl.glGenBuffers(1, tempBuffers, 0);
     grassChunkCoordVBO = tempBuffers[0];
     gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
     
+    // 5 floats total per instance * 4 bytes per float = 20 bytes stride
+    int instanceStride = 5 * 4; 
+
+    // Location 2: Instance Position Offset (vec3 -> x, y, z)
     gl.glEnableVertexAttribArray(2);
-    gl.glVertexAttribPointer(2, 3, GL3.GL_FLOAT, false, 3 * 4, 0);
-    gl.glVertexAttribDivisor(2, 1); 
+    gl.glVertexAttribPointer(2, 3, GL3.GL_FLOAT, false, instanceStride, 0);
+    gl.glVertexAttribDivisor(2, 1);  
+
+    // Location 3: Color Phenotype Shift (float)
+    gl.glEnableVertexAttribArray(3);
+    gl.glVertexAttribPointer(3, 1, GL3.GL_FLOAT, false, instanceStride, 3 * 4); // Starts after 3 floats (12 bytes)
+    gl.glVertexAttribDivisor(3, 1);  
+
+    // Location 4: Dynamic Blade Height Scale (float)
+    gl.glEnableVertexAttribArray(4);
+    gl.glVertexAttribPointer(4, 1, GL3.GL_FLOAT, false, instanceStride, 4 * 4); // Starts after 4 floats (16 bytes)
+    gl.glVertexAttribDivisor(4, 1);  
 
     gl.glBindVertexArray(0);
 
     spawnPlayerAtRandomLocation(gl);
     createDepthFramebuffer(gl, currentWidth, currentHeight);
-  }
+}
 
 
   private void spawnPlayerAtRandomLocation(GL3 gl) {
@@ -439,165 +484,199 @@ private void initialise(GL3 gl) {
   }
 
   private void updateVisibleChunks(GL3 gl, boolean forceImmediate) {
-    Map<String, Integer> requiredChunksWithLod = new HashMap<>();
+      Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
-    for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-        for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
-            int deltaX = Math.abs(cx - lastChunkX);
-            int deltaZ = Math.abs(cz - lastChunkZ);
-            int chunkRingDistance = Math.max(deltaX, deltaZ);
+      for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+          for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+              int deltaX = Math.abs(cx - lastChunkX);
+              int deltaZ = Math.abs(cz - lastChunkZ);
+              int chunkRingDistance = Math.max(deltaX, deltaZ);
 
-            int currentSegments;
-            if (chunkRingDistance > 14) currentSegments = 4;   
-            else if (chunkRingDistance > 7) currentSegments = 10;  
-            else if (chunkRingDistance > 3) currentSegments = 25;  
-            else currentSegments = 50;  
+              int currentSegments;
+              if (chunkRingDistance > 14) currentSegments = 4;   
+              else if (chunkRingDistance > 7) currentSegments = 10;  
+              else if (chunkRingDistance > 3) currentSegments = 25;  
+              else currentSegments = 50;  
 
-            String key = cx + "_" + cz;
-            requiredChunksWithLod.put(key, currentSegments);
-        }
-    }
+              String key = cx + "_" + cz;
+              requiredChunksWithLod.put(key, currentSegments);
+          }
+      }
 
-    Iterator<Map.Entry<String, Model>> iterator = chunkCache.entrySet().iterator();
-    while (iterator.hasNext()) {
-        Map.Entry<String, Model> entry = iterator.next();
-        String key = entry.getKey();
-        if (!requiredChunksWithLod.containsKey(key)) {
-            Model oldModel = entry.getValue();
-            if (oldModel.mesh != null) oldModel.mesh.dispose(gl); 
-            iterator.remove();
-        }
-    }
+      Iterator<Map.Entry<String, Model>> iterator = chunkCache.entrySet().iterator();
+      while (iterator.hasNext()) {
+          Map.Entry<String, Model> entry = iterator.next();
+          String key = entry.getKey();
+          if (!requiredChunksWithLod.containsKey(key)) {
+              Model oldModel = entry.getValue();
+              if (oldModel.mesh != null) oldModel.mesh.dispose(gl); 
+              iterator.remove();
+          }
+      }
 
-    for (Map.Entry<String, Integer> target : requiredChunksWithLod.entrySet()) {
-        String key = target.getKey();
-        int targetSegments = target.getValue();
-        
-        String[] coords = key.split("_");
-        int cx = Integer.parseInt(coords[0]);
-        int cz = Integer.parseInt(coords[1]);
+      for (Map.Entry<String, Integer> target : requiredChunksWithLod.entrySet()) {
+          String key = target.getKey();
+          int targetSegments = target.getValue();
+          
+          String[] coords = key.split("_");
+          int cx = Integer.parseInt(coords[0]);
+          int cz = Integer.parseInt(coords[1]);
 
-        boolean mustBuild = false;
+          boolean mustBuild = false;
 
-        if (chunkCache.containsKey(key)) {
-            Model cachedModel = chunkCache.get(key);
-            if (!cachedModel.name.endsWith("seg" + targetSegments)) {
-                if (cachedModel.mesh != null) cachedModel.mesh.dispose(gl);
-                mustBuild = true;
-            }
-        } else {
-            mustBuild = true;
-        }
+          if (chunkCache.containsKey(key)) {
+              Model cachedModel = chunkCache.get(key);
+              if (!cachedModel.name.endsWith("seg" + targetSegments)) {
+                  if (cachedModel.mesh != null) cachedModel.mesh.dispose(gl);
+                  mustBuild = true;
+              }
+          } else {
+              mustBuild = true;
+          }
 
-        if (mustBuild) {
-            float dynamicScale = PHYSICAL_CHUNK_SIZE / (float) targetSegments;
-            Mesh chunkMesh = TerrainMesh.generateTerrainChunk(gl, targetSegments, dynamicScale, cx, cz, worldNoise);
-            Model chunkModel = new Model("chunk_" + cx + "_" + cz + "_seg" + targetSegments, chunkMesh, globalModelMatrix, terrainShader, terrainMaterial, terrainRenderer, lights, camera);
-            chunkCache.put(key, chunkModel);
-        }
-    }
+          if (mustBuild) {
+              float dynamicScale = PHYSICAL_CHUNK_SIZE / (float) targetSegments;
+              Mesh chunkMesh = TerrainMesh.generateTerrainChunk(gl, targetSegments, dynamicScale, cx, cz, worldNoise);
+              Model chunkModel = new Model("chunk_" + cx + "_" + cz + "_seg" + targetSegments, chunkMesh, globalModelMatrix, terrainShader, terrainMaterial, terrainRenderer, lights, camera);
+              chunkCache.put(key, chunkModel);
+          }
+      }
 
-    Map<String, Boolean> activeGrassKeys = new HashMap<>();
-    for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
-        for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-            activeGrassKeys.put(cx + "_" + cz, true);
-        }
-    }
-    grassCache.keySet().retainAll(activeGrassKeys.keySet());
+      Map<String, Boolean> activeGrassKeys = new HashMap<>();
+      for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+          for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+              activeGrassKeys.put(cx + "_" + cz, true);
+          }
+      }
+      grassCache.keySet().retainAll(activeGrassKeys.keySet());
 
-    totalGrassInstances = 0;
-    boolean generatedThisFrame = false; 
+      totalGrassInstances = 0;
+      boolean generatedThisFrame = false; 
 
-    for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
-        for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-            String key = cx + "_" + cz;
-            float[] chunkGrassData = grassCache.get(key);
+      for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+          for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+              String key = cx + "_" + cz;
+              float[] chunkGrassData = grassCache.get(key);
+              
+              if (chunkGrassData == null) {
+                  if (generatedThisFrame && !forceImmediate) {
+                      continue; 
+                  }
 
-            if (chunkGrassData == null) {
-                if (generatedThisFrame && !forceImmediate) {
-                    continue; 
-                }
+                  int dynamicGrassAttempts = regionalManager.evaluateMultiplicativeCount(
+                      cx, cz, PHYSICAL_CHUNK_SIZE, 
+                      GRASS_BASE_ABUNDANCE,
+                      GRASS_ABUNDANCE_POWER,
+                      MAX_GRASS_LIMIT,
+                      this.grassTemperateFactor,
+                      this.grassMoistureFactor,
+                      this.grassPatchNoiseFactor
+                  );
 
-                int dynamicGrassAttempts = spawningManager.evaluateMultiplicativeCount(
-                    cx, cz, PHYSICAL_CHUNK_SIZE, 
-                    GRASS_BASE_ABUNDANCE,
-                    GRASS_ABUNDANCE_POWER,
-                    MAX_GRASS_LIMIT,
-                    this.grassTemperateFactor,
-                    this.grassMoistureFactor,
-                    this.grassPatchNoiseFactor
-                );
+                  if (dynamicGrassAttempts > 0) {
+                      // Optimized Allocation: 5 floats per instance cap capacity
+                      float[] rawChunkBuffer = new float[dynamicGrassAttempts * 5];
+                      int writeIdx = 0;
 
-                ArrayList<Float> tempChunkCoords = new ArrayList<>();
-                
-                // Only run generation loops if environmental factors allow items to grow here
-                if (dynamicGrassAttempts > 0) {
-                    float chunkMinX = (cx * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
-                    float chunkMinZ = (cz * PHYSICAL_CHUNK_SIZE) - (PHYSICAL_CHUNK_SIZE / 2.0f);
+                      float chunkMinX = cx * PHYSICAL_CHUNK_SIZE;
+                      float chunkMinZ = cz * PHYSICAL_CHUNK_SIZE;
 
-                    for (int i = 0; i < dynamicGrassAttempts; i++) {
-                        long bladeSeed = worldSeed 
-                                    ^ ((long) cx * 73731703L) 
-                                    ^ ((long) cz * 19349663L) 
-                                    ^ ((long) i * 2147483647L);
+                      for (int i = 0; i < dynamicGrassAttempts; i++) {
+                          long bladeSeed = worldSeed 
+                                      ^ ((long) cx * 73731703L) 
+                                      ^ ((long) cz * 19349663L) 
+                                      ^ ((long) i * 2147483647L);
 
-                        double pseudoRandomValue1 = Math.sin(bladeSeed * 12.9898) * 43758.5453123;
-                        double pseudoRandomValue2 = Math.cos(bladeSeed * 78.2330) * 43758.5453123;
+                          double pVal1 = Math.sin(bladeSeed * 12.9898) * 43758.5453123;
+                          double pVal2 = Math.cos(bladeSeed * 78.2330) * 43758.5453123;
+                          double pVal3 = Math.sin(bladeSeed * 34.1245) * 54321.1243141;
 
-                        double rand1 = Math.abs(pseudoRandomValue1) % 1.0;
-                        double rand2 = Math.abs(pseudoRandomValue2) % 1.0;
+                          float rand1 = (float)(Math.abs(pVal1) % 1.0);
+                          float rand2 = (float)(Math.abs(pVal2) % 1.0);
+                          float rand3 = (float)(Math.abs(pVal3) % 1.0);
 
-                        float worldX = chunkMinX + (float)(rand1 * PHYSICAL_CHUNK_SIZE);
-                        float worldZ = chunkMinZ + (float)(rand2 * PHYSICAL_CHUNK_SIZE);
-                        float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+                          float worldX = chunkMinX + (rand1 * PHYSICAL_CHUNK_SIZE);
+                          float worldZ = chunkMinZ + (rand2 * PHYSICAL_CHUNK_SIZE);
+                          float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+                          if (worldY > seaLevelHeight + 0.1f) {
+                              // 1. Pipeline calculation using shared evaluation engine (fixes multiplicative crushing)
+                              float structuralHeightBase = this.regionalManager.evaluateFactorsBlended(cx, cz, worldX, worldZ, 1.0f,
+                                  this.grassTemperateFactor,
+                                  this.grassMoistureFactor,
+                                  this.grassHeightNoiseFactor // <-- Fixed: Reads local private field
+                              );
+                                                
+                              float structuralColorBase = this.regionalManager.evaluateFactorsBlended(cx, cz, worldX, worldZ, 1.0f,
+                                  this.grassTemperateFactor, 
+                                  this.grassMoistureFactor,
+                                  this.grassColorNoiseFactor // <-- Fixed: Reads local private field
+                              );
 
-                        if (worldY > seaLevelHeight + 0.1f) {
-                            tempChunkCoords.add(worldX);
-                            tempChunkCoords.add(worldY);
-                            tempChunkCoords.add(worldZ);
-                        }
-                    }
-                }
+                              // 2. Compute Structural Height Jitter 
+                              float climateHeightTarget = 0.4f + structuralHeightBase * (1.7f - 0.4f); // Linear mix replacement
+                              float heightJitter = 0.75f + (rand3 * 0.5f); 
+                              float finalBladeHeight = Math.max(0.25f, Math.min(2.4f, climateHeightTarget * heightJitter));
 
-                chunkGrassData = new float[tempChunkCoords.size()];
-                for (int idx = 0; idx < tempChunkCoords.size(); idx++) {
-                    chunkGrassData[idx] = tempChunkCoords.get(idx);
-                }
-                grassCache.put(key, chunkGrassData);
-                generatedThisFrame = true; 
-            }
-            totalGrassInstances += (chunkGrassData.length / 3);
-        }
-    }
+                              // 3. Compute Color Phenotype Shifts
+                              float scaledColorBase = structuralColorBase * 0.90f; // Soft cap to preserve top range headroom
+                              float finalColorPhenotype = Math.max(0.0f, Math.min(1.0f, scaledColorBase + (rand1 * 0.25f)));
 
-    if (totalGrassInstances > 0) {
-        int requiredFloats = totalGrassInstances * 3;
+                              // 4. Sequential packing configuration (Stride Window = 5)
+                              rawChunkBuffer[writeIdx++] = worldX;
+                              rawChunkBuffer[writeIdx++] = worldY;
+                              rawChunkBuffer[writeIdx++] = worldZ;
+                              rawChunkBuffer[writeIdx++] = finalColorPhenotype;
+                              rawChunkBuffer[writeIdx++] = finalBladeHeight;
+                          }
+                      }
 
-        if (persistentGrassBuffer == null || requiredFloats > currentGrassGPUCapacityFloats) {
-            currentGrassGPUCapacityFloats = (int) (requiredFloats * 1.2f); 
-            persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
-            
-            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
-            gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
-        }
+                      // Trim the buffer array down cleanly to match surviving nodes pass count
+                      if (writeIdx < rawChunkBuffer.length) {
+                          chunkGrassData = java.util.Arrays.copyOf(rawChunkBuffer, writeIdx);
+                      } else {
+                          chunkGrassData = rawChunkBuffer;
+                      }
+                  } else {
+                      chunkGrassData = new float[0];
+                  }
+                  
+                  grassCache.put(key, chunkGrassData);
+                  generatedThisFrame = true; 
+              }
+              // Divided by 5 to calculate true element instances count
+              totalGrassInstances += (chunkGrassData.length / 5);
+          }
+      }
 
-        persistentGrassBuffer.clear();
+      if (totalGrassInstances > 0) {
+          // Allocate space for 5 floats per grass instance
+          int requiredFloats = totalGrassInstances * 5;
 
-        for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-                String key = cx + "_" + cz;
-                float[] chunkGrassData = grassCache.get(key);
-                if (chunkGrassData != null) {
-                    persistentGrassBuffer.put(chunkGrassData);
-                }
-            }
-        }
-        persistentGrassBuffer.flip();
+          if (persistentGrassBuffer == null || requiredFloats > currentGrassGPUCapacityFloats) {
+              currentGrassGPUCapacityFloats = (int) (requiredFloats * 1.2f); 
+              persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
+              
+              gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+              gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
+          }
 
-        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
-        gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
-        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
-    }
+          persistentGrassBuffer.clear();
+
+          for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+              for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+                  String key = cx + "_" + cz;
+                  float[] chunkGrassData = grassCache.get(key);
+                  if (chunkGrassData != null) {
+                      persistentGrassBuffer.put(chunkGrassData);
+                  }
+              }
+          }
+          persistentGrassBuffer.flip();
+
+          gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+          gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
+          gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
+      }
   }
 
   private void render(GL3 gl) {
@@ -689,7 +768,6 @@ private void initialise(GL3 gl) {
           this.compassHUD.updateHeading(cameraLookDir);
       }
 
-      // CRITICAL: Change this string to whatever your sky texture is registered as!
       String skyTextureKey = "sky"; 
 
       // --- PASS 1: DEPTH PRE-PASS ---
@@ -883,19 +961,44 @@ private void initialise(GL3 gl) {
   public void setMinimap(MapPanel minimap) {
       this.minimap = minimap;
 
-      if (this.isDebugModeActive) {
-          BufferedImage grassMapSnapshot = this.spawningManager.generateHeatmap(
-              TOTAL_REGION_WIDTH, 
-              PHYSICAL_CHUNK_SIZE, 
-              true,
-              GRASS_ABUNDANCE_POWER,
-              this.grassTemperateFactor, 
-              this.grassMoistureFactor, 
+      if (this.IS_DEBUG_MODE_ACTIVE) {
+        BufferedImage rawSnapshot = switch (ACTIVE_MODE) {
+          case HEIGHT -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              this.grassTemperateFactor, this.grassMoistureFactor, this.grassHeightNoiseFactor
+          );
+          case COLOR -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              this.grassTemperateFactor, this.grassMoistureFactor, this.grassColorNoiseFactor
+          );
+          case TEMPERATURE -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              this.grassTemperateFactor
+          );
+          case MOISTURE -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              this.grassMoistureFactor
+          );
+          default -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.MULTIPLICATIVE, GRASS_ABUNDANCE_POWER,
+              this.grassTemperateFactor, this.grassMoistureFactor, this.grassPatchNoiseFactor
+          );
+          case GRASS_PATCH_NOISE -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
               this.grassPatchNoiseFactor
           );
-          
-          this.minimap.setHeatmapOverlay(grassMapSnapshot);
-          this.minimap.setHeatmapVisible(true);
+          case GRASS_HEIGHT_NOISE -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              this.grassHeightNoiseFactor
+          );
+          case GRASS_COLOR_NOISE -> this.regionalManager.generateHeatmap(
+              TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, RegionalGenerationManager.HeatmapMode.BLENDED, 1.0f,
+              this.grassColorNoiseFactor
+          );
+        };
+        
+        this.minimap.setHeatmapOverlay(rawSnapshot);
+        this.minimap.setHeatmapVisible(true);
       }
   }
 

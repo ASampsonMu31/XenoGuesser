@@ -88,12 +88,15 @@ public class MapPanel extends JPanel {
     private boolean nextRoundRequested = false;
 
     private GameHUD gameHUD;
-    private XenoGuesser mainApp; 
+    private XenoGuesser mainApp;
 
-    public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
+    private float physicalChunkSize;
+
+    public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise, float physicalChunkSize) {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
+        this.physicalChunkSize = physicalChunkSize;
 
         this.setOpaque(false);
 
@@ -400,7 +403,7 @@ public class MapPanel extends JPanel {
             g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX + mapFrameW - BORDER_SIZE, startY), new Point2D.Float(startX + mapFrameW + 2, startY), fractions, colors));
             g2d.fill(rightFrame);
 
-            // --- SEPARATE LAND AND WATER FOR HEATMAP RENDERING ---
+// --- SEPARATE LAND AND WATER FOR HEATMAP RENDERING ---
             if (showHeatmap && heatmapOverlay != null) {
                 int baseW = mapImage.getWidth();
                 int baseH = mapImage.getHeight();
@@ -409,20 +412,36 @@ public class MapPanel extends JPanel {
                 BufferedImage combinedImage = new BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_RGB);
                 int oceanRGB = new Color(25, 80, 160).getRGB();
 
-                // Map pixel coordinates to heatmap matrix chunk layout dimensions
-                float scaleX = (float) heatmapOverlay.getWidth() / baseW;
-                float scaleY = (float) heatmapOverlay.getHeight() / baseH;
+                // Re-calculate alignment properties matching generateHeatmap's boundaries
+                int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+                int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+
+                int overlayW = heatmapOverlay.getWidth();
+                int overlayH = heatmapOverlay.getHeight();
 
                 for (int y = 0; y < baseH; y++) {
+                    // 1. Calculate the exact world Z coordinate for this pixel row (matching constructor)
+                    float worldZ = ((float) y / baseH) * totalRegionWidth - halfRegion;
+                    
+                    // 2. Convert world Z directly to the heatmap's chunk row index
+                    int cz = (int) Math.floor(worldZ / physicalChunkSize);
+                    int hy = cz - minChunkZ;
+                    hy = Math.max(0, Math.min(overlayH - 1, hy));
+
                     for (int x = 0; x < baseW; x++) {
                         int baseColor = mapImage.getRGB(x, y);
 
                         if (baseColor == oceanRGB) {
                             combinedImage.setRGB(x, y, oceanRGB); // Lock oceans blue safely
                         } else {
-                            // Compute corresponding coordinate inside heatmap overlay matrix data
-                            int hx = Math.max(0, Math.min(heatmapOverlay.getWidth() - 1, (int) (x * scaleX)));
-                            int hy = Math.max(0, Math.min(heatmapOverlay.getHeight() - 1, (int) (y * scaleY)));
+                            // 3. Calculate the exact world X coordinate for this pixel column
+                            float worldX = ((float) x / baseW) * totalRegionWidth - halfRegion;
+                            
+                            // 4. Convert world X directly to the heatmap's chunk column index
+                            int cx = (int) Math.floor(worldX / physicalChunkSize);
+                            int hx = cx - minChunkX;
+                            hx = Math.max(0, Math.min(overlayW - 1, hx));
+                            
                             combinedImage.setRGB(x, y, heatmapOverlay.getRGB(hx, hy));
                         }
                     }
@@ -435,6 +454,7 @@ public class MapPanel extends JPanel {
                 g2d.drawImage(mapImage, mapX, mapY, currentMapSize, currentMapSize, null);
             }
 
+            // --- HOVER ACTION BUTTONS ---
             if (isHovered && !isFullScreenReveal) {
                 g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
                 g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
@@ -454,6 +474,7 @@ public class MapPanel extends JPanel {
                 g2d.drawString(btnText, textX, textY);
             }
 
+            // --- INTERACTIVE PIN AND TARGET REVEAL RENDERERS ---
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
 
@@ -534,6 +555,7 @@ public class MapPanel extends JPanel {
                     g2d.drawString(endText, textX, textY);
                 }
 
+                // --- DYNAMIC ANIMATED SCORE HUD OVERLAY ---
                 if (shouldDrawScoreText) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
                     float baseBubbleFontSize = currentMapSize * 0.15f; 

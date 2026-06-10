@@ -10,7 +10,7 @@ import com.jogamp.opengl.util.FPSAnimator;
 
 public class XenoGuesser extends JFrame {
   
-  private static final boolean IS_DEVELOPMENT_MODE = false; 
+  private static final boolean IS_DETERMINISTIC_MODE = true;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -69,25 +69,26 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.awt.noerasebackground", "true"); 
     System.setProperty("sun.java2d.noddraw", "true");
     
-    long worldSeed = IS_DEVELOPMENT_MODE ? 123L : System.currentTimeMillis();
+    long worldSeed = IS_DETERMINISTIC_MODE ? 123L : System.currentTimeMillis();
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
     
-    int viewDistance = 24;
     float physicalChunkSize = 100.0f;
-    float totalRegionWidth = (viewDistance * physicalChunkSize) * 50.0f;
+    float totalRegionWidth = 150_000f;
     
     float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
     
     // FIXED: Passed seaLevelHeight directly into the camera object constructor here
-    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, IS_DEVELOPMENT_MODE, seaLevelHeight);
+    Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, seaLevelHeight);
     MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
     
-    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed);
+    physicalChunkSize = 100f;
+
+    glEventListener = new XenoGuesser_GLEventListener(camera, keyboardInput, worldNoise, seaLevelHeight, worldSeed, totalRegionWidth, physicalChunkSize);
 
     GameHUD gameHUD = new GameHUD();
     glEventListener.setGameHUD(gameHUD); 
 
-    MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise);
+    MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise, physicalChunkSize);
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
