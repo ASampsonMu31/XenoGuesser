@@ -92,6 +92,8 @@ public class MapPanel extends JPanel {
 
     private float physicalChunkSize;
 
+    private String heatmapName;
+
     public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise, float physicalChunkSize) {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
@@ -340,7 +342,6 @@ public class MapPanel extends JPanel {
             layeredPane.repaint(oldBounds);
         }
     }
-
 @Override
     protected void paintComponent(Graphics g) {
         Graphics2D g2d = (Graphics2D) g.create(); 
@@ -403,7 +404,7 @@ public class MapPanel extends JPanel {
             g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX + mapFrameW - BORDER_SIZE, startY), new Point2D.Float(startX + mapFrameW + 2, startY), fractions, colors));
             g2d.fill(rightFrame);
 
-// --- SEPARATE LAND AND WATER FOR HEATMAP RENDERING ---
+            // --- SEPARATE LAND AND WATER FOR HEATMAP RENDERING ---
             if (showHeatmap && heatmapOverlay != null) {
                 int baseW = mapImage.getWidth();
                 int baseH = mapImage.getHeight();
@@ -448,6 +449,35 @@ public class MapPanel extends JPanel {
                 }
                 // Render out cleanly scaled to screen spaces
                 g2d.drawImage(combinedImage, mapX, mapY, currentMapSize, currentMapSize, null);
+
+                // --- HEATMAP NAME HUD OVERLAY ---
+                if (heatmapName != null && !heatmapName.isEmpty()) {
+                    g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 13f));
+                    FontMetrics labelFm = g2d.getFontMetrics();
+                    int textW = labelFm.stringWidth(heatmapName);
+                    int textH = labelFm.getAscent();
+
+                    int padX = 12;
+                    int padY = 6;
+                    int boxW = textW + (padX * 2);
+                    int boxH = textH + (padY * 2);
+                    
+                    // Horizontally center over the top section of the map
+                    int boxX = mapX + (currentMapSize - boxW) / 2;
+                    int boxY = mapY + 12;
+
+                    // Render semi-transparent background plate for readable high-contrast
+                    g2d.setColor(new Color(25, 25, 27, 195));
+                    g2d.fillRoundRect(boxX, boxY, boxW, boxH, 10, 10);
+
+                    // Optional subtle crisp frame edge
+                    g2d.setColor(new Color(255, 255, 255, 45));
+                    g2d.drawRoundRect(boxX, boxY, boxW, boxH, 10, 10);
+
+                    // Solid clean white text
+                    g2d.setColor(Color.WHITE);
+                    g2d.drawString(heatmapName, boxX + padX, boxY + padY + textH - 1);
+                }
 
             } else {
                 // Default Mode: Standard base map rendering
@@ -657,5 +687,9 @@ public class MapPanel extends JPanel {
 
     public void setMainApp(XenoGuesser mainApp) {
         this.mainApp = mainApp;
+    }
+
+    public void setHeatmapName(String heatmapName) {
+        this.heatmapName = heatmapName;
     }
 }

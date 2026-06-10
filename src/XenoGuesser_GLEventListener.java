@@ -98,7 +98,19 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private RegionalFactor grassColorFactor;
 
     private final boolean IS_DEBUG_MODE_ACTIVE;
-    private final XenoGuesser.DebugView ACTIVE_MODE;
+    private FactorName currentDebugFactor;
+    private boolean lastKeyboardH = false;
+
+    public enum FactorName {
+      ABUNDANCE,
+      HEIGHT,
+      COLOR,
+      TEMPERATURE,
+      MOISTURE,
+      GRASS_PATCH_NOISE,
+      GRASS_HEIGHT_NOISE,
+      GRASS_COLOR_NOISE,
+    }
 
     public XenoGuesser_GLEventListener(
             Camera camera,
@@ -108,8 +120,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             long sharedSeed,
             float totalRegionWidth,
             float physicalChunkSize,
-            boolean isDebugModeActive,
-            XenoGuesser.DebugView activeMode) {
+            boolean isDebugModeActive) {
                 
         this.camera = camera;
         this.keyboard = keyboard;
@@ -119,7 +130,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
         this.TOTAL_REGION_WIDTH = totalRegionWidth;
         this.IS_DEBUG_MODE_ACTIVE = isDebugModeActive;
-        this.ACTIVE_MODE = activeMode;
+        this.currentDebugFactor = FactorName.ABUNDANCE;
         
         this.camera.setPosition(new Vec3(0f, 5f, 15f));
         this.camera.setTarget(new Vec3(0f, 0f, 0f));
@@ -743,6 +754,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             lastChunkZ = currentChunkZ;
             updateVisibleChunks(gl, false);
         }
+        
+
+        if (IS_DEBUG_MODE_ACTIVE && keyboard.h && ! lastKeyboardH) {
+          FactorName[] values = FactorName.values();
+          currentDebugFactor = values[(currentDebugFactor.ordinal() + 1) % values.length];
+          assignHeatmapToMinimap(currentDebugFactor);
+        }
+        lastKeyboardH = keyboard.h;
 
         float sunAngle = (float)Math.atan2(sunPos.y - currentPos.y, sunPos.x - currentPos.x);
         float degSunAngle = (float)Math.toDegrees(sunAngle);
@@ -964,24 +983,28 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
+        assignHeatmapToMinimap(currentDebugFactor);
+    }
 
-        if (this.IS_DEBUG_MODE_ACTIVE) {
-            // Simplified reference switch-case passing the target node directly to the manager's visualizer
-            RegionalFactor targetFactor = switch (ACTIVE_MODE) {
-                case HEIGHT -> this.grassHeightFactor;
-                case COLOR -> this.grassColorFactor;
-                case TEMPERATURE -> this.regionalManager.temperatureMap;
-                case MOISTURE -> this.grassMoistureFactor;
-                case ABUNDANCE -> this.grassAbundanceFactor;
-                case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
-                case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
-                case GRASS_COLOR_NOISE -> this.grassColorNoiseFactor;
-            };
-            
-            BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);
-            this.minimap.setHeatmapOverlay(rawSnapshot);
-            this.minimap.setHeatmapVisible(true);
-        }
+    public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
+      if (this.IS_DEBUG_MODE_ACTIVE) {
+          // Simplified reference switch-case passing the target node directly to the manager's visualizer
+          RegionalFactor targetFactor = switch (currentDebugFactor) {
+              case HEIGHT -> this.grassHeightFactor;
+              case COLOR -> this.grassColorFactor;
+              case TEMPERATURE -> this.regionalManager.temperatureMap;
+              case MOISTURE -> this.grassMoistureFactor;
+              case ABUNDANCE -> this.grassAbundanceFactor;
+              case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
+              case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
+              case GRASS_COLOR_NOISE -> this.grassColorNoiseFactor;
+          };
+          
+          BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);
+          minimap.setHeatmapOverlay(rawSnapshot);
+          minimap.setHeatmapVisible(true);
+          minimap.setHeatmapName(currentDebugFactor.toString());
+      } 
     }
 
     public void setCompassHUD(CompassHUD compassHUD) {
@@ -998,5 +1021,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         
         Renderer renderer = new Renderer();
         return new Model(name, mesh, modelMatrix, shader, material, renderer, lights, camera);
+    }
+
+    public FactorName getCurrentDebugFactor() {
+      return currentDebugFactor;
     }
 }

@@ -12,7 +12,6 @@ public class XenoGuesser extends JFrame {
   
   private static final boolean IS_DETERMINISTIC_MODE = true;
   private static final boolean IS_DEBUG_MODE_ACTIVE = true;
-  private static final DebugView ACTIVE_MODE = DebugView.COLOR;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -23,17 +22,6 @@ public class XenoGuesser extends JFrame {
   private Point permanentWindowPosition = null;
 
   private CompassHUD compassHUD;
-
-  public enum DebugView {
-    ABUNDANCE,
-    HEIGHT,
-    COLOR,
-    TEMPERATURE,
-    MOISTURE,
-    GRASS_PATCH_NOISE,
-    GRASS_HEIGHT_NOISE,
-    GRASS_COLOR_NOISE,
-  }
 
   public static void main(String[] args) {
     SwingUtilities.invokeLater(new Runnable() {
@@ -104,8 +92,7 @@ public class XenoGuesser extends JFrame {
       worldSeed,
       totalRegionWidth,
       physicalChunkSize,
-      IS_DEBUG_MODE_ACTIVE,
-      ACTIVE_MODE
+      IS_DEBUG_MODE_ACTIVE
     );
 
     GameHUD gameHUD = new GameHUD();
