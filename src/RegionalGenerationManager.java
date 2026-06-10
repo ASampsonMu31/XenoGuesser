@@ -7,149 +7,99 @@ import java.awt.Color;
 
 public class RegionalGenerationManager {
     
-    // --- CORE WORLD DATA ---
     private final float halfRegion;
     private final float seaLevelHeight;
     private final Map<String, Integer> chunkDistanceToWaterField = new HashMap<>();
-
-    @FunctionalInterface
-    public interface GenerationFactor {
-        float evaluate(int cx, int cz, float worldX, float worldZ);
-    }
-
-    // Global environmental baselines
-    public final GenerationFactor temperatureMap;
-    public final GenerationFactor coldMap;
-
-    private long worldSeed;
-
+    private final long worldSeed;
     private int assignedNoiseTracks = 0;
+
+    // Direct structural object handles replacing old functional callback lambdas
+    public final RegionalFactor temperatureMap;
+    public final RegionalFactor coldMap;
 
     public RegionalGenerationManager(long seed, float totalRegionWidth, float seaLevelHeight) {
         this.halfRegion = totalRegionWidth / 2.0f; 
         this.seaLevelHeight = seaLevelHeight;
         this.worldSeed = seed;
 
-        // Latitudinal Cosine Temperature curve (Equator -> Poles)
-        this.temperatureMap = (cx, cz, worldX, worldZ) -> {
+        // Latitudinal Baseline Configuration
+        this.temperatureMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
             float normalizedZ = worldZ / this.halfRegion;
             float temp = (float) Math.cos(normalizedZ * (Math.PI / 2.0));
             return Math.max(0.0f, Math.min(1.0f, temp));
-        };
+        });
 
-        this.coldMap = (cx, cz, worldX, worldZ) -> 1.0f - this.temperatureMap.evaluate(cx, cz, worldX, worldZ);
+        this.coldMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
+            1.0f - this.temperatureMap.evaluate(cx, cz, worldX, worldZ)
+        );
     }
 
     // ==========================================
-    //    UNIVERSAL FACTORY DESIGNERS
+    //        UNIVERSAL FACTORY DESIGNERS
     // ==========================================
 
-    public GenerationFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
-        return (cx, cz, worldX, worldZ) -> {
+    public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
+        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
             float currentTemp = this.temperatureMap.evaluate(cx, cz, worldX, worldZ);
             float diff = currentTemp - optimalTemp;
             double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
-            return Math.max(0.0f, Math.min(1.0f, (float) Math.exp(exponent)));
-        };
+            return (float) Math.exp(exponent);
+        });
     }
 
-    public GenerationFactor createWaterPreference(int optimalDistance, float standardDeviation) {
-        return (cx, cz, worldX, worldZ) -> {
+    public RegionalFactor createWaterPreference(int optimalDistance, float standardDeviation) {
+        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
             int chunksAway = chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, 999);
             float diff = (float) chunksAway - optimalDistance;
             double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
-            return Math.max(0.0f, Math.min(1.0f, (float) Math.exp(exponent)));
-        };
+            return (float) Math.exp(exponent);
+        });
     }
 
-    public GenerationFactor createWaterProximityMap(int maxChunkDistance) {
-        return (cx, cz, worldX, worldZ) -> {
+    public RegionalFactor createWaterProximityMap(int maxChunkDistance) {
+        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
             int chunksAway = chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, maxChunkDistance);
-            float weight = 1.0f - ((float) Math.min(chunksAway, maxChunkDistance) / maxChunkDistance);
-            return Math.max(0.0f, Math.min(1.0f, weight));
-        };
+            return 1.0f - ((float) Math.min(chunksAway, maxChunkDistance) / maxChunkDistance);
+        });
     }
 
-    public GenerationFactor createDeepInlandMap(int maxChunkDistance) {
-        return (cx, cz, worldX, worldZ) -> {
+    public RegionalFactor createDeepInlandMap(int maxChunkDistance) {
+        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
             int chunksAway = chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, maxChunkDistance);
-            float weight = (float) Math.min(chunksAway, maxChunkDistance) / maxChunkDistance;
-            return Math.max(0.0f, Math.min(1.0f, weight));
-        };
+            return (float) Math.min(chunksAway, maxChunkDistance) / maxChunkDistance;
+        });
     }
 
-    // ==========================================
-    //    RAW STRUCTURAL NOISE MAPPERS
-    // ==========================================
-
-    public GenerationFactor createNoiseMap(float scale) {
-        // Automatically guarantee every generated channel gets a completely unique seed track
+    public RegionalFactor createNoiseMap(float scale) {
         int uniqueOffset = 33333 + (assignedNoiseTracks * 11111);
         assignedNoiseTracks++;
         
         PerlinNoise noise = new PerlinNoise(worldSeed + uniqueOffset);
-        return (cx, cz, worldX, worldZ) -> (noise.eval(worldX * scale, worldZ * scale) + 1.0f) / 2.0f;
+        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
+            (noise.eval(worldX * scale, worldZ * scale) + 1.0f) / 2.0f
+        );
     }
 
     // ==========================================
-    //    LOW-LEVEL CONTINUOUS EVALUATION ENGINES
+    //      SIMPLIFIED COUNT EVALUATION ENGINES
     // ==========================================
 
-    public float evaluateFactorsMultiplicative(int cx, int cz, float worldX, float worldZ, float powerCurve, GenerationFactor... factors) {
-        float finalProbability = 1.0f;
-        for (GenerationFactor factor : factors) {
-            if (factor != null) {
-                finalProbability *= factor.evaluate(cx, cz, worldX, worldZ);
-            }
-        }
-        return (float) Math.pow(finalProbability, powerCurve);
-    }
-
-    public float evaluateFactorsBlended(int cx, int cz, float worldX, float worldZ, float powerCurve, GenerationFactor... factors) {
-        if (factors.length == 0) return 0.0f;
-        float totalWeight = 0.0f;
-        int activeFactors = 0;
-        for (GenerationFactor factor : factors) {
-            if (factor != null) {
-                totalWeight += factor.evaluate(cx, cz, worldX, worldZ);
-                activeFactors++;
-            }
-        }
-        if (activeFactors == 0) return 0.0f;
-        return (float) Math.pow(totalWeight / activeFactors, powerCurve);
-    }
-
-    // ==========================================
-    //    HIGH-LEVEL COUPLING WRAPPERS (COUNTS)
-    // ==========================================
-
-    public int evaluateMultiplicativeCount(int cx, int cz, float chunkSize, float baseMultiplier, float powerCurve, int maxLimit, GenerationFactor... factors) {
-        // FIX: Sample from the center of the chunk
+    /**
+     * Evaluates the absolute generation element counts for an entire chunk.
+     */
+    public int evaluateChunkAssetCount(int cx, int cz, float chunkSize, float baseMultiplier, int maxLimit, RegionalFactor factorNode) {
         float worldX = (cx + 0.5f) * chunkSize;
         float worldZ = (cz + 0.5f) * chunkSize;
-        float factor = evaluateFactorsMultiplicative(cx, cz, worldX, worldZ, powerCurve, factors);
-        return Math.min(maxLimit, Math.round(factor * baseMultiplier)); 
+        
+        float distributionDensity = factorNode.evaluate(cx, cz, worldX, worldZ);
+        return Math.min(maxLimit, Math.round(distributionDensity * baseMultiplier)); 
     }
 
-    public int evaluateBlendedCount(int cx, int cz, float chunkPhysicalSize, float baseMultiplier, float powerCurve, int maxLimit, GenerationFactor... factors) {
-        // FIX: Sample from the center of the chunk
-        float worldX = (cx + 0.5f) * chunkPhysicalSize;
-        float worldZ = (cz + 0.5f) * chunkPhysicalSize;
-        float factor = evaluateFactorsBlended(cx, cz, worldX, worldZ, powerCurve, factors);
-        return Math.min(maxLimit, Math.round(factor * baseMultiplier));
-    }
-
-    public enum HeatmapMode {
-        MULTIPLICATIVE,
-        BLENDED
-    }
-
-
- // ==========================================
-    //       STATIC HEATMAP SNAPSHOT GENERATOR
+    // ==========================================
+    //       REFACTORED VISUALIZATION ENGINE
     // ==========================================
 
-    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, HeatmapMode mode, float powerCurve, GenerationFactor... factors) {
+    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize) {
         int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
         int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
         int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
@@ -161,10 +111,10 @@ public class RegionalGenerationManager {
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 
         float[][] spectrum = {
-            {0.85f, 0.00f, 0.00f}, // 0: Red
-            {1.00f, 0.50f, 0.00f}, // 1: Orange
-            {1.00f, 0.90f, 0.00f}, // 2: Yellow
-            {0.00f, 0.70f, 0.10f}  // 3: Green
+            {0.85f, 0.00f, 0.00f}, // Red
+            {1.00f, 0.50f, 0.00f}, // Orange
+            {1.00f, 0.90f, 0.00f}, // Yellow
+            {0.00f, 0.70f, 0.10f}  // Green
         };
 
         for (int z = 0; z < height; z++) {
@@ -172,20 +122,12 @@ public class RegionalGenerationManager {
             for (int x = 0; x < width; x++) {
                 int cx = minChunkX + x;
                 
-                // Sample from the center of the chunk for accurate alignment
                 float worldX = (cx + 0.5f) * physicalChunkSize;
                 float worldZ = (cz + 0.5f) * physicalChunkSize;
 
-                // 1. Evaluate the raw values directly
-                float rawValue = switch (mode) {
-                    case MULTIPLICATIVE -> evaluateFactorsMultiplicative(cx, cz, worldX, worldZ, powerCurve, factors);
-                    case BLENDED        -> evaluateFactorsBlended(cx, cz, worldX, worldZ, powerCurve, factors);
-                };
+                // Leverage the encapsulation property directly
+                float factor = factorToVisualize.evaluate(cx, cz, worldX, worldZ);
 
-                // 2. FIXED: Use the raw value directly as the factor (Absolute 0.0 to 1.0)
-                float factor = Math.max(0.0f, Math.min(1.0f, rawValue)); 
-
-                // Map the normalized 0.0 - 1.0 factor across the 4-color multi-stage ramp
                 float r, g, b;
                 if (factor <= 0.333f) {
                     float t = factor / 0.333f;
@@ -216,12 +158,10 @@ public class RegionalGenerationManager {
     }
     
     // ==========================================
-    //    BREADTH-FIRST-SEARCH TOPOGRAPHY SCANNER
+    //   BREADTH-FIRST-SEARCH DISTANCE PRE-SCAN
     // ==========================================
-
     public void precalculateWaterDistanceField(float totalRegionWidth, PerlinNoise worldNoise, float physicalChunkSize){
         chunkDistanceToWaterField.clear();
-        
         int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
         int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
         int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
@@ -231,7 +171,6 @@ public class RegionalGenerationManager {
 
         for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
             for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                // FIX: Check water layout at the center of the chunk as well
                 float worldX = (cx + 0.5f) * physicalChunkSize;
                 float worldZ = (cz + 0.5f) * physicalChunkSize;
                 float terrainHeight = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
@@ -249,7 +188,6 @@ public class RegionalGenerationManager {
 
         while (!queue.isEmpty()) {
             ChunkNode current = queue.poll();
-
             for (int i = 0; i < 4; i++) {
                 int neighborX = current.cx + dX[i];
                 int neighborZ = current.cz + dZ[i];
