@@ -36,7 +36,6 @@ public class CompassHUD extends JPanel {
     public void updateHeading(Vec3 cameraForwardDirection) {
         this.currentYawRadians = (float) Math.atan2(cameraForwardDirection.x, cameraForwardDirection.z);
         
-        // Unhide the panel only once a valid camera heading has been fed in
         if (!this.isVisible()) {
             this.setVisible(true);
         }

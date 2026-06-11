@@ -96,6 +96,8 @@ public class MapPanel extends JPanel {
 
     private XenoGuesser_GLEventListener listener;
 
+    private CompassHUD compassHUD;
+
     public MapPanel(
             int maxMapWidth,
             int maxMapHeight,
@@ -103,13 +105,15 @@ public class MapPanel extends JPanel {
             float seaLevelHeight,
             PerlinNoise noise,
             float physicalChunkSize,
-            XenoGuesser_GLEventListener listener
+            XenoGuesser_GLEventListener listener,
+            CompassHUD compassHUD
         ) {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
         this.physicalChunkSize = physicalChunkSize;
         this.listener = listener;
+        this.compassHUD = compassHUD;
 
         this.setOpaque(false);
 
@@ -254,6 +258,8 @@ public class MapPanel extends JPanel {
         this.shouldDrawScoreText = false;
         this.currentScoreScale = 1.0f;
         this.slamProgress = 0.0f;
+
+        this.compassHUD.setVisible(false);
 
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
