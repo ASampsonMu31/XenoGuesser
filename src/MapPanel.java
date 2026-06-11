@@ -10,6 +10,7 @@ import java.awt.Insets;
 import java.awt.Polygon;
 import java.awt.image.BufferedImage;
 import java.awt.Color;
+import java.awt.AlphaComposite;
 import java.awt.geom.Point2D;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -18,56 +19,51 @@ import java.awt.BasicStroke;
 import java.awt.Stroke;
 import java.awt.Font;
 import java.awt.FontMetrics;
+import java.awt.Point;
+import java.awt.Rectangle;
 
 public class MapPanel extends JPanel {
     private BufferedImage mapImage;
-    private static final int BORDER_SIZE = 10;       // Frame thickness
-    private static final int EXTRA_BOTTOM_SPACE = 55; // Space allocated for buttons
+    private BufferedImage heatmapOverlay; // Stores the debug data snapshot
+    private boolean showHeatmap = false;   // Toggle visibility state
     
-    // Pushes internal graphics assets to clear layout discrepancies
+    private static final int BORDER_SIZE = 10;       
+    private static final int EXTRA_BOTTOM_SPACE = 55; 
     private static final int HORIZONTAL_SHUFFLE_OFFSET = 2; 
 
     private final Color baseDarkGrey = new Color(45, 45, 45);
     private final Color highlightLightGrey = new Color(90, 90, 90);
     private final Color trayGrey = new Color(60, 60, 60); 
 
-    // --- BUTTON COLORS ---
     private final Color btnDisabledGrey = new Color(90, 92, 95);
     private final Color btnEnabledGreen = new Color(50, 165, 50);
     private final Color btnNextRoundBlue = new Color(40, 120, 210); 
     private final Color btnTextWhite = new Color(255, 255, 255);
 
-    // --- WORLD DATA TRACKING ---
     private float totalRegionWidth;
     private float halfRegion;
 
-    // --- GAME END STATE VARIABLES ---
     private boolean isGuessed = false;
     private int goalX; 
     private int goalY; 
 
-    // --- PIN STATE VARIABLES ---
     private boolean hasPin = false;
     private int pinX; 
     private int pinY; 
 
-    // --- BUTTON BOUNDS TRACKING ---
     private int btnX;
     private int btnY;
     private int btnWidth;
     private int btnHeight;
 
-    // --- HOVER & FULLSCREEN REVEAL TRACKING ---
     private boolean isHovered = false;
     private boolean isFullScreenReveal = false; 
     private int currentMapSize = 150; 
 
-    // --- BUBBLE WRITING ANIMATION TRACKING ---
     private int targetRoundScore = 0;
     private int currentDisplayScore = 0;
     private boolean shouldDrawScoreText = false;
     
-    // Smooth cinematic progression trackers
     private long phaseStartTime = 0;
     private float slamProgress = 0.0f;
     private float currentScoreScale = 1.0f;
@@ -78,7 +74,6 @@ public class MapPanel extends JPanel {
     private int visualMapX = 0;
     private int visualMapY = 0;
 
-    // --- TIMED CINEMATIC SEQUENCE STATES ---
     private enum RevealPhase {
         SHOW_PLAYER_PIN,
         SHOW_ALL_RESULTS,
@@ -88,18 +83,33 @@ public class MapPanel extends JPanel {
     private RevealPhase currentPhase = RevealPhase.SHOW_PLAYER_PIN;
     private Timer revealTimer;
     
-    // --- GRADUAL LINE REVEAL TRACKING ---
     private float lineProgress = 0.0f; 
 
     private boolean nextRoundRequested = false;
 
     private GameHUD gameHUD;
-    private XenoGuesser mainApp; 
+    private XenoGuesser mainApp;
 
-    public MapPanel(int maxMapWidth, int maxMapHeight, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
+    private float physicalChunkSize;
+
+    private String heatmapName;
+
+    private XenoGuesser_GLEventListener listener;
+
+    public MapPanel(
+            int maxMapWidth,
+            int maxMapHeight,
+            float totalRegionWidth,
+            float seaLevelHeight,
+            PerlinNoise noise,
+            float physicalChunkSize,
+            XenoGuesser_GLEventListener listener
+        ) {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
+        this.physicalChunkSize = physicalChunkSize;
+        this.listener = listener;
 
         this.setOpaque(false);
 
@@ -125,41 +135,66 @@ public class MapPanel extends JPanel {
             public void mousePressed(MouseEvent e) {
                 int clickX = e.getX();
                 int clickY = e.getY();
-
-                if (isFullScreenReveal && (currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD)) {
-                    if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                        
-                        if (MapPanel.this.gameHUD != null) {
-                            MapPanel.this.gameHUD.advanceRound();
+                
+                if (e.getButton() == MouseEvent.BUTTON1) {
+                    if (isFullScreenReveal && (currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD)) {
+                        if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
+                            if (MapPanel.this.gameHUD != null) {
+                                MapPanel.this.gameHUD.advanceRound();
+                            }
+                            MapPanel.this.resetMapState(); 
+                            MapPanel.this.nextRoundRequested = true; 
+                            return; // Prevent fall-through into regular pin placement logic
                         }
+                    }
+
+                    if (isGuessed) return;
+
+                    int mapLeft = visualMapX;
+                    int mapTop = visualMapY;
+                    int mapRight = mapLeft + currentMapSize;
+                    int mapBottom = mapTop + currentMapSize;
+
+                    if (clickX >= mapLeft && clickX < mapRight && clickY >= mapTop && clickY < mapBottom) {
+                        int localizedX = clickX - visualMapX;
+                        int localizedY = clickY - visualMapY;
+                        float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
                         
-                        MapPanel.this.resetMapState(); 
-                        MapPanel.this.nextRoundRequested = true; 
-                        return;
+                        pinX = (int) (localizedX * scaleToCore);
+                        pinY = (int) (localizedY * scaleToCore);
+                        hasPin = true;
+                        repaint(); 
+                    }
+                    else if (isHovered && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
+                        if (hasPin) {
+                            startRevealSequence();
+                        }
                     }
                 }
-
-                if (isGuessed) return;
-
-                int mapLeft = visualMapX;
-                int mapTop = visualMapY;
-                int mapRight = mapLeft + currentMapSize;
-                int mapBottom = mapTop + currentMapSize;
-
-                if (clickX >= mapLeft && clickX < mapRight && clickY >= mapTop && clickY < mapBottom) {
+                if (e.getButton() == MouseEvent.BUTTON3 && mainApp.getIsDebugModeActive()) {
+                    System.out.println("Teleport Attempt");
+                    
+                    // 1. Localize click relative to the top-left of the rendered map image
                     int localizedX = clickX - visualMapX;
                     int localizedY = clickY - visualMapY;
-                    float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
-                    // ... rest of your code remains the same
-                    
-                    pinX = (int) (localizedX * scaleToCore);
-                    pinY = (int) (localizedY * scaleToCore);
-                    hasPin = true;
-                    repaint(); 
-                }
-                else if (isHovered && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                    if (hasPin) {
-                        startRevealSequence();
+
+                    // Boundary Check: Ensure the user actually clicked inside the visible map boundaries
+                    if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < currentMapSize) {
+                        
+                        // 2. Map screen pixels up to full image pixel scale
+                        float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
+                        float corePixelX = localizedX * scaleToCore;
+                        float corePixelY = localizedY * scaleToCore;
+
+                        // 3. Reverse the constructor math to convert image pixels to world coordinates
+                        // Formula used in constructor: ((float)x / maxMapWidth) * totalRegionWidth - halfRegion
+                        float worldX = (corePixelX / mapImage.getWidth()) * totalRegionWidth - halfRegion;
+                        float worldZ = (corePixelY / mapImage.getHeight()) * totalRegionWidth - halfRegion;
+
+                        // Pass the properly transformed coordinates to your listener
+                        if (MapPanel.this.listener != null) {
+                            MapPanel.this.listener.setTelepot(worldX, worldZ);
+                        }
                     }
                 }
             }
@@ -168,13 +203,11 @@ public class MapPanel extends JPanel {
             public void mouseEntered(MouseEvent e) {
                 if (!isHovered && !isFullScreenReveal) {
                     isHovered = true;
-                    
                     if (getParent() != null) {
                         currentMapSize = (int)(getParent().getHeight() * 0.60f); 
                     } else {
                         currentMapSize = 550; 
                     }
-                    
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
                 }
@@ -184,7 +217,7 @@ public class MapPanel extends JPanel {
             public void mouseExited(MouseEvent e) {
                 if (isGuessed || isFullScreenReveal) return;
 
-                java.awt.Point mousePos = getMousePosition();
+                Point mousePos = getMousePosition();
                 if (mousePos != null && mousePos.x >= 0 && mousePos.x < getWidth() && mousePos.y >= 0 && mousePos.y < getHeight()) {
                     return; 
                 }
@@ -197,6 +230,17 @@ public class MapPanel extends JPanel {
                 }
             }
         });
+    }
+
+    // --- NEW DEBUG INTERFACES FOR HEATMAP OVERLAYS ---
+    public void setHeatmapOverlay(BufferedImage heatmap) {
+        this.heatmapOverlay = heatmap;
+        repaint();
+    }
+
+    public void setHeatmapVisible(boolean visible) {
+        this.showHeatmap = visible;
+        repaint();
     }
 
     private void startRevealSequence() {
@@ -226,10 +270,8 @@ public class MapPanel extends JPanel {
         triggerParentLayoutUpdate();
 
         final float lineRevealSpeed = 0.05f; 
-        
-        // --- TIME-BASED TRACKING CONFIGURATION ---
-        final long COUNT_UP_DURATION_MS = 500; // Exact time the score count-up should take (e.g., half a second)
-        final long[] countUpStartTime = {-1};  // Holds the exact timestamp when the score phase begins
+        final long COUNT_UP_DURATION_MS = 500; 
+        final long[] countUpStartTime = {-1};  
 
         revealTimer = new Timer(16, e -> {
             if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
@@ -244,7 +286,6 @@ public class MapPanel extends JPanel {
                 }
             } 
             else if (currentPhase == RevealPhase.SHOW_ALL_RESULTS) {
-                // Initialize timestamps on the very first frame of this phase
                 if (countUpStartTime[0] == -1) {
                     countUpStartTime[0] = System.currentTimeMillis();
                 }
@@ -253,12 +294,10 @@ public class MapPanel extends JPanel {
                 float t = (float) elapsed / COUNT_UP_DURATION_MS;
 
                 if (t >= 1.0f) {
-                    // Time's up! Hard cap it to the final score and move on
                     currentDisplayScore = targetRoundScore;
                     currentPhase = RevealPhase.LINGER;
                     phaseStartTime = System.currentTimeMillis();
                 } else {
-                    // Smooth quadratic ease-out curve applied purely over time elapsed
                     float easeOutRatio = 1.0f - (1.0f - t) * (1.0f - t); 
                     currentDisplayScore = (int) (targetRoundScore * easeOutRatio);
                 }
@@ -305,21 +344,17 @@ public class MapPanel extends JPanel {
 
     public void updateGeometryLayouts() {
         if (isFullScreenReveal && getParent() != null) {
-            // Expand the panel to fill the entire parent container so the score can fly anywhere
             this.setPreferredSize(getParent().getSize());
             this.setSize(getParent().getSize());
             
-            // Center the actual map graphic inside this newly expanded full-size panel
             this.visualMapX = (getWidth() - currentMapSize) / 2;
             this.visualMapY = (getHeight() - currentMapSize) / 2;
             
-            // Reposition the button relative to the centered map graphic
             this.btnWidth = currentMapSize;
             this.btnHeight = 40;
             this.btnX = visualMapX;
             this.btnY = visualMapY + currentMapSize + BORDER_SIZE + 7;
         } else {
-            // Fallback to your original compact layout when not revealing results
             boolean needsExtraSpace = isHovered;
             int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
             
@@ -341,13 +376,12 @@ public class MapPanel extends JPanel {
     private void triggerParentLayoutUpdate() {
         if (getParent() instanceof JLayeredPane) {
             JLayeredPane layeredPane = (JLayeredPane) getParent();
-            java.awt.Rectangle oldBounds = this.getBounds();
+            Rectangle oldBounds = this.getBounds();
             XenoGuesser.updateMinimapBounds(layeredPane, this);
             layeredPane.repaint(oldBounds);
         }
     }
-
-    @Override
+@Override
     protected void paintComponent(Graphics g) {
         Graphics2D g2d = (Graphics2D) g.create(); 
         try {
@@ -358,36 +392,31 @@ public class MapPanel extends JPanel {
             int frameW = getWidth();
             int frameH = getHeight();
 
-            // --- BACKGROUND HANDLING ---
             if (isFullScreenReveal) {
-                // Force fill the canvas with your beautiful pale yellow sky backdrop
-                g2d.setColor(new Color(245, 235, 195)); // Soft pale sky yellow (Adjust RGB values to match your exact hex color)
+                g2d.setColor(new Color(245, 235, 195)); 
                 g2d.fillRect(0, 0, frameW, frameH);
             } else {
-                // Compact minimap / Hovered medium map mode: Fill the local panel bounds with your original solid tray gray
                 g2d.setColor(trayGrey);
                 g2d.fillRect(0, 0, frameW, frameH);
             }
 
-            // --- VISUAL FRAME POSITION SETUP ---
             int mapX = (this.visualMapX != 0) ? this.visualMapX : (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
             int mapY = (this.visualMapY != 0) ? this.visualMapY : BORDER_SIZE;
 
             float[] fractions = {0.0f, 0.5f, 1.0f};
-            Color[] colors = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
+            Color[] colours = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
 
             int mapFrameH = currentMapSize + (BORDER_SIZE * 2);
             int mapFrameW = currentMapSize + (BORDER_SIZE * 2);
             int startX = mapX - BORDER_SIZE;
             int startY = mapY - BORDER_SIZE;
             
-            // --- RENDER COMPONENT OUTER BORDER FRAMES ---
             Polygon topFrame = new Polygon();
             topFrame.addPoint(startX, startY); 
             topFrame.addPoint(startX + mapFrameW + 2, startY); 
             topFrame.addPoint(startX + mapFrameW - BORDER_SIZE + 2, startY + BORDER_SIZE); 
             topFrame.addPoint(startX + BORDER_SIZE, startY + BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY), new Point2D.Float(startX, startY + BORDER_SIZE), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY), new Point2D.Float(startX, startY + BORDER_SIZE), fractions, colours));
             g2d.fill(topFrame);
 
             Polygon bottomFrame = new Polygon();
@@ -395,7 +424,7 @@ public class MapPanel extends JPanel {
             bottomFrame.addPoint(startX + mapFrameW - BORDER_SIZE + 2, startY + mapFrameH - BORDER_SIZE); 
             bottomFrame.addPoint(startX + mapFrameW + 2, startY + mapFrameH); 
             bottomFrame.addPoint(startX, startY + mapFrameH);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY + mapFrameH - BORDER_SIZE), new Point2D.Float(startX, startY + mapFrameH), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY + mapFrameH - BORDER_SIZE), new Point2D.Float(startX, startY + mapFrameH), fractions, colours));
             g2d.fill(bottomFrame);
 
             Polygon leftFrame = new Polygon();
@@ -403,7 +432,7 @@ public class MapPanel extends JPanel {
             leftFrame.addPoint(startX + BORDER_SIZE, startY + BORDER_SIZE); 
             leftFrame.addPoint(startX + BORDER_SIZE, startY + mapFrameH - BORDER_SIZE); 
             leftFrame.addPoint(startX, startY + mapFrameH);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY), new Point2D.Float(startX + BORDER_SIZE, startY), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX, startY), new Point2D.Float(startX + BORDER_SIZE, startY), fractions, colours));
             g2d.fill(leftFrame);
 
             Polygon rightFrame = new Polygon();
@@ -411,13 +440,90 @@ public class MapPanel extends JPanel {
             rightFrame.addPoint(startX + mapFrameW + 2, startY); 
             rightFrame.addPoint(startX + mapFrameW + 2, startY + mapFrameH); 
             rightFrame.addPoint(startX + mapFrameW - BORDER_SIZE, startY + mapFrameH - BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX + mapFrameW - BORDER_SIZE, startY), new Point2D.Float(startX + mapFrameW + 2, startY), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX + mapFrameW - BORDER_SIZE, startY), new Point2D.Float(startX + mapFrameW + 2, startY), fractions, colours));
             g2d.fill(rightFrame);
 
-            // Draw Map Context Frame centered dynamically
-            g2d.drawImage(mapImage, mapX, mapY, currentMapSize, currentMapSize, null);
+            // --- SEPARATE LAND AND WATER FOR HEATMAP RENDERING ---
+            if (showHeatmap && heatmapOverlay != null) {
+                int baseW = mapImage.getWidth();
+                int baseH = mapImage.getHeight();
+                
+                // Create temporary image mapping directly to core pixel dimensions
+                BufferedImage combinedImage = new BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_RGB);
+                int oceanRGB = new Color(25, 80, 160).getRGB();
 
-            // --- GUESSED BUTTON GRAPHICS INTERACTION ---
+                // Re-calculate alignment properties matching generateHeatmap's boundaries
+                int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+                int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+
+                int overlayW = heatmapOverlay.getWidth();
+                int overlayH = heatmapOverlay.getHeight();
+
+                for (int y = 0; y < baseH; y++) {
+                    // 1. Calculate the exact world Z coordinate for this pixel row (matching constructor)
+                    float worldZ = ((float) y / baseH) * totalRegionWidth - halfRegion;
+                    
+                    // 2. Convert world Z directly to the heatmap's chunk row index
+                    int cz = (int) Math.floor(worldZ / physicalChunkSize);
+                    int hy = cz - minChunkZ;
+                    hy = Math.max(0, Math.min(overlayH - 1, hy));
+
+                    for (int x = 0; x < baseW; x++) {
+                        int baseColour = mapImage.getRGB(x, y);
+
+                        if (baseColour == oceanRGB) {
+                            combinedImage.setRGB(x, y, oceanRGB); // Lock oceans blue safely
+                        } else {
+                            // 3. Calculate the exact world X coordinate for this pixel column
+                            float worldX = ((float) x / baseW) * totalRegionWidth - halfRegion;
+                            
+                            // 4. Convert world X directly to the heatmap's chunk column index
+                            int cx = (int) Math.floor(worldX / physicalChunkSize);
+                            int hx = cx - minChunkX;
+                            hx = Math.max(0, Math.min(overlayW - 1, hx));
+                            
+                            combinedImage.setRGB(x, y, heatmapOverlay.getRGB(hx, hy));
+                        }
+                    }
+                }
+                // Render out cleanly scaled to screen spaces
+                g2d.drawImage(combinedImage, mapX, mapY, currentMapSize, currentMapSize, null);
+
+                // --- HEATMAP NAME HUD OVERLAY ---
+                if (heatmapName != null && !heatmapName.isEmpty()) {
+                    g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 13f));
+                    FontMetrics labelFm = g2d.getFontMetrics();
+                    int textW = labelFm.stringWidth(heatmapName);
+                    int textH = labelFm.getAscent();
+
+                    int padX = 12;
+                    int padY = 6;
+                    int boxW = textW + (padX * 2);
+                    int boxH = textH + (padY * 2);
+                    
+                    // Horizontally center over the top section of the map
+                    int boxX = mapX + (currentMapSize - boxW) / 2;
+                    int boxY = mapY + 12;
+
+                    // Render semi-transparent background plate for readable high-contrast
+                    g2d.setColor(new Color(25, 25, 27, 195));
+                    g2d.fillRoundRect(boxX, boxY, boxW, boxH, 10, 10);
+
+                    // Optional subtle crisp frame edge
+                    g2d.setColor(new Color(255, 255, 255, 45));
+                    g2d.drawRoundRect(boxX, boxY, boxW, boxH, 10, 10);
+
+                    // Solid clean white text
+                    g2d.setColor(Color.WHITE);
+                    g2d.drawString(heatmapName, boxX + padX, boxY + padY + textH - 1);
+                }
+
+            } else {
+                // Default Mode: Standard base map rendering
+                g2d.drawImage(mapImage, mapX, mapY, currentMapSize, currentMapSize, null);
+            }
+
+            // --- HOVER ACTION BUTTONS ---
             if (isHovered && !isFullScreenReveal) {
                 g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
                 g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
@@ -427,7 +533,7 @@ public class MapPanel extends JPanel {
                 g2d.drawRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
 
                 g2d.setColor(btnTextWhite);
-                g2d.setFont(g2d.getFont().deriveFont(java.awt.Font.BOLD, 22f));
+                g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 22f));
                 FontMetrics fm = g2d.getFontMetrics();
                 String btnText = "Guess";
                 int stringWidth = fm.stringWidth(btnText);
@@ -437,7 +543,7 @@ public class MapPanel extends JPanel {
                 g2d.drawString(btnText, textX, textY);
             }
 
-            // --- MAP PINS & RENDERING GRAPHICS TRACKER ---
+            // --- INTERACTIVE PIN AND TARGET REVEAL RENDERERS ---
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
 
@@ -508,7 +614,7 @@ public class MapPanel extends JPanel {
                     g2d.setStroke(originalStroke);
 
                     g2d.setColor(btnTextWhite);
-                    g2d.setFont(g2d.getFont().deriveFont(java.awt.Font.BOLD, 20f));
+                    g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 20f));
                     FontMetrics fm = g2d.getFontMetrics();
                     String endText = "Next Round";
                     int stringWidth = fm.stringWidth(endText);
@@ -518,10 +624,9 @@ public class MapPanel extends JPanel {
                     g2d.drawString(endText, textX, textY);
                 }
 
-                // --- RENDER ARCADE BUBBLE SCORE WRITING OVERLAY ---
+                // --- DYNAMIC ANIMATED SCORE HUD OVERLAY ---
                 if (shouldDrawScoreText) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
-                    
                     float baseBubbleFontSize = currentMapSize * 0.15f; 
                     float dynamicFontSize = baseBubbleFontSize * currentScoreScale;
                     
@@ -621,5 +726,9 @@ public class MapPanel extends JPanel {
 
     public void setMainApp(XenoGuesser mainApp) {
         this.mainApp = mainApp;
+    }
+
+    public void setHeatmapName(String heatmapName) {
+        this.heatmapName = heatmapName;
     }
 }

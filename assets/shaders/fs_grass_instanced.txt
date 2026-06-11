@@ -2,8 +2,9 @@
 
 in vec2 TexCoords;
 in vec3 fWorldPos;
+in float fColourPhenotype; 
 
-out vec4 fragColor;
+out vec4 fragColour;
 
 uniform sampler2D grassTexture;
 uniform sampler2D skyTexture; 
@@ -13,27 +14,38 @@ uniform mat4 skyRotation;
 
 const float PI = 3.14159265359;
 
+// Natural colour palette boundaries
+const vec3 lightBrown = vec3(0.54, 0.43, 0.31);
+const vec3 darkGreen  = vec3(0.08, 0.32, 0.10);
+
 void main() {
-    vec4 texColor = texture(grassTexture, TexCoords);
+    vec4 texColour = texture(grassTexture, TexCoords);
     
-    if (texColor.a < 0.05) {
+    if (texColour.a < 0.05) {
         discard;
     }
     
-    vec3 finalLight = clamp(3.0 * ambientLight, 0.0, 1.5);
-    vec3 baseGrassColor = texColor.rgb * finalLight;
+    // Applying a power curve skews variations toward 0.0 (dark forest green).
+    // This creates lush green grass overall, broken up by natural patches of light brown.
+    float biasedPhenotype = fColourPhenotype;
     
-    float adjustedAlpha = texColor.a;
+    // Mix equation colour blending
+    vec3 proceduralGrassColour = mix(lightBrown, darkGreen, biasedPhenotype);
+    
+    vec3 finalLight = clamp(3.0 * ambientLight, 0.0, 1.5);
+    vec3 baseGrassColour = proceduralGrassColour * finalLight;
+    
+    // Anti-Aliasing Alpha Edge Sharpening
+    float adjustedAlpha = texColour.a;
     adjustedAlpha = (adjustedAlpha - 0.5) / max(fwidth(adjustedAlpha), 0.0001) + 0.5;
     adjustedAlpha = clamp(adjustedAlpha, 0.0, 1.0);
     
-    // --- PERFECT SKY-SPHERE INVERSION TRANSFORM ---
+    // --- SKY-SPHERE INVERSION TRANSFORM ---
     float radialDistance = length(cameraPos - fWorldPos);
     vec3 worldLookDir = normalize(fWorldPos - cameraPos);
     mat3 invSkyRot = transpose(mat3(skyRotation));
     vec3 localSkyDir = invSkyRot * worldLookDir;
     
-    // Mathematically reversing InsideSphere.java's parametric layout
     float theta = atan(localSkyDir.x, localSkyDir.z);
     if (theta < 0.0) {
         theta += 2.0 * PI;
@@ -41,9 +53,9 @@ void main() {
     float u = theta / (2.0 * PI);
     float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
     
-    vec3 dynamicSkyColor = texture(skyTexture, vec2(u, v)).rgb;
+    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
 
-    // --- CUBIC DISTANCE BLENDING ---
+    // --- CUBIC DISTANCE FOG BLENDING ---
     float fogStart = 1000.0;
     float fogEnd = 2200.0; 
 
@@ -51,7 +63,7 @@ void main() {
     fogFactor = clamp(fogFactor, 0.0, 1.0); 
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
-    vec3 finalColorWithFog = mix(dynamicSkyColor, baseGrassColor, fogFactor);
+    vec3 finalColourWithFog = mix(dynamicSkyColour, baseGrassColour, fogFactor);
 
-    fragColor = vec4(finalColorWithFog, adjustedAlpha);
+    fragColour = vec4(finalColourWithFog, adjustedAlpha);
 }

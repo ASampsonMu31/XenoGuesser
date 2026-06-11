@@ -5,7 +5,7 @@ in vec3 aNormal;
 in vec2 aTexCoord;
 in float PlanarDepth;
 
-out vec4 fragColor;
+out vec4 fragColour;
 
 struct Light {
     vec3 position;
@@ -70,7 +70,7 @@ void main() {
     float u = theta / (2.0 * PI);
     float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
     
-    vec3 dynamicSkyColor = texture(skyTexture, vec2(u, v)).rgb;
+    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
 
     // --- CUBIC DISTANCE BLENDING ---
     float fogStart = 1000.0;
@@ -80,7 +80,7 @@ void main() {
     fogFactor = clamp(fogFactor, 0.0, 1.0); 
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
-    vec3 finalColorWithFog = mix(dynamicSkyColor, result, fogFactor);
+    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
 
-    fragColor = vec4(finalColorWithFog, 1.0);
+    fragColour = vec4(finalColourWithFog, 1.0);
 }

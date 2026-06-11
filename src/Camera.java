@@ -31,19 +31,15 @@ public class Camera {
   // Stored sea level variable populated by the procedural world values
   private final float seaLevelHeight;
 
-  public Camera(Vec3 position, Vec3 target, Vec3 up, boolean IS_DEVELOPMENT_MODE, float seaLevelHeight) {
+  public Camera(Vec3 position, Vec3 target, Vec3 up, float seaLevelHeight) {
     // Lock down worldUp immediately upon creation so it never drifts
     this.worldUp = new Vec3(up);
     this.worldUp.normalize();
     this.seaLevelHeight = seaLevelHeight; // Save the dynamic sea level map constraint
     setupCamera(position, target);
-    if (IS_DEVELOPMENT_MODE) {
-      KEYBOARD_SPEED = 60.0f;
-    }
-    else {
-      KEYBOARD_SPEED = 60.0f;
-    }
+    KEYBOARD_SPEED = 60.0f;
   }
+
   
   private void setupCamera(Vec3 position, Vec3 target) {
     this.position = new Vec3(position);

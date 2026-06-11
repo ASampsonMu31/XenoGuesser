@@ -3,9 +3,12 @@
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec2 aTexCoords;
 layout (location = 2) in vec3 aInstancePos; 
+layout (location = 3) in float aColourPhenotype; // Driven directly from CPU
+layout (location = 4) in float aBladeHeight;     // Driven directly from CPU
 
 out vec2 TexCoords;
 out vec3 fWorldPos;
+out float fColourPhenotype; 
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -13,31 +16,34 @@ uniform vec3 cameraPos;
 uniform float time;
 uniform int worldSeed;
 
+float hash2D(vec2 p, float seedOffset) {
+    return fract(sin(dot(p + seedOffset, vec2(127.1, 311.7))) * 43758.5453123);
+}
+
 void main() {
     // 1. DYNAMIC ATLAS SELECTION
-    float hash = fract(sin(dot(aInstancePos.xz, vec2(12.9898, 78.233))) * 43758.5453123);
-    float textureSelect = step(0.5, hash); 
-
+    float atlasHash = hash2D(aInstancePos.xz, float(worldSeed));
     vec2 modifiedUV = aTexCoords;
-    modifiedUV.x = (aTexCoords.x * 0.5) + (textureSelect * 0.5);
+    modifiedUV.x = (aTexCoords.x * 0.5) + (step(0.5, atlasHash) * 0.5);
     TexCoords = modifiedUV;
 
-    // 2. STABLE CYLINDRICAL BILLBOARDING
-    vec3 dirToCamera = cameraPos - aInstancePos;
-    dirToCamera.y = 0.0; 
-    dirToCamera = normalize(dirToCamera);
+    // 2. PASS-THROUGH PHENOTYPE FROM VBO STREAM
+    fColourPhenotype = aColourPhenotype;
+    float finalBladeHeight = aBladeHeight;
 
+    // 3. STABLE CYLINDRICAL BILLBOARDING & MESH TRANSFORM
+    vec3 localVertexPos = aPos;
+    localVertexPos.y *= finalBladeHeight; 
+
+    vec3 dirToCamera = normalize(vec3(cameraPos.x - aInstancePos.x, 0.0, cameraPos.z - aInstancePos.z));
     vec3 billboardRight = vec3(-dirToCamera.z, 0.0, dirToCamera.x);
     vec3 billboardUp    = vec3(0.0, 1.0, 0.0); 
 
-    vec3 worldPosition = aInstancePos 
-                       + billboardRight * aPos.x 
-                       + billboardUp * aPos.y;
+    vec3 worldPosition = aInstancePos + (billboardRight * localVertexPos.x) + (billboardUp * localVertexPos.y);
 
-    // 3. ZERO-POP WIND ANIMATION
+    // 4. ZERO-POP WIND ANIMATION
     if (aPos.y > 0.1) { 
-        float spatialOffset = sin(dot(aInstancePos.xz, vec2(12.9898, 78.233))) * float(worldSeed);
-        float sway = sin(time * 2.5 + spatialOffset) * 0.15;
+        float sway = sin(time * 2.5 + aInstancePos.x) * 0.08 * finalBladeHeight;
         worldPosition += billboardRight * sway; 
     }
 

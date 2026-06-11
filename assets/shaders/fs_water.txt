@@ -5,7 +5,7 @@ in vec3 aNormal;
 in vec2 aTexCoord;
 in float PlanarDepth;
 
-out vec4 fragColor;
+out vec4 fragColour;
 
 uniform vec3 viewPos;
 uniform float seaLevelHeight;
@@ -70,12 +70,12 @@ void main() {
     vec3 combinedTex = (tex1 * tex2) + (tex3 * tex4);
     vec3 waterSurfaceTex = clamp(combinedTex * 1.5, 0.0, 1.0);
 
-    vec3 shallowColorTint = vec3(0.0, 0.50, 0.60);
-    vec3 deepOceanColor = vec3(0.01, 0.10, 0.30);  
+    vec3 shallowColourTint = vec3(0.0, 0.50, 0.60);
+    vec3 deepOceanColour = vec3(0.01, 0.10, 0.30);  
     
     float factor = transparencyFactor.g;
-    vec3 shallowWaterBlend = mix(shallowColorTint, waterSurfaceTex, factor);
-    vec3 waterBaseColor = mix(deepOceanColor, shallowWaterBlend, factor);
+    vec3 shallowWaterBlend = mix(shallowColourTint, waterSurfaceTex, factor);
+    vec3 waterBaseColour = mix(deepOceanColour, shallowWaterBlend, factor);
 
     float edgeFade = clamp(totalThickness / EDGE_FADE_DISTANCE, 0.0, 1.0);
     float baseOpacity = mix(SHALLOW_OPACITY_FLOOR, 1.0, 1.0 - factor);
@@ -88,7 +88,7 @@ void main() {
     float specFactor = pow(max(dot(normal, halfwayDir), 0.0), matShininess);
     vec3 specularHighlight = lightSpecular * matSpecular * specFactor;
 
-    vec3 baseWaterColorWithSpecular = waterBaseColor + specularHighlight;
+    vec3 baseWaterColourWithSpecular = waterBaseColour + specularHighlight;
 
     // --- PERFECT SKY-SPHERE INVERSION TRANSFORM ---
     float radialDistance = length(viewPos - aPos);
@@ -103,7 +103,7 @@ void main() {
     float u = theta / (2.0 * PI);
     float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
     
-    vec3 dynamicSkyColor = texture(skyTexture, vec2(u, v)).rgb;
+    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
 
     // --- CUBIC DISTANCE BLENDING ---
     float fogStart = 1000.0;
@@ -113,12 +113,12 @@ void main() {
     fogFactor = clamp(fogFactor, 0.0, 1.0); 
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
-    vec3 finalColorWithFog = mix(dynamicSkyColor, baseWaterColorWithSpecular, fogFactor);
+    vec3 finalColourWithFog = mix(dynamicSkyColour, baseWaterColourWithSpecular, fogFactor);
 
     // --- CRITICAL ALPHA FIX FOR DISTANT WATER ---
     // As fogFactor goes to 0.0 (maximum fog at a distance), opacity must force-climb to 1.0
-    // This prevents the sky-colored fog pixels from rendering as transparent cutouts.
+    // This prevents the sky-coloured fog pixels from rendering as transparent cutouts.
     float finalOpacity = mix(1.0, opacity, fogFactor);
 
-    fragColor = vec4(finalColorWithFog, finalOpacity);
+    fragColour = vec4(finalColourWithFog, finalOpacity);
 }

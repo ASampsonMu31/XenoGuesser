@@ -2,5 +2,5 @@
 
 void main() {
     // Intentionally completely empty. 
-    // No color calculations are processed, outputting depth values directly.
+    // No colour calculations are processed, outputting depth values directly.
 }
