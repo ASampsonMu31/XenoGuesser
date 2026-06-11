@@ -11,7 +11,7 @@ import com.jogamp.opengl.util.FPSAnimator;
 public class XenoGuesser extends JFrame {
   
   private static final boolean IS_DETERMINISTIC_MODE = false;
-  private static final boolean IS_DEBUG_MODE_ACTIVE = false;
+  private static final boolean IS_DEBUG_MODE_ACTIVE = true;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -96,14 +96,24 @@ public class XenoGuesser extends JFrame {
     );
 
     GameHUD gameHUD = new GameHUD();
-    glEventListener.setGameHUD(gameHUD); 
+    glEventListener.setGameHUD(gameHUD);
+    
+    compassHUD = new CompassHUD();
 
-    MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise, physicalChunkSize, glEventListener);
+    MapPanel minimap = new MapPanel(
+      750,
+      750,
+      totalRegionWidth,
+      seaLevelHeight,
+      worldNoise,
+      physicalChunkSize,
+      glEventListener,
+      compassHUD
+    );
+
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
-
-    compassHUD = new CompassHUD();
     
     // Explicitly seed the exact initial bottom-left position matching the frame size
     int initialCompassW = compassHUD.getPreferredSize().width;
