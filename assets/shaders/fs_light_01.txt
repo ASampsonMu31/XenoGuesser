@@ -1,10 +1,10 @@
 #version 330 core
 
 in vec2 TexCoords;
-out vec4 fragColor;
+out vec4 fragColour;
 
 uniform sampler2D sun_texture; // Explicitly samples our radial alpha gradient image
 
 void main() {
-  fragColor = texture(sun_texture, TexCoords);
+  fragColour = texture(sun_texture, TexCoords);
 }

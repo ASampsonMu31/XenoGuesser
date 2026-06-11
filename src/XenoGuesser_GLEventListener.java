@@ -90,26 +90,32 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private RegionalFactor grassMoistureFactor;
     private RegionalFactor grassPatchNoiseFactor;
     private RegionalFactor grassHeightNoiseFactor;
-    private RegionalFactor grassColorNoiseFactor;
+    private RegionalFactor grassColourNoiseFactor;
 
     // Unified composed layout nodes
     private RegionalFactor grassAbundanceFactor;
     private RegionalFactor grassHeightFactor;
-    private RegionalFactor grassColorFactor;
+    private RegionalFactor grassColourFactor;
 
     private final boolean IS_DEBUG_MODE_ACTIVE;
     private FactorName currentDebugFactor;
     private boolean lastKeyboardH = false;
 
+    private boolean isToTeleport = false;
+    private float teleportX = 0f;
+    private float teleportZ = 0f;
+
+    private GL3 gl;
+
     public enum FactorName {
       ABUNDANCE,
       HEIGHT,
-      COLOR,
+      COLOUR,
       TEMPERATURE,
       MOISTURE,
       GRASS_PATCH_NOISE,
       GRASS_HEIGHT_NOISE,
-      GRASS_COLOR_NOISE,
+      GRASS_COLOUR_NOISE,
     }
 
     public XenoGuesser_GLEventListener(
@@ -164,7 +170,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
         this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
         this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
-        this.grassColorNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
+        this.grassColourNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
 
         // 4. Structural compositions using the new Builder pattern with independent weights
         this.grassAbundanceFactor = new RegionalFactor.Builder()
@@ -183,12 +189,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             .addFactor(this.grassHeightNoiseFactor, 0.6f)
             .build();
 
-        this.grassColorFactor = new RegionalFactor.Builder()
+        this.grassColourFactor = new RegionalFactor.Builder()
             .setWeight(1.5f)
             .setPowerCurve(3.0f)
             .addFactor(this.grassTemperateFactor, 0.35f)
             .addFactor(this.grassMoistureFactor, 0.35f)
-            .addFactor(this.grassColorNoiseFactor, 0.3f)
+            .addFactor(this.grassColourNoiseFactor, 0.3f)
             .build();
     }
 
@@ -199,6 +205,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     @Override
     public void init(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
+        this.gl = gl;
         
         gl.glClearColor(0.976f, 0.725f, 0.043f, 1.0f); // Sky Colour
         gl.glClearDepth(1.0f);
@@ -209,7 +216,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         gl.glEnable(GL.GL_CULL_FACE);
         gl.glCullFace(GL.GL_BACK);
         
-        initialise(gl);
+        initialise();
         startTime = getSeconds();
     }
     
@@ -241,7 +248,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             return; 
         }
         
-        render(gl);
+        render();
     }
 
     @Override
@@ -327,7 +334,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         return new Vec3(worldX, worldY, worldZ);
     }
 
-    private void initialise(GL3 gl) {
+    private void initialise() {
         textures = new TextureLibrary();
         textures.add(gl, "dirt_diffuse", "assets/textures/dirt_diffuse.png");
         textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
@@ -436,7 +443,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         gl.glVertexAttribPointer(2, 3, GL3.GL_FLOAT, false, instanceStride, 0);
         gl.glVertexAttribDivisor(2, 1);  
 
-        // Location 3: Color Phenotype Shift (float)
+        // Location 3: Colour Phenotype Shift (float)
         gl.glEnableVertexAttribArray(3);
         gl.glVertexAttribPointer(3, 1, GL3.GL_FLOAT, false, instanceStride, 3 * 4); 
         gl.glVertexAttribDivisor(3, 1);  
@@ -448,11 +455,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         gl.glBindVertexArray(0);
 
-        spawnPlayerAtRandomLocation(gl);
+        spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
     }
 
-    private void spawnPlayerAtRandomLocation(GL3 gl) {
+    private void spawnPlayerAtRandomLocation() {
         java.util.Random dynamicRand = new java.util.Random();
         float halfRegion = TOTAL_REGION_WIDTH / 2.0f;
         
@@ -479,13 +486,18 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             this.minimap.setPlayerSpawnLocation(spawnX, spawnZ);
         }
 
+        moveToLocation(spawnX, spawnZ);
+    }
+
+    public void moveToLocation(float spawnX, float spawnZ) {
+        float terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(spawnX, spawnZ, worldNoise);
         camera.setPosition(new Vec3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ));
         camera.setTarget(new Vec3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ - 10.0f));
 
         lastChunkX = (int) Math.floor((spawnX + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         lastChunkZ = (int) Math.floor((spawnZ + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         
-        updateVisibleChunks(gl, true);
+        updateVisibleChunks(true);
     }
 
     public void resetToNextRound(GL3 gl) {
@@ -503,10 +515,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             minimap.resetMapState(); 
         }
 
-        spawnPlayerAtRandomLocation(gl);
+        spawnPlayerAtRandomLocation();
     }
 
-    private void updateVisibleChunks(GL3 gl, boolean forceImmediate) {
+    private void updateVisibleChunks(boolean forceImmediate) {
         Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
@@ -624,18 +636,18 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                             if (worldY > seaLevelHeight + 0.1f) {
                                 // Integrated Node Evaluations replacing old manager pipeline arrays
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
-                                float structuralColorBase = this.grassColorFactor.evaluate(cx, cz, worldX, worldZ);
+                                float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
 
                                 float u1 = Math.max(0.0001f, rand3); 
                                 float u2 = rand4;
                                 
                                 float logTerm = (float) Math.sqrt(-2.0 * Math.log(u1));
-                                float standardNormalColor = (float) (logTerm * Math.cos(2.0 * Math.PI * u2));
+                                float standardNormalColour = (float) (logTerm * Math.cos(2.0 * Math.PI * u2));
                                 float standardNormalHeight = (float) (logTerm * Math.sin(2.0 * Math.PI * u2));
                                 
-                                float colorStandardDeviation = 0.1f;
-                                float colorJitter = standardNormalColor * colorStandardDeviation;
-                                float finalColorPhenotype = Math.max(0.0f, Math.min(1.0f, structuralColorBase + colorJitter));
+                                float colourStandardDeviation = 0.1f;
+                                float colourJitter = standardNormalColour * colourStandardDeviation;
+                                float finalColourPhenotype = Math.max(0.0f, Math.min(1.0f, structuralColourBase + colourJitter));
 
                                 float climateHeightTarget = 0.4f + structuralHeightBase * (1.7f - 0.4f);
                                 float heightStandardDeviation = 0.2f; 
@@ -645,7 +657,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                                 rawChunkBuffer[writeIdx++] = worldX;
                                 rawChunkBuffer[writeIdx++] = worldY;
                                 rawChunkBuffer[writeIdx++] = worldZ;
-                                rawChunkBuffer[writeIdx++] = finalColorPhenotype;
+                                rawChunkBuffer[writeIdx++] = finalColourPhenotype;
                                 rawChunkBuffer[writeIdx++] = finalBladeHeight;
                             }
                         }
@@ -696,7 +708,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
     }
 
-    private void render(GL3 gl) {
+    private void render() {
+
+        double elapsedTime = getSeconds() - startTime;
+        double deltaTime = elapsedTime - lastElapsedTime;
+        lastElapsedTime = elapsedTime;
+
         if (minimap != null && minimap.isNextRoundRequested()) {
             minimap.clearNextRoundRequest();
             minimap.resetMapState(); 
@@ -704,9 +721,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             return;
         }
 
-        double elapsedTime = getSeconds() - startTime;
-        double deltaTime = elapsedTime - lastElapsedTime;
-        lastElapsedTime = elapsedTime;
+        if (IS_DEBUG_MODE_ACTIVE && isToTeleport) {
+            moveToLocation(teleportX, teleportZ);
+            isToTeleport = false;
+        }
 
         if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
@@ -752,7 +770,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))) {
             lastChunkX = currentChunkX;
             lastChunkZ = currentChunkZ;
-            updateVisibleChunks(gl, false);
+            updateVisibleChunks(false);
         }
         
 
@@ -786,7 +804,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         float curSkyR = skyDayR + nightProportion * (skyNightR - skyDayR);
         float curSkyG = skyDayG + nightProportion * (skyNightG - skyDayG);
         float curSkyB = skyDayB + nightProportion * (skyNightB - skyDayB);
-        Vec3 skyColor = new Vec3(curSkyR, curSkyG, curSkyB);
+        Vec3 skyColour = new Vec3(curSkyR, curSkyG, curSkyB);
 
         if (this.compassHUD != null) {
             Vec3 cameraLookDir = camera.getForwardDirection(); 
@@ -854,7 +872,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         // --- TERRAIN PASS ---
         terrainShader.use(gl);
-        terrainShader.setVec3(gl, "skyColor", skyColor);
+        terrainShader.setVec3(gl, "skyColour", skyColour);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(terrainShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
 
         if (textures.get(skyTextureKey) != null) {
@@ -880,8 +898,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             Vec3 camPos1 = camera.getPosition();
             gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos1.x, camPos1.y, camPos1.z);
             gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
-            gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColor"), 1.0f, 0.95f, 0.95f); 
-            gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "skyColor"), skyColor.x, skyColor.y, skyColor.z);
+            gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColour"), 1.0f, 0.95f, 0.95f); 
+            gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "skyColour"), skyColour.x, skyColour.y, skyColour.z);
 
             gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "worldSeed"), (int)(worldSeed & 0xFFFF));
 
@@ -932,7 +950,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
 
         waterShader.setVec3(gl, "ambientLight", ambientLight);
-        waterShader.setVec3(gl, "skyColor", skyColor);
+        waterShader.setVec3(gl, "skyColour", skyColour);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(waterShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
 
         if (textures.get(skyTextureKey) != null) {
@@ -991,13 +1009,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
           // Simplified reference switch-case passing the target node directly to the manager's visualizer
           RegionalFactor targetFactor = switch (currentDebugFactor) {
               case HEIGHT -> this.grassHeightFactor;
-              case COLOR -> this.grassColorFactor;
+              case COLOUR -> this.grassColourFactor;
               case TEMPERATURE -> this.regionalManager.temperatureMap;
               case MOISTURE -> this.grassMoistureFactor;
               case ABUNDANCE -> this.grassAbundanceFactor;
               case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
               case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
-              case GRASS_COLOR_NOISE -> this.grassColorNoiseFactor;
+              case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
           };
           
           BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);
@@ -1026,4 +1044,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     public FactorName getCurrentDebugFactor() {
       return currentDebugFactor;
     }
+
+    public void setTelepot(float teleportX, float teleportZ) {
+        this.isToTeleport = true;
+        this.teleportX = teleportX;
+        this.teleportZ = teleportZ;
+    }
+
 }

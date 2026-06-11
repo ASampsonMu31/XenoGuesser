@@ -11,7 +11,7 @@ public class GameHUD extends JPanel {
     private int totalAccumulatedScore = 0;
     private int currentFps = 0;
 
-    // --- COLORS & FONTS ---
+    // --- COLOURS & FONTS ---
     private final Color cardBackground = new Color(0, 0, 0); 
     private final Color textGold = new Color(240, 190, 60);
     private final Color textWhite = new Color(245, 245, 245);

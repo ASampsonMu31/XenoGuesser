@@ -3,12 +3,12 @@
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec2 aTexCoords;
 layout (location = 2) in vec3 aInstancePos; 
-layout (location = 3) in float aColorPhenotype; // Driven directly from CPU
+layout (location = 3) in float aColourPhenotype; // Driven directly from CPU
 layout (location = 4) in float aBladeHeight;     // Driven directly from CPU
 
 out vec2 TexCoords;
 out vec3 fWorldPos;
-out float fColorPhenotype; 
+out float fColourPhenotype; 
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -28,7 +28,7 @@ void main() {
     TexCoords = modifiedUV;
 
     // 2. PASS-THROUGH PHENOTYPE FROM VBO STREAM
-    fColorPhenotype = aColorPhenotype;
+    fColourPhenotype = aColourPhenotype;
     float finalBladeHeight = aBladeHeight;
 
     // 3. STABLE CYLINDRICAL BILLBOARDING & MESH TRANSFORM

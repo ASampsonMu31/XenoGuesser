@@ -56,20 +56,6 @@ public class RegionalGenerationManager {
         });
     }
 
-    public RegionalFactor createWaterProximityMap(int maxChunkDistance) {
-        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            int chunksAway = chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, maxChunkDistance);
-            return 1.0f - ((float) Math.min(chunksAway, maxChunkDistance) / maxChunkDistance);
-        });
-    }
-
-    public RegionalFactor createDeepInlandMap(int maxChunkDistance) {
-        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            int chunksAway = chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, maxChunkDistance);
-            return (float) Math.min(chunksAway, maxChunkDistance) / maxChunkDistance;
-        });
-    }
-
     public RegionalFactor createNoiseMap(float scale) {
         int uniqueOffset = 33333 + (assignedNoiseTracks * 11111);
         assignedNoiseTracks++;
@@ -81,7 +67,7 @@ public class RegionalGenerationManager {
     }
 
     // ==========================================
-    //      SIMPLIFIED COUNT EVALUATION ENGINES
+    //      COUNT EVALUATION ENGINE
     // ==========================================
 
     /**
@@ -150,8 +136,8 @@ public class RegionalGenerationManager {
                 int ig = Math.max(0, Math.min(255, Math.round(g * 255.0f)));
                 int ib = Math.max(0, Math.min(255, Math.round(b * 255.0f)));
 
-                Color pixelColor = new Color(ir, ig, ib, 255);
-                image.setRGB(x, z, pixelColor.getRGB());
+                Color pixelColour = new Color(ir, ig, ib, 255);
+                image.setRGB(x, z, pixelColour.getRGB());
             }
         }
         return image;

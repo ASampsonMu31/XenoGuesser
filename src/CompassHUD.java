@@ -17,7 +17,7 @@ public class CompassHUD extends JPanel {
     private final int size = 120; // Internal size of the compass face area
     private static final int BORDER_SIZE = 10; // Frame thickness matching map panel
     
-    // --- MATCHING THEMATIC THEME COLOR TRIPLETS ---
+    // --- MATCHING THEMATIC THEME COLOUR TRIPLETS ---
     private final Color baseDarkGrey = new Color(45, 45, 45);
     private final Color highlightLightGrey = new Color(90, 90, 90);
     private final Color trayGrey = new Color(60, 60, 60); 
@@ -61,7 +61,7 @@ public class CompassHUD extends JPanel {
             
             // 2. Render Outer Bevel Border Pieces using Linear Gradient Shading Frames
             float[] fractions = {0.0f, 0.5f, 1.0f};
-            Color[] colors = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
+            Color[] colours = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
             
             // Top rim segment frame
             Polygon topFrame = new Polygon();
@@ -69,7 +69,7 @@ public class CompassHUD extends JPanel {
             topFrame.addPoint(frameW, 0); 
             topFrame.addPoint(frameW - BORDER_SIZE, BORDER_SIZE); 
             topFrame.addPoint(BORDER_SIZE, BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(0, 0), new Point2D.Float(0, BORDER_SIZE), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(0, 0), new Point2D.Float(0, BORDER_SIZE), fractions, colours));
             g2d.fill(topFrame);
 
             // Bottom rim segment frame
@@ -78,7 +78,7 @@ public class CompassHUD extends JPanel {
             bottomFrame.addPoint(frameW - BORDER_SIZE, frameH - BORDER_SIZE); 
             bottomFrame.addPoint(frameW, frameH); 
             bottomFrame.addPoint(0, frameH);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(0, frameH - BORDER_SIZE), new Point2D.Float(0, frameH), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(0, frameH - BORDER_SIZE), new Point2D.Float(0, frameH), fractions, colours));
             g2d.fill(bottomFrame);
 
             // Left rim segment frame
@@ -87,7 +87,7 @@ public class CompassHUD extends JPanel {
             leftFrame.addPoint(BORDER_SIZE, BORDER_SIZE); 
             leftFrame.addPoint(BORDER_SIZE, frameH - BORDER_SIZE); 
             leftFrame.addPoint(0, frameH);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(0, 0), new Point2D.Float(BORDER_SIZE, 0), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(0, 0), new Point2D.Float(BORDER_SIZE, 0), fractions, colours));
             g2d.fill(leftFrame);
 
             // Right rim segment frame
@@ -96,7 +96,7 @@ public class CompassHUD extends JPanel {
             rightFrame.addPoint(frameW, 0); 
             rightFrame.addPoint(frameW, frameH); 
             rightFrame.addPoint(frameW - BORDER_SIZE, frameH - BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(frameW - BORDER_SIZE, 0), new Point2D.Float(frameW, 0), fractions, colors));
+            g2d.setPaint(new LinearGradientPaint(new Point2D.Float(frameW - BORDER_SIZE, 0), new Point2D.Float(frameW, 0), fractions, colours));
             g2d.fill(rightFrame);
             
             // 3. Render Circular Compass Graphics Centered inside Frame boundaries

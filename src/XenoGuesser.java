@@ -11,7 +11,7 @@ import com.jogamp.opengl.util.FPSAnimator;
 public class XenoGuesser extends JFrame {
   
   private static final boolean IS_DETERMINISTIC_MODE = false;
-  private static final boolean IS_DEBUG_MODE_ACTIVE = true;
+  private static final boolean IS_DEBUG_MODE_ACTIVE = false;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -98,7 +98,7 @@ public class XenoGuesser extends JFrame {
     GameHUD gameHUD = new GameHUD();
     glEventListener.setGameHUD(gameHUD); 
 
-    MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise, physicalChunkSize);
+    MapPanel minimap = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise, physicalChunkSize, glEventListener);
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
@@ -210,20 +210,24 @@ public class XenoGuesser extends JFrame {
   }
 
   public static void updateMinimapBounds(JLayeredPane layeredPane, MapPanel minimap) {
-      int w = layeredPane.getWidth();
-      int h = layeredPane.getHeight();
-      
-      Dimension minimapSize = minimap.getPreferredSize();
-      int panelWidth = minimapSize.width;
-      int panelHeight = minimapSize.height;
-      
-      if (minimap.isFullScreenRevealMode()) {
-          minimap.setBounds((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
-      } else {
-          minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
-      }
-      layeredPane.revalidate();
-      layeredPane.repaint();
+    int w = layeredPane.getWidth();
+    int h = layeredPane.getHeight();
+    
+    Dimension minimapSize = minimap.getPreferredSize();
+    int panelWidth = minimapSize.width;
+    int panelHeight = minimapSize.height;
+    
+    if (minimap.isFullScreenRevealMode()) {
+        minimap.setBounds((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
+    } else {
+        minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
+    }
+    layeredPane.revalidate();
+    layeredPane.repaint();
+  }
+
+  public boolean getIsDebugModeActive() {
+    return IS_DEBUG_MODE_ACTIVE;
   }
 }
 
