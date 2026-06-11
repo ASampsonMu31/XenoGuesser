@@ -2,6 +2,13 @@ import javax.swing.JPanel;
 import javax.swing.JLayeredPane;
 import javax.swing.border.EmptyBorder;
 import javax.swing.Timer;
+import javax.swing.JTextArea;
+import javax.swing.JButton; 
+import javax.swing.BorderFactory;
+import javax.swing.text.AbstractDocument;
+import javax.swing.text.DocumentFilter;
+import javax.swing.text.AttributeSet;
+import javax.swing.text.BadLocationException;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.LinearGradientPaint;
@@ -14,6 +21,8 @@ import java.awt.AlphaComposite;
 import java.awt.geom.Point2D;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.KeyAdapter;
+import java.awt.event.KeyEvent;
 import java.awt.RenderingHints;
 import java.awt.BasicStroke;
 import java.awt.Stroke;
@@ -51,10 +60,23 @@ public class MapPanel extends JPanel {
     private int pinX; 
     private int pinY; 
 
+    // Next Round Button Layout
     private int btnX;
     private int btnY;
     private int btnWidth;
     private int btnHeight;
+
+    // Note UI Layout & Multi-line Configuration
+    private int noteBtnX;
+    private int noteBtnY;
+    private int noteBtnWidth;
+    private int noteBtnHeight;
+    private boolean isTypingNote = false;
+    private JTextArea noteArea;
+    private JButton noteEnterBtn; 
+    
+    // --- UPDATED: Character limit updated to 112 ---
+    private static final int NOTE_CHARACTER_LIMIT = 112; 
 
     private boolean isHovered = false;
     private boolean isFullScreenReveal = false; 
@@ -116,6 +138,63 @@ public class MapPanel extends JPanel {
         this.compassHUD = compassHUD;
 
         this.setOpaque(false);
+        this.setLayout(null); 
+
+        // Initialize Text Area Configuration
+        noteArea = new JTextArea();
+        noteArea.setFont(new Font(Font.MONOSPACED, Font.BOLD, 14));
+        noteArea.setBackground(Color.WHITE);          
+        noteArea.setForeground(Color.BLACK);          
+        noteArea.setCaretColor(Color.BLACK);          
+        noteArea.setLineWrap(true);                   
+        // --- UPDATED: Disabled word wrap style to break cleanly in the middle of long words ---
+        noteArea.setWrapStyleWord(false);              
+        noteArea.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(60, 60, 65), 1),
+            BorderFactory.createEmptyBorder(6, 8, 6, 8)
+        ));
+        noteArea.setVisible(false);
+
+        // --- UPDATED: Arrow text indicator and structural configuration for large Enter symbol button ---
+        noteEnterBtn = new JButton("→");
+        noteEnterBtn.setFont(new Font("Arial", Font.BOLD, 32));
+        noteEnterBtn.setBackground(btnEnabledGreen);
+        noteEnterBtn.setForeground(btnTextWhite);
+        noteEnterBtn.setFocusPainted(false);
+        noteEnterBtn.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(40, 130, 40), 1),
+            BorderFactory.createEmptyBorder(4, 8, 4, 8)
+        ));
+        noteEnterBtn.setVisible(false);
+        noteEnterBtn.addActionListener(e -> commitNote());
+
+        // Strict mathematical limit document filter check logic
+        ((AbstractDocument) noteArea.getDocument()).setDocumentFilter(new DocumentFilter() {
+            @Override
+            public void insertString(FilterBypass fb, int offset, String string, AttributeSet attr) throws BadLocationException {
+                if ((fb.getDocument().getLength() + string.length()) <= NOTE_CHARACTER_LIMIT) {
+                    super.insertString(fb, offset, string, attr);
+                }
+            }
+
+            @Override
+            public void replace(FilterBypass fb, int offset, int length, String text, AttributeSet attrs) throws BadLocationException {
+                if ((fb.getDocument().getLength() - length + text.length()) <= NOTE_CHARACTER_LIMIT) {
+                    super.replace(fb, offset, length, text, attrs);
+                }
+            }
+        });
+        
+        // Trap enter key execution manually on JTextArea context
+        noteArea.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER) {
+                    e.consume(); 
+                    commitNote();
+                }
+            }
+        });
 
         for (int z = 0; z < maxMapHeight; z++) {
             for (int x = 0; x < maxMapWidth; x++) {
@@ -142,13 +221,36 @@ public class MapPanel extends JPanel {
                 
                 if (e.getButton() == MouseEvent.BUTTON1) {
                     if (isFullScreenReveal && (currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD)) {
+                        
+                        // Handle Dynamic Note Button Selection Actions
+                        if (clickX >= noteBtnX && clickX <= (noteBtnX + noteBtnWidth) && clickY >= noteBtnY && clickY <= (noteBtnY + noteBtnHeight)) {
+                            if (!isTypingNote) {
+                                isTypingNote = true;
+                                MapPanel.this.add(noteArea);
+                                MapPanel.this.add(noteEnterBtn);
+                                
+                                int enterBtnWidth = 75;
+                                int gap = 8;
+                                
+                                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth - enterBtnWidth - gap, noteBtnHeight);
+                                noteEnterBtn.setBounds(noteBtnX + noteBtnWidth - enterBtnWidth, noteBtnY, enterBtnWidth, noteBtnHeight);
+                                
+                                noteArea.setVisible(true);
+                                noteEnterBtn.setVisible(true);
+                                noteArea.requestFocusInWindow();
+                                MapPanel.this.repaint();
+                            }
+                            return; 
+                        }
+
+                        // Next Round Execution
                         if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                             if (MapPanel.this.gameHUD != null) {
                                 MapPanel.this.gameHUD.advanceRound();
                             }
                             MapPanel.this.resetMapState(); 
                             MapPanel.this.nextRoundRequested = true; 
-                            return; // Prevent fall-through into regular pin placement logic
+                            return; 
                         }
                     }
 
@@ -178,24 +280,17 @@ public class MapPanel extends JPanel {
                 if (e.getButton() == MouseEvent.BUTTON3 && mainApp.getIsDebugModeActive()) {
                     System.out.println("Teleport Attempt");
                     
-                    // 1. Localize click relative to the top-left of the rendered map image
                     int localizedX = clickX - visualMapX;
                     int localizedY = clickY - visualMapY;
 
-                    // Boundary Check: Ensure the user actually clicked inside the visible map boundaries
                     if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < currentMapSize) {
-                        
-                        // 2. Map screen pixels up to full image pixel scale
                         float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
                         float corePixelX = localizedX * scaleToCore;
                         float corePixelY = localizedY * scaleToCore;
 
-                        // 3. Reverse the constructor math to convert image pixels to world coordinates
-                        // Formula used in constructor: ((float)x / maxMapWidth) * totalRegionWidth - halfRegion
                         float worldX = (corePixelX / mapImage.getWidth()) * totalRegionWidth - halfRegion;
                         float worldZ = (corePixelY / mapImage.getHeight()) * totalRegionWidth - halfRegion;
 
-                        // Pass the properly transformed coordinates to your listener
                         if (MapPanel.this.listener != null) {
                             MapPanel.this.listener.setTelepot(worldX, worldZ);
                         }
@@ -236,7 +331,23 @@ public class MapPanel extends JPanel {
         });
     }
 
-    // --- NEW DEBUG INTERFACES FOR HEATMAP OVERLAYS ---
+    private void commitNote() {
+        String text = noteArea.getText().trim();
+        if (!text.isEmpty()) {
+            System.out.println("Note: " + text);
+        }
+        noteArea.setText("");
+        noteArea.setVisible(false);
+        isTypingNote = false;
+        MapPanel.this.remove(noteArea);
+        if (noteEnterBtn != null) {
+            noteEnterBtn.setVisible(false);
+            MapPanel.this.remove(noteEnterBtn);
+        }
+        MapPanel.this.requestFocusInWindow(); 
+        MapPanel.this.repaint();
+    }
+
     public void setHeatmapOverlay(BufferedImage heatmap) {
         this.heatmapOverlay = heatmap;
         repaint();
@@ -263,7 +374,7 @@ public class MapPanel extends JPanel {
 
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
-            this.currentMapSize = Math.min(750, Math.max(300, parentHeight - 160)); 
+            this.currentMapSize = Math.min(750, Math.max(300, parentHeight - 240)); 
         } else {
             this.currentMapSize = 650;
         }
@@ -354,12 +465,27 @@ public class MapPanel extends JPanel {
             this.setSize(getParent().getSize());
             
             this.visualMapX = (getWidth() - currentMapSize) / 2;
-            this.visualMapY = (getHeight() - currentMapSize) / 2;
+            this.visualMapY = Math.max(20, (getHeight() - currentMapSize) / 2 - 45);
             
             this.btnWidth = currentMapSize;
             this.btnHeight = 40;
+            
+            this.noteBtnWidth = btnWidth;
+            this.noteBtnHeight = 55; 
+            this.noteBtnX = visualMapX;
+            this.noteBtnY = visualMapY + currentMapSize + BORDER_SIZE + 15; 
+            
             this.btnX = visualMapX;
-            this.btnY = visualMapY + currentMapSize + BORDER_SIZE + 7;
+            this.btnY = noteBtnY + noteBtnHeight + 15; 
+
+            if (noteArea != null && noteArea.isVisible()) {
+                int enterBtnWidth = 75;
+                int gap = 8;
+                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth - enterBtnWidth - gap, noteBtnHeight);
+                if (noteEnterBtn != null) {
+                    noteEnterBtn.setBounds(noteBtnX + noteBtnWidth - enterBtnWidth, noteBtnY, enterBtnWidth, noteBtnHeight);
+                }
+            }
         } else {
             boolean needsExtraSpace = isHovered;
             int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
@@ -376,6 +502,16 @@ public class MapPanel extends JPanel {
             this.btnHeight = 40;
             this.btnX = (panelWidth - btnWidth) / 2;
             this.btnY = currentMapSize + (BORDER_SIZE * 2) + 7;
+
+            if (noteArea != null && noteArea.isVisible()) {
+                noteArea.setVisible(false);
+                isTypingNote = false;
+                this.remove(noteArea);
+            }
+            if (noteEnterBtn != null && noteEnterBtn.isVisible()) {
+                noteEnterBtn.setVisible(false);
+                this.remove(noteEnterBtn);
+            }
         }
     }
 
@@ -387,7 +523,8 @@ public class MapPanel extends JPanel {
             layeredPane.repaint(oldBounds);
         }
     }
-@Override
+
+    @Override
     protected void paintComponent(Graphics g) {
         Graphics2D g2d = (Graphics2D) g.create(); 
         try {
@@ -449,16 +586,13 @@ public class MapPanel extends JPanel {
             g2d.setPaint(new LinearGradientPaint(new Point2D.Float(startX + mapFrameW - BORDER_SIZE, startY), new Point2D.Float(startX + mapFrameW + 2, startY), fractions, colours));
             g2d.fill(rightFrame);
 
-            // --- SEPARATE LAND AND WATER FOR HEATMAP RENDERING ---
             if (showHeatmap && heatmapOverlay != null) {
                 int baseW = mapImage.getWidth();
                 int baseH = mapImage.getHeight();
                 
-                // Create temporary image mapping directly to core pixel dimensions
                 BufferedImage combinedImage = new BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_RGB);
                 int oceanRGB = new Color(25, 80, 160).getRGB();
 
-                // Re-calculate alignment properties matching generateHeatmap's boundaries
                 int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
                 int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
 
@@ -466,10 +600,7 @@ public class MapPanel extends JPanel {
                 int overlayH = heatmapOverlay.getHeight();
 
                 for (int y = 0; y < baseH; y++) {
-                    // 1. Calculate the exact world Z coordinate for this pixel row (matching constructor)
                     float worldZ = ((float) y / baseH) * totalRegionWidth - halfRegion;
-                    
-                    // 2. Convert world Z directly to the heatmap's chunk row index
                     int cz = (int) Math.floor(worldZ / physicalChunkSize);
                     int hy = cz - minChunkZ;
                     hy = Math.max(0, Math.min(overlayH - 1, hy));
@@ -478,12 +609,9 @@ public class MapPanel extends JPanel {
                         int baseColour = mapImage.getRGB(x, y);
 
                         if (baseColour == oceanRGB) {
-                            combinedImage.setRGB(x, y, oceanRGB); // Lock oceans blue safely
+                            combinedImage.setRGB(x, y, oceanRGB); 
                         } else {
-                            // 3. Calculate the exact world X coordinate for this pixel column
                             float worldX = ((float) x / baseW) * totalRegionWidth - halfRegion;
-                            
-                            // 4. Convert world X directly to the heatmap's chunk column index
                             int cx = (int) Math.floor(worldX / physicalChunkSize);
                             int hx = cx - minChunkX;
                             hx = Math.max(0, Math.min(overlayW - 1, hx));
@@ -492,10 +620,8 @@ public class MapPanel extends JPanel {
                         }
                     }
                 }
-                // Render out cleanly scaled to screen spaces
                 g2d.drawImage(combinedImage, mapX, mapY, currentMapSize, currentMapSize, null);
 
-                // --- HEATMAP NAME HUD OVERLAY ---
                 if (heatmapName != null && !heatmapName.isEmpty()) {
                     g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 13f));
                     FontMetrics labelFm = g2d.getFontMetrics();
@@ -507,29 +633,23 @@ public class MapPanel extends JPanel {
                     int boxW = textW + (padX * 2);
                     int boxH = textH + (padY * 2);
                     
-                    // Horizontally center over the top section of the map
                     int boxX = mapX + (currentMapSize - boxW) / 2;
                     int boxY = mapY + 12;
 
-                    // Render semi-transparent background plate for readable high-contrast
                     g2d.setColor(new Color(25, 25, 27, 195));
                     g2d.fillRoundRect(boxX, boxY, boxW, boxH, 10, 10);
 
-                    // Optional subtle crisp frame edge
                     g2d.setColor(new Color(255, 255, 255, 45));
                     g2d.drawRoundRect(boxX, boxY, boxW, boxH, 10, 10);
 
-                    // Solid clean white text
                     g2d.setColor(Color.WHITE);
                     g2d.drawString(heatmapName, boxX + padX, boxY + padY + textH - 1);
                 }
 
             } else {
-                // Default Mode: Standard base map rendering
                 g2d.drawImage(mapImage, mapX, mapY, currentMapSize, currentMapSize, null);
             }
 
-            // --- HOVER ACTION BUTTONS ---
             if (isHovered && !isFullScreenReveal) {
                 g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
                 g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
@@ -549,7 +669,6 @@ public class MapPanel extends JPanel {
                 g2d.drawString(btnText, textX, textY);
             }
 
-            // --- INTERACTIVE PIN AND TARGET REVEAL RENDERERS ---
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
 
@@ -611,6 +730,24 @@ public class MapPanel extends JPanel {
                 if (isFullScreenReveal) {
                     boolean resultsReady = (currentPhase != RevealPhase.SHOW_PLAYER_PIN);
                     
+                    if (!isTypingNote) {
+                        g2d.setColor(resultsReady ? btnEnabledGreen : btnDisabledGrey);
+                        g2d.fillRoundRect(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight, 12, 12);
+
+                        g2d.setColor(new Color(255, 255, 255, resultsReady ? 60 : 30));
+                        g2d.setStroke(new BasicStroke(1.5f));
+                        g2d.drawRoundRect(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight, 12, 12);
+                        g2d.setStroke(originalStroke);
+
+                        g2d.setColor(btnTextWhite);
+                        g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 18f));
+                        FontMetrics fmNote = g2d.getFontMetrics();
+                        String noteBtnText = "Add Note";
+                        int noteStrW = fmNote.stringWidth(noteBtnText);
+                        int noteStrH = fmNote.getAscent();
+                        g2d.drawString(noteBtnText, noteBtnX + (noteBtnWidth - noteStrW) / 2, noteBtnY + (noteBtnHeight + noteStrH) / 2 - 2);
+                    }
+
                     g2d.setColor(resultsReady ? btnNextRoundBlue : btnDisabledGrey);
                     g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
 
@@ -630,7 +767,6 @@ public class MapPanel extends JPanel {
                     g2d.drawString(endText, textX, textY);
                 }
 
-                // --- DYNAMIC ANIMATED SCORE HUD OVERLAY ---
                 if (shouldDrawScoreText) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
                     float baseBubbleFontSize = currentMapSize * 0.15f; 
@@ -690,6 +826,17 @@ public class MapPanel extends JPanel {
         this.phaseStartTime = 0;
         this.slamProgress = 0.0f;
         this.currentScoreScale = 1.0f;
+
+        this.isTypingNote = false;
+        if (this.noteArea != null) {
+            this.noteArea.setVisible(false);
+            this.noteArea.setText("");
+            this.remove(this.noteArea);
+        }
+        if (this.noteEnterBtn != null) {
+            this.noteEnterBtn.setVisible(false);
+            this.remove(this.noteEnterBtn);
+        }
         
         if (this.mainApp != null) {
             this.mainApp.unlockWindowDragging();
