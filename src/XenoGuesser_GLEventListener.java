@@ -168,24 +168,24 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         // 4. Structural compositions using the new Builder pattern with independent weights
         this.grassAbundanceFactor = new RegionalFactor.Builder()
-            .setWeight(1.0f)
-            .setPowerCurve(2.0f)
+            .setWeight(3f)
+            .setPowerCurve(5.0f)
             .addFactor(this.grassTemperateFactor, 0.4f)
             .addFactor(this.grassMoistureFactor, 0.4f)
             .addFactor(this.grassPatchNoiseFactor, 0.2f)
             .build();
 
         this.grassHeightFactor = new RegionalFactor.Builder()
-            .setWeight(1.0f)
-            .setPowerCurve(2.0f)
+            .setWeight(1.5f)
+            .setPowerCurve(3.0f)
             .addFactor(this.grassTemperateFactor, 0.2f)
             .addFactor(this.grassMoistureFactor, 0.2f)
             .addFactor(this.grassHeightNoiseFactor, 0.6f)
             .build();
 
         this.grassColorFactor = new RegionalFactor.Builder()
-            .setWeight(1.0f)
-            .setPowerCurve(2.0f)
+            .setWeight(1.5f)
+            .setPowerCurve(3.0f)
             .addFactor(this.grassTemperateFactor, 0.35f)
             .addFactor(this.grassMoistureFactor, 0.35f)
             .addFactor(this.grassColorNoiseFactor, 0.3f)
