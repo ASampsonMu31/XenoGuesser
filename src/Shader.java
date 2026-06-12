@@ -15,7 +15,6 @@ public class Shader {
   private String vertexShaderSource;
   private String fragmentShaderSource;
   
-  /* The constructor */
   public Shader(GL3 gl, String vertexPath, String fragmentPath) {
     try {
       vertexShaderSource = new String(Files.readAllBytes(Paths.get(vertexPath)), Charset.defaultCharset());
@@ -65,13 +64,18 @@ public class Shader {
     int location = gl.glGetUniformLocation(ID, name);
     gl.glUniformMatrix4fv(location, 1, false, f, 0);
   }
+
+  // --- ADDED FOR INSTANCED RENDERING ---
+  public void setMat4(GL3 gl, String name, Mat4 m) {
+    int location = gl.glGetUniformLocation(ID, name);
+    gl.glUniformMatrix4fv(location, 1, false, m.toFloatArrayForGLSL(), 0);
+  }
+  // -------------------------------------
   
-  /* I declare that the modifications here are my own work based on setVec3 */
   public void setVec2(GL3 gl, String name, Vec2 v) {
     int location = gl.glGetUniformLocation(ID, name);
     gl.glUniform2f(location, v.x, v.y);
   }
-  /* Modified by Alexander Sampson, asampson1@sheffield.ac.uk */
 
   public void setVec3(GL3 gl, String name, Vec3 v) {
     int location = gl.glGetUniformLocation(ID, name);
@@ -106,5 +110,4 @@ public class Shader {
       System.err.println("[error] Unable to link program");
     return program.program();
   }
-
 }

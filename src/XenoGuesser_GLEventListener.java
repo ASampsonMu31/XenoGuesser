@@ -2,7 +2,10 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.List;
 import java.awt.image.BufferedImage;
+import java.nio.FloatBuffer;
+
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 import gmaths.*;
@@ -17,6 +20,25 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private TextureLibrary textures;
     private Map<String, Model> chunkCache;
     private Map<String, float[]> grassCache; 
+    
+    // --- FLORA FIELDS ---
+    private Map<String, List<FloraInstance>> floraCache;
+    private Model[] floraModels;
+    private final int FLORA_VARIATIONS = 10;
+    
+    private static class FloraInstance {
+        Vec3 pos;
+        int modelIndex;
+        float scale;
+        float rotationY;
+        
+        public FloraInstance(Vec3 pos, int modelIndex, float scale, float rotationY) {
+            this.pos = pos;
+            this.modelIndex = modelIndex;
+            this.scale = scale;
+            this.rotationY = rotationY;
+        }
+    }
     
     private Light[] lights;
     private Vec3 ambientLight;
@@ -85,14 +107,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // --- ECOSYSTEM SPAWNING MANAGER DATA ---
     private RegionalGenerationManager regionalManager;
 
-    // Atomic factor nodes
     private RegionalFactor grassTemperateFactor;
     private RegionalFactor grassMoistureFactor;
     private RegionalFactor grassPatchNoiseFactor;
     private RegionalFactor grassHeightNoiseFactor;
     private RegionalFactor grassColourNoiseFactor;
 
-    // Unified composed layout nodes
     private RegionalFactor grassAbundanceFactor;
     private RegionalFactor grassHeightFactor;
     private RegionalFactor grassColourFactor;
@@ -106,6 +126,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private float teleportZ = 0f;
 
     private GL3 gl;
+
+    // --- INSTANCING FIELDS ---
+    private int[] floraInstanceVBOs;
+    private int[] floraInstanceCounts;
+    private Shader floraInstancedShader;
 
     public enum FactorName {
       ABUNDANCE,
@@ -141,18 +166,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.camera.setPosition(new Vec3(0f, 5f, 15f));
         this.camera.setTarget(new Vec3(0f, 0f, 0f));
 
-        // Generate the overall planetary axial tilt once per world seed
         java.util.Random seedRand = new java.util.Random(worldSeed);
         this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
-
-        // =========================================================================
-        // ECOSYSTEM SPAWNING MANAGER INITIALIZATION
-        // =========================================================================
         
-        // 1. Instantiate our central world manager
         this.regionalManager = new RegionalGenerationManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
-
-        // 2. Precalculate the distance field maps (the BFS solver) once per game session load
         this.regionalManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE);
 
         float GRASS_TEMP_MEAN = 0.4f;
@@ -165,14 +182,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         this.GRASS_BASE_ABUNDANCE = 700f;
 
-        // 3. Initialize atomic climate preference factor configurations
         this.grassTemperateFactor = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
         this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
         this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
         this.grassColourNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
 
-        // 4. Structural compositions using the new Builder pattern with independent weights
         this.grassAbundanceFactor = new RegionalFactor.Builder()
             .setWeight(3f)
             .setPowerCurve(5.0f)
@@ -239,7 +254,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         createDepthFramebuffer(gl, width, height);
     }
 
-    @Override
+@Override
     public void display(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
         
@@ -256,6 +271,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         GL3 gl = drawable.getGL().getGL3();
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
+        }
+        
+        if (floraModels != null) {
+            for (int i = 0; i < FLORA_VARIATIONS; i++) {
+                if (floraModels[i] != null && floraModels[i].mesh != null) {
+                    floraModels[i].mesh.dispose(gl);
+                }
+            }
         }
 
         if (grassVAO != 0) {
@@ -366,6 +389,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         
         chunkCache = new HashMap<>();
         grassCache = new HashMap<>(); 
+        floraCache = new HashMap<>();
 
         terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
@@ -379,6 +403,32 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
         terrainRenderer = new Renderer();
         globalModelMatrix = new Mat4(1);
+        
+        // --- Initialize Precomputed Flora Models ---
+        floraModels = new Model[FLORA_VARIATIONS];
+        Material floraMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(1.0f, 1.0f, 1.0f), new Vec3(0.1f, 0.1f, 0.1f), 4.0f);
+        floraMat.setDiffuseMap(textures.get("dirt_diffuse")); 
+
+        // Compile your new instanced shader
+        floraInstancedShader = new Shader(gl, "assets/shaders/vs_flora_instanced.txt", "assets/shaders/fs_flora_instanced.txt");
+
+        // Setup VBO arrays for the 10 variations
+        floraInstanceVBOs = new int[FLORA_VARIATIONS];
+        floraInstanceCounts = new int[FLORA_VARIATIONS];
+        gl.glGenBuffers(FLORA_VARIATIONS, floraInstanceVBOs, 0);
+        
+        java.util.Random fRand = new java.util.Random(worldSeed);
+        for (int i = 0; i < FLORA_VARIATIONS; i++) {
+            // Generate distinct but cohesive variants
+            float bRate = 0.25f + fRand.nextFloat() * 0.15f;
+            float sWidth = 0.5f + fRand.nextFloat() * 0.3f;
+            float wDecl = 0.25f + fRand.nextFloat() * 0.2f;
+            float sDist = 12.0f + fRand.nextFloat() * 6.0f;
+            float bAngle = 35.0f + fRand.nextFloat() * 25.0f;
+            
+            Mesh fMesh = Flora.generateFloraMesh(gl, worldSeed + (i * 7382L), bRate, sWidth, wDecl, sDist, bAngle);
+            floraModels[i] = new Model("flora_" + i, fMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+        }
 
         waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
         
@@ -438,17 +488,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         
         int instanceStride = 5 * 4; 
 
-        // Location 2: Instance Position Offset (vec3)
         gl.glEnableVertexAttribArray(2);
         gl.glVertexAttribPointer(2, 3, GL3.GL_FLOAT, false, instanceStride, 0);
         gl.glVertexAttribDivisor(2, 1);  
 
-        // Location 3: Colour Phenotype Shift (float)
         gl.glEnableVertexAttribArray(3);
         gl.glVertexAttribPointer(3, 1, GL3.GL_FLOAT, false, instanceStride, 3 * 4); 
         gl.glVertexAttribDivisor(3, 1);  
 
-        // Location 4: Dynamic Blade Height Scale (float)
         gl.glEnableVertexAttribArray(4);
         gl.glVertexAttribPointer(4, 1, GL3.GL_FLOAT, false, instanceStride, 4 * 4); 
         gl.glVertexAttribDivisor(4, 1);  
@@ -506,6 +553,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
         chunkCache.clear();
         grassCache.clear(); 
+        floraCache.clear();
 
         lastChunkX = Integer.MAX_VALUE;
         lastChunkZ = Integer.MAX_VALUE;
@@ -518,7 +566,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         spawnPlayerAtRandomLocation();
     }
 
-    private void updateVisibleChunks(boolean forceImmediate) {
+private void updateVisibleChunks(boolean forceImmediate) {
         Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
@@ -576,6 +624,60 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 chunkCache.put(key, chunkModel);
             }
         }
+        
+        // --- Spawning Flora Variants ---
+        Map<String, Boolean> activeFloraKeys = new HashMap<>();
+        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+                activeFloraKeys.put(cx + "_" + cz, true);
+            }
+        }
+        
+        // Track if chunks were loaded/unloaded
+        boolean floraChanged = floraCache.keySet().retainAll(activeFloraKeys.keySet());
+        
+        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+                String key = cx + "_" + cz;
+                if (!floraCache.containsKey(key)) {
+                    floraChanged = true; // New chunk being processed
+                    
+                    List<FloraInstance> instances = new ArrayList<>();
+                    long fSeed = worldSeed ^ ((long) cx * 492876847L) ^ ((long) cz * 314159265L);
+                    java.util.Random cRand = new java.util.Random(fSeed);
+
+                    float roll = cRand.nextFloat();
+                    int numPlants = 0;
+                    
+                    // Simulate Poisson distribution where lambda = 1.0
+                    if (roll < 0.368f) numPlants = 0;
+                    else if (roll < 0.736f) numPlants = 1;
+                    else if (roll < 0.920f) numPlants = 2;
+                    else if (roll < 0.981f) numPlants = 3;
+                    else numPlants = 4;
+
+                    for (int i = 0; i < numPlants; i++) {
+                        float cxWorld = cx * PHYSICAL_CHUNK_SIZE + (cRand.nextFloat() * PHYSICAL_CHUNK_SIZE);
+                        float czWorld = cz * PHYSICAL_CHUNK_SIZE + (cRand.nextFloat() * PHYSICAL_CHUNK_SIZE);
+                        float cyWorld = TerrainMesh.getLayeredHeight(cxWorld, czWorld, worldNoise);
+
+                        if (cyWorld > seaLevelHeight + 0.1f) {
+                            int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
+                            float randomScale = 0.75f + cRand.nextFloat() * 0.5f;
+                            float randomRotY = cRand.nextFloat() * 360.0f;
+                            
+                            instances.add(new FloraInstance(new Vec3(cxWorld, cyWorld, czWorld), randModelIndex, randomScale, randomRotY));
+                        }
+                    }
+                    floraCache.put(key, instances);
+                }
+            }
+        }
+        
+        // Only update the instanced VBO arrays if the flora cache actually changed
+        if (floraChanged) {
+            updateFloraInstanceBuffers(gl);
+        }
 
         Map<String, Boolean> activeGrassKeys = new HashMap<>();
         for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
@@ -598,7 +700,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                         continue; 
                     }
 
-                    // Integrated Object-Driven Asset Count Evaluation
                     int dynamicGrassAttempts = regionalManager.evaluateChunkAssetCount(
                         cx, cz, PHYSICAL_CHUNK_SIZE, 
                         GRASS_BASE_ABUNDANCE,
@@ -634,7 +735,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                             float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
                             
                             if (worldY > seaLevelHeight + 0.1f) {
-                                // Integrated Node Evaluations replacing old manager pipeline arrays
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
                                 float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
 
@@ -829,6 +929,18 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
         }
         
+        // Note: This is still using the slow loop for the depth pass.
+        // Consider creating an instanced depth shader if this causes a bottleneck!
+        for (List<FloraInstance> positions : floraCache.values()) {
+            for (FloraInstance inst : positions) {
+                Mat4 m = Mat4Transform.translate(inst.pos);
+                m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
+                m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
+                floraModels[inst.modelIndex].setModelMatrix(m);
+                floraModels[inst.modelIndex].renderDepthPass(gl, depthPrePassShader, viewProjection);
+            }
+        }
+        
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
 
         // --- PASS 2: MAIN FORWARD DRAW ---
@@ -870,7 +982,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         gl.glDepthMask(true);
         gl.glDisable(GL.GL_BLEND);
 
-        // --- TERRAIN PASS ---
+        // --- TERRAIN & FLORA PASS ---
         terrainShader.use(gl);
         terrainShader.setVec3(gl, "skyColour", skyColour);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(terrainShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
@@ -884,6 +996,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         for (Model plane : chunkCache.values()) { 
             plane.render(gl, ambientLight, nightProportion); 
         }
+        
+        // FULLY REPLACED THE OLD FLORA LOOP HERE:
+        renderInstancedFlora(gl, camera.getViewMatrix(), camera.getPerspectiveMatrix(), ambientLight, skyRotation, skyTextureKey);
         
         // --- INSTANCED FOLIAGE RENDERING PASS ---
         if (totalGrassInstances > 0) {
@@ -1006,7 +1121,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
       if (this.IS_DEBUG_MODE_ACTIVE) {
-          // Simplified reference switch-case passing the target node directly to the manager's visualizer
           RegionalFactor targetFactor = switch (currentDebugFactor) {
               case HEIGHT -> this.grassHeightFactor;
               case COLOUR -> this.grassColourFactor;
@@ -1049,6 +1163,116 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.isToTeleport = true;
         this.teleportX = teleportX;
         this.teleportZ = teleportZ;
+    }
+
+    private void updateFloraInstanceBuffers(GL3 gl) {
+    // 1. Group all current flora instances by their model index
+    List<List<Mat4>> groupedMatrices = new ArrayList<>(FLORA_VARIATIONS);
+    for (int i = 0; i < FLORA_VARIATIONS; i++) {
+        groupedMatrices.add(new ArrayList<>());
+    }
+
+    // Iterate your chunks and pool the instances
+    for (List<FloraInstance> chunkFlora : floraCache.values()) {
+        for (FloraInstance inst : chunkFlora) {
+            // Reconstruct the model matrix for this specific instance
+            Mat4 modelMatrix = Mat4Transform.translate(inst.pos.x, inst.pos.y, inst.pos.z);
+            modelMatrix = Mat4.multiply(modelMatrix, Mat4Transform.rotateAroundY(inst.rotationY));
+            modelMatrix = Mat4.multiply(modelMatrix, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
+            
+            groupedMatrices.get(inst.modelIndex).add(modelMatrix);
+        }
+    }
+
+    // 2. Upload the matrix data to the respective VBOs
+    for (int i = 0; i < FLORA_VARIATIONS; i++) {
+        List<Mat4> matrices = groupedMatrices.get(i);
+        floraInstanceCounts[i] = matrices.size();
+        
+        if (matrices.isEmpty()) continue;
+
+        // A Mat4 is 16 floats
+        float[] bufferData = new float[matrices.size() * 16];
+        for (int m = 0; m < matrices.size(); m++) {
+            float[] matArray = matrices.get(m).toFloatArrayForGLSL(); // Assuming column-major
+            System.arraycopy(matArray, 0, bufferData, m * 16, 16);
+        }
+
+        // Bind and upload
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, floraInstanceVBOs[i]);
+        FloatBuffer fb = FloatBuffer.wrap(bufferData);
+        gl.glBufferData(GL3.GL_ARRAY_BUFFER, bufferData.length * Float.BYTES, fb, GL3.GL_DYNAMIC_DRAW);
+    }
+    
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
+    }
+
+    private void renderInstancedFlora(GL3 gl, Mat4 viewMatrix, Mat4 projectionMatrix, Vec3 ambientLight, Mat4 skyRotation, String skyTextureKey) {
+        floraInstancedShader.use(gl);
+        
+        floraInstancedShader.setMat4(gl, "view", viewMatrix);
+        floraInstancedShader.setMat4(gl, "projection", projectionMatrix);
+        floraInstancedShader.setVec3(gl, "viewPos", camera.getPosition());
+        floraInstancedShader.setVec3(gl, "ambientLight", ambientLight);
+        floraInstancedShader.setMat4(gl, "skyRotation", skyRotation);
+        floraInstancedShader.setFloat(gl, "scale", 1.0f, 1.0f); // Default scale for UVs
+        
+        // Pass standard lighting data
+        floraInstancedShader.setInt(gl, "numLights", lights.length);
+        for(int i = 0; i < lights.length; i++) {
+            floraInstancedShader.setVec3(gl, "lights[" + i + "].position", lights[i].getPosition());
+            floraInstancedShader.setVec3(gl, "lights[" + i + "].diffuse", lights[i].getMaterial().getDiffuse());
+            floraInstancedShader.setVec3(gl, "lights[" + i + "].specular", lights[i].getMaterial().getSpecular());
+        }
+
+        // Bind skybox for the inside-sphere fog
+        if (textures.get(skyTextureKey) != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get(skyTextureKey).bind(gl);
+            floraInstancedShader.setInt(gl, "skyTexture", 2);
+        }
+
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
+        floraInstancedShader.setInt(gl, "diffuse_texture", 0);
+
+        int vec4Size = 4 * Float.BYTES;
+        int stride = 16 * Float.BYTES; 
+
+        for (int i = 0; i < FLORA_VARIATIONS; i++) {
+            if (floraInstanceCounts[i] == 0) continue;
+
+            Model baseModel = floraModels[i];
+            Mesh mesh = baseModel.getMesh(); 
+            Material material = baseModel.getMaterial();
+            
+            // Set Material properties
+            floraInstancedShader.setVec3(gl, "material.ambient", material.getAmbient());
+            floraInstancedShader.setVec3(gl, "material.diffuse", material.getDiffuse());
+            floraInstancedShader.setVec3(gl, "material.specular", material.getSpecular());
+            floraInstancedShader.setFloat(gl, "material.shininess", material.getShininess());
+
+            // Bind Diffuse Map
+            if (material.getDiffuseMap() != null) {
+                material.getDiffuseMap().bind(gl);
+            }
+
+            gl.glBindVertexArray(mesh.getVaoId()); 
+            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, floraInstanceVBOs[i]);
+
+            for (int j = 0; j < 4; j++) {
+                gl.glEnableVertexAttribArray(3 + j);
+                gl.glVertexAttribPointer(3 + j, 4, GL3.GL_FLOAT, false, stride, j * vec4Size);
+                gl.glVertexAttribDivisor(3 + j, 1);
+            }
+
+            gl.glDrawElementsInstanced(GL3.GL_TRIANGLES, mesh.getVertexCount(), GL3.GL_UNSIGNED_INT, 0, floraInstanceCounts[i]);
+
+            for (int j = 0; j < 4; j++) {
+                gl.glVertexAttribDivisor(3 + j, 0);
+                gl.glDisableVertexAttribArray(3 + j);
+            }
+            gl.glBindVertexArray(0);
+        }
     }
 
 }
