@@ -19,9 +19,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Map<String, Model> chunkCache;
     private Map<String, float[]> grassCache; 
     
-    // --- FLORA FIELDS ---
+    // --- OPTIMIZED FLORA FIELDS ---
     private Map<String, List<FloraInstance>> floraCache;
-    private Model[] floraModels;
+    private Model[][] floraModelsLOD; // Matrix row maps: [0]=High, [1]=Med, [2]=Low
     private final int FLORA_VARIATIONS = 10;
     
     private static class FloraInstance {
@@ -266,10 +266,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
         
-        if (floraModels != null) {
-            for (int i = 0; i < FLORA_VARIATIONS; i++) {
-                if (floraModels[i] != null && floraModels[i].mesh != null) {
-                    floraModels[i].mesh.dispose(gl);
+        if (floraModelsLOD != null) {
+            for (int lod = 0; lod < 3; lod++) {
+                for (int i = 0; i < FLORA_VARIATIONS; i++) {
+                    if (floraModelsLOD[lod][i] != null && floraModelsLOD[lod][i].mesh != null) {
+                        floraModelsLOD[lod][i].mesh.dispose(gl);
+                    }
                 }
             }
         }
@@ -397,22 +399,26 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         terrainRenderer = new Renderer();
         globalModelMatrix = new Mat4(1);
         
-        // --- Initialize Precomputed Flora Models ---
-        floraModels = new Model[FLORA_VARIATIONS];
+        // --- Initialize Precomputed Flora Models with LOD matrix ---
+        floraModelsLOD = new Model[3][FLORA_VARIATIONS];
         Material floraMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(1.0f, 1.0f, 1.0f), new Vec3(0.1f, 0.1f, 0.1f), 4.0f);
-        floraMat.setDiffuseMap(textures.get("dirt_diffuse")); 
+        floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
         
-        java.util.Random fRand = new java.util.Random(worldSeed);
-        for (int i = 0; i < FLORA_VARIATIONS; i++) {
-            // Generate distinct but cohesive variants
-            float bRate = 0.25f + fRand.nextFloat() * 0.15f;
-            float sWidth = 0.5f + fRand.nextFloat() * 0.3f;
-            float wDecl = 0.25f + fRand.nextFloat() * 0.2f;
-            float sDist = 12.0f + fRand.nextFloat() * 6.0f;
-            float bAngle = 35.0f + fRand.nextFloat() * 25.0f;
-            
-            Mesh fMesh = Flora.generateFloraMesh(gl, worldSeed + (i * 7382L), bRate, sWidth, wDecl, sDist, bAngle);
-            floraModels[i] = new Model("flora_" + i, fMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+        int[] lodSlices = {12, 8, 4}; // High (Cylinder), Med (Octagon), Low (Square Prism)
+        
+        for (int lod = 0; lod < 3; lod++) {
+            // Seeding is reinitialized identically per tier so procedural shapes match perfectly
+            java.util.Random fRand = new java.util.Random(worldSeed);
+            for (int i = 0; i < FLORA_VARIATIONS; i++) {
+                float bRate = 0.25f + fRand.nextFloat() * 0.15f;
+                float sWidth = 0.5f + fRand.nextFloat() * 0.3f;
+                float wDecl = 0.25f + fRand.nextFloat() * 0.2f;
+                float sDist = 12.0f + fRand.nextFloat() * 6.0f;
+                float bAngle = 35.0f + fRand.nextFloat() * 25.0f;
+                
+                Mesh fMesh = Flora.generateFloraMesh(gl, worldSeed + (i * 7382L), bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod]);
+                floraModelsLOD[lod][i] = new Model("flora_" + i + "_lod" + lod, fMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+            }
         }
 
         waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
@@ -784,7 +790,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
     }
 
-    private void render() {
+private void render() {
 
         double elapsedTime = getSeconds() - startTime;
         double deltaTime = elapsedTime - lastElapsedTime;
@@ -889,6 +895,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         String skyTextureKey = "sky"; 
 
+        // Precompute culling shared properties to eliminate duplicate calculations
+        Vec3 camForward = camera.getForwardDirection();
+        float maxFloraRenderDistance = VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE;
+        float maxFloraDistSq = maxFloraRenderDistance * maxFloraRenderDistance;
+
         // --- PASS 1: DEPTH PRE-PASS ---
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
         gl.glClear(GL3.GL_DEPTH_BUFFER_BIT); 
@@ -907,11 +918,32 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         
         for (List<FloraInstance> positions : floraCache.values()) {
             for (FloraInstance inst : positions) {
+                float dx = inst.pos.x - currentPos.x;
+                float dy = inst.pos.y - currentPos.y;
+                float dz = inst.pos.z - currentPos.z;
+                float distSq = dx*dx + dy*dy + dz*dz;
+
+                // 1. Distance Culling
+                if (distSq > maxFloraDistSq) continue;
+
+                // 2. Directional Culling (Padded slightly behind camera field-of-view)
+                float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
+                if (dotProduct < -12.0f) continue;
+
+                // 3. LOD Selection Filters
+                int lodIndex = 0; // High Detail (0 - 65 units away)
+                if (distSq > 135f * 135f) {
+                    lodIndex = 2; // Low Detail (Square Prism)
+                } else if (distSq > 65f * 65f) {
+                    lodIndex = 1; // Medium Detail (Octagon)
+                }
+
                 Mat4 m = Mat4Transform.translate(inst.pos);
                 m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
                 m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
-                floraModels[inst.modelIndex].setModelMatrix(m);
-                floraModels[inst.modelIndex].renderDepthPass(gl, depthPrePassShader, viewProjection);
+                
+                floraModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
+                floraModelsLOD[lodIndex][inst.modelIndex].renderDepthPass(gl, depthPrePassShader, viewProjection);
             }
         }
         
@@ -973,11 +1005,32 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         
         for (List<FloraInstance> positions : floraCache.values()) {
             for (FloraInstance inst : positions) {
+                float dx = inst.pos.x - currentPos.x;
+                float dy = inst.pos.y - currentPos.y;
+                float dz = inst.pos.z - currentPos.z;
+                float distSq = dx*dx + dy*dy + dz*dz;
+
+                // 1. Distance Culling
+                if (distSq > maxFloraDistSq) continue;
+
+                // 2. Directional Culling
+                float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
+                if (dotProduct < -12.0f) continue;
+
+                // 3. LOD Selection Filters
+                int lodIndex = 0;
+                if (distSq > 135f * 135f) {
+                    lodIndex = 2;
+                } else if (distSq > 65f * 65f) {
+                    lodIndex = 1;
+                }
+
                 Mat4 m = Mat4Transform.translate(inst.pos);
                 m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
                 m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
-                floraModels[inst.modelIndex].setModelMatrix(m);
-                floraModels[inst.modelIndex].render(gl, ambientLight, nightProportion);
+                
+                floraModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
+                floraModelsLOD[lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
             }
         }
         
