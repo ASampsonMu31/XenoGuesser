@@ -1,0 +1,93 @@
+#version 330 core
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 aTexCoord;
+in float PlanarDepth;
+
+out vec4 fragColour;
+
+struct Light {
+    vec3 position;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+struct Material {
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float shininess;
+};
+
+uniform sampler2D diffuse_texture;
+uniform sampler2D skyTexture; 
+uniform vec3 viewPos;
+
+uniform int numLights;
+uniform Light lights[64];
+uniform Material material;
+uniform vec2 scale; 
+uniform vec3 ambientLight;
+uniform mat4 skyRotation;
+
+const float PI = 3.14159265359;
+
+void main() {
+    vec2 scaledUV = aTexCoord * scale; 
+    vec4 texColour = texture(diffuse_texture, scaledUV);
+    
+    // Optional alpha discard if your flora uses transparency masks
+    if(texColour.a < 0.1) discard;
+
+    vec3 ambient = ambientLight * material.ambient * texColour.rgb;
+    vec3 norm = normalize(aNormal);
+    vec3 viewDir = normalize(viewPos - aPos);
+
+    vec3 totalDiffuse = vec3(0.0);
+    vec3 totalSpecular = vec3(0.0);
+
+    for (int i = 0; i < numLights; i++) {
+        Light light = lights[i];
+        vec3 lightDir = normalize(light.position - aPos);  
+        float diff = max(dot(norm, lightDir), 0.0);
+        totalDiffuse += light.diffuse * material.diffuse * diff * texColour.rgb;
+        
+        vec3 halfwayDir = normalize(lightDir + viewDir);  
+        float spec = pow(max(dot(norm, halfwayDir), 0.0), material.shininess);
+        totalSpecular += light.specular * spec * material.specular;
+    }
+
+    vec3 result = ambient + totalDiffuse + totalSpecular;
+
+    // --- SEAMLESS INSIDE-SPHERE FOG COORD MAPPING ---
+    float radialDistance = length(viewPos - aPos);
+    vec3 worldLookDir = normalize(aPos - viewPos);
+    mat3 invSkyRot = transpose(mat3(skyRotation));
+    vec3 localSkyDir = invSkyRot * worldLookDir;
+    
+    // Exact mathematical inverse of InsideSphere.java coordinate layout
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) {
+        theta += 2.0 * PI;
+    }
+    float u = theta / (2.0 * PI);
+    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+    
+    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
+
+    // --- CUBIC DISTANCE BLENDING (Matched to Terrain Fog) ---
+    float fogStart = 1000.0;
+    float fogEnd = 2200.0; 
+
+    // Smooth cubic blending identical to your terrain shader
+    float fogFactor = (fogEnd - radialDistance) / (fogEnd - fogStart);
+    fogFactor = clamp(fogFactor, 0.0, 1.0); 
+    fogFactor = smoothstep(0.0, 1.0, fogFactor);
+
+    // Mix the fully lit flora color with the atmospheric sky color
+    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
+
+    // Apply final color while preserving transparency for leaves
+    fragColour = vec4(finalColourWithFog, texColour.a);
+}

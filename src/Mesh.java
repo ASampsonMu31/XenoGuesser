@@ -22,6 +22,16 @@ public class Mesh {
     fillBuffers(gl);
   }
   
+  // --- ADDED FOR INSTANCED RENDERING ---
+  public int getVertexCount() {
+      return indices.length;
+  }
+
+  public int getVaoId() {
+      return vertexArrayId[0];
+  }
+  // -------------------------------------
+  
   public void render(GL3 gl) {
     gl.glBindVertexArray(vertexArrayId[0]);
     gl.glDrawElements(GL.GL_TRIANGLES, indices.length, GL.GL_UNSIGNED_INT, 0);
@@ -43,17 +53,11 @@ public class Mesh {
     gl.glVertexAttribPointer(0, numXYZFloats, GL.GL_FLOAT, false, stride*Float.BYTES, offset);
     gl.glEnableVertexAttribArray(0);
   
-    int numNormalFloats = vertexNormalFloats; // x,y,z for each vertex 
-    offset = numXYZFloats*Float.BYTES;  // the normal values are three floats after the three x,y,z values
-                                    // so change the offset value
+    int numNormalFloats = vertexNormalFloats; 
+    offset = numXYZFloats*Float.BYTES;  
     gl.glVertexAttribPointer(1, numNormalFloats, GL.GL_FLOAT, false, stride*Float.BYTES, offset);
-                                    // the vertex shader uses location 1 (sometimes called index 1)
-                                    // for the normal information
-                                    // location, size, type, normalize, stride, offset
-                                    // offset is relative to the start of the array of data
-    gl.glEnableVertexAttribArray(1);// Enable the vertex attribute array at location 1
+    gl.glEnableVertexAttribArray(1);
 
-    // now do the texture coordinates  in vertex attribute 2
     int numTexFloats = vertexTexFloats;
     offset = (numXYZFloats+numNormalFloats)*Float.BYTES;
     gl.glVertexAttribPointer(2, numTexFloats, GL.GL_FLOAT, false, stride*Float.BYTES, offset);
@@ -63,7 +67,6 @@ public class Mesh {
     IntBuffer ib = Buffers.newDirectIntBuffer(indices);
     gl.glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, elementBufferId[0]);
     gl.glBufferData(GL.GL_ELEMENT_ARRAY_BUFFER, Integer.BYTES * indices.length, ib, GL.GL_STATIC_DRAW);
-    //gl.glBindVertexArray(0);
   }
   
   public void dispose(GL3 gl) {
@@ -71,5 +74,4 @@ public class Mesh {
     gl.glDeleteVertexArrays(1, vertexArrayId, 0);
     gl.glDeleteBuffers(1, elementBufferId, 0);
   }
-  
 }

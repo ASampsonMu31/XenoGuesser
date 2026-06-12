@@ -4,6 +4,8 @@ import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
 import java.awt.image.BufferedImage;
+import java.nio.FloatBuffer;
+
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 import gmaths.*;
@@ -124,6 +126,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private float teleportZ = 0f;
 
     private GL3 gl;
+
+    // --- INSTANCING FIELDS ---
+    private int[] floraInstanceVBOs;
+    private int[] floraInstanceCounts;
+    private Shader floraInstancedShader;
 
     public enum FactorName {
       ABUNDANCE,
@@ -247,7 +254,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         createDepthFramebuffer(gl, width, height);
     }
 
-    @Override
+@Override
     public void display(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
         
@@ -401,6 +408,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         floraModels = new Model[FLORA_VARIATIONS];
         Material floraMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(1.0f, 1.0f, 1.0f), new Vec3(0.1f, 0.1f, 0.1f), 4.0f);
         floraMat.setDiffuseMap(textures.get("dirt_diffuse")); 
+
+        // Compile your new instanced shader
+        floraInstancedShader = new Shader(gl, "assets/shaders/vs_flora_instanced.txt", "assets/shaders/fs_flora_instanced.txt");
+
+        // Setup VBO arrays for the 10 variations
+        floraInstanceVBOs = new int[FLORA_VARIATIONS];
+        floraInstanceCounts = new int[FLORA_VARIATIONS];
+        gl.glGenBuffers(FLORA_VARIATIONS, floraInstanceVBOs, 0);
         
         java.util.Random fRand = new java.util.Random(worldSeed);
         for (int i = 0; i < FLORA_VARIATIONS; i++) {
@@ -551,7 +566,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         spawnPlayerAtRandomLocation();
     }
 
-    private void updateVisibleChunks(boolean forceImmediate) {
+private void updateVisibleChunks(boolean forceImmediate) {
         Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
@@ -617,12 +632,16 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 activeFloraKeys.put(cx + "_" + cz, true);
             }
         }
-        floraCache.keySet().retainAll(activeFloraKeys.keySet());
+        
+        // Track if chunks were loaded/unloaded
+        boolean floraChanged = floraCache.keySet().retainAll(activeFloraKeys.keySet());
         
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
                 String key = cx + "_" + cz;
                 if (!floraCache.containsKey(key)) {
+                    floraChanged = true; // New chunk being processed
+                    
                     List<FloraInstance> instances = new ArrayList<>();
                     long fSeed = worldSeed ^ ((long) cx * 492876847L) ^ ((long) cz * 314159265L);
                     java.util.Random cRand = new java.util.Random(fSeed);
@@ -653,6 +672,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                     floraCache.put(key, instances);
                 }
             }
+        }
+        
+        // Only update the instanced VBO arrays if the flora cache actually changed
+        if (floraChanged) {
+            updateFloraInstanceBuffers(gl);
         }
 
         Map<String, Boolean> activeGrassKeys = new HashMap<>();
@@ -905,6 +929,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
         }
         
+        // Note: This is still using the slow loop for the depth pass.
+        // Consider creating an instanced depth shader if this causes a bottleneck!
         for (List<FloraInstance> positions : floraCache.values()) {
             for (FloraInstance inst : positions) {
                 Mat4 m = Mat4Transform.translate(inst.pos);
@@ -971,15 +997,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             plane.render(gl, ambientLight, nightProportion); 
         }
         
-        for (List<FloraInstance> positions : floraCache.values()) {
-            for (FloraInstance inst : positions) {
-                Mat4 m = Mat4Transform.translate(inst.pos);
-                m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
-                m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
-                floraModels[inst.modelIndex].setModelMatrix(m);
-                floraModels[inst.modelIndex].render(gl, ambientLight, nightProportion);
-            }
-        }
+        // FULLY REPLACED THE OLD FLORA LOOP HERE:
+        renderInstancedFlora(gl, camera.getViewMatrix(), camera.getPerspectiveMatrix(), ambientLight, skyRotation, skyTextureKey);
         
         // --- INSTANCED FOLIAGE RENDERING PASS ---
         if (totalGrassInstances > 0) {
@@ -1144,6 +1163,116 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.isToTeleport = true;
         this.teleportX = teleportX;
         this.teleportZ = teleportZ;
+    }
+
+    private void updateFloraInstanceBuffers(GL3 gl) {
+    // 1. Group all current flora instances by their model index
+    List<List<Mat4>> groupedMatrices = new ArrayList<>(FLORA_VARIATIONS);
+    for (int i = 0; i < FLORA_VARIATIONS; i++) {
+        groupedMatrices.add(new ArrayList<>());
+    }
+
+    // Iterate your chunks and pool the instances
+    for (List<FloraInstance> chunkFlora : floraCache.values()) {
+        for (FloraInstance inst : chunkFlora) {
+            // Reconstruct the model matrix for this specific instance
+            Mat4 modelMatrix = Mat4Transform.translate(inst.pos.x, inst.pos.y, inst.pos.z);
+            modelMatrix = Mat4.multiply(modelMatrix, Mat4Transform.rotateAroundY(inst.rotationY));
+            modelMatrix = Mat4.multiply(modelMatrix, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
+            
+            groupedMatrices.get(inst.modelIndex).add(modelMatrix);
+        }
+    }
+
+    // 2. Upload the matrix data to the respective VBOs
+    for (int i = 0; i < FLORA_VARIATIONS; i++) {
+        List<Mat4> matrices = groupedMatrices.get(i);
+        floraInstanceCounts[i] = matrices.size();
+        
+        if (matrices.isEmpty()) continue;
+
+        // A Mat4 is 16 floats
+        float[] bufferData = new float[matrices.size() * 16];
+        for (int m = 0; m < matrices.size(); m++) {
+            float[] matArray = matrices.get(m).toFloatArrayForGLSL(); // Assuming column-major
+            System.arraycopy(matArray, 0, bufferData, m * 16, 16);
+        }
+
+        // Bind and upload
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, floraInstanceVBOs[i]);
+        FloatBuffer fb = FloatBuffer.wrap(bufferData);
+        gl.glBufferData(GL3.GL_ARRAY_BUFFER, bufferData.length * Float.BYTES, fb, GL3.GL_DYNAMIC_DRAW);
+    }
+    
+    gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
+    }
+
+    private void renderInstancedFlora(GL3 gl, Mat4 viewMatrix, Mat4 projectionMatrix, Vec3 ambientLight, Mat4 skyRotation, String skyTextureKey) {
+        floraInstancedShader.use(gl);
+        
+        floraInstancedShader.setMat4(gl, "view", viewMatrix);
+        floraInstancedShader.setMat4(gl, "projection", projectionMatrix);
+        floraInstancedShader.setVec3(gl, "viewPos", camera.getPosition());
+        floraInstancedShader.setVec3(gl, "ambientLight", ambientLight);
+        floraInstancedShader.setMat4(gl, "skyRotation", skyRotation);
+        floraInstancedShader.setFloat(gl, "scale", 1.0f, 1.0f); // Default scale for UVs
+        
+        // Pass standard lighting data
+        floraInstancedShader.setInt(gl, "numLights", lights.length);
+        for(int i = 0; i < lights.length; i++) {
+            floraInstancedShader.setVec3(gl, "lights[" + i + "].position", lights[i].getPosition());
+            floraInstancedShader.setVec3(gl, "lights[" + i + "].diffuse", lights[i].getMaterial().getDiffuse());
+            floraInstancedShader.setVec3(gl, "lights[" + i + "].specular", lights[i].getMaterial().getSpecular());
+        }
+
+        // Bind skybox for the inside-sphere fog
+        if (textures.get(skyTextureKey) != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get(skyTextureKey).bind(gl);
+            floraInstancedShader.setInt(gl, "skyTexture", 2);
+        }
+
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
+        floraInstancedShader.setInt(gl, "diffuse_texture", 0);
+
+        int vec4Size = 4 * Float.BYTES;
+        int stride = 16 * Float.BYTES; 
+
+        for (int i = 0; i < FLORA_VARIATIONS; i++) {
+            if (floraInstanceCounts[i] == 0) continue;
+
+            Model baseModel = floraModels[i];
+            Mesh mesh = baseModel.getMesh(); 
+            Material material = baseModel.getMaterial();
+            
+            // Set Material properties
+            floraInstancedShader.setVec3(gl, "material.ambient", material.getAmbient());
+            floraInstancedShader.setVec3(gl, "material.diffuse", material.getDiffuse());
+            floraInstancedShader.setVec3(gl, "material.specular", material.getSpecular());
+            floraInstancedShader.setFloat(gl, "material.shininess", material.getShininess());
+
+            // Bind Diffuse Map
+            if (material.getDiffuseMap() != null) {
+                material.getDiffuseMap().bind(gl);
+            }
+
+            gl.glBindVertexArray(mesh.getVaoId()); 
+            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, floraInstanceVBOs[i]);
+
+            for (int j = 0; j < 4; j++) {
+                gl.glEnableVertexAttribArray(3 + j);
+                gl.glVertexAttribPointer(3 + j, 4, GL3.GL_FLOAT, false, stride, j * vec4Size);
+                gl.glVertexAttribDivisor(3 + j, 1);
+            }
+
+            gl.glDrawElementsInstanced(GL3.GL_TRIANGLES, mesh.getVertexCount(), GL3.GL_UNSIGNED_INT, 0, floraInstanceCounts[i]);
+
+            for (int j = 0; j < 4; j++) {
+                gl.glVertexAttribDivisor(3 + j, 0);
+                gl.glDisableVertexAttribArray(3 + j);
+            }
+            gl.glBindVertexArray(0);
+        }
     }
 
 }
