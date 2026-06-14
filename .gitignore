@@ -1,3 +1,4 @@
 *.class
 .vscode/
 bin/
+assets/textures/generated_alphabets/
