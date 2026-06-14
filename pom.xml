@@ -72,4 +72,42 @@
             <version>1.26.0</version>
         </dependency>
     </dependencies>
+
+    <build>
+        <sourceDirectory>src</sourceDirectory>
+
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.1</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <executable>java</executable>
+                    
+                    <classpathScope>compile</classpathScope>
+                    
+                    <arguments>
+                        <argument>--add-exports</argument>
+                        <argument>java.base/java.lang=ALL-UNNAMED</argument>
+                        <argument>--add-exports</argument>
+                        <argument>java.desktop/sun.java2d=ALL-UNNAMED</argument>
+                        <argument>--add-exports</argument>
+                        <argument>java.desktop/sun.awt=ALL-UNNAMED</argument>
+                        
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        
+                        <argument>XenoGuesser</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
