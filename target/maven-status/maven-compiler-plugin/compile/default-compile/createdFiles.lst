@@ -48,6 +48,7 @@ TextureLibrary.class
 XenoGuesser$MyMouseInput.class
 GlyphGenerator.class
 Renderer.class
+Flora$FloraBundle.class
 MapPanel$MapNote.class
 Light.class
 InsideSphere.class

@@ -21,8 +21,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     
     // --- OPTIMIZED FLORA FIELDS ---
     private Map<String, List<FloraInstance>> floraCache;
-    private Model[][] floraModelsLOD; // Matrix row maps: [0]=High, [1]=Med, [2]=Low
+    private Model[][] floraBranchModelsLOD; // Matrix row maps: [0]=High, [1]=Med, [2]=Low
+    private Model[][] floraLeafModelsLOD;   
     private final int FLORA_VARIATIONS = 10;
+    
+    // Shader fields
+    private Shader leafShader;
+    private Shader leafDepthPrePassShader;
     
     private static class FloraInstance {
         Vec3 pos;
@@ -126,14 +131,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private GL3 gl;
 
     public enum FactorName {
-      ABUNDANCE,
-      HEIGHT,
-      COLOUR,
-      TEMPERATURE,
-      MOISTURE,
-      GRASS_PATCH_NOISE,
-      GRASS_HEIGHT_NOISE,
-      GRASS_COLOUR_NOISE,
+      ABUNDANCE, HEIGHT, COLOUR, TEMPERATURE, MOISTURE, GRASS_PATCH_NOISE, GRASS_HEIGHT_NOISE, GRASS_COLOUR_NOISE,
     }
 
     public XenoGuesser_GLEventListener(
@@ -266,11 +264,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
         
-        if (floraModelsLOD != null) {
+        if (floraBranchModelsLOD != null) {
             for (int lod = 0; lod < 3; lod++) {
                 for (int i = 0; i < FLORA_VARIATIONS; i++) {
-                    if (floraModelsLOD[lod][i] != null && floraModelsLOD[lod][i].mesh != null) {
-                        floraModelsLOD[lod][i].mesh.dispose(gl);
+                    if (floraBranchModelsLOD[lod][i] != null && floraBranchModelsLOD[lod][i].mesh != null) {
+                        floraBranchModelsLOD[lod][i].mesh.dispose(gl);
+                    }
+                    if (floraLeafModelsLOD[lod][i] != null && floraLeafModelsLOD[lod][i].mesh != null) {
+                        floraLeafModelsLOD[lod][i].mesh.dispose(gl);
                     }
                 }
             }
@@ -358,6 +359,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
         textures.add(gl, "sky", "assets/textures/sky.png");
         textures.add(gl, "sun_glow", "assets/textures/sun_glow.png");
+        textures.add(gl, "leaf_diffuse", "assets/textures/leaf1.png");
 
         Texture waterTexInstance = textures.get("water_diffuse");
         waterTexInstance.bind(gl);
@@ -399,15 +401,21 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         terrainRenderer = new Renderer();
         globalModelMatrix = new Mat4(1);
         
-        // --- Initialize Precomputed Flora Models with LOD matrix ---
-        floraModelsLOD = new Model[3][FLORA_VARIATIONS];
+        floraBranchModelsLOD = new Model[3][FLORA_VARIATIONS];
+        floraLeafModelsLOD = new Model[3][FLORA_VARIATIONS];
+        
         Material floraMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(1.0f, 1.0f, 1.0f), new Vec3(0.1f, 0.1f, 0.1f), 4.0f);
         floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
+        
+        Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
+        leafMat.setDiffuseMap(textures.get("leaf_diffuse"));
+        
+        leafShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf.txt");
+        leafDepthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf_depth.txt");
         
         int[] lodSlices = {12, 8, 4}; // High (Cylinder), Med (Octagon), Low (Square Prism)
         
         for (int lod = 0; lod < 3; lod++) {
-            // Seeding is reinitialized identically per tier so procedural shapes match perfectly
             java.util.Random fRand = new java.util.Random(worldSeed);
             for (int i = 0; i < FLORA_VARIATIONS; i++) {
                 float bRate = 0.25f + fRand.nextFloat() * 0.15f;
@@ -416,8 +424,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 float sDist = 12.0f + fRand.nextFloat() * 6.0f;
                 float bAngle = 35.0f + fRand.nextFloat() * 25.0f;
                 
-                Mesh fMesh = Flora.generateFloraMesh(gl, worldSeed + (i * 7382L), bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod]);
-                floraModelsLOD[lod][i] = new Model("flora_" + i + "_lod" + lod, fMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+                Flora.FloraBundle fBundle = Flora.generateFloraBundle(gl, worldSeed + (i * 7382L), bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod]);
+                
+                floraBranchModelsLOD[lod][i] = new Model("flora_branch_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+                floraLeafModelsLOD[lod][i] = new Model("flora_leaf_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
             }
         }
 
@@ -636,7 +646,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                     float roll = cRand.nextFloat();
                     int numPlants = 0;
                     
-                    // Simulate Poisson distribution where lambda = 1.0
                     if (roll < 0.368f) numPlants = 0;
                     else if (roll < 0.736f) numPlants = 1;
                     else if (roll < 0.920f) numPlants = 2;
@@ -790,7 +799,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
     }
 
-private void render() {
+    private void render() {
 
         double elapsedTime = getSeconds() - startTime;
         double deltaTime = elapsedTime - lastElapsedTime;
@@ -854,7 +863,6 @@ private void render() {
             lastChunkZ = currentChunkZ;
             updateVisibleChunks(false);
         }
-        
 
         if (IS_DEBUG_MODE_ACTIVE && keyboard.h && ! lastKeyboardH) {
           FactorName[] values = FactorName.values();
@@ -895,7 +903,6 @@ private void render() {
 
         String skyTextureKey = "sky"; 
 
-        // Precompute culling shared properties to eliminate duplicate calculations
         Vec3 camForward = camera.getForwardDirection();
         float maxFloraRenderDistance = VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE;
         float maxFloraDistSq = maxFloraRenderDistance * maxFloraRenderDistance;
@@ -923,27 +930,27 @@ private void render() {
                 float dz = inst.pos.z - currentPos.z;
                 float distSq = dx*dx + dy*dy + dz*dz;
 
-                // 1. Distance Culling
                 if (distSq > maxFloraDistSq) continue;
 
-                // 2. Directional Culling (Padded slightly behind camera field-of-view)
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
 
-                // 3. LOD Selection Filters
-                int lodIndex = 0; // High Detail (0 - 65 units away)
+                int lodIndex = 0; 
                 if (distSq > 135f * 135f) {
-                    lodIndex = 2; // Low Detail (Square Prism)
+                    lodIndex = 2; 
                 } else if (distSq > 65f * 65f) {
-                    lodIndex = 1; // Medium Detail (Octagon)
+                    lodIndex = 1; 
                 }
 
                 Mat4 m = Mat4Transform.translate(inst.pos);
                 m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
                 m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
                 
-                floraModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
-                floraModelsLOD[lodIndex][inst.modelIndex].renderDepthPass(gl, depthPrePassShader, viewProjection);
+                floraBranchModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
+                floraBranchModelsLOD[lodIndex][inst.modelIndex].renderDepthPass(gl, depthPrePassShader, viewProjection);
+                
+                floraLeafModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
+                floraLeafModelsLOD[lodIndex][inst.modelIndex].renderDepthPass(gl, leafDepthPrePassShader, viewProjection);
             }
         }
         
@@ -988,7 +995,7 @@ private void render() {
         gl.glDepthMask(true);
         gl.glDisable(GL.GL_BLEND);
 
-        // --- TERRAIN & FLORA PASS ---
+        // --- TERRAIN PASS ---
         terrainShader.use(gl);
         terrainShader.setVec3(gl, "skyColour", skyColour);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(terrainShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
@@ -1003,6 +1010,7 @@ private void render() {
             plane.render(gl, ambientLight, nightProportion); 
         }
         
+        // --- FLORA PASS (Branches & Leaves) ---
         for (List<FloraInstance> positions : floraCache.values()) {
             for (FloraInstance inst : positions) {
                 float dx = inst.pos.x - currentPos.x;
@@ -1010,14 +1018,11 @@ private void render() {
                 float dz = inst.pos.z - currentPos.z;
                 float distSq = dx*dx + dy*dy + dz*dz;
 
-                // 1. Distance Culling
                 if (distSq > maxFloraDistSq) continue;
 
-                // 2. Directional Culling
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
 
-                // 3. LOD Selection Filters
                 int lodIndex = 0;
                 if (distSq > 135f * 135f) {
                     lodIndex = 2;
@@ -1029,12 +1034,17 @@ private void render() {
                 m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
                 m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
                 
-                floraModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
-                floraModelsLOD[lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
+                // Draw branch
+                floraBranchModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
+                floraBranchModelsLOD[lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
+                
+                // Draw leaves
+                floraLeafModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
+                floraLeafModelsLOD[lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
             }
         }
         
-        // --- INSTANCED FOLIAGE RENDERING PASS ---
+        // --- INSTANCED GRASS PASS ---
         if (totalGrassInstances > 0) {
             gl.glDisable(GL.GL_CULL_FACE); 
 
