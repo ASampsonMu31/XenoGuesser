@@ -1,0 +1,30 @@
+#version 330 core
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 aTexCoord;
+
+out vec4 fragColour;
+
+uniform sampler2D diffuse_texture;
+uniform vec3 viewPos;
+uniform vec3 ambientLight;
+
+void main() {
+    // Sample texture
+    vec4 texColor = texture(diffuse_texture, aTexCoord);
+    
+    // Alpha Test: discard pixels with low opacity
+    // This creates the "cutout" effect for your leaf shapes
+    if (texColor.a < 0.5) {
+        discard;
+    }
+
+    // Apply simple lighting
+    vec3 norm = normalize(aNormal);
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3)); // Match your global light
+    float diff = max(dot(norm, lightDir), 0.2);
+    
+    vec3 result = (ambientLight + diff) * texColor.rgb;
+    fragColour = vec4(result, 1.0);
+}
