@@ -9,8 +9,8 @@ import com.jogamp.opengl.awt.GLCanvas;
 import com.jogamp.opengl.util.FPSAnimator;
 
 public class XenoGuesser extends JFrame {
-  
-  private static final boolean IS_DETERMINISTIC_MODE = false;
+   
+  private static final boolean IS_DETERMINISTIC_MODE = false; // Set to true to test seed consistency
   private static final boolean IS_DEBUG_MODE_ACTIVE = false;
 
   private GLCanvas canvas; 
@@ -36,7 +36,26 @@ public class XenoGuesser extends JFrame {
 
   public XenoGuesser(String textForTitleBar) {
     super(textForTitleBar);
+
+    // 1. Establish the World Seed Early for Deterministic Generation
+    long worldSeed = IS_DETERMINISTIC_MODE ? 123L : System.currentTimeMillis();
+
+    String modelPath = "models/cvae_generator.pt";
+    String baseOutputDir = "assets/textures/generated_alphabets";
+
+    // 2. Procedural Systemic Multi-Glyph Generation
+    try (GlyphGenerator generator = new GlyphGenerator(modelPath)) {
+        
+        int totalDatasetAlphabets = 30; // Matches Omniglot training bounds
+        
+        generator.generateAllSystems(totalDatasetAlphabets, baseOutputDir, worldSeed);
+
+    } catch (Exception e) {
+        System.err.println("CRITICAL ERROR: Failed to generate writing systems.");
+        e.printStackTrace();
+    }
     
+    // 3. Setup Window Configurations
     this.setUndecorated(false); 
     this.setResizable(false);
     
@@ -70,7 +89,7 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.awt.noerasebackground", "true"); 
     System.setProperty("sun.java2d.noddraw", "true");
     
-    long worldSeed = IS_DETERMINISTIC_MODE ? 123L : System.currentTimeMillis();
+    // 4. Use the established seed for the World Engine
     PerlinNoise worldNoise = new PerlinNoise(worldSeed);
     
     float physicalChunkSize = 100.0f;
@@ -78,7 +97,6 @@ public class XenoGuesser extends JFrame {
     
     float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
     
-    // FIXED: Passed seaLevelHeight directly into the camera object constructor here
     Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, seaLevelHeight);
     MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
     
@@ -115,7 +133,6 @@ public class XenoGuesser extends JFrame {
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
     
-    // Explicitly seed the exact initial bottom-left position matching the frame size
     int initialCompassW = compassHUD.getPreferredSize().width;
     int initialCompassH = compassHUD.getPreferredSize().height;
     compassHUD.setBounds(0, screenSize.height - initialCompassH - 2, initialCompassW, initialCompassH);
@@ -168,7 +185,6 @@ public class XenoGuesser extends JFrame {
           updateMinimapBounds(layeredPane, minimap);
           gameHUD.setBounds(0, 0, gameHUD.getWidth(), gameHUD.getHeight());
           
-          // Squeezes the framed compass absolutely into the bottom left corner (x=0)
           int compassW = compassHUD.getPreferredSize().width;
           int compassH = compassHUD.getPreferredSize().height;
           compassHUD.setBounds(0, paneHeight - compassH - 2, compassW, compassH);
@@ -239,38 +255,38 @@ public class XenoGuesser extends JFrame {
   public boolean getIsDebugModeActive() {
     return IS_DEBUG_MODE_ACTIVE;
   }
-}
 
-class MyMouseInput extends MouseMotionAdapter {
-  private Point lastpoint;
-  private Camera camera;
-  private MapPanel minimap; 
-  
-  public MyMouseInput(Camera camera, MapPanel minimap) {
-    this.camera = camera;
-    this.minimap = minimap;
-  }
-      
-  @Override
-  public void mouseDragged(MouseEvent e) {
-    Point ms = e.getPoint();
-    if (minimap != null && minimap.isFullScreenRevealMode()) {
-      lastpoint = ms; 
-      return; 
-    }
+  class MyMouseInput extends MouseMotionAdapter {
+    private Point lastpoint;
+    private Camera camera;
+    private MapPanel minimap; 
     
-    float sensitivity = 0.001f;
-    float dx = (float) (ms.x - lastpoint.x) * sensitivity;
-    float dy = (float) (ms.y - lastpoint.y) * sensitivity;
-    
-    if (e.getModifiersEx() == MouseEvent.BUTTON1_DOWN_MASK) {
-      camera.updateYawPitch(-dx, dy);
+    public MyMouseInput(Camera camera, MapPanel minimap) {
+        this.camera = camera;
+        this.minimap = minimap;
     }
-    lastpoint = ms;
-  }
+        
+    @Override
+    public void mouseDragged(MouseEvent e) {
+        Point ms = e.getPoint();
+        if (minimap != null && minimap.isFullScreenRevealMode()) {
+            lastpoint = ms; 
+            return; 
+        }
+        
+        float sensitivity = 0.001f;
+        float dx = (float) (ms.x - lastpoint.x) * sensitivity;
+        float dy = (float) (ms.y - lastpoint.y) * sensitivity;
+        
+        if (e.getModifiersEx() == MouseEvent.BUTTON1_DOWN_MASK) {
+            camera.updateYawPitch(-dx, dy);
+        }
+        lastpoint = ms;
+    }
 
-  @Override
-  public void mouseMoved(MouseEvent e) {   
-    lastpoint = e.getPoint(); 
+    @Override
+    public void mouseMoved(MouseEvent e) {   
+        lastpoint = e.getPoint(); 
+    }
   }
 }
