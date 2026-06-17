@@ -27,7 +27,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     
     // Shader fields
     private Shader leafShader;
-    private Shader leafDepthPrePassShader;
     
     private static class FloraInstance {
         Vec3 pos;
@@ -111,14 +110,17 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private RegionalGenerationManager regionalManager;
 
     private RegionalFactor grassTemperateFactor;
+    private RegionalFactor leafTemperateFactor;
     private RegionalFactor grassMoistureFactor;
     private RegionalFactor grassPatchNoiseFactor;
     private RegionalFactor grassHeightNoiseFactor;
     private RegionalFactor grassColourNoiseFactor;
+    private RegionalFactor leafColourNoiseFactor;
 
     private RegionalFactor grassAbundanceFactor;
     private RegionalFactor grassHeightFactor;
     private RegionalFactor grassColourFactor;
+    private RegionalFactor leafColourFactor;
 
     private final boolean IS_DEBUG_MODE_ACTIVE;
     private FactorName currentDebugFactor;
@@ -130,8 +132,21 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     private GL3 gl;
 
+    private Vec3 healthyColour;
+    private Vec3 dyingColour;
+
     public enum FactorName {
-      ABUNDANCE, HEIGHT, COLOUR, TEMPERATURE, MOISTURE, GRASS_PATCH_NOISE, GRASS_HEIGHT_NOISE, GRASS_COLOUR_NOISE,
+      GRASS_ABUNDANCE,
+      GRASS_HEIGHT,
+      GRASS_COLOUR,
+      LEAF_COLOUR,
+      GRASS_TEMPERATURE_PREFERENCE,
+      LEAF_TEMPERATURE_PREFERENCE,
+      MOISTURE,
+      GRASS_PATCH_NOISE,
+      GRASS_HEIGHT_NOISE,
+      GRASS_COLOUR_NOISE,
+      LEAF_COLOUR_NOISE
     }
 
     public XenoGuesser_GLEventListener(
@@ -152,7 +167,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
         this.TOTAL_REGION_WIDTH = totalRegionWidth;
         this.IS_DEBUG_MODE_ACTIVE = isDebugModeActive;
-        this.currentDebugFactor = FactorName.ABUNDANCE;
+        this.currentDebugFactor = FactorName.GRASS_ABUNDANCE;
         
         this.camera.setPosition(new Vec3(0f, 5f, 15f));
         this.camera.setTarget(new Vec3(0f, 0f, 0f));
@@ -167,10 +182,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         float GRASS_TEMP_STD_DEV = 0.5f;
         int GRASS_WATER_MEAN = 0;
         float GRASS_WATER_STD_DEV = 80.0f;
-
         float GRASS_DENSITY_SCALE = 2e-5f;
         float GRASS_VARIATION_SCALE = 1e-5f;
-
         this.GRASS_BASE_ABUNDANCE = 700f;
 
         this.grassTemperateFactor = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
@@ -178,6 +191,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
         this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
         this.grassColourNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
+
+        float LEAF_VARIATION_SCALE = 1e-5f;
+        float LEAF_TEMP_MEAN = 0.2f;
+        float LEAF_TEMP_STD_DEV = 0.5f;
+
+        this.leafColourNoiseFactor = this.regionalManager.createNoiseMap(LEAF_VARIATION_SCALE);
+        this.leafTemperateFactor = this.regionalManager.createTemperaturePreference(LEAF_TEMP_MEAN, LEAF_TEMP_STD_DEV);
 
         this.grassAbundanceFactor = new RegionalFactor.Builder()
             .setWeight(3f)
@@ -201,6 +221,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             .addFactor(this.grassTemperateFactor, 0.35f)
             .addFactor(this.grassMoistureFactor, 0.35f)
             .addFactor(this.grassColourNoiseFactor, 0.3f)
+            .build();
+
+        this.leafColourFactor = new RegionalFactor.Builder()
+            .setWeight(1.5f)
+            .setPowerCurve(3.0f)
+            .addFactor(this.leafTemperateFactor, 0.35f)
+            .addFactor(this.grassMoistureFactor, 0.35f)
+            .addFactor(this.leafColourNoiseFactor, 0.3f)
             .build();
     }
 
@@ -411,7 +439,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         leafMat.setDiffuseMap(textures.get("leaf_diffuse"));
         
         leafShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf.txt");
-        leafDepthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf_depth.txt");
         
         int[] lodSlices = {12, 8, 4}; // High (Cylinder), Med (Octagon), Low (Square Prism)
         
@@ -505,6 +532,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
+
+        java.util.Random rand = new java.util.Random(worldSeed);
+        float r = 0.35f + rand.nextFloat() * 0.5f;
+        float g = 0.35f + rand.nextFloat() * 0.5f;
+        float b = 0.35f + rand.nextFloat() * 0.5f;
+        healthyColour = new Vec3(r, g, b);
+        dyingColour = new Vec3(0.4f, 0.25f, 0.15f);
     }
 
     private void spawnPlayerAtRandomLocation() {
@@ -947,10 +981,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
                 
                 floraBranchModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
-                floraBranchModelsLOD[lodIndex][inst.modelIndex].renderDepthPass(gl, depthPrePassShader, viewProjection);
                 
                 floraLeafModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
-                floraLeafModelsLOD[lodIndex][inst.modelIndex].renderDepthPass(gl, leafDepthPrePassShader, viewProjection);
             }
         }
         
@@ -1010,7 +1042,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             plane.render(gl, ambientLight, nightProportion); 
         }
         
-        // --- FLORA PASS (Branches & Leaves) ---
+        // ==========================================
+        // --- FLORA PASS (Branches & Leaves)     ---
+        // ==========================================
         for (List<FloraInstance> positions : floraCache.values()) {
             for (FloraInstance inst : positions) {
                 float dx = inst.pos.x - currentPos.x;
@@ -1034,11 +1068,41 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
                 m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
                 
-                // Draw branch
+                // 1. Draw Branch (Standard rendering)
                 floraBranchModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
                 floraBranchModelsLOD[lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
                 
-                // Draw leaves
+                // ---------------------------------------------------------
+                // 2. Prepare Regional Colors for Leaves
+                // ---------------------------------------------------------
+                // Determine which chunk grid coordinate this plant belongs to
+                int cx = (int) Math.floor((inst.pos.x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+                int cz = (int) Math.floor((inst.pos.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+
+                float climateVal = this.leafColourFactor.evaluate(cx, cz, inst.pos.x, inst.pos.z);
+
+                float rOut = dyingColour.x + (healthyColour.x - dyingColour.x) * climateVal;
+                float gOut = dyingColour.y + (healthyColour.y - dyingColour.y) * climateVal;
+                float bOut = dyingColour.z + (healthyColour.z - dyingColour.z) * climateVal;
+
+                Vec3 dynamicOuterColor = new Vec3(rOut, gOut, bOut);
+
+                // 4. Create the inner (lighter) color by scaling up the outer color
+                float lightScale = 1.3f; // Increases brightness by 30%
+
+                // Scale and cap at 1.0f maximum using Math.min
+                float rIn = Math.min(dynamicOuterColor.x * lightScale, 1.0f);
+                float gIn = Math.min(dynamicOuterColor.y * lightScale, 1.0f);
+                float bIn = Math.min(dynamicOuterColor.z * lightScale, 1.0f);
+
+                Vec3 dynamicInnerColor = new Vec3(rIn, gIn, bIn);
+
+                // 3. Bind shader and Push Uniforms
+                leafShader.use(gl);
+                leafShader.setVec3(gl, "u_OuterLeafColor", dynamicOuterColor);
+                leafShader.setVec3(gl, "u_InnerLeafColor", dynamicInnerColor);
+
+                // 4. Draw Leaves (Uses our newly configured shader)
                 floraLeafModelsLOD[lodIndex][inst.modelIndex].setModelMatrix(m);
                 floraLeafModelsLOD[lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
             }
@@ -1166,14 +1230,17 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
       if (this.IS_DEBUG_MODE_ACTIVE) {
           RegionalFactor targetFactor = switch (currentDebugFactor) {
-              case HEIGHT -> this.grassHeightFactor;
-              case COLOUR -> this.grassColourFactor;
-              case TEMPERATURE -> this.regionalManager.temperatureMap;
+              case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
+              case GRASS_HEIGHT -> this.grassHeightFactor;
+              case GRASS_COLOUR -> this.grassColourFactor;
+              case LEAF_COLOUR -> this.leafColourFactor;
+              case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
+              case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
               case MOISTURE -> this.grassMoistureFactor;
-              case ABUNDANCE -> this.grassAbundanceFactor;
               case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
               case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
               case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
+              case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
           };
           
           BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);
