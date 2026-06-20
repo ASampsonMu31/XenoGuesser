@@ -387,7 +387,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
         textures.add(gl, "sky", "assets/textures/sky.png");
         textures.add(gl, "sun_glow", "assets/textures/sun_glow.png");
-        textures.add(gl, "leaf_diffuse", "assets/textures/leaf1.png");
+        int N_LEAVES = 10;
+        for (int i=0; i < N_LEAVES; i++) {
+            textures.add(gl, "leaf" + String.valueOf(i), "assets/textures/leaves/leaf" + String.valueOf(i) + ".png");
+        }
+        
 
         Texture waterTexInstance = textures.get("water_diffuse");
         waterTexInstance.bind(gl);
@@ -436,7 +440,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
         
         Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
-        leafMat.setDiffuseMap(textures.get("leaf_diffuse"));
+        
+        java.util.Random randGen = new java.util.Random(worldSeed);
+        int selectedNum = randGen.nextInt(0, N_LEAVES);
+        leafMat.setDiffuseMap(textures.get("leaf" + String.valueOf(selectedNum)));
         
         leafShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf.txt");
         
