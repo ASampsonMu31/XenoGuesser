@@ -22,8 +22,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // --- MULTI-SPECIES CONFIGURATION ARCHITECTURE ---
     private static class SpeciesConfig {
         String name;
-        int leafTexStart;
-        int leafTexEnd;
+        int leafTexNum;
         
         // Base procedural growth boundaries
         float baseBRate, varBRate;
@@ -44,14 +43,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         RegionalFactor patchNoiseFactor;
         RegionalFactor abundanceFactor;
 
-        public SpeciesConfig(String name, int leafTexStart, int leafTexEnd,
+        float baseAbundance;
+
+        public SpeciesConfig(String name, int leafTexNum,
                              float baseBRate, float varBRate, float baseSWidth, float varSWidth,
                              float baseWDecl, float varWDecl, float baseSDist, float varSDist,
                              float baseBAngle, float varBAngle, Vec3 healthyColor, Vec3 dyingColor,
-                             float tempMean, float tempStdDev, float patchNoiseScale) {
+                             float tempMean, float tempStdDev, float patchNoiseScale, float baseAbundance) {
             this.name = name;
-            this.leafTexStart = leafTexStart;
-            this.leafTexEnd = leafTexEnd;
+            this.leafTexNum = leafTexNum;
             this.baseBRate = baseBRate; this.varBRate = varBRate;
             this.baseSWidth = baseSWidth; this.varSWidth = varSWidth;
             this.baseWDecl = baseWDecl; this.varWDecl = varWDecl;
@@ -62,11 +62,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             this.tempMean = tempMean;
             this.tempStdDev = tempStdDev;
             this.patchNoiseScale = patchNoiseScale;
+            this.baseAbundance = baseAbundance;
         }
     }
 
     private SpeciesConfig[] speciesConfigs;
-    private final int NUM_SPECIES = 3;
+    private final int NUM_SPECIES = 2;
     private final int FLORA_VARIATIONS = 10;
 
     private Map<String, List<FloraInstance>> floraCache;
@@ -197,9 +198,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       GRASS_HEIGHT_NOISE,
       GRASS_COLOUR_NOISE,
       LEAF_COLOUR_NOISE,
-      SPECIES_0_CONIFER_ABUNDANCE,
-      SPECIES_1_BROADLEAF_ABUNDANCE,
-      SPECIES_2_TENDRIL_ABUNDANCE
+      TREE_1_ABUNDANCE,
+      SHRUB_1_ABUNDANCE
     }
 
     public XenoGuesser_GLEventListener(
@@ -287,24 +287,49 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // --- CONSTRUCT MULTI-SPECIES PROFILES & ECO-NICHE FACTOR PIPELINES ---
         speciesConfigs = new SpeciesConfig[NUM_SPECIES];
         
-        // Species 0: Conifer Spike (Adapted to cold, low branching rates, narrow vertical growth, deep greens)
-        speciesConfigs[0] = new SpeciesConfig("Conifer Spike", 0, 2, 
-            0.15f, 0.10f, 0.4f, 0.2f, 0.35f, 0.1f, 16.0f, 8.0f, 20.0f, 15.0f,
-            new Vec3(0.08f, 0.42f, 0.18f), new Vec3(0.55f, 0.28f, 0.12f), 
-            0.15f, 0.35f, 3.2e-5f);
-            
-        // Species 1: Broadleaf Canopy (Adapted to temperate climates, wide branching structures, lush lime shades)
-        speciesConfigs[1] = new SpeciesConfig("Broadleaf Canopy", 3, 5, 
-            0.38f, 0.22f, 0.75f, 0.35f, 0.20f, 0.12f, 11.0f, 4.0f, 48.0f, 18.0f,
-            new Vec3(0.38f, 0.72f, 0.08f), new Vec3(0.42f, 0.12f, 0.08f), 
-            0.50f, 0.40f, 1.8e-5f);
-            
-        // Species 2: Alien Tendril (Adapted to high heat zones, extreme organic twisting, vibrant purples)
-        speciesConfigs[2] = new SpeciesConfig("Alien Tendril", 6, 9, 
-            0.28f, 0.32f, 0.58f, 0.28f, 0.32f, 0.22f, 7.5f, 11.0f, 28.0f, 44.0f,
-            new Vec3(0.55f, 0.08f, 0.65f), new Vec3(0.28f, 0.28f, 0.32f), 
-            0.85f, 0.25f, 4.5e-5f);
+        speciesConfigs[0] = new SpeciesConfig(
+            "Tree",
+            0, 
+            0.05f,
+            0.02f,
+            4.0f,
+            0.5f,
+            0.01f,
+            0.005f,
+            160f,
+            20f,
+            20.0f,
+            15.0f,
+            new Vec3(0.08f, 0.42f, 0.18f),
+            new Vec3(0.55f, 0.28f, 0.12f), 
+            0.15f,
+            0.35f,
+            3.2e-5f,
+            0.1f
+        ); // Updated configuration parameter safely maps linearly now
 
+        speciesConfigs[1] = new SpeciesConfig(
+            "Shrub",
+            6,
+            0.3f,
+            0.1f,
+            0.58f,
+            0.28f,
+            0.32f,
+            0.22f,
+            7.5f,
+            11.0f,
+            28.0f,
+            44.0f,
+            new Vec3(0.55f, 0.08f, 0.65f),
+            new Vec3(0.28f, 0.28f, 0.32f), 
+            0.85f,
+            0.25f,
+            4.5e-5f,
+            0.5f
+        );
+
+        // Inside the XenoGuesser_GLEventListener constructor:
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             sc.tempFactor = this.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev);
@@ -548,7 +573,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 float bAngle = sc.baseBAngle + fRand.nextFloat() * sc.varBAngle;
                 
                 // Calculate texture ONCE per variation
-                int texNum = sc.leafTexStart + fRand.nextInt(sc.leafTexEnd - sc.leafTexStart + 1);
+                int texNum = sc.leafTexNum;
                 Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
@@ -776,7 +801,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             }
         }
         floraCache.keySet().retainAll(activeFloraKeys.keySet());
-        
+
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
                 String key = cx + "_" + cz;
@@ -789,12 +814,25 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                         long fSeed = worldSeed ^ ((long) cx * 492876847L) ^ ((long) cz * 314159265L) ^ ((long) s * 9012431L);
                         java.util.Random cRand = new java.util.Random(fSeed);
 
-                        int speciesAttempts = regionalManager.evaluateChunkAssetCount(
+                        // FIX: Give the black-box manager 100x multiplier headroom to prevent sub-0.5 integer zero-outs
+                        float internalScale = 100f;
+                        int maxCeiling = Math.max(1, (int)(5 * sc.baseAbundance));
+                        int scaledCeiling = (int) (maxCeiling * internalScale);
+
+                        int scaledAttempts = regionalManager.evaluateChunkAssetCount(
                             cx, cz, PHYSICAL_CHUNK_SIZE, 
-                            1.8f, // Base species local abundance scale factor
-                            4,    // Maximum trees per chunk ceiling
+                            sc.baseAbundance * internalScale, // Turn 0.49 into 49.0 smoothly
+                            scaledCeiling,       
                             sc.abundanceFactor
                         );
+
+                        // FIX: Scale back down using a random float roll for perfect linear fraction probability 
+                        double actualAttemptsFloat = scaledAttempts / (double) internalScale;
+                        int speciesAttempts = (int) actualAttemptsFloat;
+                        double fractionalPart = actualAttemptsFloat - speciesAttempts;
+                        if (cRand.nextFloat() < fractionalPart) {
+                            speciesAttempts++;
+                        }
 
                         for (int i = 0; i < speciesAttempts; i++) {
                             float cxWorld = cx * PHYSICAL_CHUNK_SIZE + (cRand.nextFloat() * PHYSICAL_CHUNK_SIZE);
@@ -1321,9 +1359,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
               case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
               case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
               case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
-              case SPECIES_0_CONIFER_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
-              case SPECIES_1_BROADLEAF_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
-              case SPECIES_2_TENDRIL_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
+              case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
+              case SHRUB_1_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
           };
           
           BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);
