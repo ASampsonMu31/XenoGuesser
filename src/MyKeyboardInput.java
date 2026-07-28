@@ -2,7 +2,7 @@ import java.awt.event.*;
 
 
 class MyKeyboardInput implements KeyListener {
-  public boolean w, a, s, d, h;
+  public boolean w, a, s, d, g, h;
 
   // Explicit constructor with NO camera parameter required!
   public MyKeyboardInput() {
@@ -10,6 +10,7 @@ class MyKeyboardInput implements KeyListener {
     this.a = false;
     this.s = false;
     this.d = false;
+    this.g = false;
     this.h = false;
   }
 
@@ -32,6 +33,7 @@ class MyKeyboardInput implements KeyListener {
       case KeyEvent.VK_S: s = isPressed; break;
       case KeyEvent.VK_A: a = isPressed; break;
       case KeyEvent.VK_D: d = isPressed; break;
+      case KeyEvent.VK_G: g = isPressed; break;
       case KeyEvent.VK_H: h = isPressed; break;
     }
   }

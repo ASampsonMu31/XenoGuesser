@@ -1,6 +1,7 @@
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Random;
 import java.util.ArrayList;
 import java.util.List;
 import java.awt.image.BufferedImage;
@@ -19,8 +20,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Map<String, Model> chunkCache;
     private Map<String, float[]> grassCache; 
     
-    // --- MULTI-SPECIES CONFIGURATION ARCHITECTURE ---
-    private static class SpeciesConfig {
+private static class SpeciesConfig {
         String name;
         int leafTexNum;
         
@@ -30,10 +30,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         float baseWDecl, varWDecl;
         float baseSDist, varSDist;
         float baseBAngle, varBAngle;
+        float leafScale; 
         
         // Dynamic phenotype profiles
         Vec3 healthyColor;
         Vec3 dyingColor;
+        Vec3 trunkColor; // NEW: Controls the bark/wood color
         
         // Climate niche constraints
         float tempMean, tempStdDev;
@@ -45,13 +47,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         float baseAbundance;
 
-        public SpeciesConfig(String name, int leafTexNum,
+        public SpeciesConfig(String name, int leafTexNum, float leafScale,
                              float baseBRate, float varBRate, float baseSWidth, float varSWidth,
                              float baseWDecl, float varWDecl, float baseSDist, float varSDist,
-                             float baseBAngle, float varBAngle, Vec3 healthyColor, Vec3 dyingColor,
+                             float baseBAngle, float varBAngle, Vec3 healthyColor, Vec3 dyingColor, Vec3 trunkColor,
                              float tempMean, float tempStdDev, float patchNoiseScale, float baseAbundance) {
             this.name = name;
             this.leafTexNum = leafTexNum;
+            this.leafScale = leafScale; 
             this.baseBRate = baseBRate; this.varBRate = varBRate;
             this.baseSWidth = baseSWidth; this.varSWidth = varSWidth;
             this.baseWDecl = baseWDecl; this.varWDecl = varWDecl;
@@ -59,6 +62,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             this.baseBAngle = baseBAngle; this.varBAngle = varBAngle;
             this.healthyColor = healthyColor;
             this.dyingColor = dyingColor;
+            this.trunkColor = trunkColor; // NEW
             this.tempMean = tempMean;
             this.tempStdDev = tempStdDev;
             this.patchNoiseScale = patchNoiseScale;
@@ -67,7 +71,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     private SpeciesConfig[] speciesConfigs;
-    private final int NUM_SPECIES = 2;
+    private final int NUM_SPECIES = 8; // 4 Trees + 4 Shrubs
     private final int FLORA_VARIATIONS = 10;
 
     private Map<String, List<FloraInstance>> floraCache;
@@ -175,7 +179,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     private final boolean IS_DEBUG_MODE_ACTIVE;
     private FactorName currentDebugFactor;
+    private boolean lastKeyboardG = false;
     private boolean lastKeyboardH = false;
+
 
     private boolean isToTeleport = false;
     private float teleportX = 0f;
@@ -199,7 +205,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
       GRASS_COLOUR_NOISE,
       LEAF_COLOUR_NOISE,
       TREE_1_ABUNDANCE,
-      SHRUB_1_ABUNDANCE
+      TREE_2_ABUNDANCE,
+      TREE_3_ABUNDANCE,
+      TREE_4_ABUNDANCE,
+      SHRUB_1_ABUNDANCE,
+      SHRUB_2_ABUNDANCE,
+      SHRUB_3_ABUNDANCE,
+      SHRUB_4_ABUNDANCE
     }
 
     public XenoGuesser_GLEventListener(
@@ -284,62 +296,135 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             .addFactor(this.leafColourNoiseFactor, 0.3f)
             .build();
 
-        // --- CONSTRUCT MULTI-SPECIES PROFILES & ECO-NICHE FACTOR PIPELINES ---
+        // --- SEEDED DYNAMIC SPECIES GENERATION PIPELINE ---
         speciesConfigs = new SpeciesConfig[NUM_SPECIES];
         
-        speciesConfigs[0] = new SpeciesConfig(
-            "Tree",
-            0, 
-            0.05f,
-            0.02f,
-            4.0f,
-            0.5f,
-            0.01f,
-            0.005f,
-            160f,
-            20f,
-            20.0f,
-            15.0f,
-            new Vec3(0.08f, 0.42f, 0.18f),
-            new Vec3(0.55f, 0.28f, 0.12f), 
-            0.15f,
-            0.35f,
-            3.2e-5f,
-            0.1f
-        ); // Updated configuration parameter safely maps linearly now
+        // Create a Random instance tied strictly to this world's seed
+        // This guarantees variety per game, but perfect uniformity on the same seed
+        Random speciesSeeder = new Random(worldSeed);
+        
+        // Define available leaf texture asset pool indices
+        int[] availableLeafTextures = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
 
-        speciesConfigs[1] = new SpeciesConfig(
-            "Shrub",
-            6,
-            0.3f,
-            0.1f,
-            0.58f,
-            0.28f,
-            0.32f,
-            0.22f,
-            7.5f,
-            11.0f,
-            28.0f,
-            44.0f,
-            new Vec3(0.55f, 0.08f, 0.65f),
-            new Vec3(0.28f, 0.28f, 0.32f), 
-            0.85f,
-            0.25f,
-            4.5e-5f,
-            0.5f
-        );
-
-        // Inside the XenoGuesser_GLEventListener constructor:
         for (int s = 0; s < NUM_SPECIES; s++) {
+            boolean isTree = (s < 4); // First 4 are Trees, last 4 are Shrubs
+            String name = isTree ? ("Procedural Tree Type " + (s + 1)) : ("Procedural Shrub Type " + (s - 3));
+            
+            // Choose a texture out of the pool randomly based on the seed
+            int leafTexNum = availableLeafTextures[speciesSeeder.nextInt(availableLeafTextures.length)];
+            
+            // Randomize organic profiles depending on structural class (Tree vs Shrub)
+            float leafScale, baseBRate, varBRate, baseSWidth, varSWidth, baseWDecl, varWDecl, baseSDist, varSDist, baseBAngle, varBAngle;
+            float tempMean, tempStdDev, patchNoiseScale, baseAbundance;
+            Vec3 healthyColor, dyingColor;
+
+            if (isTree) {
+                // Trees: Massive leaves, low branching density, thick trunks, tall structural heights
+                leafScale   = 2.2f + speciesSeeder.nextFloat() * 1.5f; // Scale ranges from 2.2 to 3.7
+                baseBRate   = 0.03f + speciesSeeder.nextFloat() * 0.06f;
+                varBRate    = 0.01f + speciesSeeder.nextFloat() * 0.02f;
+                baseSWidth  = 2.0f + speciesSeeder.nextFloat() * 2.5f;
+                varSWidth   = 0.3f + speciesSeeder.nextFloat() * 0.4f;
+                baseWDecl   = 0.01f + speciesSeeder.nextFloat() * 0.04f;
+                varWDecl    = 0.005f + speciesSeeder.nextFloat() * 0.01f;
+                baseSDist   = 80.0f + speciesSeeder.nextFloat() * 90.0f; // Tall
+                varSDist    = 10.0f + speciesSeeder.nextFloat() * 15.0f;
+                baseBAngle  = 15.0f + speciesSeeder.nextFloat() * 25.0f; // Narrow upward growth
+                varBAngle   = 5.0f + speciesSeeder.nextFloat() * 10.0f;
+                
+                // Ecological layout: Random temperature preferences across the map
+                tempMean    = 0.1f + speciesSeeder.nextFloat() * 0.6f; 
+                tempStdDev  = 0.2f + speciesSeeder.nextFloat() * 0.2f;
+                baseAbundance = 0.02f + speciesSeeder.nextFloat() * 0.08f;
+
+
+            } else {
+                // Shrubs: Short, thin start, dense brush branching rates, ultra wide extension angles
+                leafScale   = 0.7f + speciesSeeder.nextFloat() * 0.4f; // Shrub leaf sizes (0.7 to 1.1)
+                baseBRate   = 0.2f + speciesSeeder.nextFloat() * 0.15f;
+                varBRate    = 0.05f + speciesSeeder.nextFloat() * 0.08f;
+                baseSWidth  = 0.3f + speciesSeeder.nextFloat() * 0.4f;
+                varSWidth   = 0.1f + speciesSeeder.nextFloat() * 0.2f;
+                baseWDecl   = 0.15f + speciesSeeder.nextFloat() * 0.2f;
+                varWDecl    = 0.05f + speciesSeeder.nextFloat() * 0.1f;
+                baseSDist   = 5.0f + speciesSeeder.nextFloat() * 12.0f; // Short
+                varSDist    = 2.0f + speciesSeeder.nextFloat() * 6.0f;
+                baseBAngle  = 25.0f + speciesSeeder.nextFloat() * 25.0f; // Wide bushy dispersion
+                varBAngle   = 10.0f + speciesSeeder.nextFloat() * 20.0f;
+                
+                // Ecological layout: Prefer warmer/different niches than trees
+                tempMean    = 0.4f + speciesSeeder.nextFloat() * 0.5f;
+                tempStdDev  = 0.15f + speciesSeeder.nextFloat() * 0.2f;
+                baseAbundance = 0.04f + speciesSeeder.nextFloat() * 0.16f;
+            }
+
+            // --- GENERATE PURE GREYSCALE WOOD LUMINANCE (0.15 = Charcoal, 0.95 = Ghost White) ---
+            float trunkLuminance = 0.15f + speciesSeeder.nextFloat() * 0.80f;
+            
+            // Set all channels equal to create a clean greyscale intensity factor
+            Vec3 trunkColor = new Vec3(trunkLuminance, trunkLuminance, trunkLuminance);
+
+            patchNoiseScale = 1e-5f;
+
+            // --- 1. GENERATE ANY BRIGHT HEALTHY COLOR (Per-Species) ---
+            float rawR = speciesSeeder.nextFloat();
+            float rawG = speciesSeeder.nextFloat();
+            float rawB = speciesSeeder.nextFloat();
+
+            // Find the strongest channel to scale the color up and guarantee brightness/vibrancy
+            float maxChannel = Math.max(rawR, Math.max(rawG, rawB));
+            if (maxChannel == 0.0f) { // Edge case fallback to prevent division by zero
+                rawR = 1.0f; rawG = 1.0f; rawB = 1.0f; 
+                maxChannel = 1.0f;
+            }
+
+            // Normalize so the brightest channel hits full capacity (1.0f), making it pop
+            float brightR = rawR / maxChannel;
+            float brightG = rawG / maxChannel;
+            float brightB = rawB / maxChannel;
+
+            // Add a slight minimum floor so it never goes pure black or pure neon white unexpectedly
+            healthyColor = new Vec3(
+                Math.max(0.15f, brightR),
+                Math.max(0.15f, brightG),
+                Math.max(0.15f, brightB)
+            );
+
+            // --- 2. GENERATE A BROWNER, DEGRADED VERSION OF THAT EXACT COLOR ---
+            // To simulate organic decay/browning, we mix the base color with a dark brown/grey tint.
+            // This preserves the unique base species hue while pulling it into a muddy, dead state.
+            float brownFactor = 0.35f; // Controls how much of the original hue passes through
+            float deadR = (healthyColor.x * brownFactor) + 0.15f; 
+            float deadG = (healthyColor.y * brownFactor) + 0.10f; // Lower green reduces vitality
+            float deadB = (healthyColor.z * brownFactor) + 0.04f; // Lower blue pushes it toward warm mud/earth tones
+
+            dyingColor = new Vec3(
+                Math.min(deadR, 1.0f),
+                Math.min(deadG, 1.0f),
+                Math.min(deadB, 1.0f)
+            );
+
+            // Construct the runtime configuration profile
+            speciesConfigs[s] = new SpeciesConfig(
+                name, leafTexNum, leafScale,
+                baseBRate, varBRate, baseSWidth, varSWidth,
+                baseWDecl, varWDecl, baseSDist, varSDist,
+                baseBAngle, varBAngle, healthyColor, dyingColor, trunkColor,
+                tempMean, tempStdDev, patchNoiseScale, baseAbundance
+            );
+
+            // Compile Ecosystem Pipeline Rules for this dynamic configuration
             SpeciesConfig sc = speciesConfigs[s];
             sc.tempFactor = this.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev);
             sc.patchNoiseFactor = this.regionalManager.createNoiseMap(sc.patchNoiseScale);
+            
+            // Blended factor with prominent 50% unique noise allocation for explicit segregation
             sc.abundanceFactor = new RegionalFactor.Builder()
                 .setWeight(3.5f)
-                .setPowerCurve(4.0f)
-                .addFactor(sc.tempFactor, 0.45f)
-                .addFactor(this.grassMoistureFactor, 0.35f)
-                .addFactor(sc.patchNoiseFactor, 0.20f)
+                .setPowerCurve(3.0f)
+                .addFactor(sc.tempFactor, 0.30f)
+                .addFactor(this.grassMoistureFactor, 0.20f)
+                .addFactor(sc.patchNoiseFactor, 0.50f)
                 .build();
         }
     }
@@ -550,19 +635,22 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
         floraLeafModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
         
-        Material floraMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(1.0f, 1.0f, 1.0f), new Vec3(0.1f, 0.1f, 0.1f), 4.0f);
-        floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
-        
         leafShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf.txt");
         int[] lodSlices = {12, 8, 4}; 
         
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             
-            // FIX: Iterate through Variations FIRST
+            // NEW: Create a distinct material for this specific species' trunk
+            // We feed sc.trunkColor directly into the diffuse channel of the Material
+            Material floraMat = new Material(sc.trunkColor, new Vec3(0.05f, 0.05f, 0.05f), new Vec3(0.1f, 0.1f, 0.1f), 2.0f);
+            System.out.println("trunk colour");
+            System.out.println(sc.trunkColor);
+            floraMat.setDiffuseMap(textures.get("dirt_diffuse")); // Blends the color with your bark/dirt texture
+            
+            // Iterate through Variations FIRST
             for (int i = 0; i < FLORA_VARIATIONS; i++) {
                 
-                // FIX: Initialize the Random object PER VARIATION so parameters are locked
                 java.util.Random fRand = new java.util.Random(worldSeed + s * 3721L + i * 8273L);
                 
                 // Calculate physical bounds ONCE per variation
@@ -577,14 +665,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
-                // NOW iterate through LODs, passing the locked parameters
+                // Iterate through LODs, passing the locked parameters
                 for (int lod = 0; lod < 3; lod++) {
                     
                     Flora.FloraBundle fBundle = Flora.generateFloraBundle(
                         gl, worldSeed + (i * 7382L) + s * 8831L, 
-                        bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod]
+                        bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
+                    // Notice we are passing the custom floraMat here now!
                     floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
@@ -1047,7 +1136,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             updateVisibleChunks(false);
         }
 
-        if (IS_DEBUG_MODE_ACTIVE && keyboard.h && ! lastKeyboardH) {
+        if (IS_DEBUG_MODE_ACTIVE && keyboard.g && !lastKeyboardG) {
+          FactorName[] values = FactorName.values();
+          currentDebugFactor = values[(currentDebugFactor.ordinal() - 1) % values.length];
+          assignHeatmapToMinimap(currentDebugFactor);
+        }
+        lastKeyboardG = keyboard.g;
+
+        if (IS_DEBUG_MODE_ACTIVE && keyboard.h && !lastKeyboardH) {
           FactorName[] values = FactorName.values();
           currentDebugFactor = values[(currentDebugFactor.ordinal() + 1) % values.length];
           assignHeatmapToMinimap(currentDebugFactor);
@@ -1360,7 +1456,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
               case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
               case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
               case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
-              case SHRUB_1_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
+              case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
+              case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
+              case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
+              case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
+              case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
+              case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
+              case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
           };
           
           BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);

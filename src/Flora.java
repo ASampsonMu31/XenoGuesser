@@ -19,8 +19,9 @@ public class Flora {
 
     /**
      * Generates a fully baked, procedural plant with separated branch and leaf meshes.
+     * UPDATED: Added leafScaleMultiplier to dynamically size leaves based on species config.
      */
-    public static FloraBundle generateFloraBundle(GL3 gl, long seed, float branchingRate, float startWidth, float widthDecline, float stoppingDistance, float meanBranchAngle, int slices) {
+    public static FloraBundle generateFloraBundle(GL3 gl, long seed, float branchingRate, float startWidth, float widthDecline, float stoppingDistance, float meanBranchAngle, int slices, float leafScaleMultiplier) {
         List<Float> branchVerts = new ArrayList<>();
         List<Integer> branchInds = new ArrayList<>();
         
@@ -35,7 +36,7 @@ public class Flora {
         // Start recursion at the origin, pointing straight up
         buildBranch(rand, new Vec3(0, 0, 0), new Mat4(1), startWidth, 0f, 0, 
                     branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, 
-                    branchVerts, branchInds, leafVerts, leafInds, segmentCount);
+                    branchVerts, branchInds, leafVerts, leafInds, segmentCount, leafScaleMultiplier);
         
         Mesh bMesh = new Mesh(gl, toFloatArray(branchVerts), toIntArray(branchInds));
         Mesh lMesh = new Mesh(gl, toFloatArray(leafVerts), toIntArray(leafInds));
@@ -59,14 +60,15 @@ public class Flora {
             List<Integer> bInds,
             List<Float> lVerts,
             List<Integer> lInds,
-            int[] segmentCount) {
+            int[] segmentCount,
+            float leafScaleMultiplier) {
         
         // SAFE & LOD-UNIFORM BOUNDARY CHECK:
         // Capping at 4000 total segments prevents memory crashes, while using structural counts 
         // instead of vertex array sizes ensures the tree layout evaluates identically across all LOD tiers.
         if (dist >= stoppingDistance || width < 0.05f || depth > 20 || segmentCount[0] >= 4000) {
-            // We've reached a branch tip. Spawn leaves!
-            spawnLeaves(rand, pos, rot, lVerts, lInds);
+            // We've reached a branch tip. Spawn leaves using our scale multiplier!
+            spawnLeaves(rand, pos, rot, lVerts, lInds, leafScaleMultiplier);
             return;
         }
         
@@ -131,16 +133,16 @@ public class Flora {
             // Branch off (note we pass 0f for the branch's starting dist)
             buildBranch(rand, nextPos, branchRot, branchWidth, 0f, depth + 1, 
                         branchingRate, widthDecline, branchStoppingDist, meanBranchAngle, slices, 
-                        bVerts, bInds, lVerts, lInds, segmentCount);
+                        bVerts, bInds, lVerts, lInds, segmentCount, leafScaleMultiplier);
         }
         
         // Continue the main stem upward (using the existing distance counter)
         buildBranch(rand, nextPos, mainRot, width * 0.96f, dist + length, depth, 
                     branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, 
-                    bVerts, bInds, lVerts, lInds, segmentCount);
+                    bVerts, bInds, lVerts, lInds, segmentCount, leafScaleMultiplier);
     }
 
-    private static void spawnLeaves(Random rand, Vec3 pos, Mat4 rot, List<Float> verts, List<Integer> inds) {
+    private static void spawnLeaves(Random rand, Vec3 pos, Mat4 rot, List<Float> verts, List<Integer> inds, float leafScaleMultiplier) {
         int numLeavesInCluster = 2 + rand.nextInt(3); // Spawn 2 to 4 leaves per tip
         
         for (int i = 0; i < numLeavesInCluster; i++) {
@@ -151,7 +153,8 @@ public class Flora {
             Mat4 leafRot = Mat4.multiply(rot, Mat4Transform.rotateAroundY(twist));
             leafRot = Mat4.multiply(leafRot, Mat4Transform.rotateAroundZ(bend));
             
-            float scale = 0.8f + rand.nextFloat() * 0.7f; // Jitter size
+            // UPDATED: Incorporate the leafScaleMultiplier to properly upscale trees relative to shrubs
+            float scale = (0.8f + rand.nextFloat() * 0.7f) * leafScaleMultiplier; // Jitter size * Multiplier
             float w = 0.8f * scale; 
             float h = 2.0f * scale; 
             
