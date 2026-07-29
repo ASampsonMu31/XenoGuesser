@@ -36,7 +36,12 @@ const float PI = 3.14159265359;
 void main() {
     vec2 scaledUV = aTexCoord * scale; 
 
-    vec3 ambient = ambientLight * material.ambient * texture(diffuse_texture, scaledUV).rgb;
+    // Cache the base texture color to read from VRAM only once
+    vec3 texColor = texture(diffuse_texture, scaledUV).rgb;
+
+    // Multiplicative blending for ambient lighting
+    vec3 ambient = ambientLight * material.ambient * texColor;
+    
     vec3 norm = normalize(aNormal);
     vec3 viewDir = normalize(viewPos - aPos);
 
@@ -47,7 +52,9 @@ void main() {
         Light light = lights[i];
         vec3 lightDir = normalize(light.position - aPos);  
         float diff = max(dot(norm, lightDir), 0.0);
-        totalDiffuse += light.diffuse * material.diffuse * diff * texture(diffuse_texture, scaledUV).rgb;
+        
+        // Correctly blends the texture with the material diffuse color multiplicatively
+        totalDiffuse += light.diffuse * material.diffuse * diff * texColor;
         
         vec3 halfwayDir = normalize(lightDir + viewDir);  
         float spec = pow(max(dot(norm, halfwayDir), 0.0), material.shininess);
@@ -62,7 +69,6 @@ void main() {
     mat3 invSkyRot = transpose(mat3(skyRotation));
     vec3 localSkyDir = invSkyRot * worldLookDir;
     
-    // Exact mathematical inverse of InsideSphere.java coordinate layout
     float theta = atan(localSkyDir.x, localSkyDir.z);
     if (theta < 0.0) {
         theta += 2.0 * PI;

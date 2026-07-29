@@ -1,30 +1,78 @@
 #version 330 core
 
-in vec3 aPos;
+// Inputs from vertex shader
+in vec3 aPos; 
 in vec3 aNormal;
 in vec2 aTexCoord;
 
 out vec4 fragColour;
 
+// Uniforms
 uniform sampler2D diffuse_texture;
 uniform vec3 viewPos;
 uniform vec3 ambientLight;
 
+// Uniforms for regional leaf colors
+uniform vec3 u_OuterLeafColor;
+uniform vec3 u_InnerLeafColor;
+
+// --- NEW UNIFORMS FOR FOG ---
+uniform sampler2D skyTexture; 
+uniform mat4 skyRotation;
+
+const float PI = 3.14159265359;
+
 void main() {
-    // Sample texture
+    // 1. Sample the texture 
     vec4 texColor = texture(diffuse_texture, aTexCoord);
     
-    // Alpha Test: discard pixels with low opacity
-    // This creates the "cutout" effect for your leaf shapes
+    // 2. Alpha Test: Discard transparent fragments immediately
     if (texColor.a < 0.5) {
         discard;
     }
 
-    // Apply simple lighting
+    // 3. Color Replacement using Channel Masking
+    vec3 finalLeafColor = vec3(0.0);
+    finalLeafColor += texColor.r * u_OuterLeafColor;
+    finalLeafColor += texColor.b * u_InnerLeafColor;
+    
+    float maskSum = clamp(texColor.r + texColor.b, 0.0, 1.0);
+    finalLeafColor += (1.0 - maskSum) * texColor.rgb;
+
+    // 4. Apply Lighting to your newly calculated color
     vec3 norm = normalize(aNormal);
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3)); // Match your global light
+    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3)); 
     float diff = max(dot(norm, lightDir), 0.2);
     
-    vec3 result = (ambientLight + diff) * texColor.rgb;
-    fragColour = vec4(result, 1.0);
+    vec3 result = (ambientLight + diff) * finalLeafColor;
+    
+    // =========================================================
+    // --- SEAMLESS INSIDE-SPHERE FOG COORD MAPPING ---
+    // =========================================================
+    float radialDistance = length(viewPos - aPos);
+    vec3 worldLookDir = normalize(aPos - viewPos);
+    mat3 invSkyRot = transpose(mat3(skyRotation));
+    vec3 localSkyDir = invSkyRot * worldLookDir;
+    
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) {
+        theta += 2.0 * PI;
+    }
+    float u = theta / (2.0 * PI);
+    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+    
+    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
+
+    // --- CUBIC DISTANCE BLENDING ---
+    float fogStart = 1000.0;
+    float fogEnd = 2200.0; 
+
+    float fogFactor = (fogEnd - radialDistance) / (fogEnd - fogStart);
+    fogFactor = clamp(fogFactor, 0.0, 1.0); 
+    fogFactor = smoothstep(0.0, 1.0, fogFactor);
+
+    // Mix the original leaf color with the sky background based on distance
+    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
+
+    fragColour = vec4(finalColourWithFog, 1.0);
 }

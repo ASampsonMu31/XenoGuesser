@@ -19,8 +19,9 @@ public class Flora {
 
     /**
      * Generates a fully baked, procedural plant with separated branch and leaf meshes.
+     * UPDATED: Added leafScaleMultiplier to dynamically size leaves based on species config.
      */
-    public static FloraBundle generateFloraBundle(GL3 gl, long seed, float branchingRate, float startWidth, float widthDecline, float stoppingDistance, float meanBranchAngle, int slices) {
+    public static FloraBundle generateFloraBundle(GL3 gl, long seed, float branchingRate, float startWidth, float widthDecline, float stoppingDistance, float meanBranchAngle, int slices, float leafScaleMultiplier) {
         List<Float> branchVerts = new ArrayList<>();
         List<Integer> branchInds = new ArrayList<>();
         
@@ -29,10 +30,13 @@ public class Flora {
         
         Random rand = new Random(seed);
         
+        // Shared structural counter to prevent exponential explosion across all recursive paths
+        int[] segmentCount = {0};
+        
         // Start recursion at the origin, pointing straight up
         buildBranch(rand, new Vec3(0, 0, 0), new Mat4(1), startWidth, 0f, 0, 
                     branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, 
-                    branchVerts, branchInds, leafVerts, leafInds);
+                    branchVerts, branchInds, leafVerts, leafInds, segmentCount, leafScaleMultiplier);
         
         Mesh bMesh = new Mesh(gl, toFloatArray(branchVerts), toIntArray(branchInds));
         Mesh lMesh = new Mesh(gl, toFloatArray(leafVerts), toIntArray(leafInds));
@@ -55,14 +59,21 @@ public class Flora {
             List<Float> bVerts, 
             List<Integer> bInds,
             List<Float> lVerts,
-            List<Integer> lInds) {
+            List<Integer> lInds,
+            int[] segmentCount,
+            float leafScaleMultiplier) {
         
-        // Safety base cases to prevent heap overflow or infinite recursion
-        if (dist >= stoppingDistance || width < 0.05f || depth > 20 || bVerts.size() > 300000) {
-            // We've reached a branch tip. Spawn leaves!
-            spawnLeaves(rand, pos, rot, lVerts, lInds);
+        // SAFE & LOD-UNIFORM BOUNDARY CHECK:
+        // Capping at 4000 total segments prevents memory crashes, while using structural counts 
+        // instead of vertex array sizes ensures the tree layout evaluates identically across all LOD tiers.
+        if (dist >= stoppingDistance || width < 0.05f || depth > 20 || segmentCount[0] >= 4000) {
+            // We've reached a branch tip. Spawn leaves using our scale multiplier!
+            spawnLeaves(rand, pos, rot, lVerts, lInds, leafScaleMultiplier);
             return;
         }
+        
+        // Increment structural segment counter
+        segmentCount[0]++;
         
         // Variable segment length for natural jitter
         float length = 1.0f + (rand.nextFloat() * 0.8f); 
@@ -108,21 +119,30 @@ public class Flora {
         if (rand.nextFloat() < branchingRate) {
             float twistAngle = (rand.nextFloat() * 360f);
             float bendAngle = meanBranchAngle + (rand.nextFloat() * 15f - 7.5f);
-            float branchWidth = width * widthDecline;
+            
+            // Treat widthDecline as the amount to subtract (e.g., 0.1 decline = 90% thickness retained).
+            float branchWidth = width * (1.0f - widthDecline);
             
             Mat4 branchRot = Mat4.multiply(rot, Mat4Transform.rotateAroundY(twistAngle));
             branchRot = Mat4.multiply(branchRot, Mat4Transform.rotateAroundZ(bendAngle));
             
-            buildBranch(rand, nextPos, branchRot, branchWidth, dist + length, depth + 1, 
-                        branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, bVerts, bInds, lVerts, lInds);
+            // Scale the stopping distance down based on the parent's remaining length
+            float remainingDistance = stoppingDistance - dist;
+            float branchStoppingDist = Math.max(remainingDistance * 0.75f, 2.0f);
+            
+            // Branch off (note we pass 0f for the branch's starting dist)
+            buildBranch(rand, nextPos, branchRot, branchWidth, 0f, depth + 1, 
+                        branchingRate, widthDecline, branchStoppingDist, meanBranchAngle, slices, 
+                        bVerts, bInds, lVerts, lInds, segmentCount, leafScaleMultiplier);
         }
         
-        // Continue the main stem upward
+        // Continue the main stem upward (using the existing distance counter)
         buildBranch(rand, nextPos, mainRot, width * 0.96f, dist + length, depth, 
-                    branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, bVerts, bInds, lVerts, lInds);
+                    branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, 
+                    bVerts, bInds, lVerts, lInds, segmentCount, leafScaleMultiplier);
     }
 
-    private static void spawnLeaves(Random rand, Vec3 pos, Mat4 rot, List<Float> verts, List<Integer> inds) {
+    private static void spawnLeaves(Random rand, Vec3 pos, Mat4 rot, List<Float> verts, List<Integer> inds, float leafScaleMultiplier) {
         int numLeavesInCluster = 2 + rand.nextInt(3); // Spawn 2 to 4 leaves per tip
         
         for (int i = 0; i < numLeavesInCluster; i++) {
@@ -133,7 +153,8 @@ public class Flora {
             Mat4 leafRot = Mat4.multiply(rot, Mat4Transform.rotateAroundY(twist));
             leafRot = Mat4.multiply(leafRot, Mat4Transform.rotateAroundZ(bend));
             
-            float scale = 0.8f + rand.nextFloat() * 0.7f; // Jitter size
+            // UPDATED: Incorporate the leafScaleMultiplier to properly upscale trees relative to shrubs
+            float scale = (0.8f + rand.nextFloat() * 0.7f) * leafScaleMultiplier; // Jitter size * Multiplier
             float w = 0.8f * scale; 
             float h = 2.0f * scale; 
             

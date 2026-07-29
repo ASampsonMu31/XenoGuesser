@@ -49,28 +49,31 @@ public class RegionalFactor {
      */
     public static class Builder {
         private float weight = 1.0f;
-        private float powerCurve = 1.0f;
-        private final List<FactorEntry> subFactors = new ArrayList<>();
+        private float powerCurve = 1.0f; // New: Tracks custom power constraints
+        private final List<FactorEntry> factors = new ArrayList<>();
 
         public Builder setWeight(float weight) {
             this.weight = weight;
             return this;
         }
 
+        // New: Allows chaining .setPowerCurve(...) in your configurations
         public Builder setPowerCurve(float powerCurve) {
             this.powerCurve = powerCurve;
             return this;
         }
 
-        public Builder addFactor(RegionalFactor factor, float compositionWeight) {
-            if (factor != null) {
-                this.subFactors.add(new FactorEntry(factor, compositionWeight));
-            }
+        public Builder addFactor(RegionalFactor factor, float influence) {
+            this.factors.add(new FactorEntry(factor, influence));
             return this;
         }
 
         public RegionalFactor build() {
-            return new RegionalFactor(weight, powerCurve, subFactors);
+            if (factors.isEmpty()) {
+                throw new IllegalStateException("Cannot build a composed factor with zero sub-factors.");
+            }
+            // Fix: Pass this.powerCurve instead of the hardcoded 1.0f
+            return new RegionalFactor(this.weight, this.powerCurve, this.factors);
         }
     }
 
