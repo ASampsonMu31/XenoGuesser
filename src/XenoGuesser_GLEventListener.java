@@ -420,8 +420,8 @@ private static class SpeciesConfig {
             
             // Blended factor with prominent 50% unique noise allocation for explicit segregation
             sc.abundanceFactor = new RegionalFactor.Builder()
-                .setWeight(3.5f)
-                .setPowerCurve(3.0f)
+                .setWeight(6.0f)        // Drop this to 1.0f so it NEVER artificially blows up low scores
+                .setPowerCurve(6.0f)    // Crank the power curve up to 5.0 or 6.0 to make it brutal
                 .addFactor(sc.tempFactor, 0.30f)
                 .addFactor(this.grassMoistureFactor, 0.20f)
                 .addFactor(sc.patchNoiseFactor, 0.50f)
@@ -1150,16 +1150,20 @@ private static class SpeciesConfig {
         }
 
         if (IS_DEBUG_MODE_ACTIVE && keyboard.g && !lastKeyboardG) {
-          FactorName[] values = FactorName.values();
-          currentDebugFactor = values[(currentDebugFactor.ordinal() - 1) % values.length];
-          assignHeatmapToMinimap(currentDebugFactor);
+            FactorName[] values = FactorName.values();
+            // Fix: Use Math.floorMod to handle negative numbers safely
+            int prevIndex = Math.floorMod(currentDebugFactor.ordinal() - 1, values.length);
+            currentDebugFactor = values[prevIndex];
+            assignHeatmapToMinimap(currentDebugFactor);
         }
         lastKeyboardG = keyboard.g;
 
         if (IS_DEBUG_MODE_ACTIVE && keyboard.h && !lastKeyboardH) {
-          FactorName[] values = FactorName.values();
-          currentDebugFactor = values[(currentDebugFactor.ordinal() + 1) % values.length];
-          assignHeatmapToMinimap(currentDebugFactor);
+            FactorName[] values = FactorName.values();
+            // While standard % works fine for addition, using floorMod here keeps your code uniform
+            int nextIndex = Math.floorMod(currentDebugFactor.ordinal() + 1, values.length);
+            currentDebugFactor = values[nextIndex];
+            assignHeatmapToMinimap(currentDebugFactor);
         }
         lastKeyboardH = keyboard.h;
 
@@ -1488,7 +1492,7 @@ private static class SpeciesConfig {
               case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
           };
           
-          BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor);
+          BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor, currentDebugFactor.toString());
           minimap.setHeatmapOverlay(rawSnapshot);
           minimap.setHeatmapVisible(true);
           minimap.setHeatmapName(currentDebugFactor.toString());

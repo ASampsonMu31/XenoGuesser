@@ -85,7 +85,7 @@ public class RegionalGenerationManager {
     //       REFACTORED VISUALIZATION ENGINE
     // ==========================================
 
-    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize) {
+    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label) {
         int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
         int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
         int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
@@ -103,6 +103,10 @@ public class RegionalGenerationManager {
             {0.00f, 0.70f, 0.10f}  // Green
         };
 
+        // Track minimum and maximum limits observed across the region
+        float minObservedFactor = Float.MAX_VALUE;
+        float maxObservedFactor = -Float.MAX_VALUE;
+
         for (int z = 0; z < height; z++) {
             int cz = minChunkZ + z;
             for (int x = 0; x < width; x++) {
@@ -111,8 +115,11 @@ public class RegionalGenerationManager {
                 float worldX = (cx + 0.5f) * physicalChunkSize;
                 float worldZ = (cz + 0.5f) * physicalChunkSize;
 
-                // Leverage the encapsulation property directly
                 float factor = factorToVisualize.evaluate(cx, cz, worldX, worldZ);
+
+                // Update min/max metrics
+                if (factor < minObservedFactor) minObservedFactor = factor;
+                if (factor > maxObservedFactor) maxObservedFactor = factor;
 
                 float r, g, b;
                 if (factor <= 0.333f) {
@@ -140,6 +147,10 @@ public class RegionalGenerationManager {
                 image.setRGB(x, z, pixelColour.getRGB());
             }
         }
+
+        // Print the statistical range straight into your development console terminal
+        System.out.printf("[%s METRICS] Range observed: Min = %.4f | Max = %.4f%n", label, minObservedFactor, maxObservedFactor);
+
         return image;
     }
     
