@@ -641,12 +641,25 @@ private static class SpeciesConfig {
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             
-            // NEW: Create a distinct material for this specific species' trunk
-            // We feed sc.trunkColor directly into the diffuse channel of the Material
-            Material floraMat = new Material(sc.trunkColor, new Vec3(0.05f, 0.05f, 0.05f), new Vec3(0.1f, 0.1f, 0.1f), 2.0f);
-            System.out.println("trunk colour");
-            System.out.println(sc.trunkColor);
-            floraMat.setDiffuseMap(textures.get("dirt_diffuse")); // Blends the color with your bark/dirt texture
+            // Fix: Multiply the color values by a boost factor (e.g., 2.5f or 3.0f) 
+            // This scales the procedural grey up so it doesn't crush the dark dirt texture into blackness.
+            float brightnessBoost = 2.5f;
+            Vec3 boostedTrunkColor = new Vec3(
+                sc.trunkColor.x * brightnessBoost,
+                sc.trunkColor.y * brightnessBoost,
+                sc.trunkColor.z * brightnessBoost
+            );
+
+            // Pass the boosted colors safely into the material
+            Material floraMat = new Material(
+                boostedTrunkColor,             // Slot 1: Ambient
+                boostedTrunkColor,             // Slot 2: Diffuse
+                new Vec3(0.02f, 0.02f, 0.02f), // Slot 3: Specular (Kept low for wood matte reflection)
+                2.0f                           // Slot 4: Shininess
+            );
+            
+            System.out.println("Trunk color successfully assigned and boosted: " + boostedTrunkColor);
+            floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
             
             // Iterate through Variations FIRST
             for (int i = 0; i < FLORA_VARIATIONS; i++) {
@@ -1315,6 +1328,16 @@ private static class SpeciesConfig {
                 leafShader.use(gl);
                 leafShader.setVec3(gl, "u_OuterLeafColor", dynamicOuterColor);
                 leafShader.setVec3(gl, "u_InnerLeafColor", dynamicInnerColor);
+
+                // --- NEW: Pass Fog/Sky data to the leaf shader ---
+                gl.glUniformMatrix4fv(gl.glGetUniformLocation(leafShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+                
+                if (textures.get(skyTextureKey) != null) {
+                    gl.glActiveTexture(GL3.GL_TEXTURE2);
+                    textures.get(skyTextureKey).bind(gl); 
+                    leafShader.setInt(gl, "skyTexture", 2);
+                }
+                // -------------------------------------------------
 
                 // 4. Draw Leaves (Uses the species leaf asset variation maps)
                 floraLeafModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].setModelMatrix(m);
