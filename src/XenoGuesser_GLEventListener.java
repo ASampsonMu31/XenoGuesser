@@ -192,6 +192,9 @@ private static class SpeciesConfig {
     private Vec3 healthyColour;
     private Vec3 dyingColour;
 
+    private NationGenerationManager nationManager;
+    private int totalNationsCount;
+
     public enum FactorName {
       GRASS_ABUNDANCE,
       GRASS_HEIGHT,
@@ -211,7 +214,8 @@ private static class SpeciesConfig {
       SHRUB_1_ABUNDANCE,
       SHRUB_2_ABUNDANCE,
       SHRUB_3_ABUNDANCE,
-      SHRUB_4_ABUNDANCE
+      SHRUB_4_ABUNDANCE,
+      NATION_TERRITORIES
     }
 
     public XenoGuesser_GLEventListener(
@@ -427,6 +431,18 @@ private static class SpeciesConfig {
                 .addFactor(sc.patchNoiseFactor, 0.50f)
                 .build();
         }
+
+        // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
+        Random rand = new Random(this.worldSeed);
+        this.totalNationsCount = 6 + rand.nextInt(9); 
+
+        // Map resolution matched safely to 512x512 grids to match MapPanel specs
+        // Map resolution matched safely to 384 grids for fast CA simulation
+        this.nationManager = new NationGenerationManager(this.worldSeed, this.totalNationsCount, 384, seaLevelHeight, worldNoise);
+
+        // Run the spreading calculation using your environment configuration data parameters
+        // Assuming 'terrainAbundanceFactor' or standard height maps are accessible inside your initialization path
+        this.nationManager.generateTerritories(this.worldSeed, TOTAL_REGION_WIDTH);
     }
 
     public void setGameHUD(GameHUD gameHUD) {
@@ -1469,34 +1485,56 @@ private static class SpeciesConfig {
     }
 
     public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
-      if (this.IS_DEBUG_MODE_ACTIVE) {
-          RegionalFactor targetFactor = switch (currentDebugFactor) {
-              case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
-              case GRASS_HEIGHT -> this.grassHeightFactor;
-              case GRASS_COLOUR -> this.grassColourFactor;
-              case LEAF_COLOUR -> this.leafColourFactor;
-              case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
-              case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
-              case MOISTURE -> this.grassMoistureFactor;
-              case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
-              case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
-              case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
-              case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
-              case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
-              case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
-              case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
-              case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
-              case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
-              case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
-              case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
-              case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
-          };
-          
-          BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor, currentDebugFactor.toString());
-          minimap.setHeatmapOverlay(rawSnapshot);
-          minimap.setHeatmapVisible(true);
-          minimap.setHeatmapName(currentDebugFactor.toString());
-      } 
+        if (this.IS_DEBUG_MODE_ACTIVE) {
+            
+            // 1. Intercept the Nation Territory view to bypass continuous factor generation
+            if (currentDebugFactor == FactorName.NATION_TERRITORIES) {
+                if (this.nationManager != null) {
+                    // Tell the Manager to upscale the render to match the chunk layout
+                    int chunkRes = (int)(TOTAL_REGION_WIDTH / PHYSICAL_CHUNK_SIZE); 
+                    BufferedImage nationSnapshot = this.nationManager.generateNationOverlay(chunkRes);
+                    
+                    minimap.setHeatmapOverlay(nationSnapshot);
+                    minimap.setHeatmapVisible(true);
+                    minimap.setHeatmapName("NATION_TERRITORIES");
+                }
+                return; // Exit method early
+            }
+            // ... (rest of the method stays the same)
+
+            // 2. Otherwise, look up and evaluate standard noise/growth parameters
+            RegionalFactor targetFactor = switch (currentDebugFactor) {
+                case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
+                case GRASS_HEIGHT -> this.grassHeightFactor;
+                case GRASS_COLOUR -> this.grassColourFactor;
+                case LEAF_COLOUR -> this.leafColourFactor;
+                case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
+                case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
+                case MOISTURE -> this.grassMoistureFactor;
+                case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
+                case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
+                case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
+                case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
+                case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
+                case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
+                case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
+                case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
+                case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
+                case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
+                case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
+                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
+                default -> null; 
+            };
+            
+            if (targetFactor != null) {
+                BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(
+                    TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor, currentDebugFactor.toString()
+                );
+                minimap.setHeatmapOverlay(rawSnapshot);
+                minimap.setHeatmapVisible(true);
+                minimap.setHeatmapName(currentDebugFactor.toString());
+            }
+        }
     }
 
     public void setCompassHUD(CompassHUD compassHUD) {
@@ -1517,6 +1555,10 @@ private static class SpeciesConfig {
 
     public FactorName getCurrentDebugFactor() {
       return currentDebugFactor;
+    }
+
+    public int getTotalNationsCount() {
+        return this.totalNationsCount;
     }
 
     public void setTelepot(float teleportX, float teleportZ) {

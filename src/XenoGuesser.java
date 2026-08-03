@@ -10,8 +10,8 @@ import com.jogamp.opengl.util.FPSAnimator;
 
 public class XenoGuesser extends JFrame {
    
-  private static final boolean IS_DETERMINISTIC_MODE = false; // Set to true to test seed consistency
-  private static final boolean IS_DEBUG_MODE_ACTIVE = false;
+  private static final boolean IS_DETERMINISTIC_MODE = true; // Set to true to test seed consistency
+  private static final boolean IS_DEBUG_MODE_ACTIVE = true;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;

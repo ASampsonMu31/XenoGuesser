@@ -4,6 +4,7 @@ XenoGuesser.class
 XenoGuesser_GLEventListener$FloraInstance.class
 CompassHUD.class
 Cylinder.class
+NationGenerationManager.class
 XenoGuesser_GLEventListener$SpeciesConfig.class
 XenoGuesser$5.class
 Sphere.class
