@@ -114,6 +114,8 @@ private static class SpeciesConfig {
     private Material terrainMaterial;
     private Mat4 globalModelMatrix;
 
+    private Shader solidShader;
+
     private Shader depthPrePassShader;
 
     private final float PHYSICAL_CHUNK_SIZE; 
@@ -194,6 +196,11 @@ private static class SpeciesConfig {
 
     private NationGenerationManager nationManager;
     private int totalNationsCount;
+
+    private InfrastructureManager infraManager;
+    private Map<String, List<InfrastructureObject>> infraCache;
+    private Map<Integer, Model> signModelsByNation;
+    private Model postModel;
 
     public enum FactorName {
       GRASS_ABUNDANCE,
@@ -596,7 +603,7 @@ private static class SpeciesConfig {
         return new Vec3(worldX, worldY, worldZ);
     }
 
-    private void initialise() {
+private void initialise() {
         textures = new TextureLibrary();
         textures.add(gl, "dirt_diffuse", "assets/textures/dirt_diffuse.png");
         textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
@@ -636,6 +643,7 @@ private static class SpeciesConfig {
 
         terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
+        solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
 
         terrainMaterial = new Material(
             new Vec3(1.0f, 1.0f, 1.0f), 
@@ -646,6 +654,44 @@ private static class SpeciesConfig {
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
         terrainRenderer = new Renderer();
         globalModelMatrix = new Mat4(1);
+
+
+        // Initialize the manager
+        this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager);
+        this.infraCache = new HashMap<>();
+        this.signModelsByNation = new HashMap<>();
+        
+        // --- INFRASTRUCTURE COMPILATION ---
+        // 1. Compile the shared cylindrical post model
+        float[] postVerts = Cylinder.createVertices(12);
+        int[] postInds = Cylinder.createIndices(12);
+        Mesh postMesh = new Mesh(gl, postVerts, postInds);
+        
+        Material postMat = new Material(
+            new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown ambient
+            new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown diffuse
+            new Vec3(0.0f, 0.0f, 0.0f),    // Zero specular
+            1.0f
+        );
+        this.postModel = new Model("shared_sign_post", postMesh, new Mat4(1), solidShader, postMat, terrainRenderer, lights, camera);
+
+        // 2. Pre-compile the flat TwoTriangles billboard models for each nation
+        Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
+        
+        for (int n = 1; n <= totalNationsCount; n++) {
+            java.awt.Color awtColor = nationManager.getNationColor(n);
+            Vec3 nationRGB = new Vec3(awtColor.getRed() / 255.0f, awtColor.getGreen() / 255.0f, awtColor.getBlue() / 255.0f);
+            
+            Material signMaterial = new Material(
+                nationRGB,                     
+                nationRGB,                     
+                new Vec3(0.0f, 0.0f, 0.0f),    
+                1.0f                           
+            );
+            
+            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), solidShader, signMaterial, terrainRenderer, lights, camera);
+            signModelsByNation.put(n, signModel);
+        }
         
         // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
         floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
@@ -657,8 +703,6 @@ private static class SpeciesConfig {
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             
-            // Fix: Multiply the color values by a boost factor (e.g., 2.5f or 3.0f) 
-            // This scales the procedural grey up so it doesn't crush the dark dirt texture into blackness.
             float brightnessBoost = 2.5f;
             Vec3 boostedTrunkColor = new Vec3(
                 sc.trunkColor.x * brightnessBoost,
@@ -666,35 +710,30 @@ private static class SpeciesConfig {
                 sc.trunkColor.z * brightnessBoost
             );
 
-            // Pass the boosted colors safely into the material
             Material floraMat = new Material(
-                boostedTrunkColor,             // Slot 1: Ambient
-                boostedTrunkColor,             // Slot 2: Diffuse
-                new Vec3(0.02f, 0.02f, 0.02f), // Slot 3: Specular (Kept low for wood matte reflection)
-                2.0f                           // Slot 4: Shininess
+                boostedTrunkColor,             
+                boostedTrunkColor,             
+                new Vec3(0.02f, 0.02f, 0.02f), 
+                2.0f                           
             );
             
             System.out.println("Trunk color successfully assigned and boosted: " + boostedTrunkColor);
             floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
             
-            // Iterate through Variations FIRST
             for (int i = 0; i < FLORA_VARIATIONS; i++) {
                 
                 java.util.Random fRand = new java.util.Random(worldSeed + s * 3721L + i * 8273L);
                 
-                // Calculate physical bounds ONCE per variation
                 float bRate = sc.baseBRate + fRand.nextFloat() * sc.varBRate;
                 float sWidth = sc.baseSWidth + fRand.nextFloat() * sc.varSWidth;
                 float wDecl = sc.baseWDecl + fRand.nextFloat() * sc.varWDecl;
                 float sDist = sc.baseSDist + fRand.nextFloat() * sc.varSDist;
                 float bAngle = sc.baseBAngle + fRand.nextFloat() * sc.varBAngle;
                 
-                // Calculate texture ONCE per variation
                 int texNum = sc.leafTexNum;
                 Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
-                // Iterate through LODs, passing the locked parameters
                 for (int lod = 0; lod < 3; lod++) {
                     
                     Flora.FloraBundle fBundle = Flora.generateFloraBundle(
@@ -702,7 +741,6 @@ private static class SpeciesConfig {
                         bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
-                    // Notice we are passing the custom floraMat here now!
                     floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
@@ -1098,6 +1136,27 @@ private static class SpeciesConfig {
             gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
             gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
         }
+
+        // --- MULTI-SPECIES INFRASTRUCTURE SEEDING ---
+        Map<String, Boolean> activeInfraKeys = new HashMap<>();
+        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+                activeInfraKeys.put(cx + "_" + cz, true);
+            }
+        }
+        infraCache.keySet().retainAll(activeInfraKeys.keySet());
+
+        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+                String key = cx + "_" + cz;
+                if (!infraCache.containsKey(key)) {
+                    List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
+                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
+                    );
+                    infraCache.put(key, spawnedObjects);
+                }
+            }
+        }
     }
 
     private void render() {
@@ -1362,6 +1421,82 @@ private static class SpeciesConfig {
                 // 4. Draw Leaves (Uses the species leaf asset variation maps)
                 floraLeafModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].setModelMatrix(m);
                 floraLeafModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
+            }
+        }
+
+        // ==========================================
+        // --- INFRASTRUCTURE RENDERING PASS --------
+        // ==========================================
+
+        // TODO: consider other drawing methods without constructing in the main render method
+        for (List<InfrastructureObject> objects : infraCache.values()) {
+            for (InfrastructureObject obj : objects) {
+                
+                float dx = obj.position.x - currentPos.x;
+                float dy = obj.position.y - currentPos.y;
+                float dz = obj.position.z - currentPos.z;
+                float distSq = dx*dx + dy*dy + dz*dz;
+                
+                if (distSq > maxFloraDistSq) continue;
+                
+                float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
+                if (dotProduct < -12.0f) continue;
+                
+                if (obj.type == InfrastructureObject.Type.SIGN) {
+                    
+                    Model billboardModel = signModelsByNation.get(obj.nationId);
+                    Model activePostModel = this.postModel; 
+                    
+                    if (billboardModel != null && activePostModel != null) {
+                        
+                        // Set post height and post spacing offset
+                        float postSpacing = 15.0f;
+                        float postHeight = 45.0f;  
+                        
+                        Mat4 postScale = Mat4Transform.scale(1.0f, postHeight, 1.0f);
+                        
+                        // --- A. LEFT POST ---
+                        Mat4 leftShift = Mat4Transform.translate(-postSpacing, postHeight / 2.0f, 0.0f);
+                        Mat4 leftMatrix = Mat4.multiply(obj.modelMatrix, Mat4.multiply(leftShift, postScale));
+                        
+                        activePostModel.setModelMatrix(leftMatrix);
+                        activePostModel.render(gl, ambientLight, nightProportion);
+                        
+                        // --- B. RIGHT POST ---
+                        Mat4 rightShift = Mat4Transform.translate(postSpacing, postHeight / 2.0f, 0.0f);
+                        Mat4 rightMatrix = Mat4.multiply(obj.modelMatrix, Mat4.multiply(rightShift, postScale));
+                        
+                        activePostModel.setModelMatrix(rightMatrix);
+                        activePostModel.render(gl, ambientLight, nightProportion);
+                        
+                        // --- C. FRONT BILLBOARD PANEL ---
+                        float boardWidth = postSpacing * 2.0f; 
+                        float boardHeight = 22.0f;             // Back to a normal height value
+                        float boardCenterY = 32.0f;            
+                        
+                        Mat4 boardShift = Mat4Transform.translate(0.0f, boardCenterY, 0.0f);
+                        
+                        // FIX: Scale Z instead of Y, because the original TwoTriangles plane is flat on XZ
+                        Mat4 boardScale = Mat4Transform.scale(boardWidth, 1.0f, boardHeight); 
+                        
+                        // Rotate 90 degrees to stand it upright facing forward
+                        Mat4 frontRot = Mat4Transform.rotateAroundX(90.0f); 
+                        Mat4 frontTransform = Mat4.multiply(boardShift, Mat4.multiply(frontRot, boardScale));
+                        Mat4 frontMatrix = Mat4.multiply(obj.modelMatrix, frontTransform);
+                        
+                        billboardModel.setModelMatrix(frontMatrix);
+                        billboardModel.render(gl, ambientLight, nightProportion);
+
+                        // --- D. BACK BILLBOARD PANEL ---
+                        // Rotate -90 degrees so the visible face points in the opposite direction
+                        Mat4 backRot = Mat4Transform.rotateAroundX(-90.0f); 
+                        Mat4 backTransform = Mat4.multiply(boardShift, Mat4.multiply(backRot, boardScale));
+                        Mat4 backMatrix = Mat4.multiply(obj.modelMatrix, backTransform);
+                        
+                        billboardModel.setModelMatrix(backMatrix);
+                        billboardModel.render(gl, ambientLight, nightProportion);
+                    }
+                }
             }
         }
         

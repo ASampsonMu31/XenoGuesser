@@ -235,4 +235,27 @@ public class NationGenerationManager {
         
         return overlay;
     }
+
+    /**
+     * Maps real-world coordinates back to the CA grid to find the nation ID.
+     */
+    public int getNationAtWorld(float worldX, float worldZ, float totalRegionWidth) {
+        float halfRegion = totalRegionWidth / 2.0f;
+        
+        int simX = (int) (((worldX + halfRegion) / totalRegionWidth) * resolution);
+        int simZ = (int) (((worldZ + halfRegion) / totalRegionWidth) * resolution);
+        
+        // Clamp to prevent out-of-bounds if the player reaches the absolute edge
+        simX = Math.max(0, Math.min(simX, resolution - 1));
+        simZ = Math.max(0, Math.min(simZ, resolution - 1));
+        
+        return nationMap[simX][simZ];
+    }
+
+    /**
+     * Safely fetches the mapped color for rendering.
+     */
+    public Color getNationColor(int nationId) {
+        return nationColors.getOrDefault(nationId, new Color(150, 150, 150)); // Fallback grey
+    }
 }

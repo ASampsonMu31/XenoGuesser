@@ -26,6 +26,7 @@ gmaths\Mat4.class
 XenoGuesser$7.class
 gmaths\Vec4.class
 MapPanel$1.class
+InfrastructureObject$Type.class
 RegionalFactor$Builder.class
 XenoGuesser_GLEventListener.class
 Mesh.class
@@ -37,6 +38,7 @@ MaterialConstants.class
 XenoGuesser$6.class
 gmaths\Mat4Transform.class
 XenoGuesser_GLEventListener$FactorName.class
+InfrastructureManager.class
 RegionalFactor$Sampler.class
 TerrainMesh.class
 RegionalGenerationManager$ChunkNode.class
@@ -44,6 +46,7 @@ Shader.class
 Material.class
 RegionalGenerationManager.class
 XenoGuesser$2.class
+InfrastructureObject.class
 gmaths\Vec2.class
 MapPanel$2.class
 TextureLibrary.class
