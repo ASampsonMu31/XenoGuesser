@@ -1427,6 +1427,15 @@ private void initialise() {
         // --- INFRASTRUCTURE RENDERING PASS --------
         // ==========================================
 
+        solidShader.use(gl);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(solidShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+
+        if (textures.get(skyTextureKey) != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get(skyTextureKey).bind(gl); 
+            solidShader.setInt(gl, "skyTexture", 2);
+        }
+
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject obj : objects) {
                 

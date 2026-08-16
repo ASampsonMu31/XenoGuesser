@@ -53,21 +53,31 @@ void main() {
 
     vec3 result = ambient + totalDiffuse + totalSpecular;
 
-    // --- FOG BLENDING ---
+    // --- SEAMLESS INSIDE-SPHERE FOG COORD MAPPING ---
     float radialDistance = length(viewPos - aPos);
     vec3 worldLookDir = normalize(aPos - viewPos);
     mat3 invSkyRot = transpose(mat3(skyRotation));
     vec3 localSkyDir = invSkyRot * worldLookDir;
     
     float theta = atan(localSkyDir.x, localSkyDir.z);
-    if (theta < 0.0) theta += 2.0 * PI;
+    if (theta < 0.0) {
+        theta += 2.0 * PI;
+    }
     
     float u = theta / (2.0 * PI);
     float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
     
     vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
 
-    float fogFactor = smoothstep(0.0, 1.0, clamp((2200.0 - radialDistance) / 1200.0, 0.0, 1.0));
+    // --- CUBIC DISTANCE BLENDING ---
+    float fogStart = 1000.0;
+    float fogEnd = 2200.0; 
 
-    fragColour = vec4(mix(dynamicSkyColour, result, fogFactor), 1.0);
+    float fogFactor = (fogEnd - radialDistance) / (fogEnd - fogStart);
+    fogFactor = clamp(fogFactor, 0.0, 1.0); 
+    fogFactor = smoothstep(0.0, 1.0, fogFactor);
+
+    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
+
+    fragColour = vec4(finalColourWithFog, 1.0);
 }
