@@ -41,13 +41,16 @@ public class InfrastructureManager {
             
             // Only spawn on dry land
             if (worldY > seaLevelHeight + 0.5f) {
+
                 // Probe the nation grid
                 int nationId = nationManager.getNationAtWorld(worldX, worldZ, totalRegionWidth);
-                
+
                 if (nationId != 0 && nationSignProbabilities.containsKey(nationId)) {
                     // Check against this specific nation's spawn probability
                     if (chunkRand.nextDouble() < nationSignProbabilities.get(nationId)) {
-                        objects.add(new InfrastructureObject(InfrastructureObject.Type.SIGN, new Vec3(worldX, worldY, worldZ), nationId));
+                        // Generate a random rotation so signs face different directions
+                        float randomRotY = chunkRand.nextFloat() * 360.0f;
+                        objects.add(new InfrastructureObject(InfrastructureObject.Type.SIGN, new Vec3(worldX, worldY, worldZ), nationId, randomRotY));
                     }
                 }
             }

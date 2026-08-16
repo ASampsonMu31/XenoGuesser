@@ -717,7 +717,6 @@ private void initialise() {
                 2.0f                           
             );
             
-            System.out.println("Trunk color successfully assigned and boosted: " + boostedTrunkColor);
             floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
             
             for (int i = 0; i < FLORA_VARIATIONS; i++) {
@@ -1428,7 +1427,6 @@ private void initialise() {
         // --- INFRASTRUCTURE RENDERING PASS --------
         // ==========================================
 
-        // TODO: consider other drawing methods without constructing in the main render method
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject obj : objects) {
                 
@@ -1437,66 +1435,15 @@ private void initialise() {
                 float dz = obj.position.z - currentPos.z;
                 float distSq = dx*dx + dy*dy + dz*dz;
                 
+                // Frustum / Distance Culling
                 if (distSq > maxFloraDistSq) continue;
                 
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
                 
-                if (obj.type == InfrastructureObject.Type.SIGN) {
-                    
-                    Model billboardModel = signModelsByNation.get(obj.nationId);
-                    Model activePostModel = this.postModel; 
-                    
-                    if (billboardModel != null && activePostModel != null) {
-                        
-                        // Set post height and post spacing offset
-                        float postSpacing = 15.0f;
-                        float postHeight = 45.0f;  
-                        
-                        Mat4 postScale = Mat4Transform.scale(1.0f, postHeight, 1.0f);
-                        
-                        // --- A. LEFT POST ---
-                        Mat4 leftShift = Mat4Transform.translate(-postSpacing, postHeight / 2.0f, 0.0f);
-                        Mat4 leftMatrix = Mat4.multiply(obj.modelMatrix, Mat4.multiply(leftShift, postScale));
-                        
-                        activePostModel.setModelMatrix(leftMatrix);
-                        activePostModel.render(gl, ambientLight, nightProportion);
-                        
-                        // --- B. RIGHT POST ---
-                        Mat4 rightShift = Mat4Transform.translate(postSpacing, postHeight / 2.0f, 0.0f);
-                        Mat4 rightMatrix = Mat4.multiply(obj.modelMatrix, Mat4.multiply(rightShift, postScale));
-                        
-                        activePostModel.setModelMatrix(rightMatrix);
-                        activePostModel.render(gl, ambientLight, nightProportion);
-                        
-                        // --- C. FRONT BILLBOARD PANEL ---
-                        float boardWidth = postSpacing * 2.0f; 
-                        float boardHeight = 22.0f;             // Back to a normal height value
-                        float boardCenterY = 32.0f;            
-                        
-                        Mat4 boardShift = Mat4Transform.translate(0.0f, boardCenterY, 0.0f);
-                        
-                        // FIX: Scale Z instead of Y, because the original TwoTriangles plane is flat on XZ
-                        Mat4 boardScale = Mat4Transform.scale(boardWidth, 1.0f, boardHeight); 
-                        
-                        // Rotate 90 degrees to stand it upright facing forward
-                        Mat4 frontRot = Mat4Transform.rotateAroundX(90.0f); 
-                        Mat4 frontTransform = Mat4.multiply(boardShift, Mat4.multiply(frontRot, boardScale));
-                        Mat4 frontMatrix = Mat4.multiply(obj.modelMatrix, frontTransform);
-                        
-                        billboardModel.setModelMatrix(frontMatrix);
-                        billboardModel.render(gl, ambientLight, nightProportion);
-
-                        // --- D. BACK BILLBOARD PANEL ---
-                        // Rotate -90 degrees so the visible face points in the opposite direction
-                        Mat4 backRot = Mat4Transform.rotateAroundX(-90.0f); 
-                        Mat4 backTransform = Mat4.multiply(boardShift, Mat4.multiply(backRot, boardScale));
-                        Mat4 backMatrix = Mat4.multiply(obj.modelMatrix, backTransform);
-                        
-                        billboardModel.setModelMatrix(backMatrix);
-                        billboardModel.render(gl, ambientLight, nightProportion);
-                    }
-                }
+                // The main loop no longer cares what type of object this is. 
+                // It just passes the necessary resources and says "Draw yourself."
+                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModel);
             }
         }
         
