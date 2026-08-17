@@ -55,9 +55,12 @@ public class InfrastructureObject {
     }
 
     // NEW: The object now knows how to draw itself
-    public void render(GL3 gl, Vec3 ambientLight, float nightProportion, Map<Integer, Model> signModelsByNation, Model postModel) {
+    public void render(GL3 gl, Vec3 ambientLight, float nightProportion, 
+                        Map<Integer, Model> signModelsByNation, 
+                        Map<Integer, Model> postModelsByNation) {
         if (this.type == Type.SIGN) {
             Model billboardModel = signModelsByNation.get(this.nationId);
+            Model postModel = postModelsByNation.get(this.nationId);
             
             if (billboardModel != null && postModel != null) {
                 // Draw Posts
@@ -75,6 +78,5 @@ public class InfrastructureObject {
                 billboardModel.render(gl, ambientLight, nightProportion);
             }
         }
-        // As you add new types (Border Posts, Roads), you just add new 'else if' blocks here!
     }
 }

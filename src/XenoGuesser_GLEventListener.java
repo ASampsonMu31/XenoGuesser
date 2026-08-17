@@ -201,6 +201,7 @@ private static class SpeciesConfig {
     private Map<String, List<InfrastructureObject>> infraCache;
     private Map<Integer, Model> signModelsByNation;
     private Model postModel;
+    private Map<Integer, Model> postModelsByNation;
 
     public enum FactorName {
       GRASS_ABUNDANCE,
@@ -603,7 +604,7 @@ private static class SpeciesConfig {
         return new Vec3(worldX, worldY, worldZ);
     }
 
-private void initialise() {
+    private void initialise() {
         textures = new TextureLibrary();
         textures.add(gl, "dirt_diffuse", "assets/textures/dirt_diffuse.png");
         textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
@@ -656,16 +657,23 @@ private void initialise() {
         globalModelMatrix = new Mat4(1);
 
 
-        // Initialize the manager
+// Initialize the manager
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager);
         this.infraCache = new HashMap<>();
         this.signModelsByNation = new HashMap<>();
+        this.postModelsByNation = new HashMap<>();
         
         // --- INFRASTRUCTURE COMPILATION ---
-        // 1. Compile the shared cylindrical post model
-        float[] postVerts = Cylinder.createVertices(12);
-        int[] postInds = Cylinder.createIndices(12);
-        Mesh postMesh = new Mesh(gl, postVerts, postInds);
+        
+        // 1. Pre-compile the 4 geometry variations for posts once to preserve VRAM
+        int[] sliceOptions = {3, 4, 8, 12}; // Triangle, Square, Octagon, 12-pointed Circle
+        Map<Integer, Mesh> postMeshesBySlice = new HashMap<>();
+        
+        for (int slices : sliceOptions) {
+            float[] vert = Cylinder.createVertices(slices);
+            int[] ind = Cylinder.createIndices(slices);
+            postMeshesBySlice.put(slices, new Mesh(gl, vert, ind));
+        }
         
         Material postMat = new Material(
             new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown ambient
@@ -673,7 +681,16 @@ private void initialise() {
             new Vec3(0.0f, 0.0f, 0.0f),    // Zero specular
             1.0f
         );
-        this.postModel = new Model("shared_sign_post", postMesh, new Mat4(1), solidShader, postMat, terrainRenderer, lights, camera);
+        
+        // Assign a random post cross-section to each nation deterministically based on the world seed
+        java.util.Random postRand = new java.util.Random(this.worldSeed + 7777L);
+        
+        for (int n = 1; n <= totalNationsCount; n++) {
+            int chosenSlices = sliceOptions[postRand.nextInt(sliceOptions.length)];
+            Mesh postMesh = postMeshesBySlice.get(chosenSlices);
+            Model postModel = new Model("post_nation_" + n, postMesh, new Mat4(1), solidShader, postMat, terrainRenderer, lights, camera);
+            postModelsByNation.put(n, postModel);
+        }
 
         // 2. Pre-compile the flat TwoTriangles billboard models for each nation
         Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
@@ -1452,7 +1469,7 @@ private void initialise() {
                 
                 // The main loop no longer cares what type of object this is. 
                 // It just passes the necessary resources and says "Draw yourself."
-                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModel);
+                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation);
             }
         }
         
