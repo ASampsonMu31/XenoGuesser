@@ -120,7 +120,7 @@ private static class SpeciesConfig {
     private Mat4 globalModelMatrix;
 
     private Shader solidShader;
-
+    private Shader signboardShader;
     private Shader depthPrePassShader;
 
     private final float PHYSICAL_CHUNK_SIZE; 
@@ -702,7 +702,7 @@ private static class SpeciesConfig {
         }
 
         // 2. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
-        Shader signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
+        signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
         Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
         
         this.nationAtlases = new HashMap<>();
@@ -1492,13 +1492,14 @@ private static class SpeciesConfig {
         // --- INFRASTRUCTURE RENDERING PASS --------
         // ==========================================
 
-        solidShader.use(gl);
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(solidShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        signboardShader.use(gl);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
 
         if (textures.get(skyTextureKey) != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             textures.get(skyTextureKey).bind(gl); 
             solidShader.setInt(gl, "skyTexture", 2);
+            signboardShader.setInt(gl, "skyTexture", 2);
         }
 
         for (List<InfrastructureObject> objects : infraCache.values()) {
