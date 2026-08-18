@@ -63,7 +63,7 @@ void main() {
         
         // --- SPACING CONTROLS ---
         // Increased lineGap to 2.2 for a very prominent space between lines
-        float lineGap = 1.3; 
+        float lineGap = 1.0; 
         
         // Small uniform padding to prevent glyph touching
         float pad = 0.05;    

@@ -1750,15 +1750,6 @@ private static class SpeciesConfig {
                 }
             }
             g2d.dispose();
-
-            try {
-                // Saves to the root directory of your project
-                File outputDebugFile = new File("debug_atlas_nation_" + alphabetId + ".png");
-                ImageIO.write(atlasImage, "png", outputDebugFile);
-                System.out.println("Saved debug atlas to: " + outputDebugFile.getAbsolutePath());
-            } catch (IOException e) {
-                e.printStackTrace();
-}
             
             return TextureLibrary.createTextureFromBufferedImage(gl, atlasImage);
         } catch (Exception e) {
