@@ -8,6 +8,11 @@ import java.awt.image.BufferedImage;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 import gmaths.*;
+import java.io.File;
+import java.io.IOException;
+
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
 
 public class XenoGuesser_GLEventListener implements GLEventListener {
     
@@ -202,6 +207,10 @@ private static class SpeciesConfig {
     private Map<Integer, Model> signModelsByNation;
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
+
+    private Map<Integer, Texture> nationAtlases;
+    private Map<Integer, Integer> nationAtlasSizes;
+    private Map<Integer, Integer> nationDirections;
 
     public enum FactorName {
       GRASS_ABUNDANCE,
@@ -657,8 +666,8 @@ private static class SpeciesConfig {
         globalModelMatrix = new Mat4(1);
 
 
-// Initialize the manager
-        this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager);
+        // Initialize the manager
+        this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager, this);
         this.infraCache = new HashMap<>();
         this.signModelsByNation = new HashMap<>();
         this.postModelsByNation = new HashMap<>();
@@ -692,21 +701,60 @@ private static class SpeciesConfig {
             postModelsByNation.put(n, postModel);
         }
 
-        // 2. Pre-compile the flat TwoTriangles billboard models for each nation
+        // 2. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
+        Shader signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
         Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
         
+        this.nationAtlases = new HashMap<>();
+        this.nationAtlasSizes = new HashMap<>();
+        this.nationDirections = new HashMap<>();
+        
+        java.util.Random signConfigRand = new java.util.Random(this.worldSeed + 999L);
+        
+        // Dynamically count subdirectories inside generated_alphabets
+        java.io.File alphabetsDir = new java.io.File("assets/textures/generated_alphabets");
+        java.io.File[] alphabetFolders = alphabetsDir.listFiles(java.io.File::isDirectory);
+        
+        int totalAvailableAlphabets = (alphabetFolders != null) ? alphabetFolders.length : 0;
+        
+        if (totalAvailableAlphabets == 0) {
+            System.err.println("Warning: No alphabet folders found in generated_alphabets!");
+        }
+        
         for (int n = 1; n <= totalNationsCount; n++) {
+            // Assign random writing direction (0=LR, 1=RL, 2=UD, 3=DU)
+            int direction = signConfigRand.nextInt(4);
+            nationDirections.put(n, direction);
+            
+            // Assign random alphabet safely
+            int alphabetId = 1 + signConfigRand.nextInt(Math.max(1, totalAvailableAlphabets));
+            // Load and cache the atlas if not already loaded
+            if (!nationAtlases.containsKey(n)) {
+                Texture atlas = createAlphabetAtlas(gl, alphabetId);
+                if (atlas != null) {
+                    nationAtlases.put(n, atlas);
+                    
+                    // Count files safely to determine the number of available characters
+                    java.io.File alphabetDir = new java.io.File("assets/textures/generated_alphabets/alphabet" + alphabetId);
+                    java.io.File[] glyphFiles = alphabetDir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
+                    int glyphCount = (glyphFiles != null) ? glyphFiles.length : 0;
+                    nationAtlasSizes.put(n, glyphCount);
+                }
+            }
+            
             java.awt.Color awtColor = nationManager.getNationColor(n);
             Vec3 nationRGB = new Vec3(awtColor.getRed() / 255.0f, awtColor.getGreen() / 255.0f, awtColor.getBlue() / 255.0f);
             
+            // Fix: Replaced nationRGB with raw white values so the shader gets a clean canvas 
             Material signMaterial = new Material(
-                nationRGB,                     
-                nationRGB,                     
+                new Vec3(1.0f, 1.0f, 1.0f),                     
+                new Vec3(1.0f, 1.0f, 1.0f),                     
                 new Vec3(0.0f, 0.0f, 0.0f),    
                 1.0f                           
             );
             
-            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), solidShader, signMaterial, terrainRenderer, lights, camera);
+            // Note: We are using the new signboardShader here instead of solidShader
+            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
             signModelsByNation.put(n, signModel);
         }
         
@@ -1467,9 +1515,13 @@ private static class SpeciesConfig {
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
                 
-                // The main loop no longer cares what type of object this is. 
-                // It just passes the necessary resources and says "Draw yourself."
-                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation);
+                // --- NEW: Fetch Atlas Data for this specific sign's nation ---
+                Texture atlas = nationAtlases.get(obj.nationId);
+                int atlasSize = nationAtlasSizes.getOrDefault(obj.nationId, 1);
+                int writingDir = nationDirections.getOrDefault(obj.nationId, 0);
+                
+                // Pass the new variables to the object
+                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir);
             }
         }
         
@@ -1673,5 +1725,58 @@ private static class SpeciesConfig {
         this.isToTeleport = true;
         this.teleportX = teleportX;
         this.teleportZ = teleportZ;
+    }
+
+    private Texture createAlphabetAtlas(GL3 gl, int alphabetId) {
+        try {
+            File dir = new File("assets/textures/generated_alphabets/alphabet" + alphabetId);
+            File[] glyphFiles = dir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
+            
+            if (glyphFiles == null || glyphFiles.length == 0) return null;
+            
+            // Assume all glyphs are same resolution (e.g., 64x64)
+            BufferedImage firstGlyph = ImageIO.read(glyphFiles[0]);
+            int gWidth = firstGlyph.getWidth();
+            int gHeight = firstGlyph.getHeight();
+            
+            BufferedImage atlasImage = new BufferedImage(gWidth * glyphFiles.length, gHeight, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g2d = atlasImage.createGraphics();
+            
+            for (int i = 0; i < glyphFiles.length; i++) {
+                File gFile = new File(dir, "glyph_" + i + ".png");
+                if (gFile.exists()) {
+                    BufferedImage glyph = ImageIO.read(gFile);
+                    g2d.drawImage(glyph, i * gWidth, 0, null);
+                }
+            }
+            g2d.dispose();
+
+            try {
+                // Saves to the root directory of your project
+                File outputDebugFile = new File("debug_atlas_nation_" + alphabetId + ".png");
+                ImageIO.write(atlasImage, "png", outputDebugFile);
+                System.out.println("Saved debug atlas to: " + outputDebugFile.getAbsolutePath());
+            } catch (IOException e) {
+                e.printStackTrace();
+}
+            
+            return TextureLibrary.createTextureFromBufferedImage(gl, atlasImage);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    /**
+     * Returns the total number of glyphs available in a nation's character atlas.
+     * * @param nationId The ID of the nation (1-indexed)
+     * @return The number of glyphs in the nation's atlas, or a fallback default (e.g. 10) if not found.
+     */
+    public int getNationAtlasSize(int nationId) {
+        if (nationAtlasSizes != null && nationAtlasSizes.containsKey(nationId)) {
+            int count = nationAtlasSizes.get(nationId);
+            return count > 0 ? count : 10; // Ensure we don't return 0 to prevent division by zero
+        }
+        return 10; // Fallback default if atlas size hasn't been mapped yet
     }
 }
