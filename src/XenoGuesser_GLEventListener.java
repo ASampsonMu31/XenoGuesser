@@ -8,6 +8,11 @@ import java.awt.image.BufferedImage;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 import gmaths.*;
+import java.io.File;
+import java.io.IOException;
+
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
 
 public class XenoGuesser_GLEventListener implements GLEventListener {
     
@@ -114,6 +119,8 @@ private static class SpeciesConfig {
     private Material terrainMaterial;
     private Mat4 globalModelMatrix;
 
+    private Shader solidShader;
+
     private Shader depthPrePassShader;
 
     private final float PHYSICAL_CHUNK_SIZE; 
@@ -192,6 +199,19 @@ private static class SpeciesConfig {
     private Vec3 healthyColour;
     private Vec3 dyingColour;
 
+    private NationGenerationManager nationManager;
+    private int totalNationsCount;
+
+    private InfrastructureManager infraManager;
+    private Map<String, List<InfrastructureObject>> infraCache;
+    private Map<Integer, Model> signModelsByNation;
+    private Model postModel;
+    private Map<Integer, Model> postModelsByNation;
+
+    private Map<Integer, Texture> nationAtlases;
+    private Map<Integer, Integer> nationAtlasSizes;
+    private Map<Integer, Integer> nationDirections;
+
     public enum FactorName {
       GRASS_ABUNDANCE,
       GRASS_HEIGHT,
@@ -211,7 +231,8 @@ private static class SpeciesConfig {
       SHRUB_1_ABUNDANCE,
       SHRUB_2_ABUNDANCE,
       SHRUB_3_ABUNDANCE,
-      SHRUB_4_ABUNDANCE
+      SHRUB_4_ABUNDANCE,
+      NATION_TERRITORIES
     }
 
     public XenoGuesser_GLEventListener(
@@ -427,6 +448,18 @@ private static class SpeciesConfig {
                 .addFactor(sc.patchNoiseFactor, 0.50f)
                 .build();
         }
+
+        // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
+        Random rand = new Random(this.worldSeed);
+        this.totalNationsCount = 6 + rand.nextInt(9); 
+
+        // Map resolution matched safely to 512x512 grids to match MapPanel specs
+        // Map resolution matched safely to 384 grids for fast CA simulation
+        this.nationManager = new NationGenerationManager(this.worldSeed, this.totalNationsCount, 384, seaLevelHeight, worldNoise);
+
+        // Run the spreading calculation using your environment configuration data parameters
+        // Assuming 'terrainAbundanceFactor' or standard height maps are accessible inside your initialization path
+        this.nationManager.generateTerritories(this.worldSeed, TOTAL_REGION_WIDTH);
     }
 
     public void setGameHUD(GameHUD gameHUD) {
@@ -620,6 +653,7 @@ private static class SpeciesConfig {
 
         terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
+        solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
 
         terrainMaterial = new Material(
             new Vec3(1.0f, 1.0f, 1.0f), 
@@ -630,6 +664,99 @@ private static class SpeciesConfig {
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
         terrainRenderer = new Renderer();
         globalModelMatrix = new Mat4(1);
+
+
+        // Initialize the manager
+        this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager, this);
+        this.infraCache = new HashMap<>();
+        this.signModelsByNation = new HashMap<>();
+        this.postModelsByNation = new HashMap<>();
+        
+        // --- INFRASTRUCTURE COMPILATION ---
+        
+        // 1. Pre-compile the 4 geometry variations for posts once to preserve VRAM
+        int[] sliceOptions = {3, 4, 8, 12}; // Triangle, Square, Octagon, 12-pointed Circle
+        Map<Integer, Mesh> postMeshesBySlice = new HashMap<>();
+        
+        for (int slices : sliceOptions) {
+            float[] vert = Cylinder.createVertices(slices);
+            int[] ind = Cylinder.createIndices(slices);
+            postMeshesBySlice.put(slices, new Mesh(gl, vert, ind));
+        }
+        
+        Material postMat = new Material(
+            new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown ambient
+            new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown diffuse
+            new Vec3(0.0f, 0.0f, 0.0f),    // Zero specular
+            1.0f
+        );
+        
+        // Assign a random post cross-section to each nation deterministically based on the world seed
+        java.util.Random postRand = new java.util.Random(this.worldSeed + 7777L);
+        
+        for (int n = 1; n <= totalNationsCount; n++) {
+            int chosenSlices = sliceOptions[postRand.nextInt(sliceOptions.length)];
+            Mesh postMesh = postMeshesBySlice.get(chosenSlices);
+            Model postModel = new Model("post_nation_" + n, postMesh, new Mat4(1), solidShader, postMat, terrainRenderer, lights, camera);
+            postModelsByNation.put(n, postModel);
+        }
+
+        // 2. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
+        Shader signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
+        Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
+        
+        this.nationAtlases = new HashMap<>();
+        this.nationAtlasSizes = new HashMap<>();
+        this.nationDirections = new HashMap<>();
+        
+        java.util.Random signConfigRand = new java.util.Random(this.worldSeed + 999L);
+        
+        // Dynamically count subdirectories inside generated_alphabets
+        java.io.File alphabetsDir = new java.io.File("assets/textures/generated_alphabets");
+        java.io.File[] alphabetFolders = alphabetsDir.listFiles(java.io.File::isDirectory);
+        
+        int totalAvailableAlphabets = (alphabetFolders != null) ? alphabetFolders.length : 0;
+        
+        if (totalAvailableAlphabets == 0) {
+            System.err.println("Warning: No alphabet folders found in generated_alphabets!");
+        }
+        
+        for (int n = 1; n <= totalNationsCount; n++) {
+            // Assign random writing direction (0=LR, 1=RL, 2=UD, 3=DU)
+            int direction = signConfigRand.nextInt(4);
+            nationDirections.put(n, direction);
+            
+            // Assign random alphabet safely
+            int alphabetId = 1 + signConfigRand.nextInt(Math.max(1, totalAvailableAlphabets));
+            // Load and cache the atlas if not already loaded
+            if (!nationAtlases.containsKey(n)) {
+                Texture atlas = createAlphabetAtlas(gl, alphabetId);
+                if (atlas != null) {
+                    nationAtlases.put(n, atlas);
+                    
+                    // Count files safely to determine the number of available characters
+                    java.io.File alphabetDir = new java.io.File("assets/textures/generated_alphabets/alphabet" + alphabetId);
+                    java.io.File[] glyphFiles = alphabetDir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
+                    int glyphCount = (glyphFiles != null) ? glyphFiles.length : 0;
+                    nationAtlasSizes.put(n, glyphCount);
+                }
+            }
+            
+            java.awt.Color awtColor = nationManager.getNationColor(n);
+            Vec3 nationRGB = new Vec3(awtColor.getRed() / 255.0f, awtColor.getGreen() / 255.0f, awtColor.getBlue() / 255.0f);
+            
+            // Fix: Replaced nationRGB with raw white values so the shader gets a clean canvas 
+            Material signMaterial = new Material(
+                new Vec3(1.0f, 1.0f, 1.0f),                     
+                new Vec3(1.0f, 1.0f, 1.0f),                     
+                new Vec3(0.0f, 0.0f, 0.0f),    
+                1.0f                           
+            );
+            
+            // Note: We are using the new signboardShader here instead of solidShader
+            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
+            signModelsByNation.put(n, signModel);
+        }
         
         // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
         floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
@@ -641,8 +768,6 @@ private static class SpeciesConfig {
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             
-            // Fix: Multiply the color values by a boost factor (e.g., 2.5f or 3.0f) 
-            // This scales the procedural grey up so it doesn't crush the dark dirt texture into blackness.
             float brightnessBoost = 2.5f;
             Vec3 boostedTrunkColor = new Vec3(
                 sc.trunkColor.x * brightnessBoost,
@@ -650,35 +775,29 @@ private static class SpeciesConfig {
                 sc.trunkColor.z * brightnessBoost
             );
 
-            // Pass the boosted colors safely into the material
             Material floraMat = new Material(
-                boostedTrunkColor,             // Slot 1: Ambient
-                boostedTrunkColor,             // Slot 2: Diffuse
-                new Vec3(0.02f, 0.02f, 0.02f), // Slot 3: Specular (Kept low for wood matte reflection)
-                2.0f                           // Slot 4: Shininess
+                boostedTrunkColor,             
+                boostedTrunkColor,             
+                new Vec3(0.02f, 0.02f, 0.02f), 
+                2.0f                           
             );
             
-            System.out.println("Trunk color successfully assigned and boosted: " + boostedTrunkColor);
             floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
             
-            // Iterate through Variations FIRST
             for (int i = 0; i < FLORA_VARIATIONS; i++) {
                 
                 java.util.Random fRand = new java.util.Random(worldSeed + s * 3721L + i * 8273L);
                 
-                // Calculate physical bounds ONCE per variation
                 float bRate = sc.baseBRate + fRand.nextFloat() * sc.varBRate;
                 float sWidth = sc.baseSWidth + fRand.nextFloat() * sc.varSWidth;
                 float wDecl = sc.baseWDecl + fRand.nextFloat() * sc.varWDecl;
                 float sDist = sc.baseSDist + fRand.nextFloat() * sc.varSDist;
                 float bAngle = sc.baseBAngle + fRand.nextFloat() * sc.varBAngle;
                 
-                // Calculate texture ONCE per variation
                 int texNum = sc.leafTexNum;
                 Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
-                // Iterate through LODs, passing the locked parameters
                 for (int lod = 0; lod < 3; lod++) {
                     
                     Flora.FloraBundle fBundle = Flora.generateFloraBundle(
@@ -686,7 +805,6 @@ private static class SpeciesConfig {
                         bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
-                    // Notice we are passing the custom floraMat here now!
                     floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
@@ -1082,6 +1200,27 @@ private static class SpeciesConfig {
             gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
             gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
         }
+
+        // --- MULTI-SPECIES INFRASTRUCTURE SEEDING ---
+        Map<String, Boolean> activeInfraKeys = new HashMap<>();
+        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+                activeInfraKeys.put(cx + "_" + cz, true);
+            }
+        }
+        infraCache.keySet().retainAll(activeInfraKeys.keySet());
+
+        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+                String key = cx + "_" + cz;
+                if (!infraCache.containsKey(key)) {
+                    List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
+                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
+                    );
+                    infraCache.put(key, spawnedObjects);
+                }
+            }
+        }
     }
 
     private void render() {
@@ -1348,6 +1487,43 @@ private static class SpeciesConfig {
                 floraLeafModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
             }
         }
+
+        // ==========================================
+        // --- INFRASTRUCTURE RENDERING PASS --------
+        // ==========================================
+
+        solidShader.use(gl);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(solidShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+
+        if (textures.get(skyTextureKey) != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get(skyTextureKey).bind(gl); 
+            solidShader.setInt(gl, "skyTexture", 2);
+        }
+
+        for (List<InfrastructureObject> objects : infraCache.values()) {
+            for (InfrastructureObject obj : objects) {
+                
+                float dx = obj.position.x - currentPos.x;
+                float dy = obj.position.y - currentPos.y;
+                float dz = obj.position.z - currentPos.z;
+                float distSq = dx*dx + dy*dy + dz*dz;
+                
+                // Frustum / Distance Culling
+                if (distSq > maxFloraDistSq) continue;
+                
+                float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
+                if (dotProduct < -12.0f) continue;
+                
+                // --- NEW: Fetch Atlas Data for this specific sign's nation ---
+                Texture atlas = nationAtlases.get(obj.nationId);
+                int atlasSize = nationAtlasSizes.getOrDefault(obj.nationId, 1);
+                int writingDir = nationDirections.getOrDefault(obj.nationId, 0);
+                
+                // Pass the new variables to the object
+                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir);
+            }
+        }
         
         // --- INSTANCED GRASS PASS ---
         if (totalGrassInstances > 0) {
@@ -1469,34 +1645,56 @@ private static class SpeciesConfig {
     }
 
     public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
-      if (this.IS_DEBUG_MODE_ACTIVE) {
-          RegionalFactor targetFactor = switch (currentDebugFactor) {
-              case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
-              case GRASS_HEIGHT -> this.grassHeightFactor;
-              case GRASS_COLOUR -> this.grassColourFactor;
-              case LEAF_COLOUR -> this.leafColourFactor;
-              case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
-              case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
-              case MOISTURE -> this.grassMoistureFactor;
-              case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
-              case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
-              case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
-              case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
-              case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
-              case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
-              case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
-              case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
-              case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
-              case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
-              case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
-              case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
-          };
-          
-          BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor, currentDebugFactor.toString());
-          minimap.setHeatmapOverlay(rawSnapshot);
-          minimap.setHeatmapVisible(true);
-          minimap.setHeatmapName(currentDebugFactor.toString());
-      } 
+        if (this.IS_DEBUG_MODE_ACTIVE) {
+            
+            // 1. Intercept the Nation Territory view to bypass continuous factor generation
+            if (currentDebugFactor == FactorName.NATION_TERRITORIES) {
+                if (this.nationManager != null) {
+                    // Tell the Manager to upscale the render to match the chunk layout
+                    int chunkRes = (int)(TOTAL_REGION_WIDTH / PHYSICAL_CHUNK_SIZE); 
+                    BufferedImage nationSnapshot = this.nationManager.generateNationOverlay(chunkRes);
+                    
+                    minimap.setHeatmapOverlay(nationSnapshot);
+                    minimap.setHeatmapVisible(true);
+                    minimap.setHeatmapName("NATION_TERRITORIES");
+                }
+                return; // Exit method early
+            }
+            // ... (rest of the method stays the same)
+
+            // 2. Otherwise, look up and evaluate standard noise/growth parameters
+            RegionalFactor targetFactor = switch (currentDebugFactor) {
+                case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
+                case GRASS_HEIGHT -> this.grassHeightFactor;
+                case GRASS_COLOUR -> this.grassColourFactor;
+                case LEAF_COLOUR -> this.leafColourFactor;
+                case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
+                case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
+                case MOISTURE -> this.grassMoistureFactor;
+                case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
+                case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
+                case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
+                case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
+                case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
+                case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
+                case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
+                case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
+                case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
+                case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
+                case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
+                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
+                default -> null; 
+            };
+            
+            if (targetFactor != null) {
+                BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(
+                    TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor, currentDebugFactor.toString()
+                );
+                minimap.setHeatmapOverlay(rawSnapshot);
+                minimap.setHeatmapVisible(true);
+                minimap.setHeatmapName(currentDebugFactor.toString());
+            }
+        }
     }
 
     public void setCompassHUD(CompassHUD compassHUD) {
@@ -1519,9 +1717,66 @@ private static class SpeciesConfig {
       return currentDebugFactor;
     }
 
+    public int getTotalNationsCount() {
+        return this.totalNationsCount;
+    }
+
     public void setTelepot(float teleportX, float teleportZ) {
         this.isToTeleport = true;
         this.teleportX = teleportX;
         this.teleportZ = teleportZ;
+    }
+
+    private Texture createAlphabetAtlas(GL3 gl, int alphabetId) {
+        try {
+            File dir = new File("assets/textures/generated_alphabets/alphabet" + alphabetId);
+            File[] glyphFiles = dir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
+            
+            if (glyphFiles == null || glyphFiles.length == 0) return null;
+            
+            // Assume all glyphs are same resolution (e.g., 64x64)
+            BufferedImage firstGlyph = ImageIO.read(glyphFiles[0]);
+            int gWidth = firstGlyph.getWidth();
+            int gHeight = firstGlyph.getHeight();
+            
+            BufferedImage atlasImage = new BufferedImage(gWidth * glyphFiles.length, gHeight, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g2d = atlasImage.createGraphics();
+            
+            for (int i = 0; i < glyphFiles.length; i++) {
+                File gFile = new File(dir, "glyph_" + i + ".png");
+                if (gFile.exists()) {
+                    BufferedImage glyph = ImageIO.read(gFile);
+                    g2d.drawImage(glyph, i * gWidth, 0, null);
+                }
+            }
+            g2d.dispose();
+
+            try {
+                // Saves to the root directory of your project
+                File outputDebugFile = new File("debug_atlas_nation_" + alphabetId + ".png");
+                ImageIO.write(atlasImage, "png", outputDebugFile);
+                System.out.println("Saved debug atlas to: " + outputDebugFile.getAbsolutePath());
+            } catch (IOException e) {
+                e.printStackTrace();
+}
+            
+            return TextureLibrary.createTextureFromBufferedImage(gl, atlasImage);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    /**
+     * Returns the total number of glyphs available in a nation's character atlas.
+     * * @param nationId The ID of the nation (1-indexed)
+     * @return The number of glyphs in the nation's atlas, or a fallback default (e.g. 10) if not found.
+     */
+    public int getNationAtlasSize(int nationId) {
+        if (nationAtlasSizes != null && nationAtlasSizes.containsKey(nationId)) {
+            int count = nationAtlasSizes.get(nationId);
+            return count > 0 ? count : 10; // Ensure we don't return 0 to prevent division by zero
+        }
+        return 10; // Fallback default if atlas size hasn't been mapped yet
     }
 }

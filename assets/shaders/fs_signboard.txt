@@ -1,0 +1,183 @@
+#version 330 core
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 aTexCoord;
+
+out vec4 fragColour;
+
+struct Light {
+    vec3 position;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+struct Material {
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float shininess;
+};
+
+uniform sampler2D skyTexture; 
+uniform sampler2D alphabetAtlas; 
+
+uniform vec3 viewPos;
+uniform int numLights;
+uniform Light lights[64];
+uniform Material material;
+uniform vec3 ambientLight;
+uniform mat4 skyRotation;
+
+// --- TEXT RENDERING UNIFORMS ---
+uniform int textString[512];  
+uniform int stringLength;     
+uniform int atlasSize;        
+uniform int writingDirection; // 0: L->R, 1: R->L, 2: U->D, 3: D->U
+
+const float PI = 3.14159265359;
+
+void main() {
+    vec3 albedo = vec3(1.0, 1.0, 1.0); // Pure white background
+    
+    float marginX = 0.04;
+    float marginY = 0.06; 
+    
+    const float COLS = 28.0;
+    const float ROWS = 12.0;
+
+    bool isTextSpace = false;
+    int cellIndex = -1;
+    float localU = 0.0;
+    float localV = 0.0;
+
+    if (gl_FrontFacing && aTexCoord.x > marginX && aTexCoord.x < (1.0 - marginX) &&
+        aTexCoord.y > marginY && aTexCoord.y < (1.0 - marginY)) {
+        
+        float mappedX = (aTexCoord.x - marginX) / (1.0 - 2.0 * marginX);
+        float mappedY = (aTexCoord.y - marginY) / (1.0 - 2.0 * marginY);
+        float invY = 1.0 - mappedY; 
+        
+        float charW = 1.0 / COLS;
+        float charH = 1.0 / ROWS;
+        
+        // --- SPACING CONTROLS ---
+        // Increased lineGap to 2.2 for a very prominent space between lines
+        float lineGap = 1.3; 
+        
+        // Small uniform padding to prevent glyph touching
+        float pad = 0.05;    
+
+        int col = 0;
+        int row = 0;
+        float colLocalU = 0.0;
+        float rowLocalV = 0.0;
+
+        if (writingDirection == 0 || writingDirection == 1) {
+            // Horizontal Modes: Gap is applied between rows (Y direction)
+            float rawCol = mappedX / charW;
+            col = int(floor(rawCol));
+            colLocalU = fract(rawCol);
+
+            float rawRow = invY / (charH * lineGap);
+            row = int(floor(rawRow));
+            rowLocalV = fract(rawRow) * lineGap; // Values > 1.0 become line gap
+        } else {
+            float vertLineGap = lineGap * (charH / charW);
+
+            float rawCol = mappedX / (charW * vertLineGap);
+            col = int(floor(rawCol));
+            colLocalU = fract(rawCol) * vertLineGap; // Values > 1.0 become column gap
+
+            float rawRow = invY / charH;
+            row = int(floor(rawRow));
+            rowLocalV = fract(rawRow);
+        }
+
+        // Only process if within grid bounds
+        if (col >= 0 && col < int(COLS) && row >= 0 && row < int(ROWS)) {
+            
+            // 1. Ensure UV point is inside the character cell bounds, NOT the line gap region
+            if (colLocalU <= 1.0 && rowLocalV <= 1.0) {
+                
+                // 2. Uniform padding test
+                if (colLocalU >= pad && colLocalU <= (1.0 - pad) && 
+                    rowLocalV >= pad && rowLocalV <= (1.0 - pad)) {
+                    
+                    isTextSpace = true;
+                    
+                    // Assign index based on direction
+                    if (writingDirection == 0) {
+                        cellIndex = row * int(COLS) + col;
+                    } else if (writingDirection == 1) {
+                        int gridX = (int(COLS) - 1) - col;
+                        cellIndex = row * int(COLS) + gridX;
+                    } else if (writingDirection == 2) {
+                        cellIndex = col * int(ROWS) + row;
+                    } else if (writingDirection == 3) {
+                        int gridY = (int(ROWS) - 1) - row;
+                        cellIndex = col * int(ROWS) + gridY;
+                    }
+                    
+                    // Map local UV uniformly (keeps character scale 1:1 and square)
+                    localU = (colLocalU - pad) / (1.0 - 2.0 * pad);
+                    localV = (rowLocalV - pad) / (1.0 - 2.0 * pad);
+                }
+            }
+        }
+    }
+
+    // Render Character Glyph
+    if (isTextSpace && cellIndex >= 0 && cellIndex < stringLength && cellIndex < 512 && atlasSize > 0) {
+        int glyphIndex = textString[cellIndex];
+        
+        if (glyphIndex > 0) {
+            float atlasU = (float(glyphIndex) + localU) / float(atlasSize);
+            float atlasV = localV;
+            
+            vec4 glyphSample = texture(alphabetAtlas, vec2(atlasU, atlasV));
+            
+            float brightness = dot(glyphSample.rgb, vec3(0.299, 0.587, 0.114));
+            float glyphCoverage = smoothstep(0.4, 0.6, 1.0 - brightness);
+
+            vec3 textInkColor = vec3(0.05, 0.05, 0.05);
+            albedo = mix(albedo, textInkColor, glyphCoverage);
+        }
+    }
+
+    // Standard Lighting Calculations
+    vec3 ambient = ambientLight * albedo * 1.0; 
+    vec3 norm = gl_FrontFacing ? normalize(aNormal) : -normalize(aNormal);
+    vec3 viewDir = normalize(viewPos - aPos);
+    vec3 totalDiffuse = vec3(0.0);
+    vec3 totalSpecular = vec3(0.0);
+
+    for (int i = 0; i < numLights; i++) {
+        Light light = lights[i];
+        vec3 lightDir = normalize(light.position - aPos);  
+        float diff = max(dot(norm, lightDir), 0.0);
+        totalDiffuse += light.diffuse * albedo * diff;
+        
+        vec3 halfwayDir = normalize(lightDir + viewDir);  
+        float spec = pow(max(dot(norm, halfwayDir), 0.0), material.shininess);
+        totalSpecular += light.specular * spec * vec3(0.1); 
+    }
+
+    vec3 result = ambient + totalDiffuse + totalSpecular;
+
+    // Sky Dynamic Fog Calculations
+    float radialDistance = length(viewPos - aPos);
+    vec3 worldLookDir = normalize(aPos - viewPos);
+    mat3 invSkyRot = transpose(mat3(skyRotation));
+    vec3 localSkyDir = invSkyRot * worldLookDir;
+    
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) theta += 2.0 * PI;
+    float u = theta / (2.0 * PI);
+    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+    
+    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
+    float fogFactor = smoothstep(0.0, 1.0, clamp((2200.0 - radialDistance) / 1200.0, 0.0, 1.0));
+
+    fragColour = vec4(mix(dynamicSkyColour, result, fogFactor), 1.0);
+}

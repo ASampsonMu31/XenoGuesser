@@ -9,6 +9,8 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\gmaths\Mat4Transform.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\gmaths\Vec2.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\gmaths\Vec3.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\gmaths\Vec4.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureManager.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureObject.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InsideSphere.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Light.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapPanel.java
@@ -17,6 +19,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MaterialConstants.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Mesh.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Model.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MyKeyboardInput.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\NationGenerationManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PerlinNoise.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalFactor.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalGenerationManager.java
