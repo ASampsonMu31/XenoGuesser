@@ -123,6 +123,8 @@ private static class SpeciesConfig {
     private Shader signboardShader;
     private Shader depthPrePassShader;
 
+    private Shader standardShader;
+
     private final float PHYSICAL_CHUNK_SIZE; 
     private final int VIEW_DISTANCE = 22; 
 
@@ -651,9 +653,10 @@ private static class SpeciesConfig {
         grassCache = new HashMap<>(); 
         floraCache = new HashMap<>();
 
-        terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
+        terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_terrain.txt");
         depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
+        standardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
 
         terrainMaterial = new Material(
             new Vec3(1.0f, 1.0f, 1.0f), 
@@ -805,7 +808,7 @@ private static class SpeciesConfig {
                         bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
-                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), standardShader, floraMat, terrainRenderer, lights, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
             }
@@ -1442,6 +1445,16 @@ private static class SpeciesConfig {
                 
                 SpeciesConfig sc = speciesConfigs[inst.speciesIndex];
 
+                standardShader.use(gl);
+                standardShader.setVec3(gl, "skyColour", skyColour);
+                gl.glUniformMatrix4fv(gl.glGetUniformLocation(standardShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+
+                if (textures.get(skyTextureKey) != null) {
+                    gl.glActiveTexture(GL3.GL_TEXTURE2);
+                    textures.get(skyTextureKey).bind(gl); 
+                    standardShader.setInt(gl, "skyTexture", 2);
+                }
+
                 // 1. Draw Branch (Uses species config parameters)
                 floraBranchModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].setModelMatrix(m);
                 floraBranchModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
@@ -1498,7 +1511,9 @@ private static class SpeciesConfig {
         if (textures.get(skyTextureKey) != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             textures.get(skyTextureKey).bind(gl); 
+            solidShader.use(gl);
             solidShader.setInt(gl, "skyTexture", 2);
+            signboardShader.use(gl);
             signboardShader.setInt(gl, "skyTexture", 2);
         }
 
