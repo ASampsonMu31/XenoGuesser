@@ -25,7 +25,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Map<String, Model> chunkCache;
     private Map<String, float[]> grassCache; 
     
-private static class SpeciesConfig {
+    private static class SpeciesConfig {
         String name;
         int leafTexNum;
         
@@ -213,6 +213,8 @@ private static class SpeciesConfig {
     private Map<Integer, Texture> nationAtlases;
     private Map<Integer, Integer> nationAtlasSizes;
     private Map<Integer, Integer> nationDirections;
+
+    private Material roadMaterial;
 
     public enum FactorName {
       GRASS_ABUNDANCE,
@@ -759,6 +761,13 @@ private static class SpeciesConfig {
             // Note: We are using the new signboardShader here instead of solidShader
             Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
             signModelsByNation.put(n, signModel);
+
+            roadMaterial = new Material(
+                new Vec3(0.55f, 0.55f, 0.58f), // Ambient
+                new Vec3(0.68f, 0.68f, 0.72f), // Diffuse
+                new Vec3(0.02f, 0.02f, 0.02f), // Specular (low shine)
+                2.0f // Shininess
+            );
         }
         
         // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
@@ -1218,7 +1227,7 @@ private static class SpeciesConfig {
                 String key = cx + "_" + cz;
                 if (!infraCache.containsKey(key)) {
                     List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
-                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
+                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise, gl
                     );
                     infraCache.put(key, spawnedObjects);
                 }
@@ -1507,16 +1516,21 @@ private static class SpeciesConfig {
 
         signboardShader.use(gl);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        
+        // --- NEW: Update skyRotation for the solidShader ---
+        solidShader.use(gl);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(solidShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
 
         if (textures.get(skyTextureKey) != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             textures.get(skyTextureKey).bind(gl); 
+            
             solidShader.use(gl);
             solidShader.setInt(gl, "skyTexture", 2);
+            
             signboardShader.use(gl);
             signboardShader.setInt(gl, "skyTexture", 2);
         }
-
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject obj : objects) {
                 
@@ -1531,13 +1545,12 @@ private static class SpeciesConfig {
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
                 
-                // --- NEW: Fetch Atlas Data for this specific sign's nation ---
                 Texture atlas = nationAtlases.get(obj.nationId);
                 int atlasSize = nationAtlasSizes.getOrDefault(obj.nationId, 1);
                 int writingDir = nationDirections.getOrDefault(obj.nationId, 0);
                 
-                // Pass the new variables to the object
-                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir);
+                // --- CHANGED: Pass solidShader and roadMaterial to the object ---
+                obj.render(gl, camera, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir, solidShader, roadMaterial);
             }
         }
         

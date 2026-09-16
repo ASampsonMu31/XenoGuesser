@@ -71,5 +71,13 @@ public class Mesh {
     gl.glDeleteVertexArrays(1, vertexArrayId, 0);
     gl.glDeleteBuffers(1, elementBufferId, 0);
   }
+
+  public int getVertexCount() {
+      return vertices != null ? vertices.length / vertexStride : 0;
+  }
+
+  public int getIndexCount() {
+      return indices != null ? indices.length : 0;
+  }
   
 }
