@@ -120,6 +120,7 @@ private static class SpeciesConfig {
     private Mat4 globalModelMatrix;
 
     private Shader solidShader;
+    private Shader signboardShader;
 
     private Shader depthPrePassShader;
 
@@ -207,6 +208,7 @@ private static class SpeciesConfig {
     private Map<Integer, Model> signModelsByNation;
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
+    private Material roadMaterial;
 
     private Map<Integer, Texture> nationAtlases;
     private Map<Integer, Integer> nationAtlasSizes;
@@ -701,8 +703,16 @@ private static class SpeciesConfig {
             postModelsByNation.put(n, postModel);
         }
 
-        // 2. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
-        Shader signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
+        // 2. Road styling: widen the asphalt strips and darken the material for a more obvious road look.
+        roadMaterial = new Material(
+            new Vec3(0.18f, 0.18f, 0.18f),
+            new Vec3(0.28f, 0.28f, 0.28f),
+            new Vec3(0.01f, 0.01f, 0.01f),
+            1.0f
+        );
+
+        // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
+        signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
         Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
         
         this.nationAtlases = new HashMap<>();
@@ -955,6 +965,9 @@ private static class SpeciesConfig {
     }
 
     private void updateVisibleChunks(boolean forceImmediate) {
+        infraManager.prepareRoadNetwork(
+            PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
+        );
         Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
@@ -1059,7 +1072,8 @@ private static class SpeciesConfig {
                             float czWorld = cz * PHYSICAL_CHUNK_SIZE + (cRand.nextFloat() * PHYSICAL_CHUNK_SIZE);
                             float cyWorld = TerrainMesh.getLayeredHeight(cxWorld, czWorld, worldNoise);
 
-                            if (cyWorld > seaLevelHeight + 0.1f) {
+                            if (cyWorld > seaLevelHeight + 0.1f
+                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 28.0f)) {
                                 int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
                                 float randomScale = 0.70f + cRand.nextFloat() * 0.60f;
                                 float randomRotY = cRand.nextFloat() * 360.0f;
@@ -1090,7 +1104,9 @@ private static class SpeciesConfig {
                 float[] chunkGrassData = grassCache.get(key);
                 
                 if (chunkGrassData == null) {
-                    if (generatedThisFrame && !forceImmediate) {
+                    int distanceFromPlayer = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+                    boolean prioritizeNearbyChunk = distanceFromPlayer <= 3;
+                    if (generatedThisFrame && !forceImmediate && !prioritizeNearbyChunk) {
                         continue; 
                     }
 
@@ -1128,7 +1144,8 @@ private static class SpeciesConfig {
                             float worldZ = chunkMinZ + (rand2 * PHYSICAL_CHUNK_SIZE);
                             float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
                             
-                            if (worldY > seaLevelHeight + 0.1f) {
+                            if (worldY > seaLevelHeight + 0.1f
+                                    && !infraManager.isRoadLocation(worldX, worldZ, 28.0f)) {
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
                                 float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
 
@@ -1217,6 +1234,11 @@ private static class SpeciesConfig {
                     List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
                         cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
                     );
+                    for (InfrastructureObject obj : spawnedObjects) {
+                        if (obj.type == InfrastructureObject.Type.ROAD) {
+                            obj.initializeRoadModel(gl, solidShader, roadMaterial, terrainRenderer, lights, camera);
+                        }
+                    }
                     infraCache.put(key, spawnedObjects);
                 }
             }
@@ -1514,6 +1536,22 @@ private static class SpeciesConfig {
                 
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
+
+                if (obj.type == InfrastructureObject.Type.SIGN) {
+                    signboardShader.use(gl);
+                    gl.glUniformMatrix4fv(
+                        gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"),
+                        1,
+                        false,
+                        skyRotation.toFloatArrayForGLSL(),
+                        0
+                    );
+                    if (textures.get(skyTextureKey) != null) {
+                        gl.glActiveTexture(GL3.GL_TEXTURE2);
+                        textures.get(skyTextureKey).bind(gl);
+                        signboardShader.setInt(gl, "skyTexture", 2);
+                    }
+                }
                 
                 // --- NEW: Fetch Atlas Data for this specific sign's nation ---
                 Texture atlas = nationAtlases.get(obj.nationId);

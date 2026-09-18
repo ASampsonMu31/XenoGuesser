@@ -20,11 +20,21 @@ public class InfrastructureObject {
     // --- TEXT DATA ---
     public int[] textString;
     public int stringLength;
+    private final float[] roadVertices;
+    private final int[] roadIndices;
+    private Model roadModel;
 
     public InfrastructureObject(Type type, Vec3 position, int nationId, float rotationY, int[] textString) {
+        this(type, position, nationId, rotationY, textString, null, null);
+    }
+
+    public InfrastructureObject(Type type, Vec3 position, int nationId, float rotationY, int[] textString,
+                                float[] roadVertices, int[] roadIndices) {
         this.type = type;
         this.position = position;
         this.nationId = nationId;
+        this.roadVertices = roadVertices;
+        this.roadIndices = roadIndices;
         
         // --- FIXED: INCREASE MAX LIMIT TO 512 CHARACTERS ---
         int maxShaderCapacity = 512;
@@ -68,12 +78,25 @@ public class InfrastructureObject {
         }
     }
 
+    public void initializeRoadModel(GL3 gl, Shader shader, Material material, Renderer renderer,
+                                    Light[] lights, Camera camera) {
+        if (type == Type.ROAD && roadModel == null && roadVertices != null && roadIndices != null) {
+            Mesh mesh = new Mesh(gl, roadVertices, roadIndices);
+            roadModel = new Model("road", mesh, new Mat4(1), shader, material, renderer, lights, camera);
+        }
+    }
+
     public void render(GL3 gl, Vec3 ambientLight, float nightProportion, 
                     Map<Integer, Model> signModelsByNation, 
                     Map<Integer, Model> postModelsByNation,
                     Texture alphabetAtlas, int atlasSize, int writingDirection) {
-                        
-        if (this.type == Type.SIGN) {
+        if (this.type == Type.ROAD) {
+            if (roadModel != null) {
+                gl.glDisable(GL3.GL_CULL_FACE);
+                roadModel.render(gl, ambientLight, nightProportion);
+                gl.glEnable(GL3.GL_CULL_FACE);
+            }
+        } else if (this.type == Type.SIGN) {
             Model billboardModel = signModelsByNation.get(this.nationId);
             Model postModel = postModelsByNation.get(this.nationId);
             
