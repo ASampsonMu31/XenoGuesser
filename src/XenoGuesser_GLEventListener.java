@@ -25,7 +25,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Map<String, Model> chunkCache;
     private Map<String, float[]> grassCache; 
     
-    private static class SpeciesConfig {
+private static class SpeciesConfig {
         String name;
         int leafTexNum;
         
@@ -121,9 +121,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     private Shader solidShader;
     private Shader signboardShader;
-    private Shader depthPrePassShader;
 
-    private Shader standardShader;
+    private Shader depthPrePassShader;
 
     private final float PHYSICAL_CHUNK_SIZE; 
     private final int VIEW_DISTANCE = 22; 
@@ -209,12 +208,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Map<Integer, Model> signModelsByNation;
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
+    private Material roadMaterial;
 
     private Map<Integer, Texture> nationAtlases;
     private Map<Integer, Integer> nationAtlasSizes;
     private Map<Integer, Integer> nationDirections;
-
-    private Material roadMaterial;
 
     public enum FactorName {
       GRASS_ABUNDANCE,
@@ -655,10 +653,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         grassCache = new HashMap<>(); 
         floraCache = new HashMap<>();
 
-        terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_terrain.txt");
+        terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
-        standardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
 
         terrainMaterial = new Material(
             new Vec3(1.0f, 1.0f, 1.0f), 
@@ -706,7 +703,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             postModelsByNation.put(n, postModel);
         }
 
-        // 2. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
+        // 2. Road styling: widen the asphalt strips and darken the material for a more obvious road look.
+        roadMaterial = new Material(
+            new Vec3(0.18f, 0.18f, 0.18f),
+            new Vec3(0.28f, 0.28f, 0.28f),
+            new Vec3(0.01f, 0.01f, 0.01f),
+            1.0f
+        );
+
+        // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
         signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
         Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
         
@@ -761,13 +766,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             // Note: We are using the new signboardShader here instead of solidShader
             Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
             signModelsByNation.put(n, signModel);
-
-            roadMaterial = new Material(
-                new Vec3(0.55f, 0.55f, 0.58f), // Ambient
-                new Vec3(0.68f, 0.68f, 0.72f), // Diffuse
-                new Vec3(0.02f, 0.02f, 0.02f), // Specular (low shine)
-                2.0f // Shininess
-            );
         }
         
         // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
@@ -817,7 +815,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                         bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
-                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), standardShader, floraMat, terrainRenderer, lights, camera);
+                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
             }
@@ -967,6 +965,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     private void updateVisibleChunks(boolean forceImmediate) {
+        infraManager.prepareRoadNetwork(
+            PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
+        );
         Map<String, Integer> requiredChunksWithLod = new HashMap<>();
 
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
@@ -1071,7 +1072,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                             float czWorld = cz * PHYSICAL_CHUNK_SIZE + (cRand.nextFloat() * PHYSICAL_CHUNK_SIZE);
                             float cyWorld = TerrainMesh.getLayeredHeight(cxWorld, czWorld, worldNoise);
 
-                            if (cyWorld > seaLevelHeight + 0.1f) {
+                            if (cyWorld > seaLevelHeight + 0.1f
+                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 28.0f)) {
                                 int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
                                 float randomScale = 0.70f + cRand.nextFloat() * 0.60f;
                                 float randomRotY = cRand.nextFloat() * 360.0f;
@@ -1102,7 +1104,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 float[] chunkGrassData = grassCache.get(key);
                 
                 if (chunkGrassData == null) {
-                    if (generatedThisFrame && !forceImmediate) {
+                    int distanceFromPlayer = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+                    boolean prioritizeNearbyChunk = distanceFromPlayer <= 3;
+                    if (generatedThisFrame && !forceImmediate && !prioritizeNearbyChunk) {
                         continue; 
                     }
 
@@ -1140,7 +1144,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                             float worldZ = chunkMinZ + (rand2 * PHYSICAL_CHUNK_SIZE);
                             float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
                             
-                            if (worldY > seaLevelHeight + 0.1f) {
+                            if (worldY > seaLevelHeight + 0.1f
+                                    && !infraManager.isRoadLocation(worldX, worldZ, 28.0f)) {
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
                                 float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
 
@@ -1227,8 +1232,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 String key = cx + "_" + cz;
                 if (!infraCache.containsKey(key)) {
                     List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
-                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise, gl
+                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
                     );
+                    for (InfrastructureObject obj : spawnedObjects) {
+                        if (obj.type == InfrastructureObject.Type.ROAD) {
+                            obj.initializeRoadModel(gl, solidShader, roadMaterial, terrainRenderer, lights, camera);
+                        }
+                    }
                     infraCache.put(key, spawnedObjects);
                 }
             }
@@ -1454,16 +1464,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 
                 SpeciesConfig sc = speciesConfigs[inst.speciesIndex];
 
-                standardShader.use(gl);
-                standardShader.setVec3(gl, "skyColour", skyColour);
-                gl.glUniformMatrix4fv(gl.glGetUniformLocation(standardShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-
-                if (textures.get(skyTextureKey) != null) {
-                    gl.glActiveTexture(GL3.GL_TEXTURE2);
-                    textures.get(skyTextureKey).bind(gl); 
-                    standardShader.setInt(gl, "skyTexture", 2);
-                }
-
                 // 1. Draw Branch (Uses species config parameters)
                 floraBranchModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].setModelMatrix(m);
                 floraBranchModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
@@ -1514,23 +1514,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // --- INFRASTRUCTURE RENDERING PASS --------
         // ==========================================
 
-        signboardShader.use(gl);
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        
-        // --- NEW: Update skyRotation for the solidShader ---
         solidShader.use(gl);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(solidShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
 
         if (textures.get(skyTextureKey) != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             textures.get(skyTextureKey).bind(gl); 
-            
-            solidShader.use(gl);
             solidShader.setInt(gl, "skyTexture", 2);
-            
-            signboardShader.use(gl);
-            signboardShader.setInt(gl, "skyTexture", 2);
         }
+
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject obj : objects) {
                 
@@ -1544,13 +1536,30 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f) continue;
+
+                if (obj.type == InfrastructureObject.Type.SIGN) {
+                    signboardShader.use(gl);
+                    gl.glUniformMatrix4fv(
+                        gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"),
+                        1,
+                        false,
+                        skyRotation.toFloatArrayForGLSL(),
+                        0
+                    );
+                    if (textures.get(skyTextureKey) != null) {
+                        gl.glActiveTexture(GL3.GL_TEXTURE2);
+                        textures.get(skyTextureKey).bind(gl);
+                        signboardShader.setInt(gl, "skyTexture", 2);
+                    }
+                }
                 
+                // --- NEW: Fetch Atlas Data for this specific sign's nation ---
                 Texture atlas = nationAtlases.get(obj.nationId);
                 int atlasSize = nationAtlasSizes.getOrDefault(obj.nationId, 1);
                 int writingDir = nationDirections.getOrDefault(obj.nationId, 0);
                 
-                // --- CHANGED: Pass solidShader and roadMaterial to the object ---
-                obj.render(gl, camera, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir, solidShader, roadMaterial);
+                // Pass the new variables to the object
+                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir);
             }
         }
         
@@ -1779,6 +1788,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 }
             }
             g2d.dispose();
+
+            try {
+                // Saves to the root directory of your project
+                File outputDebugFile = new File("debug_atlas_nation_" + alphabetId + ".png");
+                ImageIO.write(atlasImage, "png", outputDebugFile);
+                System.out.println("Saved debug atlas to: " + outputDebugFile.getAbsolutePath());
+            } catch (IOException e) {
+                e.printStackTrace();
+}
             
             return TextureLibrary.createTextureFromBufferedImage(gl, atlasImage);
         } catch (Exception e) {
