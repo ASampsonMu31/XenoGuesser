@@ -6,6 +6,7 @@ CompassHUD.class
 Cylinder.class
 NationGenerationManager.class
 XenoGuesser_GLEventListener$SpeciesConfig.class
+gmaths\package-info.class
 XenoGuesser$5.class
 Sphere.class
 XenoGuesser$1.class
@@ -48,6 +49,8 @@ RegionalGenerationManager.class
 XenoGuesser$2.class
 InfrastructureObject.class
 gmaths\Vec2.class
+InfrastructureManager$RoadPath.class
+InfrastructureManager$RoadSegment.class
 MapPanel$2.class
 TextureLibrary.class
 XenoGuesser$MyMouseInput.class

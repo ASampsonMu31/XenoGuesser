@@ -1,131 +1,117 @@
 package gmaths;
 
-/**
- * A class for a 4x4 matrix.
- *
- * @author    Dr Steve Maddock
- * @version   1.0 (01/10/2017)
- */
+import java.util.Locale;
 
-public class Mat4 {   // row column formulation
+/** A 4 by 4 matrix stored as rows of column values. */
+public class Mat4 {
+  private final float[][] values = new float[4][4];
 
-  private float[][] values;
-  
   public Mat4() {
-    this(0);
-  }
-  
-  public Mat4(float f) {
-    values = new float[4][4];
-    makeZero();
-    for (int i=0; i<4; ++i) {
-      values[i][i] = f;
-    }
-  }
-  
-  public Mat4(Mat4 m) {
-    this.values = new float[4][4];
-    for (int i=0; i<4; ++i) {
-      for (int j=0; j<4; ++j) {
-        this.values[i][j] = m.values[i][j];
-      }
-    }
-  }
-  
-  public void set(int r, int c, float f) {
-    values[r][c] = f;
+    this(0.0f);
   }
 
-  public float get(int r, int c) {
-    return values[r][c];
-  }
-  
-  private void makeZero() {
-    for (int i=0; i<4; ++i) {
-      for (int j=0; j<4; ++j) {
-        values[i][j] = 0;
-      }
+  public Mat4(float diagonal) {
+    for (int index = 0; index < 4; index++) {
+      values[index][index] = diagonal;
     }
   }
-  
+
+  public Mat4(Mat4 source) {
+    for (int row = 0; row < 4; row++) {
+      System.arraycopy(source.values[row], 0, values[row], 0, 4);
+    }
+  }
+
+  public void set(int row, int column, float value) {
+    values[row][column] = value;
+  }
+
+  public float get(int row, int column) {
+    return values[row][column];
+  }
+
   public void transpose() {
-    for (int i=0; i<4; ++i) {
-      for (int j=i; j<4; ++j) {
-        float t = values[i][j];
-        values[i][j] = values[j][i];
-        values[j][i] = t;
+    for (int row = 0; row < 4; row++) {
+      for (int column = row + 1; column < 4; column++) {
+        float value = values[row][column];
+        values[row][column] = values[column][row];
+        values[column][row] = value;
       }
     }
-  }
-    
-  public static Mat4 transpose(Mat4 m) {
-    Mat4 a = new Mat4(m);
-    for (int i=0; i<4; ++i) {
-      for (int j=i; j<4; ++j) {
-        float t = a.values[i][j];
-        a.values[i][j] = a.values[j][i];
-        a.values[j][i] = t;
-      }
-    }
-    return a;
   }
 
-  public static Mat4 multiply(Mat4 a, Mat4 b) {
-    Mat4 result = new Mat4();
-    for (int i=0; i<4; ++i) {
-      for (int j=0; j<4; ++j) {
-        for (int k=0; k<4; ++k) {
-          result.values[i][j] += a.values[i][k]*b.values[k][j];
+  public static Mat4 transpose(Mat4 matrix) {
+    Mat4 result = new Mat4(matrix);
+    result.transpose();
+    return result;
+  }
+
+  public static Mat4 multiply(Mat4 left, Mat4 right) {
+    Mat4 product = new Mat4();
+    for (int row = 0; row < 4; row++) {
+      for (int column = 0; column < 4; column++) {
+        float sum = 0.0f;
+        for (int inner = 0; inner < 4; inner++) {
+          sum += left.values[row][inner] * right.values[inner][column];
         }
+        product.values[row][column] = sum;
       }
     }
-    return result;
-  }
-  
-  public static Vec3 multiply(Mat4 m, Vec3 v) {
-    Vec3 result = new Vec3();
-    result.x = m.values[0][0]*v.x + m.values[0][1]*v.y
-               + m.values[0][2]*v.z;
-    result.y = m.values[1][0]*v.x + m.values[1][1]*v.y
-               + m.values[1][2]*v.z;
-    result.z = m.values[2][0]*v.x + m.values[2][1]*v.y
-               + m.values[2][2]*v.z;
-    return result;
+    return product;
   }
 
-  public float[] toFloatArrayForGLSL() {  // col by row
-    float[] f = new float[16];
-    for (int j=0; j<4; ++j) {
-      for (int i=0; i<4; ++i) {
-        f[j*4+i] = values[i][j];
+  public static Vec3 multiply(Mat4 matrix, Vec3 vector) {
+    float x = matrix.values[0][0] * vector.x
+        + matrix.values[0][1] * vector.y
+        + matrix.values[0][2] * vector.z;
+    float y = matrix.values[1][0] * vector.x
+        + matrix.values[1][1] * vector.y
+        + matrix.values[1][2] * vector.z;
+    float z = matrix.values[2][0] * vector.x
+        + matrix.values[2][1] * vector.y
+        + matrix.values[2][2] * vector.z;
+    return new Vec3(x, y, z);
+  }
+
+  public float[] toFloatArrayForGLSL() {
+    float[] flattened = new float[16];
+    for (int column = 0; column < 4; column++) {
+      for (int row = 0; row < 4; row++) {
+        flattened[column * 4 + row] = values[row][column];
       }
     }
-    return f;
+    return flattened;
   }
-  
-  public String asFloatArrayForGLSL() {  // col by row
-    String s = "{";
-    for (int j=0; j<4; ++j) {
-      for (int i=0; i<4; ++i) {
-        s += String.format("%.2f",values[i][j]);
-        if (!(j==3 && i==3)) s+=",";
+
+  public String asFloatArrayForGLSL() {
+    StringBuilder text = new StringBuilder("{");
+    for (int column = 0; column < 4; column++) {
+      for (int row = 0; row < 4; row++) {
+        if (column != 0 || row != 0) {
+          text.append(',');
+        }
+        text.append(String.format(Locale.ROOT, "%.2f", values[row][column]));
       }
     }
-    return s;
+    return text.append('}').toString();
   }
-  
+
+  @Override
   public String toString() {
-    String s = "{";
-    for (int i=0; i<4; ++i) {
-      s += (i==0) ? "{" : " {";
-      for (int j=0; j<4; ++j) {
-        s += String.format("%.2f",values[i][j]);  
-        if (j<3) s += ", ";
+    StringBuilder text = new StringBuilder("{");
+    for (int row = 0; row < 4; row++) {
+      if (row > 0) {
+        text.append(" ");
       }
-      s += (i==3) ? "}" : "},\n";
-    } 
-    s += "}";
-    return s;
+      text.append('{');
+      for (int column = 0; column < 4; column++) {
+        if (column > 0) {
+          text.append(", ");
+        }
+        text.append(String.format(Locale.ROOT, "%.2f", values[row][column]));
+      }
+      text.append(row == 3 ? "}" : "},\n");
+    }
+    return text.append('}').toString();
   }
-  
-} // end of Mat4 class
+}
