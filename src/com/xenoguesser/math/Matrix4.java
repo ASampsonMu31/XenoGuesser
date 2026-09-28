@@ -1,9 +1,9 @@
-package gmaths;
+package com.xenoguesser.math;
 
-public class Mat4 {
+public class Matrix4 {
     private final float[] values;
 
-    public Mat4(float diagonal) {
+    public Matrix4(float diagonal) {
         values = new float[16];
         values[0] = diagonal;
         values[5] = diagonal;
@@ -11,7 +11,7 @@ public class Mat4 {
         values[15] = diagonal;
     }
 
-    Mat4(float[] values) {
+    Matrix4(float[] values) {
         if (values.length != 16) {
             throw new IllegalArgumentException("A 4x4 matrix requires 16 values");
         }
@@ -25,7 +25,7 @@ public class Mat4 {
         values[column * 4 + row] = value;
     }
 
-    public static Mat4 multiply(Mat4 left, Mat4 right) {
+    public static Matrix4 multiply(Matrix4 left, Matrix4 right) {
         float[] result = new float[16];
         for (int column = 0; column < 4; column++) {
             for (int row = 0; row < 4; row++) {
@@ -36,7 +36,7 @@ public class Mat4 {
                 result[column * 4 + row] = value;
             }
         }
-        return new Mat4(result);
+        return new Matrix4(result);
     }
 
     public float[] toFloatArrayForGLSL() {

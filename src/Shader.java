@@ -5,7 +5,7 @@ import java.nio.charset.Charset;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.glsl.*;
 
-import gmaths.*;  
+import com.xenoguesser.math.*;  
   
 public class Shader {
   
@@ -67,13 +67,13 @@ public class Shader {
   }
   
   /* I declare that the modifications here are my own work based on setVec3 */
-  public void setVec2(GL3 gl, String name, Vec2 v) {
+  public void setVec2(GL3 gl, String name, Vector2 v) {
     int location = gl.glGetUniformLocation(ID, name);
     gl.glUniform2f(location, v.x, v.y);
   }
   /* Modified by Alexander Sampson, asampson1@sheffield.ac.uk */
 
-  public void setVec3(GL3 gl, String name, Vec3 v) {
+  public void setVec3(GL3 gl, String name, Vector3 v) {
     int location = gl.glGetUniformLocation(ID, name);
     gl.glUniform3f(location, v.x, v.y, v.z);
   }

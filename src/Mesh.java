@@ -2,7 +2,7 @@ import java.nio.*;
 import com.jogamp.common.nio.*;
 import com.jogamp.opengl.*;
 
-import gmaths.*;
+import com.xenoguesser.math.*;
 
 public class Mesh {
   

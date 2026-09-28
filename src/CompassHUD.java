@@ -8,7 +8,7 @@ import java.awt.geom.Point2D;
 import java.awt.RenderingHints;
 import java.awt.BasicStroke;
 import java.awt.Dimension;
-import gmaths.Vec3;
+import com.xenoguesser.math.Vector3;
 
 public class CompassHUD extends JPanel {
     
@@ -33,7 +33,7 @@ public class CompassHUD extends JPanel {
         this.setSize(panelWidth, panelHeight);
     }
     
-    public void updateHeading(Vec3 cameraForwardDirection) {
+    public void updateHeading(Vector3 cameraForwardDirection) {
         this.currentYawRadians = (float) Math.atan2(cameraForwardDirection.x, cameraForwardDirection.z);
         
         if (!this.isVisible()) {

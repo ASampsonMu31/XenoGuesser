@@ -2,7 +2,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import com.jogamp.opengl.GL3;
-import gmaths.*;
+import com.xenoguesser.math.*;
 
 public class Flora {
 
@@ -34,7 +34,7 @@ public class Flora {
         int[] segmentCount = {0};
         
         // Start recursion at the origin, pointing straight up
-        buildBranch(rand, new Vec3(0, 0, 0), new Mat4(1), startWidth, 0f, 0, 
+        buildBranch(rand, new Vector3(0, 0, 0), new Matrix4(1), startWidth, 0f, 0, 
                     branchingRate, widthDecline, stoppingDistance, meanBranchAngle, slices, 
                     branchVerts, branchInds, leafVerts, leafInds, segmentCount, leafScaleMultiplier);
         
@@ -46,8 +46,8 @@ public class Flora {
 
     private static void buildBranch(
             Random rand, 
-            Vec3 pos, 
-            Mat4 rot, 
+            Vector3 pos, 
+            Matrix4 rot, 
             float width, 
             float dist, 
             int depth,
@@ -79,10 +79,10 @@ public class Flora {
         float length = 1.0f + (rand.nextFloat() * 0.8f); 
         
         // Build the transform for this specific branch segment cylinder
-        Mat4 localTransform = Mat4.multiply(Mat4Transform.scale(width, length, width), Mat4Transform.translate(0f, 0.5f, 0f));
-        Mat4 modelMat = Mat4Transform.translate(pos.x, pos.y, pos.z);
-        modelMat = Mat4.multiply(modelMat, rot);
-        modelMat = Mat4.multiply(modelMat, localTransform);
+        Matrix4 localTransform = Matrix4.multiply(Matrix4Transform.scale(width, length, width), Matrix4Transform.translate(0f, 0.5f, 0f));
+        Matrix4 modelMat = Matrix4Transform.translate(pos.x, pos.y, pos.z);
+        modelMat = Matrix4.multiply(modelMat, rot);
+        modelMat = Matrix4.multiply(modelMat, localTransform);
         
         int vertexOffset = bVerts.size() / 8; // 8 floats per vertex
         
@@ -107,13 +107,13 @@ public class Flora {
         
         // Calculate the starting position of the next segment at the end of this one
         float[] endOffset = multiplyNormal(rot, 0, length, 0);
-        Vec3 nextPos = new Vec3(pos.x + endOffset[0], pos.y + endOffset[1], pos.z + endOffset[2]);
+        Vector3 nextPos = new Vector3(pos.x + endOffset[0], pos.y + endOffset[1], pos.z + endOffset[2]);
         
         // Slight organic curve variation for main stem tracking
         float mainTwist = (rand.nextFloat() * 10f) - 5f;
         float mainBend = (rand.nextFloat() * 6f) - 3f;
-        Mat4 mainRot = Mat4.multiply(rot, Mat4Transform.rotateAroundY(mainTwist));
-        mainRot = Mat4.multiply(mainRot, Mat4Transform.rotateAroundZ(mainBend));
+        Matrix4 mainRot = Matrix4.multiply(rot, Matrix4Transform.rotateAroundY(mainTwist));
+        mainRot = Matrix4.multiply(mainRot, Matrix4Transform.rotateAroundZ(mainBend));
         
         // Determine branching splitting
         if (rand.nextFloat() < branchingRate) {
@@ -123,8 +123,8 @@ public class Flora {
             // Treat widthDecline as the amount to subtract (e.g., 0.1 decline = 90% thickness retained).
             float branchWidth = width * (1.0f - widthDecline);
             
-            Mat4 branchRot = Mat4.multiply(rot, Mat4Transform.rotateAroundY(twistAngle));
-            branchRot = Mat4.multiply(branchRot, Mat4Transform.rotateAroundZ(bendAngle));
+            Matrix4 branchRot = Matrix4.multiply(rot, Matrix4Transform.rotateAroundY(twistAngle));
+            branchRot = Matrix4.multiply(branchRot, Matrix4Transform.rotateAroundZ(bendAngle));
             
             // Scale the stopping distance down based on the parent's remaining length
             float remainingDistance = stoppingDistance - dist;
@@ -142,7 +142,7 @@ public class Flora {
                     bVerts, bInds, lVerts, lInds, segmentCount, leafScaleMultiplier);
     }
 
-    private static void spawnLeaves(Random rand, Vec3 pos, Mat4 rot, List<Float> verts, List<Integer> inds, float leafScaleMultiplier) {
+    private static void spawnLeaves(Random rand, Vector3 pos, Matrix4 rot, List<Float> verts, List<Integer> inds, float leafScaleMultiplier) {
         int numLeavesInCluster = 2 + rand.nextInt(3); // Spawn 2 to 4 leaves per tip
         
         for (int i = 0; i < numLeavesInCluster; i++) {
@@ -150,8 +150,8 @@ public class Flora {
             float twist = (rand.nextFloat() * 360f);
             float bend = 15f + rand.nextFloat() * 60f; // Bend outward from the stem
             
-            Mat4 leafRot = Mat4.multiply(rot, Mat4Transform.rotateAroundY(twist));
-            leafRot = Mat4.multiply(leafRot, Mat4Transform.rotateAroundZ(bend));
+            Matrix4 leafRot = Matrix4.multiply(rot, Matrix4Transform.rotateAroundY(twist));
+            leafRot = Matrix4.multiply(leafRot, Matrix4Transform.rotateAroundZ(bend));
             
             // UPDATED: Incorporate the leafScaleMultiplier to properly upscale trees relative to shrubs
             float scale = (0.8f + rand.nextFloat() * 0.7f) * leafScaleMultiplier; // Jitter size * Multiplier
@@ -178,7 +178,7 @@ public class Flora {
             // --- FRONT PLANE ---
             float[] normFront = multiplyNormal(leafRot, 0, 0, 1);
             for (int v = 0; v < 4; v++) {
-                float[] p = multiply(Mat4.multiply(Mat4Transform.translate(pos), leafRot), positions[v][0], positions[v][1], positions[v][2]);
+                float[] p = multiply(Matrix4.multiply(Matrix4Transform.translate(pos), leafRot), positions[v][0], positions[v][1], positions[v][2]);
                 addVertex(verts, p[0], p[1], p[2], normFront[0], normFront[1], normFront[2], frontUVs[v][0], frontUVs[v][1]);
             }
             inds.add(offset + 0); inds.add(offset + 1); inds.add(offset + 2);
@@ -189,7 +189,7 @@ public class Flora {
             // --- BACK PLANE ---
             float[] normBack = multiplyNormal(leafRot, 0, 0, -1);
             for (int v = 0; v < 4; v++) {
-                float[] p = multiply(Mat4.multiply(Mat4Transform.translate(pos), leafRot), positions[v][0], positions[v][1], positions[v][2]);
+                float[] p = multiply(Matrix4.multiply(Matrix4Transform.translate(pos), leafRot), positions[v][0], positions[v][1], positions[v][2]);
                 addVertex(verts, p[0], p[1], p[2], normBack[0], normBack[1], normBack[2], backUVs[v][0], backUVs[v][1]);
             }
             // Reversed winding order so normals calculate correctly on the backface
@@ -204,7 +204,7 @@ public class Flora {
         verts.add(u); verts.add(v);
     }
 
-    private static float[] multiply(Mat4 mat, float x, float y, float z) {
+    private static float[] multiply(Matrix4 mat, float x, float y, float z) {
         float[] m = mat.toFloatArrayForGLSL();
         float nx = m[0]*x + m[4]*y + m[8]*z + m[12];
         float ny = m[1]*x + m[5]*y + m[9]*z + m[13];
@@ -212,7 +212,7 @@ public class Flora {
         return new float[]{nx, ny, nz};
     }
 
-    private static float[] multiplyNormal(Mat4 rot, float x, float y, float z) {
+    private static float[] multiplyNormal(Matrix4 rot, float x, float y, float z) {
         float[] m = rot.toFloatArrayForGLSL();
         float nx = m[0]*x + m[4]*y + m[8]*z;
         float ny = m[1]*x + m[5]*y + m[9]*z;
