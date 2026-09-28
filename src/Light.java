@@ -3,13 +3,13 @@ import com.jogamp.common.nio.*;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
 
-import gmaths.*;
+import com.xenoguesser.math.*;
   
 public class Light {
   
   private Material material;
-  private Vec3 position;
-  private Mat4 modelMatrix;
+  private Vector3 position;
+  private Matrix4 modelMatrix;
   private Shader shader;
   private Camera camera;
   private Mesh mesh;
@@ -18,15 +18,15 @@ public class Light {
   private float brightnessProportion;
   private Texture glowTexture; 
   
-  public Light(GL3 gl, Camera camera, boolean isSun, Vec3 position, float size) {
+  public Light(GL3 gl, Camera camera, boolean isSun, Vector3 position, float size) {
     this(gl, MaterialConstants.dullWhiteLightSource, position, camera, isSun, size, null);
   }
 
-  public Light(GL3 gl, Camera camera, boolean isSun, Vec3 position, float size, Texture glowTexture) {
+  public Light(GL3 gl, Camera camera, boolean isSun, Vector3 position, float size, Texture glowTexture) {
     this(gl, MaterialConstants.dullWhiteLightSource, position, camera, isSun, size, glowTexture);
   }
 
-  public Light(GL3 gl, Material material, Vec3 position, Camera camera, boolean isSun, float size, Texture glowTexture) {
+  public Light(GL3 gl, Material material, Vector3 position, Camera camera, boolean isSun, float size, Texture glowTexture) {
     this.material = material;
     this.position = position;
     this.camera = camera;
@@ -35,7 +35,7 @@ public class Light {
     this.brightnessProportion = 1;
     this.glowTexture = glowTexture;
 
-    modelMatrix = new Mat4(1);
+    modelMatrix = new Matrix4(1);
 
     shader = new Shader(gl, "assets/shaders/vs_light_01.txt", "assets/shaders/fs_light_01.txt");
     
@@ -43,7 +43,7 @@ public class Light {
     mesh = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
   }
   
-  public void setPosition(Vec3 v) {
+  public void setPosition(Vector3 v) {
     position.x = v.x;
     position.y = v.y;
     position.z = v.z;
@@ -55,7 +55,7 @@ public class Light {
     position.z = z;
   }
   
-  public Vec3 getPosition() {
+  public Vector3 getPosition() {
     return position;
   }
 
@@ -83,10 +83,10 @@ public class Light {
     this.camera = camera;
   }
 
-  public Vec3 scaleUpColour(Vec3 colour) {
-    Vec3 materialFullDiffuse = material.getFullDiffuse();
+  public Vector3 scaleUpColour(Vector3 colour) {
+    Vector3 materialFullDiffuse = material.getFullDiffuse();
     float sf = 1 / Math.max(Math.max(materialFullDiffuse.x, materialFullDiffuse.y), materialFullDiffuse.z);
-    return new Vec3(Math.min(colour.x * sf , 1),
+    return new Vector3(Math.min(colour.x * sf , 1),
                     Math.min(colour.y * sf , 1),
                     Math.min(colour.z * sf , 1));
   }
@@ -102,7 +102,7 @@ public class Light {
 
     // 1. Compute the direct vector from the Player Camera position to the Sun position
     // FIX: Reversing this direction vectors solves the backface culling problem!
-    Vec3 camPos = camera.getPosition();
+    Vector3 camPos = camera.getPosition();
     float lookX = position.x - camPos.x;
     float lookY = position.y - camPos.y;
     float lookZ = position.z - camPos.z;
@@ -134,7 +134,7 @@ public class Light {
     float upZ = lookX * sideY - lookY * sideX;
 
     // 5. Build position-aligned orientation matrix
-    Mat4 positionBillboard = new Mat4(1);
+    Matrix4 positionBillboard = new Matrix4(1);
     // Column 0 maps local X 
     positionBillboard.set(0, 0, sideX);
     positionBillboard.set(1, 0, sideY);
@@ -149,13 +149,13 @@ public class Light {
     positionBillboard.set(2, 2, upZ);
 
     // 6. Combine transformations
-    Mat4 localMM = Mat4Transform.translate(position);
-    localMM = Mat4.multiply(localMM, positionBillboard);
-    localMM = Mat4.multiply(localMM, Mat4Transform.scale(this.size, 1.0f, this.size));
+    Matrix4 localMM = Matrix4Transform.translate(position);
+    localMM = Matrix4.multiply(localMM, positionBillboard);
+    localMM = Matrix4.multiply(localMM, Matrix4Transform.scale(this.size, 1.0f, this.size));
     
     // Calculate final matrices
-    Mat4 mvMatrix = Mat4.multiply(camera.getViewMatrix(), localMM);
-    Mat4 mvpMatrix = Mat4.multiply(camera.getPerspectiveMatrix(), mvMatrix);
+    Matrix4 mvMatrix = Matrix4.multiply(camera.getViewMatrix(), localMM);
+    Matrix4 mvpMatrix = Matrix4.multiply(camera.getPerspectiveMatrix(), mvMatrix);
     
     shader.setFloatArray(gl, "mvpMatrix", mvpMatrix.toFloatArrayForGLSL());
     

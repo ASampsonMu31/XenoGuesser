@@ -3,7 +3,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.List;
 import java.util.ArrayList;
-import gmaths.Vec3;
+import com.xenoguesser.math.Vector3;
 
 public class InfrastructureManager {
     private static final int ROAD_SEED_COUNT = 500;
@@ -19,16 +19,16 @@ public class InfrastructureManager {
     private float roadChunkSize;
 
     private static final class RoadPath {
-        private final List<Vec3> points = new ArrayList<>();
+        private final List<Vector3> points = new ArrayList<>();
     }
 
     private static final class RoadSegment {
-        private final Vec3 start;
-        private final Vec3 end;
-        private final Vec3 startTangent;
-        private final Vec3 endTangent;
+        private final Vector3 start;
+        private final Vector3 end;
+        private final Vector3 startTangent;
+        private final Vector3 endTangent;
 
-        private RoadSegment(Vec3 start, Vec3 end, Vec3 startTangent, Vec3 endTangent) {
+        private RoadSegment(Vector3 start, Vector3 end, Vector3 startTangent, Vector3 endTangent) {
             this.start = start;
             this.end = end;
             this.startTangent = startTangent;
@@ -97,7 +97,7 @@ public class InfrastructureManager {
                             }
                         }
                         
-                        objects.add(new InfrastructureObject(InfrastructureObject.Type.SIGN, new Vec3(worldX, worldY, worldZ), nationId, randomRotY, textString));
+                        objects.add(new InfrastructureObject(InfrastructureObject.Type.SIGN, new Vector3(worldX, worldY, worldZ), nationId, randomRotY, textString));
                     }
                 }
             }
@@ -143,10 +143,10 @@ public class InfrastructureManager {
 
         for (RoadPath path : roadNetwork) {
             for (int i = 0; i < path.points.size() - 1; i++) {
-                Vec3 start = path.points.get(i);
-                Vec3 end = path.points.get(i + 1);
-                Vec3 startTangent = roadTangent(path.points, i == 0 ? i : i - 1, i + 1);
-                Vec3 endTangent = roadTangent(path.points, i, i + 1 == path.points.size() - 1 ? i + 1 : i + 2);
+                Vector3 start = path.points.get(i);
+                Vector3 end = path.points.get(i + 1);
+                Vector3 startTangent = roadTangent(path.points, i == 0 ? i : i - 1, i + 1);
+                Vector3 endTangent = roadTangent(path.points, i, i + 1 == path.points.size() - 1 ? i + 1 : i + 2);
                 float midpointX = (start.x + end.x) * 0.5f;
                 float midpointZ = (start.z + end.z) * 0.5f;
                 int segmentChunkX = (int) Math.floor((midpointX + chunkSize * 0.5f) / chunkSize);
@@ -180,7 +180,7 @@ public class InfrastructureManager {
         return false;
     }
 
-    private float distanceSquaredToSegment(float x, float z, Vec3 start, Vec3 end) {
+    private float distanceSquaredToSegment(float x, float z, Vector3 start, Vector3 end) {
         float dx = end.x - start.x;
         float dz = end.z - start.z;
         float lengthSquared = dx * dx + dz * dz;
@@ -217,7 +217,7 @@ public class InfrastructureManager {
                 break;
             }
 
-            path.points.add(new Vec3(x, height, z));
+            path.points.add(new Vector3(x, height, z));
             heading += (random.nextFloat() - 0.5f) * 0.55f;
             x += (float) Math.cos(heading) * stepLength;
             z += (float) Math.sin(heading) * stepLength;
@@ -234,7 +234,7 @@ public class InfrastructureManager {
                     continue;
                 }
                 int branchIndex = 3 + random.nextInt(path.points.size() - 5);
-                Vec3 branchStart = path.points.get(branchIndex);
+                Vector3 branchStart = path.points.get(branchIndex);
                 float branchDirection = heading + (branch == 0 ? 1.0f : -1.0f)
                         * (0.65f + random.nextFloat() * 0.8f);
                 growRoadBranch(branchStart.x, branchStart.z, branchDirection,
@@ -244,13 +244,13 @@ public class InfrastructureManager {
         }
     }
 
-    private Vec3 roadTangent(List<Vec3> points, int fromIndex, int toIndex) {
-        Vec3 from = points.get(fromIndex);
-        Vec3 to = points.get(toIndex);
+    private Vector3 roadTangent(List<Vector3> points, int fromIndex, int toIndex) {
+        Vector3 from = points.get(fromIndex);
+        Vector3 to = points.get(toIndex);
         float dx = to.x - from.x;
         float dz = to.z - from.z;
         float length = (float) Math.sqrt(dx * dx + dz * dz);
-        return new Vec3(dx / length, 0.0f, dz / length);
+        return new Vector3(dx / length, 0.0f, dz / length);
     }
 
     private InfrastructureObject createRoadSegment(RoadSegment segment, PerlinNoise noise, float seaLevelHeight) {
@@ -263,7 +263,7 @@ public class InfrastructureManager {
             float t = (float) i / segments;
             float x = segment.start.x + (segment.end.x - segment.start.x) * t;
             float z = segment.start.z + (segment.end.z - segment.start.z) * t;
-            Vec3 tangent = lerpTangent(segment.startTangent, segment.endTangent, t);
+            Vector3 tangent = lerpTangent(segment.startTangent, segment.endTangent, t);
             float sideX = -tangent.z * roadWidth * 0.5f;
             float sideZ = tangent.x * roadWidth * 0.5f;
 
@@ -306,7 +306,7 @@ public class InfrastructureManager {
         float centerY = TerrainMesh.getLayeredHeight(centerX, centerZ, noise) + ROAD_SURFACE_OFFSET;
         return new InfrastructureObject(
             InfrastructureObject.Type.ROAD,
-            new Vec3(centerX, centerY, centerZ),
+            new Vector3(centerX, centerY, centerZ),
             0,
             0.0f,
             null,
@@ -315,14 +315,14 @@ public class InfrastructureManager {
         );
     }
 
-    private Vec3 lerpTangent(Vec3 first, Vec3 second, float amount) {
+    private Vector3 lerpTangent(Vector3 first, Vector3 second, float amount) {
         float x = first.x + (second.x - first.x) * amount;
         float z = first.z + (second.z - first.z) * amount;
         float length = (float) Math.sqrt(x * x + z * z);
-        return new Vec3(x / length, 0.0f, z / length);
+        return new Vector3(x / length, 0.0f, z / length);
     }
 
-    private float[] miterOffset(Vec3 incoming, Vec3 outgoing, float halfWidth) {
+    private float[] miterOffset(Vector3 incoming, Vector3 outgoing, float halfWidth) {
         float incomingSideX = -incoming.z;
         float incomingSideZ = incoming.x;
         float outgoingSideX = -outgoing.z;

@@ -7,7 +7,7 @@ import java.util.List;
 import java.awt.image.BufferedImage;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.Texture;
-import gmaths.*;
+import com.xenoguesser.math.*;
 import java.io.File;
 import java.io.IOException;
 
@@ -38,9 +38,9 @@ private static class SpeciesConfig {
         float leafScale; 
         
         // Dynamic phenotype profiles
-        Vec3 healthyColor;
-        Vec3 dyingColor;
-        Vec3 trunkColor; // NEW: Controls the bark/wood color
+        Vector3 healthyColor;
+        Vector3 dyingColor;
+        Vector3 trunkColor; // NEW: Controls the bark/wood color
         
         // Climate niche constraints
         float tempMean, tempStdDev;
@@ -55,7 +55,7 @@ private static class SpeciesConfig {
         public SpeciesConfig(String name, int leafTexNum, float leafScale,
                              float baseBRate, float varBRate, float baseSWidth, float varSWidth,
                              float baseWDecl, float varWDecl, float baseSDist, float varSDist,
-                             float baseBAngle, float varBAngle, Vec3 healthyColor, Vec3 dyingColor, Vec3 trunkColor,
+                             float baseBAngle, float varBAngle, Vector3 healthyColor, Vector3 dyingColor, Vector3 trunkColor,
                              float tempMean, float tempStdDev, float patchNoiseScale, float baseAbundance) {
             this.name = name;
             this.leafTexNum = leafTexNum;
@@ -87,13 +87,13 @@ private static class SpeciesConfig {
     private Shader leafShader;
     
     private static class FloraInstance {
-        Vec3 pos;
+        Vector3 pos;
         int speciesIndex;
         int modelIndex;
         float scale;
         float rotationY;
         
-        public FloraInstance(Vec3 pos, int speciesIndex, int modelIndex, float scale, float rotationY) {
+        public FloraInstance(Vector3 pos, int speciesIndex, int modelIndex, float scale, float rotationY) {
             this.pos = pos;
             this.speciesIndex = speciesIndex;
             this.modelIndex = modelIndex;
@@ -103,7 +103,7 @@ private static class SpeciesConfig {
     }
     
     private Light[] lights;
-    private Vec3 ambientLight;
+    private Vector3 ambientLight;
     private float nightProportion;
     private float timeOfDay;
 
@@ -117,7 +117,7 @@ private static class SpeciesConfig {
     private Shader terrainShader;
     private Renderer terrainRenderer;
     private Material terrainMaterial;
-    private Mat4 globalModelMatrix;
+    private Matrix4 globalModelMatrix;
 
     private Shader solidShader;
     private Shader signboardShader;
@@ -197,8 +197,8 @@ private static class SpeciesConfig {
 
     private GL3 gl;
 
-    private Vec3 healthyColour;
-    private Vec3 dyingColour;
+    private Vector3 healthyColour;
+    private Vector3 dyingColour;
 
     private NationGenerationManager nationManager;
     private int totalNationsCount;
@@ -257,8 +257,8 @@ private static class SpeciesConfig {
         this.IS_DEBUG_MODE_ACTIVE = isDebugModeActive;
         this.currentDebugFactor = FactorName.GRASS_ABUNDANCE;
         
-        this.camera.setPosition(new Vec3(0f, 5f, 15f));
-        this.camera.setTarget(new Vec3(0f, 0f, 0f));
+        this.camera.setPosition(new Vector3(0f, 5f, 15f));
+        this.camera.setTarget(new Vector3(0f, 0f, 0f));
 
         java.util.Random seedRand = new java.util.Random(worldSeed);
         this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
@@ -339,7 +339,7 @@ private static class SpeciesConfig {
             // Randomize organic profiles depending on structural class (Tree vs Shrub)
             float leafScale, baseBRate, varBRate, baseSWidth, varSWidth, baseWDecl, varWDecl, baseSDist, varSDist, baseBAngle, varBAngle;
             float tempMean, tempStdDev, patchNoiseScale, baseAbundance;
-            Vec3 healthyColor, dyingColor;
+            Vector3 healthyColor, dyingColor;
 
             if (isTree) {
                 // Trees: Massive leaves, low branching density, thick trunks, tall structural heights
@@ -385,7 +385,7 @@ private static class SpeciesConfig {
             float trunkLuminance = 0.15f + speciesSeeder.nextFloat() * 0.80f;
             
             // Set all channels equal to create a clean greyscale intensity factor
-            Vec3 trunkColor = new Vec3(trunkLuminance, trunkLuminance, trunkLuminance);
+            Vector3 trunkColor = new Vector3(trunkLuminance, trunkLuminance, trunkLuminance);
 
             patchNoiseScale = 1e-5f;
 
@@ -407,7 +407,7 @@ private static class SpeciesConfig {
             float brightB = rawB / maxChannel;
 
             // Add a slight minimum floor so it never goes pure black or pure neon white unexpectedly
-            healthyColor = new Vec3(
+            healthyColor = new Vector3(
                 Math.max(0.15f, brightR),
                 Math.max(0.15f, brightG),
                 Math.max(0.15f, brightB)
@@ -421,7 +421,7 @@ private static class SpeciesConfig {
             float deadG = (healthyColor.y * brownFactor) + 0.10f; // Lower green reduces vitality
             float deadB = (healthyColor.z * brownFactor) + 0.04f; // Lower blue pushes it toward warm mud/earth tones
 
-            dyingColor = new Vec3(
+            dyingColor = new Vector3(
                 Math.min(deadR, 1.0f),
                 Math.min(deadG, 1.0f),
                 Math.min(deadB, 1.0f)
@@ -499,7 +499,7 @@ private static class SpeciesConfig {
         
         float aspect = (float) width / (float) height;
         float farClippingPlane = 3000.0f; 
-        Mat4 perspectiveMatrix = Mat4Transform.perspective(45, aspect, 10.0f, farClippingPlane);
+        Matrix4 perspectiveMatrix = Matrix4Transform.perspective(45, aspect, 10.0f, farClippingPlane);
         camera.setPerspectiveMatrix(perspectiveMatrix);
 
         createDepthFramebuffer(gl, width, height);
@@ -578,7 +578,7 @@ private static class SpeciesConfig {
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
     }
 
-    private Vec3 getSunPosition() {
+    private Vector3 getSunPosition() {
         float sunDistance = 2350.0f; 
         
         float progress = timeOfDay - (float)Math.floor(timeOfDay);
@@ -587,7 +587,7 @@ private static class SpeciesConfig {
         float maxAngleRad = (float)Math.toRadians(170.0);
         float currentAngleRad = minAngleRad + progress * (maxAngleRad - minAngleRad);
         
-        Vec3 cameraPosition = camera.getPosition();
+        Vector3 cameraPosition = camera.getPosition();
         
         float localX = sunDistance * (float)Math.cos(currentAngleRad);
         float localY = sunDistance * (float)Math.sin(currentAngleRad); 
@@ -612,7 +612,7 @@ private static class SpeciesConfig {
         float worldY = cameraPosition.y + (localY * cosTilt - localZ * sinTilt);
         float worldZ = cameraPosition.z + (localY * sinTilt + localZ * cosTilt);
         
-        return new Vec3(worldX, worldY, worldZ);
+        return new Vector3(worldX, worldY, worldZ);
     }
 
     private void initialise() {
@@ -631,7 +631,7 @@ private static class SpeciesConfig {
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_REPEAT);
 
-        ambientLight = new Vec3(0.4f, 0.38f, 0.35f); 
+        ambientLight = new Vector3(0.4f, 0.38f, 0.35f); 
         nightProportion = 0.0f;
         
         timeOfDay = 0.5f;
@@ -639,7 +639,7 @@ private static class SpeciesConfig {
         lights = new Light[1];
         float lightSize = 275.0f; 
         
-        Light l = new Light(gl, camera, true, new Vec3(0,0,0), lightSize, textures.get("sun_glow"));
+        Light l = new Light(gl, camera, true, new Vector3(0,0,0), lightSize, textures.get("sun_glow"));
         Material m = new Material();
         
         m.setFullDiffuse(1.0f, 0.95f, 0.95f);  
@@ -658,14 +658,14 @@ private static class SpeciesConfig {
         solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
 
         terrainMaterial = new Material(
-            new Vec3(1.0f, 1.0f, 1.0f), 
-            new Vec3(1.0f, 1.0f, 1.0f), 
-            new Vec3(0.1f, 0.1f, 0.1f), 
+            new Vector3(1.0f, 1.0f, 1.0f), 
+            new Vector3(1.0f, 1.0f, 1.0f), 
+            new Vector3(0.1f, 0.1f, 0.1f), 
             4.0f                                                                                                                                                                                
         );
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
         terrainRenderer = new Renderer();
-        globalModelMatrix = new Mat4(1);
+        globalModelMatrix = new Matrix4(1);
 
 
         // Initialize the manager
@@ -687,9 +687,9 @@ private static class SpeciesConfig {
         }
         
         Material postMat = new Material(
-            new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown ambient
-            new Vec3(0.35f, 0.25f, 0.15f), // Wood/brown diffuse
-            new Vec3(0.0f, 0.0f, 0.0f),    // Zero specular
+            new Vector3(0.35f, 0.25f, 0.15f), // Wood/brown ambient
+            new Vector3(0.35f, 0.25f, 0.15f), // Wood/brown diffuse
+            new Vector3(0.0f, 0.0f, 0.0f),    // Zero specular
             1.0f
         );
         
@@ -699,15 +699,15 @@ private static class SpeciesConfig {
         for (int n = 1; n <= totalNationsCount; n++) {
             int chosenSlices = sliceOptions[postRand.nextInt(sliceOptions.length)];
             Mesh postMesh = postMeshesBySlice.get(chosenSlices);
-            Model postModel = new Model("post_nation_" + n, postMesh, new Mat4(1), solidShader, postMat, terrainRenderer, lights, camera);
+            Model postModel = new Model("post_nation_" + n, postMesh, new Matrix4(1), solidShader, postMat, terrainRenderer, lights, camera);
             postModelsByNation.put(n, postModel);
         }
 
         // 2. Road styling: widen the asphalt strips and darken the material for a more obvious road look.
         roadMaterial = new Material(
-            new Vec3(0.18f, 0.18f, 0.18f),
-            new Vec3(0.28f, 0.28f, 0.28f),
-            new Vec3(0.01f, 0.01f, 0.01f),
+            new Vector3(0.18f, 0.18f, 0.18f),
+            new Vector3(0.28f, 0.28f, 0.28f),
+            new Vector3(0.01f, 0.01f, 0.01f),
             1.0f
         );
 
@@ -753,18 +753,18 @@ private static class SpeciesConfig {
             }
             
             java.awt.Color awtColor = nationManager.getNationColor(n);
-            Vec3 nationRGB = new Vec3(awtColor.getRed() / 255.0f, awtColor.getGreen() / 255.0f, awtColor.getBlue() / 255.0f);
+            Vector3 nationRGB = new Vector3(awtColor.getRed() / 255.0f, awtColor.getGreen() / 255.0f, awtColor.getBlue() / 255.0f);
             
             // Fix: Replaced nationRGB with raw white values so the shader gets a clean canvas 
             Material signMaterial = new Material(
-                new Vec3(1.0f, 1.0f, 1.0f),                     
-                new Vec3(1.0f, 1.0f, 1.0f),                     
-                new Vec3(0.0f, 0.0f, 0.0f),    
+                new Vector3(1.0f, 1.0f, 1.0f),                     
+                new Vector3(1.0f, 1.0f, 1.0f),                     
+                new Vector3(0.0f, 0.0f, 0.0f),    
                 1.0f                           
             );
             
             // Note: We are using the new signboardShader here instead of solidShader
-            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Mat4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
+            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Matrix4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
             signModelsByNation.put(n, signModel);
         }
         
@@ -779,7 +779,7 @@ private static class SpeciesConfig {
             SpeciesConfig sc = speciesConfigs[s];
             
             float brightnessBoost = 2.5f;
-            Vec3 boostedTrunkColor = new Vec3(
+            Vector3 boostedTrunkColor = new Vector3(
                 sc.trunkColor.x * brightnessBoost,
                 sc.trunkColor.y * brightnessBoost,
                 sc.trunkColor.z * brightnessBoost
@@ -788,7 +788,7 @@ private static class SpeciesConfig {
             Material floraMat = new Material(
                 boostedTrunkColor,             
                 boostedTrunkColor,             
-                new Vec3(0.02f, 0.02f, 0.02f), 
+                new Vector3(0.02f, 0.02f, 0.02f), 
                 2.0f                           
             );
             
@@ -805,7 +805,7 @@ private static class SpeciesConfig {
                 float bAngle = sc.baseBAngle + fRand.nextFloat() * sc.varBAngle;
                 
                 int texNum = sc.leafTexNum;
-                Material leafMat = new Material(new Vec3(0.9f, 0.9f, 0.9f), new Vec3(0.2f, 0.2f, 0.2f), new Vec3(0.0f, 0.0f, 0.0f), 1.0f);
+                Material leafMat = new Material(new Vector3(0.9f, 0.9f, 0.9f), new Vector3(0.2f, 0.2f, 0.2f), new Vector3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
                 for (int lod = 0; lod < 3; lod++) {
@@ -815,8 +815,8 @@ private static class SpeciesConfig {
                         bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
-                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Mat4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
-                    floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Mat4(1), leafShader, leafMat, terrainRenderer, lights, camera);
+                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Matrix4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
+                    floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Matrix4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
             }
         }
@@ -824,15 +824,15 @@ private static class SpeciesConfig {
         waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
         
         waterMaterial = new Material(
-            new Vec3(0.01f, 0.31f, 0.55f),  
-            new Vec3(0.01f, 0.31f, 0.55f),  
-            new Vec3(10.5f, 0.4f, 0.4f),
+            new Vector3(0.01f, 0.31f, 0.55f),  
+            new Vector3(0.01f, 0.31f, 0.55f),  
+            new Vector3(10.5f, 0.4f, 0.4f),
             2048f                                                                                                                                                                                
         );
         waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
 
         Renderer waterRenderer = new Renderer(); 
-        Mat4 waterModelMatrix = new Mat4(1);
+        Matrix4 waterModelMatrix = new Matrix4(1);
         Mesh waterMesh = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);  
         waterPlaneModel = new Model("ocean_surface", waterMesh, waterModelMatrix, waterShader, waterMaterial, waterRenderer, lights, camera);
 
@@ -900,8 +900,8 @@ private static class SpeciesConfig {
         float r = 0.35f + rand.nextFloat() * 0.5f;
         float g = 0.35f + rand.nextFloat() * 0.5f;
         float b = 0.35f + rand.nextFloat() * 0.5f;
-        healthyColour = new Vec3(r, g, b);
-        dyingColour = new Vec3(0.4f, 0.25f, 0.15f);
+        healthyColour = new Vector3(r, g, b);
+        dyingColour = new Vector3(0.4f, 0.25f, 0.15f);
     }
 
     private void spawnPlayerAtRandomLocation() {
@@ -936,8 +936,8 @@ private static class SpeciesConfig {
 
     public void moveToLocation(float spawnX, float spawnZ) {
         float terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(spawnX, spawnZ, worldNoise);
-        camera.setPosition(new Vec3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ));
-        camera.setTarget(new Vec3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ - 10.0f));
+        camera.setPosition(new Vector3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ));
+        camera.setTarget(new Vector3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ - 10.0f));
 
         lastChunkX = (int) Math.floor((spawnX + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         lastChunkZ = (int) Math.floor((spawnZ + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
@@ -1078,7 +1078,7 @@ private static class SpeciesConfig {
                                 float randomScale = 0.70f + cRand.nextFloat() * 0.60f;
                                 float randomRotY = cRand.nextFloat() * 360.0f;
                                 
-                                instances.add(new FloraInstance(new Vec3(cxWorld, cyWorld, czWorld), s, randModelIndex, randomScale, randomRotY));
+                                instances.add(new FloraInstance(new Vector3(cxWorld, cyWorld, czWorld), s, randModelIndex, randomScale, randomRotY));
                             }
                         }
                     }
@@ -1288,7 +1288,7 @@ private static class SpeciesConfig {
             camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime);
         }
 
-        Vec3 currentPos = camera.getPosition();
+        Vector3 currentPos = camera.getPosition();
         float rawGroundHeight = TerrainMesh.getLayeredHeight(currentPos.x, currentPos.z, worldNoise);
         float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
@@ -1299,7 +1299,7 @@ private static class SpeciesConfig {
         camera.setHeight(smoothedHeight);
 
         lights[0].setPosition(getSunPosition());
-        Vec3 sunPos = lights[0].getPosition();
+        Vector3 sunPos = lights[0].getPosition();
 
         int currentChunkX = (int) Math.floor((camera.getPosition().x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         int currentChunkZ = (int) Math.floor((camera.getPosition().z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
@@ -1343,7 +1343,7 @@ private static class SpeciesConfig {
         float currentG = dayG + nightProportion * (nightG - dayG);
         float currentB = dayB + nightProportion * (nightB - dayB);
         
-        ambientLight = new Vec3(currentR, currentG, currentB);
+        ambientLight = new Vector3(currentR, currentG, currentB);
 
         float skyDayR = 0.976f, skyDayG = 0.725f, skyDayB = 0.043f;
         float skyNightR = 0.05f, skyNightG = 0.05f, skyNightB = 0.08f; 
@@ -1351,16 +1351,16 @@ private static class SpeciesConfig {
         float curSkyR = skyDayR + nightProportion * (skyNightR - skyDayR);
         float curSkyG = skyDayG + nightProportion * (skyNightG - skyDayG);
         float curSkyB = skyDayB + nightProportion * (skyNightB - skyDayB);
-        Vec3 skyColour = new Vec3(curSkyR, curSkyG, curSkyB);
+        Vector3 skyColour = new Vector3(curSkyR, curSkyG, curSkyB);
 
         if (this.compassHUD != null) {
-            Vec3 cameraLookDir = camera.getForwardDirection(); 
+            Vector3 cameraLookDir = camera.getForwardDirection(); 
             this.compassHUD.updateHeading(cameraLookDir);
         }
 
         String skyTextureKey = "sky"; 
 
-        Vec3 camForward = camera.getForwardDirection();
+        Vector3 camForward = camera.getForwardDirection();
         float maxFloraRenderDistance = VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE;
         float maxFloraDistSq = maxFloraRenderDistance * maxFloraRenderDistance;
 
@@ -1372,9 +1372,9 @@ private static class SpeciesConfig {
 
         depthPrePassShader.use(gl);
         
-        Mat4 view = camera.getViewMatrix();
-        Mat4 projection = camera.getPerspectiveMatrix(); 
-        Mat4 viewProjection = Mat4.multiply(projection, view); 
+        Matrix4 view = camera.getViewMatrix();
+        Matrix4 projection = camera.getPerspectiveMatrix(); 
+        Matrix4 viewProjection = Matrix4.multiply(projection, view); 
 
         for (Model plane : chunkCache.values()) { 
             plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
@@ -1390,7 +1390,7 @@ private static class SpeciesConfig {
         float sunProgress = timeOfDay - (float)Math.floor(timeOfDay);
         float sunAngleDeg = 10.0f + sunProgress * (170.0f - 10.0f);
 
-        Vec3 camPosForSky = camera.getPosition();
+        Vector3 camPosForSky = camera.getPosition();
         float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
         float maxMapEdgeZ = totalPlayableRegion / 2.0f;
         
@@ -1401,12 +1401,12 @@ private static class SpeciesConfig {
         float latitudeAngleDeg = -latitudeFactor * 35.0f;
         float tiltAngleDeg = latitudeAngleDeg + currentSeasonalTiltDegrees;
 
-        Mat4 skyRotation = Mat4Transform.rotateAroundX(tiltAngleDeg);
-        skyRotation = Mat4.multiply(skyRotation, Mat4Transform.rotateAroundZ(sunAngleDeg + 90.0f));
+        Matrix4 skyRotation = Matrix4Transform.rotateAroundX(tiltAngleDeg);
+        skyRotation = Matrix4.multiply(skyRotation, Matrix4Transform.rotateAroundZ(sunAngleDeg + 90.0f));
 
-        Mat4 skyTransform = Mat4Transform.translate(camera.getPosition());
-        skyTransform = Mat4.multiply(skyTransform, skyRotation);
-        skyTransform = Mat4.multiply(skyTransform, Mat4Transform.scale(2400.0f, 2400.0f, 2400.0f));
+        Matrix4 skyTransform = Matrix4Transform.translate(camera.getPosition());
+        skyTransform = Matrix4.multiply(skyTransform, skyRotation);
+        skyTransform = Matrix4.multiply(skyTransform, Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f));
         
         skyModel.setModelMatrix(skyTransform);
         skyModel.render(gl, ambientLight, nightProportion);
@@ -1458,9 +1458,9 @@ private static class SpeciesConfig {
                     lodIndex = 1;
                 }
 
-                Mat4 m = Mat4Transform.translate(inst.pos);
-                m = Mat4.multiply(m, Mat4Transform.rotateAroundY(inst.rotationY));
-                m = Mat4.multiply(m, Mat4Transform.scale(inst.scale, inst.scale, inst.scale));
+                Matrix4 m = Matrix4Transform.translate(inst.pos);
+                m = Matrix4.multiply(m, Matrix4Transform.rotateAroundY(inst.rotationY));
+                m = Matrix4.multiply(m, Matrix4Transform.scale(inst.scale, inst.scale, inst.scale));
                 
                 SpeciesConfig sc = speciesConfigs[inst.speciesIndex];
 
@@ -1479,7 +1479,7 @@ private static class SpeciesConfig {
                 float gOut = sc.dyingColor.y + (sc.healthyColor.y - sc.dyingColor.y) * climateVal;
                 float bOut = sc.dyingColor.z + (sc.healthyColor.z - sc.dyingColor.z) * climateVal;
 
-                Vec3 dynamicOuterColor = new Vec3(rOut, gOut, bOut);
+                Vector3 dynamicOuterColor = new Vector3(rOut, gOut, bOut);
 
                 // Scale inner lightness structure
                 float lightScale = 1.3f; 
@@ -1487,7 +1487,7 @@ private static class SpeciesConfig {
                 float gIn = Math.min(dynamicOuterColor.y * lightScale, 1.0f);
                 float bIn = Math.min(dynamicOuterColor.z * lightScale, 1.0f);
 
-                Vec3 dynamicInnerColor = new Vec3(rIn, gIn, bIn);
+                Vector3 dynamicInnerColor = new Vector3(rIn, gIn, bIn);
 
                 // 3. Update Material Uniform State
                 leafShader.use(gl);
@@ -1573,7 +1573,7 @@ private static class SpeciesConfig {
             gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "projection"), 1, false, camera.getPerspectiveMatrix().toFloatArrayForGLSL(), 0);
             gl.glUniformMatrix4fv(gl.glGetUniformLocation(grassShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
             
-            Vec3 camPos1 = camera.getPosition();
+            Vector3 camPos1 = camera.getPosition();
             gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "cameraPos"), camPos1.x, camPos1.y, camPos1.z);
             gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "ambientLight"), ambientLight.x, ambientLight.y, ambientLight.z);
             gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunColour"), 1.0f, 0.95f, 0.95f); 
@@ -1581,11 +1581,11 @@ private static class SpeciesConfig {
 
             gl.glUniform1i(gl.glGetUniformLocation(grassShader.getID(), "worldSeed"), (int)(worldSeed & 0xFFFF));
 
-            Vec3 camPosForSun = camera.getPosition();
-            Vec3 direction = new Vec3(sunPos.x - camPosForSun.x, sunPos.y - camPosForSun.y, sunPos.z - camPosForSun.z);
+            Vector3 camPosForSun = camera.getPosition();
+            Vector3 direction = new Vector3(sunPos.x - camPosForSun.x, sunPos.y - camPosForSun.y, sunPos.z - camPosForSun.z);
             float len = (float)Math.sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
             if (len > 0.0f) {
-                direction = new Vec3(direction.x / len, direction.y / len, direction.z / len);
+                direction = new Vector3(direction.x / len, direction.y / len, direction.z / len);
             }
             gl.glUniform3f(gl.glGetUniformLocation(grassShader.getID(), "sunDir"), direction.x, direction.y, direction.z);
             gl.glUniform1f(gl.glGetUniformLocation(grassShader.getID(), "time"), (float)elapsedTime);
@@ -1611,18 +1611,18 @@ private static class SpeciesConfig {
         gl.glEnable(GL.GL_BLEND);
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
 
-        Vec3 camPos = camera.getPosition();
+        Vector3 camPos = camera.getPosition();
         float waterCoverageSize = PHYSICAL_CHUNK_SIZE * VIEW_DISTANCE * 2.0f;
 
-        Mat4 waterMatrix = Mat4Transform.translate(camPos.x, seaLevelHeight - 0.05f, camPos.z);
-        waterMatrix = Mat4.multiply(waterMatrix, Mat4Transform.scale(waterCoverageSize, 1.0f, waterCoverageSize));
+        Matrix4 waterMatrix = Matrix4Transform.translate(camPos.x, seaLevelHeight - 0.05f, camPos.z);
+        waterMatrix = Matrix4.multiply(waterMatrix, Matrix4Transform.scale(waterCoverageSize, 1.0f, waterCoverageSize));
 
         waterShader.use(gl);
         waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
-        waterShader.setVec2(gl, "windowSize", new Vec2((float)currentWidth, (float)currentHeight));
+        waterShader.setVec2(gl, "windowSize", new Vector2((float)currentWidth, (float)currentHeight));
 
         waterShader.setVec3(gl, "sunPos", sunPos);
-        waterShader.setVec3(gl, "lightSpecular", new Vec3(1.0f, 1.0f, 1.0f));
+        waterShader.setVec3(gl, "lightSpecular", new Vector3(1.0f, 1.0f, 1.0f));
         
         waterShader.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
         waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
@@ -1742,9 +1742,9 @@ private static class SpeciesConfig {
     private Model makeSkybox(GL3 gl, String fragmentPath, Texture skyTexture) {
         String name = "skybox";
         Mesh mesh = new Mesh(gl, InsideSphere.vertices.clone(), InsideSphere.indices.clone());
-        Mat4 modelMatrix = Mat4Transform.scale(2400.0f, 2400.0f, 2400.0f);
+        Matrix4 modelMatrix = Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f);
         Shader shader = new Shader(gl, "assets/shaders/vs_standard.txt", fragmentPath);
-        Material material = new Material(new Vec3(0f, 0f, 0f), new Vec3(0f, 0f, 0f));
+        Material material = new Material(new Vector3(0f, 0f, 0f), new Vector3(0f, 0f, 0f));
         material.setDiffuseMap(skyTexture);
         
         Renderer renderer = new Renderer();

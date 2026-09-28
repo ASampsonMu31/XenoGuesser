@@ -1,18 +1,18 @@
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.util.texture.*;
 
-import gmaths.*;
+import com.xenoguesser.math.*;
 
 public class Renderer {
 
-  public Vec2 scale = new Vec2(1, 1);
+  public Vector2 scale = new Vector2(1, 1);
 
   public Renderer() {}
 
-  private void doVertexShaderMatrices(GL3 gl, Shader shader, Mat4 modelMatrix, Camera camera) { 
+  private void doVertexShaderMatrices(GL3 gl, Shader shader, Matrix4 modelMatrix, Camera camera) { 
     shader.setFloatArray(gl, "model", modelMatrix.toFloatArrayForGLSL());
-    Mat4 mvpMatrix = Mat4.multiply(camera.getPerspectiveMatrix(), 
-                                   Mat4.multiply(camera.getViewMatrix(), modelMatrix));
+    Matrix4 mvpMatrix = Matrix4.multiply(camera.getPerspectiveMatrix(), 
+                                   Matrix4.multiply(camera.getViewMatrix(), modelMatrix));
     shader.setFloatArray(gl, "mvpMatrix", mvpMatrix.toFloatArrayForGLSL());
     shader.setVec3(gl, "viewPos", camera.getPosition());
   }
@@ -23,23 +23,23 @@ public class Renderer {
     for (int i = 0; i < lights.length; i++) {
         Light l = lights[i];
         shader.setVec3(gl, "lights[" + i + "].position",  l.getPosition());
-        Vec3 diffuse;
-        Vec3 specular;
+        Vector3 diffuse;
+        Vector3 specular;
         if (!l.getIsSun()) {
           diffuse = l.getMaterial().getDiffuse();
           specular = l.getMaterial().getSpecular();
         }
         else {
           float brightnessProportion = l.getBrightnessProportion();
-          diffuse = new Vec3(0.8f * brightnessProportion, 0.8f * brightnessProportion, 0.8f * brightnessProportion);
-          specular = new Vec3(0.8f * brightnessProportion, 0.8f * brightnessProportion, 0.8f * brightnessProportion);
+          diffuse = new Vector3(0.8f * brightnessProportion, 0.8f * brightnessProportion, 0.8f * brightnessProportion);
+          specular = new Vector3(0.8f * brightnessProportion, 0.8f * brightnessProportion, 0.8f * brightnessProportion);
         }
         shader.setVec3(gl, "lights[" + i + "].diffuse", diffuse);
         shader.setVec3(gl, "lights[" + i + "].specular", specular);
     }
   }
   
-  private void doAmbientLight(GL3 gl, Shader shader, Vec3 ambientLight) {
+  private void doAmbientLight(GL3 gl, Shader shader, Vector3 ambientLight) {
     shader.setVec3(gl, "ambientLight", ambientLight);
   }
 
@@ -79,11 +79,11 @@ public class Renderer {
     shader.setFloat(gl, "nightProportion", nightProportion); 
   }
 
-  private void doOverlayOffset(GL3 gl, Shader shader, Vec2 offset) {
+  private void doOverlayOffset(GL3 gl, Shader shader, Vector2 offset) {
     shader.setVec2(gl, "overlayOffset", offset);  
   }
 
-  private void doOverlayOffset2(GL3 gl, Shader shader, Vec2 offset) {
+  private void doOverlayOffset2(GL3 gl, Shader shader, Vector2 offset) {
     shader.setVec2(gl, "overlayOffset2", offset);  
   }
 
@@ -107,12 +107,12 @@ public class Renderer {
     em.bind(gl);
   }
 
-  public void setScale(Vec2 scale) {
+  public void setScale(Vector2 scale) {
     this.scale = scale;
   }
 
-  public void render(GL3 gl, Mesh mesh, Mat4 modelMatrix, Shader shader, 
-                     Material material, Light[] lights, Vec3 ambientLight, 
+  public void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, 
+                     Material material, Light[] lights, Vector3 ambientLight, 
                      float nightProportion, Camera camera) {
     shader.use(gl);
     doVertexShaderMatrices(gl, shader, modelMatrix, camera);

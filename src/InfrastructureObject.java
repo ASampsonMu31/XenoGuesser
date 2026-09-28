@@ -1,4 +1,4 @@
-import gmaths.*;
+import com.xenoguesser.math.*;
 import com.jogamp.opengl.GL3;
 import com.jogamp.opengl.util.texture.Texture;
 
@@ -8,14 +8,14 @@ public class InfrastructureObject {
     public enum Type { SIGN, BORDER_POST, ROAD }
     
     public Type type;
-    public Vec3 position;
+    public Vector3 position;
     public int nationId;
-    public Mat4 modelMatrix;
+    public Matrix4 modelMatrix;
     
-    public Mat4 leftPostMatrix;
-    public Mat4 rightPostMatrix;
-    public Mat4 frontBoardMatrix;
-    public Mat4 backBoardMatrix;
+    public Matrix4 leftPostMatrix;
+    public Matrix4 rightPostMatrix;
+    public Matrix4 frontBoardMatrix;
+    public Matrix4 backBoardMatrix;
     
     // --- TEXT DATA ---
     public int[] textString;
@@ -24,11 +24,11 @@ public class InfrastructureObject {
     private final int[] roadIndices;
     private Model roadModel;
 
-    public InfrastructureObject(Type type, Vec3 position, int nationId, float rotationY, int[] textString) {
+    public InfrastructureObject(Type type, Vector3 position, int nationId, float rotationY, int[] textString) {
         this(type, position, nationId, rotationY, textString, null, null);
     }
 
-    public InfrastructureObject(Type type, Vec3 position, int nationId, float rotationY, int[] textString,
+    public InfrastructureObject(Type type, Vector3 position, int nationId, float rotationY, int[] textString,
                                 float[] roadVertices, int[] roadIndices) {
         this.type = type;
         this.position = position;
@@ -47,34 +47,34 @@ public class InfrastructureObject {
             System.arraycopy(textString, 0, this.textString, 0, this.stringLength);
         }
         
-        this.modelMatrix = Mat4Transform.translate(position);
-        this.modelMatrix = Mat4.multiply(this.modelMatrix, Mat4Transform.rotateAroundY(rotationY));
+        this.modelMatrix = Matrix4Transform.translate(position);
+        this.modelMatrix = Matrix4.multiply(this.modelMatrix, Matrix4Transform.rotateAroundY(rotationY));
         
         if (this.type == Type.SIGN) {
             float postSpacing = 15.0f;
             float postHeight = 45.0f;  
-            Mat4 postScale = Mat4Transform.scale(1.0f, postHeight, 1.0f);
+            Matrix4 postScale = Matrix4Transform.scale(1.0f, postHeight, 1.0f);
             
-            Mat4 leftShift = Mat4Transform.translate(-postSpacing, postHeight / 2.0f, 0.0f);
-            this.leftPostMatrix = Mat4.multiply(this.modelMatrix, Mat4.multiply(leftShift, postScale));
+            Matrix4 leftShift = Matrix4Transform.translate(-postSpacing, postHeight / 2.0f, 0.0f);
+            this.leftPostMatrix = Matrix4.multiply(this.modelMatrix, Matrix4.multiply(leftShift, postScale));
             
-            Mat4 rightShift = Mat4Transform.translate(postSpacing, postHeight / 2.0f, 0.0f);
-            this.rightPostMatrix = Mat4.multiply(this.modelMatrix, Mat4.multiply(rightShift, postScale));
+            Matrix4 rightShift = Matrix4Transform.translate(postSpacing, postHeight / 2.0f, 0.0f);
+            this.rightPostMatrix = Matrix4.multiply(this.modelMatrix, Matrix4.multiply(rightShift, postScale));
             
             float boardWidth = postSpacing * 2.0f; 
             float boardHeight = 22.0f;             
             float boardCenterY = 32.0f;            
             
-            Mat4 boardShift = Mat4Transform.translate(0.0f, boardCenterY, 0.0f);
-            Mat4 boardScale = Mat4Transform.scale(boardWidth, 1.0f, boardHeight); 
+            Matrix4 boardShift = Matrix4Transform.translate(0.0f, boardCenterY, 0.0f);
+            Matrix4 boardScale = Matrix4Transform.scale(boardWidth, 1.0f, boardHeight); 
             
-            Mat4 frontRot = Mat4Transform.rotateAroundX(90.0f); 
-            Mat4 frontTransform = Mat4.multiply(boardShift, Mat4.multiply(frontRot, boardScale));
-            this.frontBoardMatrix = Mat4.multiply(this.modelMatrix, frontTransform);
+            Matrix4 frontRot = Matrix4Transform.rotateAroundX(90.0f); 
+            Matrix4 frontTransform = Matrix4.multiply(boardShift, Matrix4.multiply(frontRot, boardScale));
+            this.frontBoardMatrix = Matrix4.multiply(this.modelMatrix, frontTransform);
             
-            Mat4 backRot = Mat4Transform.rotateAroundX(-90.0f); 
-            Mat4 backTransform = Mat4.multiply(boardShift, Mat4.multiply(backRot, boardScale));
-            this.backBoardMatrix = Mat4.multiply(this.modelMatrix, backTransform);
+            Matrix4 backRot = Matrix4Transform.rotateAroundX(-90.0f); 
+            Matrix4 backTransform = Matrix4.multiply(boardShift, Matrix4.multiply(backRot, boardScale));
+            this.backBoardMatrix = Matrix4.multiply(this.modelMatrix, backTransform);
         }
     }
 
@@ -82,11 +82,11 @@ public class InfrastructureObject {
                                     Light[] lights, Camera camera) {
         if (type == Type.ROAD && roadModel == null && roadVertices != null && roadIndices != null) {
             Mesh mesh = new Mesh(gl, roadVertices, roadIndices);
-            roadModel = new Model("road", mesh, new Mat4(1), shader, material, renderer, lights, camera);
+            roadModel = new Model("road", mesh, new Matrix4(1), shader, material, renderer, lights, camera);
         }
     }
 
-    public void render(GL3 gl, Vec3 ambientLight, float nightProportion, 
+    public void render(GL3 gl, Vector3 ambientLight, float nightProportion, 
                     Map<Integer, Model> signModelsByNation, 
                     Map<Integer, Model> postModelsByNation,
                     Texture alphabetAtlas, int atlasSize, int writingDirection) {

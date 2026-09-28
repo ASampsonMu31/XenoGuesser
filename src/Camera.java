@@ -1,4 +1,4 @@
-import gmaths.*;
+import com.xenoguesser.math.*;
 
 public class Camera {
   
@@ -7,33 +7,33 @@ public class Camera {
     NO_MOVEMENT, FORWARD, BACK, LEFT, RIGHT, UP, DOWN
   };
   
-  public static final Vec3 DEFAULT_POSITION = new Vec3(0, 0, 25);
-  public static final Vec3 DEFAULT_TARGET = new Vec3(0, 0, 0);
-  public static final Vec3 DEFAULT_UP = new Vec3(0, 1, 0);
+  public static final Vector3 DEFAULT_POSITION = new Vector3(0, 0, 25);
+  public static final Vector3 DEFAULT_TARGET = new Vector3(0, 0, 0);
+  public static final Vector3 DEFAULT_UP = new Vector3(0, 1, 0);
 
   public final float KEYBOARD_SPEED;
   
   // Preserved at 100f to match your drag inputs scaling factor
   public final float MOUSE_SPEED = 100f;
   
-  private Vec3 position;
-  private Vec3 target;
-  private Vec3 up;
-  private Vec3 worldUp; // Stays permanently locked as your global sky axis
-  private Vec3 front;
-  private Vec3 right;
+  private Vector3 position;
+  private Vector3 target;
+  private Vector3 up;
+  private Vector3 worldUp; // Stays permanently locked as your global sky axis
+  private Vector3 front;
+  private Vector3 right;
   
   private float yaw;
   private float pitch;
   
-  private Mat4 perspective;
+  private Matrix4 perspective;
   
   // Stored sea level variable populated by the procedural world values
   private final float seaLevelHeight;
 
-  public Camera(Vec3 position, Vec3 target, Vec3 up, float seaLevelHeight) {
+  public Camera(Vector3 position, Vector3 target, Vector3 up, float seaLevelHeight) {
     // Lock down worldUp immediately upon creation so it never drifts
-    this.worldUp = new Vec3(up);
+    this.worldUp = new Vector3(up);
     this.worldUp.normalize();
     this.seaLevelHeight = seaLevelHeight; // Save the dynamic sea level map constraint
     setupCamera(position, target);
@@ -41,74 +41,74 @@ public class Camera {
   }
 
   
-  private void setupCamera(Vec3 position, Vec3 target) {
-    this.position = new Vec3(position);
-    this.target = new Vec3(target);
+  private void setupCamera(Vector3 position, Vector3 target) {
+    this.position = new Vector3(position);
+    this.target = new Vector3(target);
     
-    front = Vec3.subtract(target, position);
+    front = Vector3.subtract(target, position);
     front.normalize();
     
     calculateYawPitch(front);
     updateCameraVectors();
   }
   
-  public Vec3 getPosition() {
-    return new Vec3(position);
+  public Vector3 getPosition() {
+    return new Vector3(position);
   }
 
-  public Vec3 getForwardDirection() {
-    return new Vec3(front);
+  public Vector3 getForwardDirection() {
+    return new Vector3(front);
   }
   
   // FIX: Directly updates positions and recomputes matrices without touching or corrupting worldUp
-  public void setPosition(Vec3 p) {
-    this.position = new Vec3(p);
-    front = Vec3.subtract(target, position);
+  public void setPosition(Vector3 p) {
+    this.position = new Vector3(p);
+    front = Vector3.subtract(target, position);
     front.normalize();
     calculateYawPitch(front);
     updateCameraVectors();
   }
   
   // FIX: Directly updates target and recomputes matrices without touching or corrupting worldUp
-  public void setTarget(Vec3 t) {
-    this.target = new Vec3(t);
-    front = Vec3.subtract(t, position);
+  public void setTarget(Vector3 t) {
+    this.target = new Vector3(t);
+    front = Vector3.subtract(t, position);
     front.normalize();
     calculateYawPitch(front);
     updateCameraVectors();
   }
 
-  private void calculateYawPitch(Vec3 v) {
+  private void calculateYawPitch(Vector3 v) {
     yaw = (float) Math.toDegrees(Math.atan2(v.z, v.x));
     pitch = (float) Math.toDegrees(Math.asin(v.y));
   }
 
-  public Mat4 getViewMatrix() {
-    target = Vec3.add(position, front);
-    return Mat4Transform.lookAt(position, target, up);
+  public Matrix4 getViewMatrix() {
+    target = Vector3.add(position, front);
+    return Matrix4Transform.lookAt(position, target, up);
   }
   
-  public void setPerspectiveMatrix(Mat4 m) {
+  public void setPerspectiveMatrix(Matrix4 m) {
     perspective = m;
   }
   
-  public Mat4 getPerspectiveMatrix() {
+  public Matrix4 getPerspectiveMatrix() {
     return perspective;
   }
  
   public void updatePosition(boolean w, boolean a, boolean s, boolean d, float deltaTime) {
-    Vec3 movementDirection = new Vec3(0, 0, 0);
+    Vector3 movementDirection = new Vector3(0, 0, 0);
 
-    Vec3 flatFront = new Vec3(front.x, 0.0f, front.z);
+    Vector3 flatFront = new Vector3(front.x, 0.0f, front.z);
     flatFront.normalize();
     
-    Vec3 flatRight = new Vec3(right.x, 0.0f, right.z);
+    Vector3 flatRight = new Vector3(right.x, 0.0f, right.z);
     flatRight.normalize();
 
     if (w) movementDirection.add(flatFront);
-    if (s) movementDirection.add(Vec3.multiply(flatFront, -1.0f));
+    if (s) movementDirection.add(Vector3.multiply(flatFront, -1.0f));
     if (d) movementDirection.add(flatRight);
-    if (a) movementDirection.add(Vec3.multiply(flatRight, -1.0f));
+    if (a) movementDirection.add(Vector3.multiply(flatRight, -1.0f));
 
     if (w || a || s || d) {
       movementDirection.normalize();
@@ -124,7 +124,7 @@ public class Camera {
           currentSpeed *= speedMultiplier;
       }
       
-      Vec3 velocity = Vec3.multiply(movementDirection, currentSpeed);
+      Vector3 velocity = Vector3.multiply(movementDirection, currentSpeed);
       position.add(velocity);
     }
   }
@@ -151,18 +151,18 @@ public class Camera {
     front.y = (float) (sp);
     front.z = (float) (sy * cp);
     front.normalize();
-    target = Vec3.add(position, front);
+    target = Vector3.add(position, front);
   }
   
   private void updateCameraVectors() {  
-    right = Vec3.crossProduct(front, worldUp);
+    right = Vector3.crossProduct(front, worldUp);
     right.normalize();
-    up = Vec3.crossProduct(right, front);
+    up = Vector3.crossProduct(right, front);
     up.normalize();
   }
 
   public void setHeight(float newY) {
     this.position.y = newY;
-    this.target = Vec3.add(this.position, this.front);
+    this.target = Vector3.add(this.position, this.front);
   }
 }

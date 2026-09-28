@@ -1,6 +1,6 @@
 import com.jogamp.opengl.util.texture.*;
 
-import gmaths.*;
+import com.xenoguesser.math.*;
 
  /**
  * This class stores the Material properties for a Mesh
@@ -12,19 +12,19 @@ import gmaths.*;
 public class Material implements Cloneable {
   
   // Note: if assigned, these cannot be changed. For a changeable value need to create
-  // a new Vec3 using one of these.
+  // a new Vector3 using one of these.
   // Default is a fairly bright white colour with some specular.
-  public static final Vec3 DEFAULT_AMBIENT = new Vec3(0.2f, 0.2f, 0.2f);
-  public static final Vec3 DEFAULT_DIFFUSE = new Vec3(0.8f, 0.8f, 0.8f);
-  public static final Vec3 DEFAULT_SPECULAR = new Vec3(0.5f, 0.5f, 0.5f);
-  public static final Vec3 DEFAULT_EMISSION = new Vec3(0.0f, 0.0f, 0.0f);
+  public static final Vector3 DEFAULT_AMBIENT = new Vector3(0.2f, 0.2f, 0.2f);
+  public static final Vector3 DEFAULT_DIFFUSE = new Vector3(0.8f, 0.8f, 0.8f);
+  public static final Vector3 DEFAULT_SPECULAR = new Vector3(0.5f, 0.5f, 0.5f);
+  public static final Vector3 DEFAULT_EMISSION = new Vector3(0.0f, 0.0f, 0.0f);
 
   public static final float DEFAULT_SHININESS = 32;
 
-  private Vec3 ambient;
-  private Vec3 diffuse;
-  private Vec3 specular;
-  private Vec3 emission;
+  private Vector3 ambient;
+  private Vector3 diffuse;
+  private Vector3 specular;
+  private Vector3 emission;
   private float shininess;
   private Texture diffuseMap;
   private Texture specularMap;
@@ -33,12 +33,12 @@ public class Material implements Cloneable {
   private Texture diffuseMap2;
   private Texture diffuseMap3;
   private Texture diffuseMap4;
-  private Vec2 overlayOffset;
+  private Vector2 overlayOffset;
   private float overlayScale;
-  private Vec2 overlayOffset2;
+  private Vector2 overlayOffset2;
   private float overlayScale2;
-  private Vec3 fullDiffuse;
-  private Vec3 fullSpecular;
+  private Vector3 fullDiffuse;
+  private Vector3 fullSpecular;
   /* Author Alexander Sampson, asampson1@sheffield.ac.uk */
 
 
@@ -46,8 +46,8 @@ public class Material implements Cloneable {
    * Constructor. Sets attributes to default initial values.
    */    
   public Material() {
-    this(new Vec3(DEFAULT_AMBIENT), new Vec3(DEFAULT_DIFFUSE), 
-         new Vec3(DEFAULT_SPECULAR), new Vec3(DEFAULT_EMISSION), 
+    this(new Vector3(DEFAULT_AMBIENT), new Vector3(DEFAULT_DIFFUSE), 
+         new Vector3(DEFAULT_SPECULAR), new Vector3(DEFAULT_EMISSION), 
          null, null, null, DEFAULT_SHININESS);
   }
 
@@ -58,8 +58,8 @@ public class Material implements Cloneable {
    * @param  diffuse    vector of 3 values: red, green and blue, in the range 0.0..1.0.
    */  
    
-  public Material(Vec3 ambient, Vec3 diffuse) {
-    this(ambient, diffuse, new Vec3(DEFAULT_SPECULAR), new Vec3(DEFAULT_EMISSION), 
+  public Material(Vector3 ambient, Vector3 diffuse) {
+    this(ambient, diffuse, new Vector3(DEFAULT_SPECULAR), new Vector3(DEFAULT_EMISSION), 
          null, null, null, DEFAULT_SHININESS);
   }
 
@@ -72,8 +72,8 @@ public class Material implements Cloneable {
    * @param  shininess   float value in the range 0.0..1.0.
    */  
    
-  public Material(Vec3 ambient, Vec3 diffuse, Vec3 specular, float shininess) {
-    this(ambient, diffuse, specular, new Vec3(DEFAULT_EMISSION), 
+  public Material(Vector3 ambient, Vector3 diffuse, Vector3 specular, float shininess) {
+    this(ambient, diffuse, specular, new Vector3(DEFAULT_EMISSION), 
          null, null, null, shininess);
   }
 
@@ -87,7 +87,7 @@ public class Material implements Cloneable {
    * @param  shininess   float value in the range 0.0..1.0.
    */  
    
-   public Material(Vec3 ambient, Vec3 diffuse, Vec3 specular, Vec3 emission, float shininess) {
+   public Material(Vector3 ambient, Vector3 diffuse, Vector3 specular, Vector3 emission, float shininess) {
     this(ambient, diffuse, specular, emission, 
          null, null, null, shininess);
   }
@@ -102,8 +102,8 @@ public class Material implements Cloneable {
    */  
    
   public Material(Texture diffuseMap, Texture specularMap, Texture emissionMap, float shininess) {
-    this(new Vec3(DEFAULT_AMBIENT), new Vec3(DEFAULT_DIFFUSE), 
-         new Vec3(DEFAULT_SPECULAR), new Vec3(DEFAULT_EMISSION), 
+    this(new Vector3(DEFAULT_AMBIENT), new Vector3(DEFAULT_DIFFUSE), 
+         new Vector3(DEFAULT_SPECULAR), new Vector3(DEFAULT_EMISSION), 
          diffuseMap, specularMap, emissionMap, shininess);
   }
   
@@ -120,7 +120,7 @@ public class Material implements Cloneable {
    * @param  shininess   float value in the range 0.0..1.0.
    */
 
-  public Material(Vec3 ambient, Vec3 diffuse, Vec3 specular, Vec3 emission,
+  public Material(Vector3 ambient, Vector3 diffuse, Vector3 specular, Vector3 emission,
                   Texture diffuseMap, Texture specularMap, Texture emissionMap, 
                   float shininess) {
     this.ambient = ambient;
@@ -132,8 +132,8 @@ public class Material implements Cloneable {
     this.specularMap = specularMap;
     this.emissionMap = emissionMap;
     /* I declare that this code is my own work */
-    this.fullDiffuse = new Vec3(diffuse.x, diffuse.y, diffuse.z);
-    this.fullSpecular = new Vec3(specular.x, specular.y, specular.z);
+    this.fullDiffuse = new Vector3(diffuse.x, diffuse.y, diffuse.z);
+    this.fullSpecular = new Vector3(specular.x, specular.y, specular.z);
     /* Author Alexander Sampson, asampson1@sheffield.ac.uk */
   }
 
@@ -156,7 +156,7 @@ public class Material implements Cloneable {
    * @param  rgb  vector of 3 values, where the  3 values are the values for red, green and blue, 
                    in the range 0.0..1.0.
    */    
-  public void setAmbient(Vec3 rgb) {
+  public void setAmbient(Vector3 rgb) {
     setAmbient(rgb.x, rgb.y, rgb.z);
   }
   
@@ -165,8 +165,8 @@ public class Material implements Cloneable {
    * 
    * @return  vector of 3 values, where the  3 values are the values for red, green and blue.
    */  
-  public Vec3 getAmbient() {
-    return new Vec3(ambient);
+  public Vector3 getAmbient() {
+    return new Vector3(ambient);
   }
 
   /**
@@ -188,7 +188,7 @@ public class Material implements Cloneable {
    * @param  rgb  vector of 3 values, where the  3 values are the values for red, green and blue, 
                    in the range 0.0..1.0.
    */      
-  public void setDiffuse(Vec3 rgb) {
+  public void setDiffuse(Vector3 rgb) {
     setDiffuse(rgb.x, rgb.y, rgb.z);
   }
 
@@ -205,7 +205,7 @@ public class Material implements Cloneable {
     fullSpecular.z = blue;
   }
 
-  public Vec3 getFullDiffuse() {
+  public Vector3 getFullDiffuse() {
     return fullDiffuse;
   }
 
@@ -224,8 +224,8 @@ public class Material implements Cloneable {
    * 
    * @return  vector of 3 values, where the  3 values are the values for red, green and blue
    */    
-  public Vec3 getDiffuse() {
-    return new Vec3(diffuse);
+  public Vector3 getDiffuse() {
+    return new Vector3(diffuse);
   }
 
   /**
@@ -247,7 +247,7 @@ public class Material implements Cloneable {
    * @param  rgb  vector of 3 values, where the first 3 values are the values for red, green and blue, 
                    in the range 0.0..1.0, and the last value is an alpha term, which is always 1.
    */    
-  public void setSpecular(Vec3 rgb) {
+  public void setSpecular(Vector3 rgb) {
     setSpecular(rgb.x, rgb.y, rgb.z);
   }
     
@@ -256,8 +256,8 @@ public class Material implements Cloneable {
    * 
    * @return  vector of 3 values, where the  3 values are the values for red, green and blue.
    */  
-  public Vec3 getSpecular() {
-    return new Vec3(specular);
+  public Vector3 getSpecular() {
+    return new Vector3(specular);
   }
 
   /**
@@ -279,7 +279,7 @@ public class Material implements Cloneable {
    * @param  rgb  vector of 3 values, where the 3 values are the values for red, green and blue, 
                    in the range 0.0..1.0.
    */    
-  public void setEmission(Vec3 rgb) {
+  public void setEmission(Vector3 rgb) {
     setEmission(rgb.x, rgb.y, rgb.z);
   }
 
@@ -288,8 +288,8 @@ public class Material implements Cloneable {
    * 
    * @return  vector of 3 values, where the  3 values are the values for red, green and blue.
    */ 
-  public Vec3 getEmission() {
-    return new Vec3(emission);
+  public Vector3 getEmission() {
+    return new Vector3(emission);
   }
     
   /**
@@ -389,7 +389,7 @@ public class Material implements Cloneable {
   }
 
   /* I declare that this code is my own work */
-  public void setOverlayOffset(Vec2 overlayOffset) {
+  public void setOverlayOffset(Vector2 overlayOffset) {
     this.overlayOffset = overlayOffset;
   }
 
@@ -397,7 +397,7 @@ public class Material implements Cloneable {
     this.overlayScale = overlayScale;
   }
 
-  public void setOverlayOffset2(Vec2 overlayOffset2) {
+  public void setOverlayOffset2(Vector2 overlayOffset2) {
     this.overlayOffset2 = overlayOffset2;
   }
 
@@ -405,7 +405,7 @@ public class Material implements Cloneable {
     this.overlayScale2 = overlayScale2;
   }
 
-  public Vec2 getOverlayOffset() {
+  public Vector2 getOverlayOffset() {
     return overlayOffset;
   }
 
@@ -413,7 +413,7 @@ public class Material implements Cloneable {
     return  overlayScale;
   }
 
-  public Vec2 getOverlayOffset2() {
+  public Vector2 getOverlayOffset2() {
     return overlayOffset2;
   }
 
@@ -424,10 +424,10 @@ public class Material implements Cloneable {
 
   public Material clone() {
     Material cloned = new Material();
-    cloned.ambient = new Vec3(this.ambient);
-    cloned.diffuse = new Vec3(this.diffuse);
-    cloned.specular = new Vec3(this.specular);
-    cloned.emission = new Vec3(this.emission);
+    cloned.ambient = new Vector3(this.ambient);
+    cloned.diffuse = new Vector3(this.diffuse);
+    cloned.specular = new Vector3(this.specular);
+    cloned.emission = new Vector3(this.emission);
     cloned.shininess = this.shininess;
     cloned.diffuseMap = this.diffuseMap;
     cloned.specularMap = this.specularMap;
