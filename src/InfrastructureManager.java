@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import gmaths.Vec3;
 
 public class InfrastructureManager {
-    private static final int ROAD_SEED_COUNT = 1000;
+    private static final int ROAD_SEED_COUNT = 500;
     private static final float ROAD_SURFACE_OFFSET = 2.0f;
     
     private final Map<Integer, Double> nationSignProbabilities;
@@ -45,7 +45,7 @@ public class InfrastructureManager {
         Random rand = new Random(seed + 5555L); 
         
         for (int i = 1; i <= numNations; i++) {
-            double prob = 0.005 + (rand.nextDouble() * 0.025);
+            double prob = 0.00025 + (rand.nextDouble() * 0.00125);
             nationSignProbabilities.put(i, prob);
         }
     }
