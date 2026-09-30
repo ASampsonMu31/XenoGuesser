@@ -56,6 +56,11 @@ public class RegionalGenerationManager {
         });
     }
 
+    /** Chunks (4-connected steps) from the chunk to the nearest water chunk; 999 if unknown. */
+    public int getChunkDistanceToWater(int cx, int cz) {
+        return chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, 999);
+    }
+
     public RegionalFactor createNoiseMap(float scale) {
         int uniqueOffset = 33333 + (assignedNoiseTracks * 11111);
         assignedNoiseTracks++;

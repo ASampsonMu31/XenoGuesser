@@ -1,3 +1,4 @@
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\BirdsEyeMaps.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\BuildingMeshes.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\BuildingStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Camera.java
@@ -8,9 +9,11 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Vector
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Vector4.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\CompassHUD.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Cylinder.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\FenceStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Flora.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameHUD.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GlyphGenerator.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GuardRailStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureObject.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InsideSphere.java
@@ -28,6 +31,9 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalFactor.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalGenerationManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Renderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadLineStyle.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadNetworkBuilder.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadPath.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SettlementManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Shader.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Sphere.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TerrainMesh.java

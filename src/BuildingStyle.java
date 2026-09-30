@@ -31,6 +31,22 @@ public class BuildingStyle {
     public final Vector3 roofColour;
     public final Vector3 doorColour;
 
+    // Windows: how many per floor on the front/back and side walls, their size and glazing
+    public int windowsFront;
+    public int windowsSide;
+    public int floors;
+    public float windowWidth;
+    public float windowHeight;
+    public float frameSize;
+    public Vector3 glassColour;
+    public Vector3 frameColour;
+
+    // A smaller wing attached to one side of the house
+    public float extensionChance;
+    public float extensionWidthRatio;
+    public float extensionDepthRatio;
+    public float extensionHeightRatio;
+
     private BuildingStyle(RoofType roofType, float width, float depth, float wallHeight,
                           float roofHeight, float roofOverhang, float doorWidth, float doorHeight,
                           double signChance, Vector3 wallColour, Vector3 roofColour, Vector3 doorColour) {
@@ -90,6 +106,35 @@ public class BuildingStyle {
 
             styles.put(n, new BuildingStyle(roofType, width, depth, wallHeight, roofHeight, roofOverhang,
                     doorWidth, doorHeight, signChance, wallColour, roofColour, doorColour));
+        }
+
+        // Separate stream so windows and extensions leave the established nation looks unchanged
+        Random detailRand = new Random(seed + 9191L);
+        for (int n = 1; n <= numNations; n++) {
+            BuildingStyle style = styles.get(n);
+            style.floors = style.wallHeight > 48.0f ? 2 : 1;
+            style.windowWidth = 7.0f + detailRand.nextFloat() * 6.0f;
+            style.windowHeight = Math.min(style.wallHeight / style.floors * 0.55f, 8.0f + detailRand.nextFloat() * 6.0f);
+            int maxFront = Math.max(1, (int) ((style.width - style.doorWidth) / (style.windowWidth * 2.2f)));
+            style.windowsFront = 1 + detailRand.nextInt(Math.min(4, maxFront));
+            int maxSide = Math.max(0, (int) (style.depth / (style.windowWidth * 2.2f)));
+            style.windowsSide = maxSide == 0 ? 0 : detailRand.nextInt(Math.min(3, maxSide) + 1);
+            style.frameSize = detailRand.nextFloat() < 0.3f ? 0.0f : 0.8f + detailRand.nextFloat() * 1.4f;
+
+            float glass = 0.05f + detailRand.nextFloat() * 0.15f;
+            float tint = detailRand.nextFloat();
+            style.glassColour = tint < 0.4f ? new Vector3(glass * 0.8f, glass, glass * 1.8f)
+                              : tint < 0.7f ? new Vector3(glass * 0.8f, glass * 1.4f, glass * 1.2f)
+                              : new Vector3(glass, glass, glass);
+            float frame = detailRand.nextFloat();
+            style.frameColour = frame < 0.4f ? new Vector3(0.93f, 0.93f, 0.9f)
+                              : frame < 0.7f ? style.doorColour
+                              : new Vector3(0.12f, 0.12f, 0.12f);
+
+            style.extensionChance = detailRand.nextFloat() < 0.3f ? 0.0f : 0.3f + detailRand.nextFloat() * 0.6f;
+            style.extensionWidthRatio = 0.35f + detailRand.nextFloat() * 0.25f;
+            style.extensionDepthRatio = 0.45f + detailRand.nextFloat() * 0.35f;
+            style.extensionHeightRatio = 0.5f + detailRand.nextFloat() * 0.3f;
         }
         return styles;
     }

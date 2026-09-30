@@ -204,15 +204,25 @@ private static class SpeciesConfig {
     private int totalNationsCount;
 
     private InfrastructureManager infraManager;
+    private SettlementManager settlementManager;
     private Map<String, List<InfrastructureObject>> infraCache;
+
+    // Bird's-eye minimap layers, rendered on a background thread at startup
+    private static final int BIRDS_EYE_MAP_RESOLUTION = 750;
+    private volatile BufferedImage roadNetworkMap;
+    private volatile BufferedImage urbannessMap;
+    private volatile BufferedImage buildingMap;
+    // Three times the resolution, swapped in when the player zooms the minimap
+    private volatile BufferedImage roadNetworkMapDetail;
+    private volatile BufferedImage urbannessMapDetail;
+    private volatile BufferedImage buildingMapDetail;
+
+    // Cities thin out trees and draw fewer distant details to pay for their extra buildings
+    private static final float URBAN_FLORA_REDUCTION = 0.75f;
+    private static final float SIGN_DRAW_DISTANCE = 1600.0f;
     private Map<Integer, Model> signModelsByNation;
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
-    private Material roadMaterial;
-    private Map<Integer, Material> roadLineMaterialsByNation;
-    private Map<Integer, Model> buildingWallModelsByNation;
-    private Map<Integer, Model> buildingRoofModelsByNation;
-    private Map<Integer, Model> buildingDoorModelsByNation;
 
     private Map<Integer, Texture> nationAtlases;
     private Map<Integer, Integer> nationAtlasSizes;
@@ -238,7 +248,10 @@ private static class SpeciesConfig {
       SHRUB_2_ABUNDANCE,
       SHRUB_3_ABUNDANCE,
       SHRUB_4_ABUNDANCE,
-      NATION_TERRITORIES
+      NATION_TERRITORIES,
+      ROAD_NETWORK,
+      URBANNESS,
+      BUILDINGS
     }
 
     public XenoGuesser_GLEventListener(
@@ -466,6 +479,56 @@ private static class SpeciesConfig {
         // Run the spreading calculation using your environment configuration data parameters
         // Assuming 'terrainAbundanceFactor' or standard height maps are accessible inside your initialization path
         this.nationManager.generateTerritories(this.worldSeed, TOTAL_REGION_WIDTH);
+
+        // Settlements decide where cities grow; the road network and buildings follow from them
+        this.settlementManager = new SettlementManager(worldSeed, TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE,
+                seaLevelHeight, worldNoise, regionalManager);
+        this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
+                this.settlementManager, this);
+        this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
+        startBirdsEyeMapRendering();
+    }
+
+    private void startBirdsEyeMapRendering() {
+        Thread mapThread = new Thread(() -> {
+            BirdsEyeMaps maps = new BirdsEyeMaps(BIRDS_EYE_MAP_RESOLUTION, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
+            long startTime = System.currentTimeMillis();
+
+            BufferedImage[] baseMap = maps.renderBaseMap();
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (minimap != null) {
+                    minimap.setBaseMapDetail(baseMap[1]);
+                }
+            });
+
+            BufferedImage[] urban = maps.renderUrbannessMap(settlementManager);
+            urbannessMapDetail = urban[1];
+            urbannessMap = urban[0];
+            onBirdsEyeMapReady(FactorName.URBANNESS);
+
+            BufferedImage[] roads = maps.renderRoadMap(infraManager);
+            roadNetworkMapDetail = roads[1];
+            roadNetworkMap = roads[0];
+            onBirdsEyeMapReady(FactorName.ROAD_NETWORK);
+
+            BufferedImage[] buildings = maps.renderBuildingMap(infraManager);
+            buildingMapDetail = buildings[1];
+            buildingMap = buildings[0];
+            onBirdsEyeMapReady(FactorName.BUILDINGS);
+
+            System.out.printf("[MINIMAP] Bird's-eye maps ready in %d ms%n", System.currentTimeMillis() - startTime);
+        }, "birds-eye-map-renderer");
+        mapThread.setDaemon(true);
+        mapThread.setPriority(Thread.MIN_PRIORITY);
+        mapThread.start();
+    }
+
+    private void onBirdsEyeMapReady(FactorName factor) {
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            if (minimap != null && currentDebugFactor == factor) {
+                assignHeatmapToMinimap(factor);
+            }
+        });
     }
 
     public void setGameHUD(GameHUD gameHUD) {
@@ -672,8 +735,6 @@ private static class SpeciesConfig {
         globalModelMatrix = new Matrix4(1);
 
 
-        // Initialize the manager
-        this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager, this);
         this.infraCache = new HashMap<>();
         this.signModelsByNation = new HashMap<>();
         this.postModelsByNation = new HashMap<>();
@@ -705,47 +766,6 @@ private static class SpeciesConfig {
             Mesh postMesh = postMeshesBySlice.get(chosenSlices);
             Model postModel = new Model("post_nation_" + n, postMesh, new Matrix4(1), solidShader, postMat, terrainRenderer, lights, camera);
             postModelsByNation.put(n, postModel);
-        }
-
-        // 2. Road styling: widen the asphalt strips and darken the material for a more obvious road look.
-        roadMaterial = new Material(
-            new Vector3(0.18f, 0.18f, 0.18f),
-            new Vector3(0.28f, 0.28f, 0.28f),
-            new Vector3(0.01f, 0.01f, 0.01f),
-            1.0f
-        );
-
-        // Each nation paints its own road line colour
-        roadLineMaterialsByNation = new HashMap<>();
-        for (int n = 1; n <= totalNationsCount; n++) {
-            RoadLineStyle lineStyle = infraManager.getRoadLineStyle(n);
-            roadLineMaterialsByNation.put(n, new Material(
-                Vector3.multiply(lineStyle.colour, 0.9f),
-                lineStyle.colour,
-                new Vector3(0.05f, 0.05f, 0.05f),
-                8.0f
-            ));
-        }
-
-        // 2b. Buildings: shared wall and door geometry, per-nation roof design and colours
-        buildingWallModelsByNation = new HashMap<>();
-        buildingRoofModelsByNation = new HashMap<>();
-        buildingDoorModelsByNation = new HashMap<>();
-        Mesh buildingWallMesh = BuildingMeshes.createWalls().build(gl);
-        Mesh buildingDoorMesh = BuildingMeshes.createBox().build(gl);
-        Vector3 buildingSpecular = new Vector3(0.03f, 0.03f, 0.03f);
-
-        for (int n = 1; n <= totalNationsCount; n++) {
-            BuildingStyle buildingStyle = infraManager.getBuildingStyle(n);
-            Mesh roofMesh = BuildingMeshes.createRoof(buildingStyle).build(gl);
-
-            Material wallMat = new Material(buildingStyle.wallColour, buildingStyle.wallColour, buildingSpecular, 2.0f);
-            Material roofMat = new Material(buildingStyle.roofColour, buildingStyle.roofColour, buildingSpecular, 4.0f);
-            Material doorMat = new Material(buildingStyle.doorColour, buildingStyle.doorColour, buildingSpecular, 2.0f);
-
-            buildingWallModelsByNation.put(n, new Model("building_walls_nation_" + n, buildingWallMesh, new Matrix4(1), solidShader, wallMat, terrainRenderer, lights, camera));
-            buildingRoofModelsByNation.put(n, new Model("building_roof_nation_" + n, roofMesh, new Matrix4(1), solidShader, roofMat, terrainRenderer, lights, camera));
-            buildingDoorModelsByNation.put(n, new Model("building_door_nation_" + n, buildingDoorMesh, new Matrix4(1), solidShader, doorMat, terrainRenderer, lights, camera));
         }
 
         // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
@@ -1077,6 +1097,7 @@ private static class SpeciesConfig {
                 String key = cx + "_" + cz;
                 if (!floraCache.containsKey(key)) {
                     List<FloraInstance> instances = new ArrayList<>();
+                    float urbanness = infraManager.getUrbanness((cx + 0.5f) * PHYSICAL_CHUNK_SIZE, (cz + 0.5f) * PHYSICAL_CHUNK_SIZE);
                     
                     // Seed species independently based on their unique abundance calculations
                     for (int s = 0; s < NUM_SPECIES; s++) {
@@ -1098,6 +1119,7 @@ private static class SpeciesConfig {
 
                         // FIX: Scale back down using a random float roll for perfect linear fraction probability 
                         double actualAttemptsFloat = scaledAttempts / (double) internalScale;
+                        actualAttemptsFloat *= 1.0 - URBAN_FLORA_REDUCTION * urbanness;
                         int speciesAttempts = (int) actualAttemptsFloat;
                         double fractionalPart = actualAttemptsFloat - speciesAttempts;
                         if (cRand.nextFloat() < fractionalPart) {
@@ -1110,7 +1132,7 @@ private static class SpeciesConfig {
                             float cyWorld = TerrainMesh.getLayeredHeight(cxWorld, czWorld, worldNoise);
 
                             if (cyWorld > seaLevelHeight + 0.1f
-                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 28.0f)
+                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 11.0f)
                                     && !infraManager.isBuildingLocation(cxWorld, czWorld, 6.0f)) {
                                 int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
                                 float randomScale = 0.70f + cRand.nextFloat() * 0.60f;
@@ -1183,7 +1205,7 @@ private static class SpeciesConfig {
                             float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
                             
                             if (worldY > seaLevelHeight + 0.1f
-                                    && !infraManager.isRoadLocation(worldX, worldZ, 28.0f)) {
+                                    && !infraManager.isRoadLocation(worldX, worldZ, 11.0f)) {
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
                                 float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
 
@@ -1263,7 +1285,16 @@ private static class SpeciesConfig {
                 activeInfraKeys.put(cx + "_" + cz, true);
             }
         }
-        infraCache.keySet().retainAll(activeInfraKeys.keySet());
+        Iterator<Map.Entry<String, List<InfrastructureObject>>> infraIterator = infraCache.entrySet().iterator();
+        while (infraIterator.hasNext()) {
+            Map.Entry<String, List<InfrastructureObject>> entry = infraIterator.next();
+            if (!activeInfraKeys.containsKey(entry.getKey())) {
+                for (InfrastructureObject obj : entry.getValue()) {
+                    obj.dispose(gl);
+                }
+                infraIterator.remove();
+            }
+        }
 
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
@@ -1273,9 +1304,8 @@ private static class SpeciesConfig {
                         cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
                     );
                     for (InfrastructureObject obj : spawnedObjects) {
-                        if (obj.type == InfrastructureObject.Type.ROAD) {
-                            obj.initializeRoadModel(gl, solidShader, roadMaterial,
-                                    roadLineMaterialsByNation.get(obj.nationId), terrainRenderer, lights, camera);
+                        if (obj.type == InfrastructureObject.Type.BATCH) {
+                            obj.initializeBatch(gl, solidShader, terrainRenderer, lights, camera);
                         }
                     }
                     infraCache.put(key, spawnedObjects);
@@ -1570,21 +1600,26 @@ private static class SpeciesConfig {
                 float dz = obj.position.z - currentPos.z;
                 float distSq = dx*dx + dy*dy + dz*dz;
                 
-                // Frustum / Distance Culling
-                if (distSq > maxFloraDistSq) continue;
-                
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
                 if (dotProduct < -12.0f - obj.boundingRadius) continue;
 
-                if (obj.type == InfrastructureObject.Type.BUILDING) {
-                    obj.renderBuilding(gl, ambientLight, nightProportion,
-                        buildingWallModelsByNation.get(obj.nationId),
-                        buildingRoofModelsByNation.get(obj.nationId),
-                        buildingDoorModelsByNation.get(obj.nationId));
+                // Batches are culled by their bounds, since their anchor is only the middle of their contents
+                if (obj.type == InfrastructureObject.Type.BATCH) {
+                    float reach = maxFloraRenderDistance + obj.boundingRadius;
+                    if (distSq > reach * reach) {
+                        continue;
+                    }
+                    obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, null, 0, 0);
                     continue;
                 }
 
+                // Frustum / Distance Culling
+                if (distSq > maxFloraDistSq) continue;
+
                 if (obj.type == InfrastructureObject.Type.SIGN) {
+                    if (distSq > SIGN_DRAW_DISTANCE * SIGN_DRAW_DISTANCE) {
+                        continue;
+                    }
                     signboardShader.use(gl);
                     gl.glUniformMatrix4fv(
                         gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"),
@@ -1745,7 +1780,32 @@ private static class SpeciesConfig {
                 }
                 return; // Exit method early
             }
-            // ... (rest of the method stays the same)
+
+            // Bird's-eye layers are pre-rendered in the background and cover the whole map
+            if (currentDebugFactor == FactorName.ROAD_NETWORK
+                    || currentDebugFactor == FactorName.URBANNESS
+                    || currentDebugFactor == FactorName.BUILDINGS) {
+                BufferedImage layer = switch (currentDebugFactor) {
+                    case ROAD_NETWORK -> this.roadNetworkMap;
+                    case URBANNESS -> this.urbannessMap;
+                    default -> this.buildingMap;
+                };
+                BufferedImage detail = switch (currentDebugFactor) {
+                    case ROAD_NETWORK -> this.roadNetworkMapDetail;
+                    case URBANNESS -> this.urbannessMapDetail;
+                    default -> this.buildingMapDetail;
+                };
+                if (layer != null) {
+                    minimap.setHeatmapName(currentDebugFactor.toString());
+                    minimap.setFullMapOverlay(layer, detail);
+                } else {
+                    // Shown until the background render finishes and swaps the real layer in
+                    minimap.setHeatmapName(currentDebugFactor + " (generating...)");
+                    minimap.setFullMapOverlay(null, null);
+                }
+                minimap.setHeatmapVisible(true);
+                return;
+            }
 
             // 2. Otherwise, look up and evaluate standard noise/growth parameters
             RegionalFactor targetFactor = switch (currentDebugFactor) {
