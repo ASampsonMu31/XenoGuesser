@@ -5,6 +5,7 @@ XenoGuesser_GLEventListener$FloraInstance.class
 CompassHUD.class
 Cylinder.class
 NationGenerationManager.class
+BuildingStyle.class
 com\xenoguesser\math\Vector2.class
 XenoGuesser_GLEventListener$SpeciesConfig.class
 XenoGuesser$5.class
@@ -12,7 +13,9 @@ Sphere.class
 XenoGuesser$1.class
 com\xenoguesser\math\Matrix4Transform.class
 TwoTriangles.class
+BuildingStyle$RoofType.class
 Flora.class
+MeshBuilder.class
 MapPanel$RevealPhase.class
 MapPanel$3.class
 MyKeyboardInput.class
@@ -21,9 +24,11 @@ RegionalFactor$FactorEntry.class
 PerlinNoise.class
 Camera$CameraType.class
 XenoGuesser$4.class
+InfrastructureManager$BuildingPlacement.class
 Model.class
 XenoGuesser$7.class
 MapPanel$1.class
+RoadLineStyle$Placement.class
 InfrastructureObject$Type.class
 RegionalFactor$Builder.class
 XenoGuesser_GLEventListener.class
@@ -32,6 +37,7 @@ com\xenoguesser\math\Matrix4.class
 XenoGuesser$3.class
 com\xenoguesser\math\Vector4.class
 RegionalFactor.class
+BuildingMeshes$1.class
 XenoGuesser$7$1.class
 MapPanel.class
 MaterialConstants.class
@@ -47,8 +53,10 @@ Material.class
 RegionalGenerationManager.class
 XenoGuesser$2.class
 InfrastructureObject.class
+BuildingMeshes.class
 InfrastructureManager$RoadPath.class
 InfrastructureManager$RoadSegment.class
+RoadLineStyle.class
 MapPanel$2.class
 TextureLibrary.class
 XenoGuesser$MyMouseInput.class

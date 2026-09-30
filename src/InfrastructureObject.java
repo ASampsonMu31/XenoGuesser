@@ -5,7 +5,9 @@ import com.jogamp.opengl.util.texture.Texture;
 import java.util.Map;
 
 public class InfrastructureObject {
-    public enum Type { SIGN, BORDER_POST, ROAD }
+    public enum Type { SIGN, BORDER_POST, ROAD, BUILDING }
+
+    private static final float DOOR_THICKNESS = 1.5f;
     
     public Type type;
     public Vector3 position;
@@ -16,25 +18,28 @@ public class InfrastructureObject {
     public Matrix4 rightPostMatrix;
     public Matrix4 frontBoardMatrix;
     public Matrix4 backBoardMatrix;
+
+    public Matrix4 wallMatrix;
+    public Matrix4 roofMatrix;
+    public Matrix4 doorMatrix;
+
+    // Extra reach beyond the object's anchor point, used for behind-camera culling
+    public float boundingRadius;
     
     // --- TEXT DATA ---
     public int[] textString;
     public int stringLength;
-    private final float[] roadVertices;
-    private final int[] roadIndices;
+    private float[] roadVertices;
+    private int[] roadIndices;
+    private float[] lineVertices;
+    private int[] lineIndices;
     private Model roadModel;
+    private Model lineModel;
 
     public InfrastructureObject(Type type, Vector3 position, int nationId, float rotationY, int[] textString) {
-        this(type, position, nationId, rotationY, textString, null, null);
-    }
-
-    public InfrastructureObject(Type type, Vector3 position, int nationId, float rotationY, int[] textString,
-                                float[] roadVertices, int[] roadIndices) {
         this.type = type;
         this.position = position;
         this.nationId = nationId;
-        this.roadVertices = roadVertices;
-        this.roadIndices = roadIndices;
         
         // --- FIXED: INCREASE MAX LIMIT TO 512 CHARACTERS ---
         int maxShaderCapacity = 512;
@@ -78,12 +83,76 @@ public class InfrastructureObject {
         }
     }
 
-    public void initializeRoadModel(GL3 gl, Shader shader, Material material, Renderer renderer,
-                                    Light[] lights, Camera camera) {
+    public static InfrastructureObject createRoad(Vector3 position, int nationId, float boundingRadius,
+                                                  float[] roadVertices, int[] roadIndices,
+                                                  float[] lineVertices, int[] lineIndices) {
+        InfrastructureObject road = new InfrastructureObject(Type.ROAD, position, nationId, 0.0f, null);
+        road.boundingRadius = boundingRadius;
+        road.roadVertices = roadVertices;
+        road.roadIndices = roadIndices;
+        road.lineVertices = lineVertices;
+        road.lineIndices = lineIndices;
+        return road;
+    }
+
+    /**
+     * Builds a building whose walls rise from basePosition. The door sits on the
+     * local +Z wall, doorBaseOffset above the base so it meets the ground there.
+     */
+    public static InfrastructureObject createBuilding(Vector3 basePosition, int nationId, float rotationY,
+                                                      float width, float depth, float wallHeight,
+                                                      float roofHeight, float roofOverhang,
+                                                      float doorWidth, float doorHeight, float doorBaseOffset) {
+        InfrastructureObject building = new InfrastructureObject(Type.BUILDING, basePosition, nationId, rotationY, null);
+
+        Matrix4 wallTransform = Matrix4Transform.scale(width, wallHeight, depth);
+        building.wallMatrix = Matrix4.multiply(building.modelMatrix, wallTransform);
+
+        float roofWidth = width + 2.0f * roofOverhang;
+        float roofDepth = depth + 2.0f * roofOverhang;
+        Matrix4 roofTransform = Matrix4.multiply(
+            Matrix4Transform.translate(0.0f, wallHeight, 0.0f),
+            Matrix4Transform.scale(roofWidth, roofHeight, roofDepth)
+        );
+        building.roofMatrix = Matrix4.multiply(building.modelMatrix, roofTransform);
+
+        Matrix4 doorTransform = Matrix4.multiply(
+            Matrix4Transform.translate(0.0f, doorBaseOffset, depth * 0.5f),
+            Matrix4Transform.scale(doorWidth, doorHeight, DOOR_THICKNESS)
+        );
+        building.doorMatrix = Matrix4.multiply(building.modelMatrix, doorTransform);
+
+        float horizontalRadius = 0.5f * (float) Math.sqrt(roofWidth * roofWidth + roofDepth * roofDepth);
+        building.boundingRadius = Math.max(horizontalRadius, wallHeight + roofHeight);
+        return building;
+    }
+
+    public void initializeRoadModel(GL3 gl, Shader shader, Material material, Material lineMaterial,
+                                    Renderer renderer, Light[] lights, Camera camera) {
         if (type == Type.ROAD && roadModel == null && roadVertices != null && roadIndices != null) {
             Mesh mesh = new Mesh(gl, roadVertices, roadIndices);
             roadModel = new Model("road", mesh, new Matrix4(1), shader, material, renderer, lights, camera);
+
+            if (lineMaterial != null && lineIndices != null && lineIndices.length > 0) {
+                Mesh lineMesh = new Mesh(gl, lineVertices, lineIndices);
+                lineModel = new Model("road_lines", lineMesh, new Matrix4(1), shader, lineMaterial, renderer, lights, camera);
+            }
         }
+    }
+
+    public void renderBuilding(GL3 gl, Vector3 ambientLight, float nightProportion,
+                               Model wallModel, Model roofModel, Model doorModel) {
+        if (type != Type.BUILDING || wallModel == null || roofModel == null || doorModel == null) {
+            return;
+        }
+        wallModel.setModelMatrix(wallMatrix);
+        wallModel.render(gl, ambientLight, nightProportion);
+
+        roofModel.setModelMatrix(roofMatrix);
+        roofModel.render(gl, ambientLight, nightProportion);
+
+        doorModel.setModelMatrix(doorMatrix);
+        doorModel.render(gl, ambientLight, nightProportion);
     }
 
     public void render(GL3 gl, Vector3 ambientLight, float nightProportion, 
@@ -94,6 +163,13 @@ public class InfrastructureObject {
             if (roadModel != null) {
                 gl.glDisable(GL3.GL_CULL_FACE);
                 roadModel.render(gl, ambientLight, nightProportion);
+                if (lineModel != null) {
+                    // Pull the paint towards the camera so it never z-fights the asphalt
+                    gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
+                    gl.glPolygonOffset(-1.0f, -2.0f);
+                    lineModel.render(gl, ambientLight, nightProportion);
+                    gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
+                }
                 gl.glEnable(GL3.GL_CULL_FACE);
             }
         } else if (this.type == Type.SIGN) {

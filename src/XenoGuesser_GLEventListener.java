@@ -209,6 +209,10 @@ private static class SpeciesConfig {
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
     private Material roadMaterial;
+    private Map<Integer, Material> roadLineMaterialsByNation;
+    private Map<Integer, Model> buildingWallModelsByNation;
+    private Map<Integer, Model> buildingRoofModelsByNation;
+    private Map<Integer, Model> buildingDoorModelsByNation;
 
     private Map<Integer, Texture> nationAtlases;
     private Map<Integer, Integer> nationAtlasSizes;
@@ -711,6 +715,39 @@ private static class SpeciesConfig {
             1.0f
         );
 
+        // Each nation paints its own road line colour
+        roadLineMaterialsByNation = new HashMap<>();
+        for (int n = 1; n <= totalNationsCount; n++) {
+            RoadLineStyle lineStyle = infraManager.getRoadLineStyle(n);
+            roadLineMaterialsByNation.put(n, new Material(
+                Vector3.multiply(lineStyle.colour, 0.9f),
+                lineStyle.colour,
+                new Vector3(0.05f, 0.05f, 0.05f),
+                8.0f
+            ));
+        }
+
+        // 2b. Buildings: shared wall and door geometry, per-nation roof design and colours
+        buildingWallModelsByNation = new HashMap<>();
+        buildingRoofModelsByNation = new HashMap<>();
+        buildingDoorModelsByNation = new HashMap<>();
+        Mesh buildingWallMesh = BuildingMeshes.createWalls().build(gl);
+        Mesh buildingDoorMesh = BuildingMeshes.createBox().build(gl);
+        Vector3 buildingSpecular = new Vector3(0.03f, 0.03f, 0.03f);
+
+        for (int n = 1; n <= totalNationsCount; n++) {
+            BuildingStyle buildingStyle = infraManager.getBuildingStyle(n);
+            Mesh roofMesh = BuildingMeshes.createRoof(buildingStyle).build(gl);
+
+            Material wallMat = new Material(buildingStyle.wallColour, buildingStyle.wallColour, buildingSpecular, 2.0f);
+            Material roofMat = new Material(buildingStyle.roofColour, buildingStyle.roofColour, buildingSpecular, 4.0f);
+            Material doorMat = new Material(buildingStyle.doorColour, buildingStyle.doorColour, buildingSpecular, 2.0f);
+
+            buildingWallModelsByNation.put(n, new Model("building_walls_nation_" + n, buildingWallMesh, new Matrix4(1), solidShader, wallMat, terrainRenderer, lights, camera));
+            buildingRoofModelsByNation.put(n, new Model("building_roof_nation_" + n, roofMesh, new Matrix4(1), solidShader, roofMat, terrainRenderer, lights, camera));
+            buildingDoorModelsByNation.put(n, new Model("building_door_nation_" + n, buildingDoorMesh, new Matrix4(1), solidShader, doorMat, terrainRenderer, lights, camera));
+        }
+
         // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
         signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
         Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
@@ -1073,7 +1110,8 @@ private static class SpeciesConfig {
                             float cyWorld = TerrainMesh.getLayeredHeight(cxWorld, czWorld, worldNoise);
 
                             if (cyWorld > seaLevelHeight + 0.1f
-                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 28.0f)) {
+                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 28.0f)
+                                    && !infraManager.isBuildingLocation(cxWorld, czWorld, 6.0f)) {
                                 int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
                                 float randomScale = 0.70f + cRand.nextFloat() * 0.60f;
                                 float randomRotY = cRand.nextFloat() * 360.0f;
@@ -1236,7 +1274,8 @@ private static class SpeciesConfig {
                     );
                     for (InfrastructureObject obj : spawnedObjects) {
                         if (obj.type == InfrastructureObject.Type.ROAD) {
-                            obj.initializeRoadModel(gl, solidShader, roadMaterial, terrainRenderer, lights, camera);
+                            obj.initializeRoadModel(gl, solidShader, roadMaterial,
+                                    roadLineMaterialsByNation.get(obj.nationId), terrainRenderer, lights, camera);
                         }
                     }
                     infraCache.put(key, spawnedObjects);
@@ -1535,7 +1574,15 @@ private static class SpeciesConfig {
                 if (distSq > maxFloraDistSq) continue;
                 
                 float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
-                if (dotProduct < -12.0f) continue;
+                if (dotProduct < -12.0f - obj.boundingRadius) continue;
+
+                if (obj.type == InfrastructureObject.Type.BUILDING) {
+                    obj.renderBuilding(gl, ambientLight, nightProportion,
+                        buildingWallModelsByNation.get(obj.nationId),
+                        buildingRoofModelsByNation.get(obj.nationId),
+                        buildingDoorModelsByNation.get(obj.nationId));
+                    continue;
+                }
 
                 if (obj.type == InfrastructureObject.Type.SIGN) {
                     signboardShader.use(gl);
