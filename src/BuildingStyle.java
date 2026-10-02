@@ -1,22 +1,27 @@
 import java.awt.Color;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import com.xenoguesser.math.Vector3;
 
 /**
- * Per-nation building appearance: proportions, roof design and colours.
- * Width runs along the building's local X axis (the ridge direction) and depth
- * along local Z; the front door faces local +Z.
+ * Per-nation building appearance: footprint shape, proportions, roof design, colours, and
+ * the wall and roof finishes their procedural textures are generated from.
+ *
+ * For box houses width runs along local X (the ridge direction) and depth along local Z;
+ * other footprints are fitted inside the same width by depth rectangle. The front door
+ * always faces local +Z.
+ *
+ * Neighbouring nations tend to share a building tradition: footprint, wall finish and roof
+ * form are chosen in geographic blocs, and height and brick proportions drift gradually
+ * across the map (see NationKinship).
  */
 public class BuildingStyle {
-    public enum RoofType { FLAT, GABLE, HIP, PYRAMID, SHED }
-
-    private static final float GOLDEN_RATIO_CONJUGATE = 0.618034f;
+    public enum RoofType { FLAT, GABLE, HIP, PYRAMID, SHED, DOME, SPIRE }
+    public enum Footprint { BOX, ROUND, POLYGON }
+    public enum WallFinish { BRICK, STONE, PLAIN }
+    public enum Bond { RUNNING, THIRD, STACK }
+    public enum RoofFinish { TILES, SHINGLES, CORRUGATED, PLAIN }
 
     public final RoofType roofType;
     public final float width;
@@ -31,6 +36,31 @@ public class BuildingStyle {
     public final Vector3 roofColour;
     public final Vector3 doorColour;
 
+    // Footprint and wall slant
+    public Footprint footprint = Footprint.BOX;
+    public int sides = 4;
+    /** Top of the walls relative to the base: below 1 leans inward, above 1 flares out. */
+    public float taper = 1.0f;
+
+    // Wall finish and its texture parameters
+    public WallFinish wallFinish = WallFinish.PLAIN;
+    public Bond bond = Bond.RUNNING;
+    public float courseHeight;        // world units per brick course
+    public float brickAspect;         // brick length / course height
+    public float mortarFraction;      // share of each course taken by mortar
+    public float brickColourVariation;
+    public Vector3 mortarColour;
+    /** World units covered by one repeat of the wall texture, horizontally and vertically. */
+    public float wallTileWidth;
+    public float wallTileHeight;
+
+        /** How common each of the world's wall varieties is in this nation (sums to 1). */
+    public float[] wallVariantWeights;
+
+    // Roof finish
+    public RoofFinish roofFinish = RoofFinish.PLAIN;
+    public float roofTileSize;
+
     // Windows: how many per floor on the front/back and side walls, their size and glazing
     public int windowsFront;
     public int windowsSide;
@@ -41,7 +71,7 @@ public class BuildingStyle {
     public Vector3 glassColour;
     public Vector3 frameColour;
 
-    // A smaller wing attached to one side of the house
+    // A smaller wing attached to one side of the house (box houses only)
     public float extensionChance;
     public float extensionWidthRatio;
     public float extensionDepthRatio;
@@ -64,55 +94,141 @@ public class BuildingStyle {
         this.doorColour = doorColour;
     }
 
-    /**
-     * Roof types are dealt from a shuffled deck so neighbouring nation IDs never
-     * share a design, and hues are spread by the golden ratio so wall and roof
-     * colours differ between nations.
-     */
-    public static Map<Integer, BuildingStyle> generateForNations(long seed, int numNations) {
+    private static final RoofType[] BOX_ROOFS = { RoofType.FLAT, RoofType.GABLE, RoofType.HIP, RoofType.PYRAMID, RoofType.SHED };
+    private static final RoofType[] CENTRED_ROOFS = { RoofType.FLAT, RoofType.PYRAMID, RoofType.DOME, RoofType.SPIRE };
+    private static final int[] POLYGON_SIDES = { 3, 5, 6, 8 };
+
+    public static Map<Integer, BuildingStyle> generateForNations(long seed, int numNations,
+                                                                 NationKinship kinship, WorldPalette palette) {
         Random rand = new Random(seed + 8888L);
 
-        List<RoofType> roofOrder = new ArrayList<>(Arrays.asList(RoofType.values()));
-        Collections.shuffle(roofOrder, rand);
+        // Building traditions spread between neighbours: a handful of blocs share a footprint,
+        // a wall finish, a roof form and a colour family
+        int traditionCount = Math.min(numNations, 3 + rand.nextInt(2));
+        int[] tradition = kinship.clusters(rand, traditionCount, 0.15f);
+        Footprint[] traditionFootprint = new Footprint[traditionCount];
+        int[] traditionSides = new int[traditionCount];
+        float[] traditionTaper = new float[traditionCount];
+        WallFinish[] traditionFinish = new WallFinish[traditionCount];
+        RoofType[] traditionRoof = new RoofType[traditionCount];
+        RoofFinish[] traditionRoofFinish = new RoofFinish[traditionCount];
+        float[] traditionWallHue = new float[traditionCount];
+        float[] traditionRoofHue = new float[traditionCount];
+        Bond[] traditionBond = new Bond[traditionCount];
+        for (int t = 0; t < traditionCount; t++) {
+            // The first tradition keeps ordinary boxes so every world has some familiar houses
+            float shapeRoll = t == 0 ? 0f : rand.nextFloat();
+            if (shapeRoll < 0.35f) {
+                traditionFootprint[t] = Footprint.BOX;
+                traditionSides[t] = 4;
+            } else if (shapeRoll < 0.6f) {
+                traditionFootprint[t] = Footprint.ROUND;
+                traditionSides[t] = 20;
+            } else {
+                traditionFootprint[t] = Footprint.POLYGON;
+                traditionSides[t] = POLYGON_SIDES[rand.nextInt(POLYGON_SIDES.length)];
+            }
+            float slantRoll = rand.nextFloat();
+            traditionTaper[t] = slantRoll < 0.5f ? 1.0f : (slantRoll < 0.85f ? 0.72f + rand.nextFloat() * 0.18f : 1.04f + rand.nextFloat() * 0.06f);
+            float finishRoll = rand.nextFloat();
+            traditionFinish[t] = finishRoll < 0.45f ? WallFinish.BRICK : (finishRoll < 0.65f ? WallFinish.STONE : WallFinish.PLAIN);
+            traditionBond[t] = Bond.values()[rand.nextInt(Bond.values().length)];
+            traditionRoof[t] = traditionFootprint[t] == Footprint.BOX
+                    ? BOX_ROOFS[rand.nextInt(BOX_ROOFS.length)]
+                    : CENTRED_ROOFS[rand.nextInt(CENTRED_ROOFS.length)];
+            traditionRoofFinish[t] = RoofFinish.values()[rand.nextInt(RoofFinish.values().length)];
+            traditionWallHue[t] = rand.nextFloat();
+            traditionRoofHue[t] = rand.nextFloat();
+        }
 
-        float wallHueBase = rand.nextFloat();
-        float roofHueBase = rand.nextFloat();
+        float[] heightDrift = kinship.gradient(rand, 0.12f);
+        float[] sizeDrift = kinship.gradient(rand, 0.15f);
+        float[] brickAspectDrift = kinship.gradient(rand, 0.1f);
+        float[] courseDrift = kinship.gradient(rand, 0.1f);
+
+        // Bricks are fired from the local earth, so their colour starts from the world's soil
+        float[] clay = WorldPalette.toHsv(palette.soilBase);
 
         Map<Integer, BuildingStyle> styles = new HashMap<>();
         for (int n = 1; n <= numNations; n++) {
-            RoofType roofType = roofOrder.get((n - 1) % roofOrder.size());
+            int t = tradition[n];
+            RoofType roofType = traditionRoof[t];
+            Footprint footprint = traditionFootprint[t];
 
-            float width = 60.0f + rand.nextFloat() * 60.0f;
-            float depth = width * (0.55f + rand.nextFloat() * 0.35f);
-            float wallHeight = 30.0f + rand.nextFloat() * 35.0f;
+            float width = 55.0f + sizeDrift[n] * 55.0f + rand.nextFloat() * 10.0f;
+            float depth = footprint == Footprint.BOX ? width * (0.55f + rand.nextFloat() * 0.35f)
+                                                     : width * (0.85f + rand.nextFloat() * 0.15f);
+            // Some nations build low bungalows, others tall towers
+            float wallHeight = 26.0f + heightDrift[n] * heightDrift[n] * 80.0f + rand.nextFloat() * 8.0f;
             float roofHeight;
             float roofOverhang;
             if (roofType == RoofType.FLAT) {
                 roofHeight = 3.0f + rand.nextFloat() * 3.0f;
+                roofOverhang = 1.0f + rand.nextFloat() * 2.0f;
+            } else if (roofType == RoofType.SPIRE) {
+                roofHeight = depth * (1.0f + rand.nextFloat() * 0.9f);
+                roofOverhang = 2.0f + rand.nextFloat() * 3.0f;
+            } else if (roofType == RoofType.DOME) {
+                roofHeight = depth * (0.35f + rand.nextFloat() * 0.25f);
                 roofOverhang = 1.0f + rand.nextFloat() * 2.0f;
             } else {
                 roofHeight = depth * (0.3f + rand.nextFloat() * 0.5f);
                 roofOverhang = 3.0f + rand.nextFloat() * 6.0f;
             }
             float doorWidth = Math.min(width * 0.2f, 12.0f + rand.nextFloat() * 5.0f);
-            float doorHeight = Math.min(wallHeight * 0.65f, 24.0f + rand.nextFloat() * 6.0f);
+            float doorHeight = Math.min(26.0f, 22.0f + rand.nextFloat() * 6.0f);
             double signChance = 0.35 + rand.nextDouble() * 0.45;
 
-            float wallHue = fraction(wallHueBase + n * GOLDEN_RATIO_CONJUGATE);
-            float roofHue = fraction(roofHueBase + n * GOLDEN_RATIO_CONJUGATE);
-            Vector3 wallColour = hsb(wallHue, 0.12f + rand.nextFloat() * 0.33f, 0.60f + rand.nextFloat() * 0.30f);
+            float wallHue = fraction(traditionWallHue[t] + (rand.nextFloat() - 0.5f) * 0.08f);
+            float roofHue = fraction(traditionRoofHue[t] + (rand.nextFloat() - 0.5f) * 0.08f);
+            Vector3 wallColour;
+            WallFinish finish = traditionFinish[t];
+            if (finish == WallFinish.BRICK) {
+                // Fired clay: the soil's hue, warmed, darkened and saturated by the kiln,
+                // or occasionally a glazed alien colour
+                wallColour = rand.nextFloat() < 0.75f
+                        ? hsb(fraction(clay[0] - 0.02f + (rand.nextFloat() - 0.5f) * 0.05f),
+                              Math.min(0.8f, 0.35f + clay[1] * 0.8f + rand.nextFloat() * 0.15f), 0.42f + rand.nextFloat() * 0.25f)
+                        : hsb(wallHue, 0.35f + rand.nextFloat() * 0.3f, 0.45f + rand.nextFloat() * 0.3f);
+            } else if (finish == WallFinish.STONE) {
+                wallColour = hsb(wallHue, 0.05f + rand.nextFloat() * 0.15f, 0.5f + rand.nextFloat() * 0.3f);
+            } else {
+                wallColour = hsb(wallHue, 0.12f + rand.nextFloat() * 0.33f, 0.62f + rand.nextFloat() * 0.30f);
+            }
             Vector3 roofColour = hsb(roofHue, 0.40f + rand.nextFloat() * 0.40f, 0.30f + rand.nextFloat() * 0.30f);
             Vector3 doorColour = hsb(wallHue, 0.30f + rand.nextFloat() * 0.30f, 0.15f + rand.nextFloat() * 0.15f);
 
-            styles.put(n, new BuildingStyle(roofType, width, depth, wallHeight, roofHeight, roofOverhang,
-                    doorWidth, doorHeight, signChance, wallColour, roofColour, doorColour));
+            BuildingStyle style = new BuildingStyle(roofType, width, depth, wallHeight, roofHeight, roofOverhang,
+                    doorWidth, doorHeight, signChance, wallColour, roofColour, doorColour);
+            style.footprint = footprint;
+            style.sides = traditionSides[t];
+            style.taper = traditionTaper[t];
+            style.wallFinish = finish;
+            style.bond = traditionBond[t];
+            style.roofFinish = traditionRoofFinish[t];
+
+            // Alien bricks: anything from cubes to long thin slabs, sized by nation
+            style.courseHeight = 2.2f + courseDrift[n] * 3.5f;
+            style.brickAspect = finish == WallFinish.STONE ? 1.2f + brickAspectDrift[n] * 1.6f : 1.0f + brickAspectDrift[n] * 4.0f;
+            style.mortarFraction = 0.06f + rand.nextFloat() * 0.1f;
+            style.brickColourVariation = 0.04f + rand.nextFloat() * 0.12f;
+            float mortarShade = rand.nextFloat() < 0.6f ? 0.75f + rand.nextFloat() * 0.2f : 0.18f + rand.nextFloat() * 0.2f;
+            style.mortarColour = new Vector3(mortarShade, mortarShade * 0.97f, mortarShade * 0.92f);
+            if (finish == WallFinish.PLAIN) {
+                style.wallTileWidth = style.wallTileHeight = 40.0f + rand.nextFloat() * 40.0f;
+            } else {
+                style.wallTileHeight = style.courseHeight * 8;   // the texture holds eight courses
+                style.wallTileWidth = style.wallTileHeight;
+            }
+            style.roofTileSize = 12.0f + rand.nextFloat() * 18.0f;
+            styles.put(n, style);
         }
 
         // Separate stream so windows and extensions leave the established nation looks unchanged
         Random detailRand = new Random(seed + 9191L);
         for (int n = 1; n <= numNations; n++) {
             BuildingStyle style = styles.get(n);
-            style.floors = style.wallHeight > 48.0f ? 2 : 1;
+            style.floors = Math.max(1, Math.round(style.wallHeight / 26.0f));
             style.windowWidth = 7.0f + detailRand.nextFloat() * 6.0f;
             style.windowHeight = Math.min(style.wallHeight / style.floors * 0.55f, 8.0f + detailRand.nextFloat() * 6.0f);
             int maxFront = Math.max(1, (int) ((style.width - style.doorWidth) / (style.windowWidth * 2.2f)));
@@ -131,12 +247,109 @@ public class BuildingStyle {
                               : frame < 0.7f ? style.doorColour
                               : new Vector3(0.12f, 0.12f, 0.12f);
 
-            style.extensionChance = detailRand.nextFloat() < 0.3f ? 0.0f : 0.3f + detailRand.nextFloat() * 0.6f;
+            boolean canExtend = style.footprint == Footprint.BOX && style.taper == 1.0f;
+            style.extensionChance = !canExtend || detailRand.nextFloat() < 0.3f ? 0.0f : 0.3f + detailRand.nextFloat() * 0.6f;
             style.extensionWidthRatio = 0.35f + detailRand.nextFloat() * 0.25f;
             style.extensionDepthRatio = 0.45f + detailRand.nextFloat() * 0.35f;
             style.extensionHeightRatio = 0.5f + detailRand.nextFloat() * 0.3f;
         }
         return styles;
+    }
+
+        /**
+     * One kind of wall that houses can be built with: a finish, a colour and, for masonry,
+     * the size, shape and bond of its bricks or stones. A world has a handful of these, and
+     * every nation builds with its own mix of them.
+     */
+    public static final class WallVariant {
+        public WallFinish finish;
+        public Bond bond;
+        public Vector3 colour;
+        public Vector3 mortarColour;
+        public float courseHeight;
+        public float brickAspect;
+        public float mortarFraction;
+        public float colourVariation;
+        public float tileWidth;
+        public float tileHeight;
+    }
+
+    /**
+     * The world's wall varieties. There is always a white render and a brick fired from the
+     * local soil, so every world has the familiar pair, plus a few others: coloured renders,
+     * darker or glazed bricks, and stone.
+     */
+    public static java.util.List<WallVariant> generateWallVariants(long seed, WorldPalette palette) {
+        Random rand = new Random(seed + 7373L);
+        float[] clay = WorldPalette.toHsv(palette.soilBase);
+        int count = 7 + rand.nextInt(4);
+        java.util.List<WallVariant> variants = new java.util.ArrayList<>();
+        for (int v = 0; v < count; v++) {
+            WallVariant variant = new WallVariant();
+            float kind = v == 0 ? 0f : v == 1 ? 0.3f : rand.nextFloat();
+            if (kind < 0.12f) {            // white or cream render
+                variant.finish = WallFinish.PLAIN;
+                variant.colour = hsb(0.08f + rand.nextFloat() * 0.08f, 0.03f + rand.nextFloat() * 0.08f, 0.88f + rand.nextFloat() * 0.08f);
+            } else if (kind < 0.45f) {     // brick from the local clay
+                variant.finish = WallFinish.BRICK;
+                variant.colour = hsb(fraction(clay[0] - 0.02f + (rand.nextFloat() - 0.5f) * 0.05f),
+                        Math.min(0.8f, 0.35f + clay[1] * 0.8f + rand.nextFloat() * 0.15f), 0.38f + rand.nextFloat() * 0.25f);
+            } else if (kind < 0.6f) {      // glazed alien brick
+                variant.finish = WallFinish.BRICK;
+                variant.colour = hsb(rand.nextFloat(), 0.35f + rand.nextFloat() * 0.3f, 0.45f + rand.nextFloat() * 0.3f);
+            } else if (kind < 0.78f) {     // stone
+                variant.finish = WallFinish.STONE;
+                variant.colour = hsb(rand.nextFloat(), 0.05f + rand.nextFloat() * 0.18f, 0.5f + rand.nextFloat() * 0.3f);
+            } else {                       // coloured render
+                variant.finish = WallFinish.PLAIN;
+                variant.colour = hsb(rand.nextFloat(), 0.15f + rand.nextFloat() * 0.3f, 0.62f + rand.nextFloat() * 0.3f);
+            }
+            variant.bond = Bond.values()[rand.nextInt(Bond.values().length)];
+            // Alien bricks: anything from cubes to long thin slabs
+            variant.courseHeight = 2.2f + rand.nextFloat() * 3.5f;
+            variant.brickAspect = variant.finish == WallFinish.STONE ? 1.2f + rand.nextFloat() * 1.6f : 1.0f + rand.nextFloat() * 4.0f;
+            variant.mortarFraction = 0.06f + rand.nextFloat() * 0.1f;
+            variant.colourVariation = 0.04f + rand.nextFloat() * 0.12f;
+            float mortarShade = rand.nextFloat() < 0.6f ? 0.75f + rand.nextFloat() * 0.2f : 0.18f + rand.nextFloat() * 0.2f;
+            variant.mortarColour = new Vector3(mortarShade, mortarShade * 0.97f, mortarShade * 0.92f);
+            if (variant.finish == WallFinish.PLAIN) {
+                variant.tileWidth = variant.tileHeight = 40.0f + rand.nextFloat() * 40.0f;
+            } else {
+                variant.tileHeight = variant.courseHeight * 8;   // the texture holds eight courses
+                variant.tileWidth = variant.tileHeight;
+            }
+            variants.add(variant);
+        }
+        return variants;
+    }
+
+    /**
+     * Gives every nation its mix of the wall varieties. Each variety's popularity follows its
+     * own smooth spread across the map, so a variety common in one country is likely to be
+     * common next door too, and varieties matching a nation's building tradition get a boost.
+     */
+    public static void assignWallVariants(long seed, Map<Integer, BuildingStyle> styles,
+                                          java.util.List<WallVariant> variants, NationKinship kinship) {
+        Random rand = new Random(seed + 7474L);
+        float[][] popularity = new float[variants.size()][];
+        for (int v = 0; v < variants.size(); v++) {
+            popularity[v] = kinship.gradient(rand, 0.15f);
+        }
+        for (Map.Entry<Integer, BuildingStyle> entry : styles.entrySet()) {
+            int n = entry.getKey();
+            BuildingStyle style = entry.getValue();
+            float[] weights = new float[variants.size()];
+            float total = 0;
+            for (int v = 0; v < variants.size(); v++) {
+                float p = popularity[v][n];
+                // A popular variety is common but rarely universal: there's always a mix
+                weights[v] = 0.25f + 1.6f * p * p;
+                if (variants.get(v).finish == style.wallFinish) weights[v] *= 1.6f;
+                total += weights[v];
+            }
+            for (int v = 0; v < weights.length; v++) weights[v] /= total;
+            style.wallVariantWeights = weights;
+        }
     }
 
     /**
@@ -154,7 +367,7 @@ public class BuildingStyle {
     }
 
     private static Vector3 hsb(float hue, float saturation, float brightness) {
-        Color colour = new Color(Color.HSBtoRGB(hue, saturation, brightness));
+        Color colour = new Color(Color.HSBtoRGB(hue, Math.max(0f, Math.min(1f, saturation)), Math.max(0f, Math.min(1f, brightness))));
         return new Vector3(colour.getRed() / 255.0f, colour.getGreen() / 255.0f, colour.getBlue() / 255.0f);
     }
 }

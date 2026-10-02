@@ -11,7 +11,17 @@ public class MeshBuilder {
     private float[] vertices = new float[64 * STRIDE];
     private int vertexFloatCount;
     private int[] indices = new int[96];
-    private int indexCount;
+        private int indexCount;
+    private float planarTextureScale = 0;
+
+    /**
+     * Gives faces added with addConvexFace texture coordinates in world units times this
+     * scale: along the face horizontally and up it vertically, or straight down onto flat
+     * faces. Zero keeps the old corner-based coordinates.
+     */
+    public void setPlanarTextureScale(float scale) {
+        this.planarTextureScale = scale;
+    }
 
     public int addVertex(float x, float y, float z, float nx, float ny, float nz, float u, float v) {
         if (vertexFloatCount + STRIDE > vertices.length) {
@@ -79,8 +89,20 @@ public class MeshBuilder {
         int first = -1;
         for (int i = 0; i < corners.length; i++) {
             float[] corner = corners[flip ? corners.length - 1 - i : i];
-            int index = addVertex(corner[0], corner[1], corner[2], nx, ny, nz,
-                    corner[0] + 0.5f, corner[1] + corner[2] + 0.5f);
+                        float u = corner[0] + 0.5f, v = corner[1] + corner[2] + 0.5f;
+            if (planarTextureScale > 0) {
+                if (Math.abs(ny) > 0.7f) {
+                    u = corner[0] * planarTextureScale;
+                    v = corner[2] * planarTextureScale;
+                } else {
+                    // Horizontal direction within the face
+                    float tx = -nz, tz = nx;
+                    float tl = (float) Math.sqrt(tx * tx + tz * tz);
+                    u = (corner[0] * tx + corner[2] * tz) / tl * planarTextureScale;
+                    v = corner[1] * planarTextureScale;
+                }
+            }
+            int index = addVertex(corner[0], corner[1], corner[2], nx, ny, nz, u, v);
             if (first < 0) {
                 first = index;
             }

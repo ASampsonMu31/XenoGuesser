@@ -9,7 +9,12 @@ public class RegionalGenerationManager {
     
     private final float halfRegion;
     private final float seaLevelHeight;
-    private final Map<String, Integer> chunkDistanceToWaterField = new HashMap<>();
+    /** Everything that shapes the landscape is generated this far past the playable edge. */
+    public static final float GENERATION_MARGIN = 5000.0f;
+
+    private short[] waterField = new short[0];
+    private int waterFieldMin;
+    private int waterFieldSize;
     private final long worldSeed;
     private int assignedNoiseTracks = 0;
 
@@ -49,7 +54,7 @@ public class RegionalGenerationManager {
 
     public RegionalFactor createWaterPreference(int optimalDistance, float standardDeviation) {
         return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            int chunksAway = chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, 999);
+            int chunksAway = getChunkDistanceToWater(cx, cz);
             float diff = (float) chunksAway - optimalDistance;
             double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
             return (float) Math.exp(exponent);
@@ -58,7 +63,12 @@ public class RegionalGenerationManager {
 
     /** Chunks (4-connected steps) from the chunk to the nearest water chunk; 999 if unknown. */
     public int getChunkDistanceToWater(int cx, int cz) {
-        return chunkDistanceToWaterField.getOrDefault(cx + "_" + cz, 999);
+        if (waterFieldSize == 0) return 999;
+        // Beyond the generated margin, carry on with the value at its edge
+        int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
+        int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
+        int d = waterField[j * waterFieldSize + i];
+        return d < 0 ? 999 : d;
     }
 
     public RegionalFactor createNoiseMap(float scale) {
@@ -162,59 +172,47 @@ public class RegionalGenerationManager {
     // ==========================================
     //   BREADTH-FIRST-SEARCH DISTANCE PRE-SCAN
     // ==========================================
+
+    /**
+     * Distance in chunks from every chunk to the nearest sea chunk, over the playable
+     * region plus GENERATION_MARGIN on every side, so moisture-driven vegetation looks the
+     * same just past the edge of the map as inside it. Stored as a flat grid: a string-keyed
+     * map of the 2.25 million chunks was slow to build and slow to query every frame.
+     */
     public void precalculateWaterDistanceField(float totalRegionWidth, PerlinNoise worldNoise, float physicalChunkSize){
-        chunkDistanceToWaterField.clear();
-        int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
-        int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
-        int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
-        int maxChunkZ = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
+        float half = totalRegionWidth / 2.0f + GENERATION_MARGIN;
+        waterFieldMin = (int) Math.floor(-half / physicalChunkSize);
+        waterFieldSize = (int) Math.ceil(half / physicalChunkSize) - waterFieldMin + 1;
+        waterField = new short[waterFieldSize * waterFieldSize];
+        java.util.Arrays.fill(waterField, (short) -1);
 
-        Queue<ChunkNode> queue = new LinkedList<>();
-
-        for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-            for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-                float worldX = (cx + 0.5f) * physicalChunkSize;
-                float worldZ = (cz + 0.5f) * physicalChunkSize;
-                float terrainHeight = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
-
-                if (terrainHeight <= seaLevelHeight) {
-                    String key = cx + "_" + cz;
-                    chunkDistanceToWaterField.put(key, 0);
-                    queue.add(new ChunkNode(cx, cz, 0));
+        int[] queue = new int[waterFieldSize * waterFieldSize];
+        int head = 0, tail = 0;
+        for (int j = 0; j < waterFieldSize; j++) {
+            for (int i = 0; i < waterFieldSize; i++) {
+                float worldX = (waterFieldMin + i + 0.5f) * physicalChunkSize;
+                float worldZ = (waterFieldMin + j + 0.5f) * physicalChunkSize;
+                if (TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise) <= seaLevelHeight) {
+                    waterField[j * waterFieldSize + i] = 0;
+                    queue[tail++] = j * waterFieldSize + i;
                 }
             }
         }
-
-        int[] dX = {1, -1, 0, 0};
-        int[] dZ = {0, 0, 1, -1};
-
-        while (!queue.isEmpty()) {
-            ChunkNode current = queue.poll();
-            for (int i = 0; i < 4; i++) {
-                int neighborX = current.cx + dX[i];
-                int neighborZ = current.cz + dZ[i];
-
-                if (neighborX < minChunkX || neighborX > maxChunkX || neighborZ < minChunkZ || neighborZ > maxChunkZ) {
-                    continue;
-                }
-
-                String neighborKey = neighborX + "_" + neighborZ;
-                int nextDistance = current.distance + 1;
-
-                if (!chunkDistanceToWaterField.containsKey(neighborKey)) {
-                    chunkDistanceToWaterField.put(neighborKey, nextDistance);
-                    queue.add(new ChunkNode(neighborX, neighborZ, nextDistance));
-                }
-            }
+        while (head < tail) {
+            int cell = queue[head++];
+            int i = cell % waterFieldSize, j = cell / waterFieldSize;
+            short next = (short) Math.min(Short.MAX_VALUE, waterField[cell] + 1);
+            if (i > 0) tail = visit(cell - 1, next, queue, tail);
+            if (i < waterFieldSize - 1) tail = visit(cell + 1, next, queue, tail);
+            if (j > 0) tail = visit(cell - waterFieldSize, next, queue, tail);
+            if (j < waterFieldSize - 1) tail = visit(cell + waterFieldSize, next, queue, tail);
         }
     }
 
-    private static class ChunkNode {
-        int cx, cz, distance;
-        ChunkNode(int cx, int cz, int distance) { 
-            this.cx = cx; 
-            this.cz = cz; 
-            this.distance = distance; 
-        }
+    private int visit(int cell, short distance, int[] queue, int tail) {
+        if (waterField[cell] >= 0) return tail;
+        waterField[cell] = distance;
+        queue[tail] = cell;
+        return tail + 1;
     }
 }

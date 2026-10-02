@@ -79,7 +79,14 @@ private static class SpeciesConfig {
     private final int NUM_SPECIES = 8; // 4 Trees + 4 Shrubs
     private final int FLORA_VARIATIONS = 10;
 
-    private Map<String, List<FloraInstance>> floraCache;
+        private Map<String, List<FloraInstance>> floraCache;
+    // Bounding sphere {x, y, z, radius} per terrain chunk, for frustum culling
+    private final Map<String, float[]> chunkBounds = new HashMap<>();
+    private final Frustum frustum = new Frustum();
+    private final List<Model> visibleChunks = new ArrayList<>();
+    private final List<FloraInstance> visibleFlora = new ArrayList<>();
+    // Tallest trees reach about this far from their base, before instance scaling
+    private static final float FLORA_CULL_RADIUS = 140.0f;
     private Model[][][] floraBranchModelsLOD; // Matrix bounds: [species][lodIndex][variationIndex]
     private Model[][][] floraLeafModelsLOD;   
     
@@ -87,11 +94,17 @@ private static class SpeciesConfig {
     private Shader leafShader;
     
     private static class FloraInstance {
-        Vector3 pos;
+                Vector3 pos;
         int speciesIndex;
         int modelIndex;
         float scale;
         float rotationY;
+        // Cached on first draw: these never change for a placed tree
+        Matrix4 modelMatrix;
+        Vector3 leafDark;
+        Vector3 leafLight;
+        int lodIndex;
+
         
         public FloraInstance(Vector3 pos, int speciesIndex, int modelIndex, float scale, float rotationY) {
             this.pos = pos;
@@ -149,8 +162,9 @@ private static class SpeciesConfig {
     private int currentWidth = 1024;  
     private int currentHeight = 768;
     
-    private float fpsSmoothing = 0.95f; 
-    private double smoothedFps = 60.0;  
+    private static final double FPS_WINDOW_SECONDS = 0.5;
+    private int fpsFrameCount = 0;
+    private double fpsWindowStart = 0;
 
     // --- Fully GPU-Driven Instanced Grass Rendering Fields ---
     private Shader grassShader;
@@ -179,6 +193,11 @@ private static class SpeciesConfig {
     private RegionalFactor grassHeightNoiseFactor;
     private RegionalFactor grassColourNoiseFactor;
     private RegionalFactor leafColourNoiseFactor;
+
+        // Regional soil colour: where the ground drifts toward each of the palette's soil variants
+    private RegionalFactor soilVariantAFactor;
+    private RegionalFactor soilVariantBFactor;
+    private static final int SOIL_REGION_MAP_SIZE = 256;
 
     private RegionalFactor grassAbundanceFactor;
     private RegionalFactor grassHeightFactor;
@@ -224,6 +243,19 @@ private static class SpeciesConfig {
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
 
+    // Procedurally generated textures and staged GL loading
+    private WorldArtGenerator worldArt;
+    private LoadingProgress loading;
+    private Runnable onWorldReady;
+    private int loadingStep = 0;
+    private boolean worldReady = false;
+    private int framesRenderedSinceReady = 0;
+    // While loading, grass seeding may keep going for this long per frame; in play it seeds one far chunk per frame
+    private static final long LOADING_GRASS_BUDGET_NANOS = 120_000_000L;
+    private long grassBudgetNanos = 0;
+    private static final float LEAF_DARK_SCALE = 0.65f;
+    private static final float LEAF_LIGHT_SCALE = 1.3f;
+
     private Map<Integer, Texture> nationAtlases;
     private Map<Integer, Integer> nationAtlasSizes;
     private Map<Integer, Integer> nationDirections;
@@ -239,7 +271,9 @@ private static class SpeciesConfig {
       GRASS_PATCH_NOISE,
       GRASS_HEIGHT_NOISE,
       GRASS_COLOUR_NOISE,
-      LEAF_COLOUR_NOISE,
+            LEAF_COLOUR_NOISE,
+      SOIL_COLOUR_VARIANT_A,
+      SOIL_COLOUR_VARIANT_B,
       TREE_1_ABUNDANCE,
       TREE_2_ABUNDANCE,
       TREE_3_ABUNDANCE,
@@ -342,16 +376,13 @@ private static class SpeciesConfig {
         // Create a Random instance tied strictly to this world's seed
         // This guarantees variety per game, but perfect uniformity on the same seed
         Random speciesSeeder = new Random(worldSeed);
-        
-        // Define available leaf texture asset pool indices
-        int[] availableLeafTextures = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
 
         for (int s = 0; s < NUM_SPECIES; s++) {
             boolean isTree = (s < 4); // First 4 are Trees, last 4 are Shrubs
             String name = isTree ? ("Procedural Tree Type " + (s + 1)) : ("Procedural Shrub Type " + (s - 3));
-            
-            // Choose a texture out of the pool randomly based on the seed
-            int leafTexNum = availableLeafTextures[speciesSeeder.nextInt(availableLeafTextures.length)];
+
+            // Every species gets its own generated leaf texture
+            int leafTexNum = s;
             
             // Randomize organic profiles depending on structural class (Tree vs Shrub)
             float leafScale, baseBRate, varBRate, baseSWidth, varSWidth, baseWDecl, varWDecl, baseSDist, varSDist, baseBAngle, varBAngle;
@@ -485,7 +516,9 @@ private static class SpeciesConfig {
                 seaLevelHeight, worldNoise, regionalManager);
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
-        this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
+                this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
+        this.soilVariantAFactor = this.regionalManager.createNoiseMap(1.4e-5f);
+        this.soilVariantBFactor = this.regionalManager.createNoiseMap(2.1e-5f);
         startBirdsEyeMapRendering();
     }
 
@@ -540,17 +573,58 @@ private static class SpeciesConfig {
         GL3 gl = drawable.getGL().getGL3();
         this.gl = gl;
         
-        gl.glClearColor(0.976f, 0.725f, 0.043f, 1.0f); // Sky Colour
+        float[] zenith = worldArt.palette().skyZenith;
+        gl.glClearColor(zenith[0], zenith[1], zenith[2], 1.0f);
         gl.glClearDepth(1.0f);
-        
+
         gl.glEnable(GL.GL_DEPTH_TEST);
         gl.glDepthFunc(GL.GL_LESS);
         gl.glFrontFace(GL.GL_CCW);
         gl.glEnable(GL.GL_CULL_FACE);
         gl.glCullFace(GL.GL_BACK);
-        
-        initialise();
+        // The heavy set-up runs in steps from display(), so the loading screen keeps animating
+    }
+
+    /**
+     * Advances GL-side loading by one step per display() call: uploads and shaders, one
+     * flora species at a time, then the first terrain around the spawn point, then a first
+     * real frame. Returns true once the game is ready to render normally.
+     */
+    private boolean advanceLoading() {
+        if (loadingStep == 0) {
+            loading.begin(LoadingProgress.Stage.GPU_UPLOAD);
+            initialiseCore();
+            loadingStep++;
+            loading.begin(LoadingProgress.Stage.FLORA);
+            return false;
+        }
+        int floraSteps = NUM_SPECIES * FLORA_VARIATIONS;
+        int floraStep = loadingStep - 1;
+        if (floraStep < floraSteps) {
+            initialiseFloraVariation(floraStep / FLORA_VARIATIONS, floraStep % FLORA_VARIATIONS);
+            loading.report((floraStep + 1) / (float) floraSteps);
+            loadingStep++;
+            if (floraStep + 1 == floraSteps) loading.begin(LoadingProgress.Stage.TERRAIN);
+            return false;
+        }
+        if (loadingStep == floraSteps + 1) {
+            finishInitialise();
+            loadingStep++;
+            return false;
+        }
+        // Distant grass is seeded within a time budget per frame so the loading screen keeps moving
+        int grassChunksTotal = (GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1);
+        if (grassCache.size() < grassChunksTotal) {
+            grassBudgetNanos = LOADING_GRASS_BUDGET_NANOS;
+            updateVisibleChunks(false);
+            grassBudgetNanos = 0;
+            loading.report(grassCache.size() / (float) grassChunksTotal);
+            return false;
+        }
+        loading.begin(LoadingProgress.Stage.FIRST_FRAME);
         startTime = getSeconds();
+        lastElapsedTime = 0;
+        return true;
     }
     
     @Override
@@ -576,12 +650,127 @@ private static class SpeciesConfig {
     public void display(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
         
+        if (!worldReady) {
+            gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+            if (!advanceLoading()) return;
+            worldReady = true;
+        }
+
         if (minimap != null && minimap.isFullScreenRevealMode()) {
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
-            return; 
+            return;
         }
-        
+
         render();
+
+        // Hand over from the loading screen only once a real frame of the round exists
+        if (!loading.isFinished() && ++framesRenderedSinceReady >= 2) {
+            if (IS_DEBUG_MODE_ACTIVE) saveFirstFrame(gl);
+            loading.finish();
+            if (onWorldReady != null) javax.swing.SwingUtilities.invokeLater(onWorldReady);
+        }
+    }
+
+    /** Debug aid: writes the round's first frame next to this run's generated textures. */
+    private void saveFirstFrame(GL3 gl) {
+        int w = currentWidth, h = currentHeight;
+        java.nio.ByteBuffer pixels = com.jogamp.common.nio.Buffers.newDirectByteBuffer(w * h * 4);
+        gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
+        Thread writer = new Thread(() -> {
+            BufferedImage img = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+            for (int y = 0; y < h; y++) {
+                for (int x = 0; x < w; x++) {
+                    int i = (y * w + x) * 4;
+                    int rgb = ((pixels.get(i) & 255) << 16) | ((pixels.get(i + 1) & 255) << 8) | (pixels.get(i + 2) & 255);
+                    img.setRGB(x, h - 1 - y, rgb);
+                }
+            }
+            try {
+                ImageIO.write(img, "png", new File(WorldArtGenerator.OUTPUT_DIR, "first_frame.png"));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }, "first-frame-writer");
+        writer.setDaemon(true);
+        writer.start();
+    }
+
+    public void setWorldArt(WorldArtGenerator worldArt) {
+        this.worldArt = worldArt;
+    }
+
+    public void setLoading(LoadingProgress loading, Runnable onWorldReady) {
+        this.loading = loading;
+        this.onWorldReady = onWorldReady;
+    }
+
+        /**
+     * A whole-region map of how far the soil's colour departs from the base soil texture,
+     * stored as a per-channel ratio (halved to fit in [0, 1]). The terrain shader multiplies
+     * the soil texture by it, so the ground shifts gradually between the palette's base soil
+     * and its two regional variants over tens of kilometres.
+     */
+    public java.awt.image.BufferedImage buildSoilRegionMap(WorldPalette palette) {
+        int n = SOIL_REGION_MAP_SIZE;
+        java.awt.image.BufferedImage map = new java.awt.image.BufferedImage(n, n, java.awt.image.BufferedImage.TYPE_INT_RGB);
+                float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
+        float half = TOTAL_REGION_WIDTH / 2.0f;
+        float[] fa = new float[n * n], fb = new float[n * n];
+        for (int py = 0; py < n; py++) {
+            for (int px = 0; px < n; px++) {
+                float worldX = (px + 0.5f) / n * TOTAL_REGION_WIDTH - half;
+                float worldZ = (py + 0.5f) / n * TOTAL_REGION_WIDTH - half;
+                int cx = (int) Math.floor(worldX / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(worldZ / PHYSICAL_CHUNK_SIZE);
+                fa[py * n + px] = soilVariantAFactor.evaluate(cx, cz, worldX, worldZ);
+                fb[py * n + px] = soilVariantBFactor.evaluate(cx, cz, worldX, worldZ);
+            }
+        }
+        // Noise values bunch around the middle, so thresholds come from their actual spread:
+        // each variant takes over roughly the top third of its factor, blending in gradually
+        float[] rangeA = percentiles(fa, 0.55f, 0.72f), rangeB = percentiles(fb, 0.55f, 0.72f);
+        for (int py = 0; py < n; py++) {
+            for (int px = 0; px < n; px++) {
+                float wa = ProceduralTextures.smoothstep(rangeA[0], rangeA[1], fa[py * n + px]);
+                float wb = ProceduralTextures.smoothstep(rangeB[0], rangeB[1], fb[py * n + px]);
+                int rgb = 0;
+                for (int c = 0; c < 3; c++) {
+                    float colour = base[c] + (a[c] - base[c]) * wa;
+                    colour += (b[c] - colour) * wb;
+                    float ratio = Math.min(2.0f, colour / Math.max(0.02f, base[c]));
+                    rgb = (rgb << 8) | Math.round(ratio * 0.5f * 255f);
+                }
+                map.setRGB(px, py, rgb);
+            }
+        }
+        return map;
+    }
+
+    /** Every nation's architecture texture generators, for WorldArtGenerator. */
+    public Map<String, java.util.function.Supplier<BufferedImage>> getNationTextureJobs() {
+        return infraManager.textureJobs();
+    }
+
+        private static float[] percentiles(float[] values, float low, float high) {
+        float[] sorted = values.clone();
+        java.util.Arrays.sort(sorted);
+        int last = sorted.length - 1;
+        return new float[] { sorted[(int) (low * last)], sorted[(int) (high * last)] };
+    }
+
+    public int getSpeciesCount() {
+        return NUM_SPECIES;
+    }
+
+    // Leaf textures are greyscale; the leaf shader maps black to this dark colour and white
+    // to this light colour, continuously, for each species' regional colour
+    private static Vector3 leafDarkColour(Vector3 regional) {
+        return new Vector3(regional.x * LEAF_DARK_SCALE, regional.y * LEAF_DARK_SCALE, regional.z * LEAF_DARK_SCALE);
+    }
+
+    private static Vector3 leafLightColour(Vector3 regional) {
+        return new Vector3(Math.min(regional.x * LEAF_LIGHT_SCALE, 1.0f),
+                Math.min(regional.y * LEAF_LIGHT_SCALE, 1.0f),
+                Math.min(regional.z * LEAF_LIGHT_SCALE, 1.0f));
     }
 
     @Override
@@ -682,17 +871,17 @@ private static class SpeciesConfig {
         return new Vector3(worldX, worldY, worldZ);
     }
 
-    private void initialise() {
+    private void initialiseCore() {
+        // All textures were generated for this world by WorldArtGenerator before the window opened
         textures = new TextureLibrary();
-        textures.add(gl, "dirt_diffuse", "assets/textures/dirt_diffuse.png");
-        textures.add(gl, "water_diffuse", "assets/textures/water_diffuse.png");
-        textures.add(gl, "sky", "assets/textures/sky.png");
-        textures.add(gl, "sun_glow", "assets/textures/sun_glow.png");
-        int N_LEAVES = 10;
-        for (int i=0; i < N_LEAVES; i++) {
-            textures.add(gl, "leaf" + String.valueOf(i), "assets/textures/leaves/leaf" + String.valueOf(i) + ".png");
+        textures.add(gl, "dirt_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL));
+        textures.add(gl, "water_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SEA));
+        textures.add(gl, "sky", WorldArtGenerator.pathFor(WorldArtGenerator.SKY));
+        textures.add(gl, "sun_glow", WorldArtGenerator.pathFor(WorldArtGenerator.SUN_GLOW));
+        for (int s = 0; s < NUM_SPECIES; s++) {
+            textures.add(gl, "leaf" + s, WorldArtGenerator.pathFor(WorldArtGenerator.leafName(s)));
         }
-        
+
         Texture waterTexInstance = textures.get("water_diffuse");
         waterTexInstance.bind(gl);
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
@@ -708,8 +897,10 @@ private static class SpeciesConfig {
         
         Light l = new Light(gl, camera, true, new Vector3(0,0,0), lightSize, textures.get("sun_glow"));
         Material m = new Material();
-        
-        m.setFullDiffuse(1.0f, 0.95f, 0.95f);  
+
+        // Sunlight takes on a little of the star's black-body colour
+        float[] sunTint = worldArt.palette().sunTint;
+        m.setFullDiffuse(0.75f + 0.25f * sunTint[0], 0.75f + 0.25f * sunTint[1], 0.75f + 0.25f * sunTint[2]);
         m.setFullSpecular(1.0f, 0.0f, 0.0f);   
         l.setMaterial(m);
         lights[0] = l;
@@ -731,6 +922,15 @@ private static class SpeciesConfig {
             4.0f                                                                                                                                                                                
         );
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
+                enableAnisotropicFiltering(textures.get("dirt_diffuse"));
+        textures.add(gl, "soil_regions", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS));
+
+        // Each nation's wall, roof and fence textures repeat across surfaces
+        for (String name : infraManager.textureJobs().keySet()) {
+            textures.addWrap(gl, name, WorldArtGenerator.pathFor(name));
+            enableAnisotropicFiltering(textures.get(name));
+        }
+        infraManager.setNationTextures(textures::get);
         terrainRenderer = new Renderer();
         globalModelMatrix = new Matrix4(1);
 
@@ -830,9 +1030,12 @@ private static class SpeciesConfig {
         floraLeafModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
         
         leafShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf.txt");
-        int[] lodSlices = {12, 8, 4}; 
-        
-        for (int s = 0; s < NUM_SPECIES; s++) {
+        initialiseWaterAndGrass();
+    }
+
+    private void initialiseFloraVariation(int s, int variation) {
+        int[] lodSlices = {12, 8, 4};
+        {
             SpeciesConfig sc = speciesConfigs[s];
             
             float brightnessBoost = 2.5f;
@@ -851,8 +1054,8 @@ private static class SpeciesConfig {
             
             floraMat.setDiffuseMap(textures.get("dirt_diffuse"));
             
-            for (int i = 0; i < FLORA_VARIATIONS; i++) {
-                
+            {
+                int i = variation;
                 java.util.Random fRand = new java.util.Random(worldSeed + s * 3721L + i * 8273L);
                 
                 float bRate = sc.baseBRate + fRand.nextFloat() * sc.varBRate;
@@ -877,13 +1080,15 @@ private static class SpeciesConfig {
                 }
             }
         }
+    }
 
+    private void initialiseWaterAndGrass() {
         waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
         
         waterMaterial = new Material(
             new Vector3(0.01f, 0.31f, 0.55f),  
             new Vector3(0.01f, 0.31f, 0.55f),  
-            new Vector3(10.5f, 0.4f, 0.4f),
+                        new Vector3(6.0f, 6.0f, 6.0f),
             2048f                                                                                                                                                                                
         );
         waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
@@ -893,7 +1098,7 @@ private static class SpeciesConfig {
         Mesh waterMesh = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);  
         waterPlaneModel = new Model("ocean_surface", waterMesh, waterModelMatrix, waterShader, waterMaterial, waterRenderer, lights, camera);
 
-        textures.add(gl, "grass_atlas", "assets/textures/grass2.png");
+        textures.add(gl, "grass_atlas", WorldArtGenerator.pathFor(WorldArtGenerator.GRASS_ATLAS));
         
         Texture grassTex = textures.get("grass_atlas");
         grassTex.bind(gl);
@@ -949,7 +1154,9 @@ private static class SpeciesConfig {
         gl.glVertexAttribDivisor(4, 1);  
 
         gl.glBindVertexArray(0);
+    }
 
+    private void finishInitialise() {
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
 
@@ -961,14 +1168,55 @@ private static class SpeciesConfig {
         dyingColour = new Vector3(0.4f, 0.25f, 0.15f);
     }
 
+    /**
+     * The ground is mostly seen at a glancing angle, where plain mipmapping blurs the soil's
+     * fine grain into smeared streaks; anisotropic filtering keeps it crisp when available.
+     */
+    private void enableAnisotropicFiltering(Texture texture) {
+        if (!gl.isExtensionAvailable("GL_EXT_texture_filter_anisotropic")) return;
+        float[] maxAniso = new float[1];
+        gl.glGetFloatv(GL.GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, maxAniso, 0);
+        texture.bind(gl);
+        gl.glTexParameterf(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAX_ANISOTROPY_EXT, Math.min(16f, maxAniso[0]));
+    }
+
+        // With a fixed test seed the spawn sequence repeats too, so test runs are comparable
+    private final java.util.Random spawnRandom = Long.getLong("xenoguesser.seed") != null
+            ? new java.util.Random(Long.getLong("xenoguesser.seed")) : new java.util.Random();
+
     private void spawnPlayerAtRandomLocation() {
-        java.util.Random dynamicRand = new java.util.Random();
+        java.util.Random dynamicRand = spawnRandom;
         float halfRegion = TOTAL_REGION_WIDTH / 2.0f;
         
         float spawnX = 0.0f;
         float spawnZ = 0.0f;
         float terrainHeightAtSpawn = 0.0f;
-        boolean foundDryLand = false;
+        // Rounds always start on a road, looking along it
+                // Developer aid: -Dxenoguesser.view=house starts each round looking at a house
+        float[] roadSpawn = "house".equals(System.getProperty("xenoguesser.view"))
+                ? infraManager.randomHouseViewpoint(dynamicRand) : infraManager.randomRoadPoint(dynamicRand);
+        float lookX = 0.0f, lookZ = -1.0f;
+        if (roadSpawn != null) {
+            spawnX = roadSpawn[0];
+            spawnZ = roadSpawn[1];
+            lookX = roadSpawn[2];
+            lookZ = roadSpawn[3];
+        }
+        boolean foundDryLand = roadSpawn != null;
+        if ("edge".equals(System.getProperty("xenoguesser.view"))) {
+            // Developer aid: stand just inside the eastern edge of the map, looking out past it
+            float halfWidth = TOTAL_REGION_WIDTH / 2.0f;
+            for (float z = 0; z < halfWidth; z += 500.0f) {
+                if (TerrainMesh.getLayeredHeight(halfWidth - 200.0f, z, worldNoise) > seaLevelHeight) {
+                    spawnX = halfWidth - 200.0f;
+                    spawnZ = z;
+                    break;
+                }
+            }
+            lookX = 1.0f;
+            lookZ = 0.0f;
+            foundDryLand = true;
+        }
 
         while (!foundDryLand) {
             spawnX = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
@@ -988,18 +1236,23 @@ private static class SpeciesConfig {
             this.minimap.setPlayerSpawnLocation(spawnX, spawnZ);
         }
 
-        moveToLocation(spawnX, spawnZ);
+        moveToLocation(spawnX, spawnZ, lookX, lookZ);
     }
 
     public void moveToLocation(float spawnX, float spawnZ) {
+        moveToLocation(spawnX, spawnZ, 0.0f, -1.0f);
+    }
+
+    private void moveToLocation(float spawnX, float spawnZ, float lookX, float lookZ) {
         float terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(spawnX, spawnZ, worldNoise);
         camera.setPosition(new Vector3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ));
-        camera.setTarget(new Vector3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ - 10.0f));
+        camera.setTarget(new Vector3(spawnX + lookX * 10.0f, terrainHeightAtSpawn + playerEyeHeight, spawnZ + lookZ * 10.0f));
 
         lastChunkX = (int) Math.floor((spawnX + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         lastChunkZ = (int) Math.floor((spawnZ + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         
-        updateVisibleChunks(true);
+        // During the initial load, distant grass is seeded over later loading frames instead
+        updateVisibleChunks(worldReady);
     }
 
     public void resetToNextRound(GL3 gl) {
@@ -1050,8 +1303,9 @@ private static class SpeciesConfig {
             String key = entry.getKey();
             if (!requiredChunksWithLod.containsKey(key)) {
                 Model oldModel = entry.getValue();
-                if (oldModel.mesh != null) oldModel.mesh.dispose(gl); 
+                                if (oldModel.mesh != null) oldModel.mesh.dispose(gl);
                 iterator.remove();
+                chunkBounds.remove(key);
             }
         }
 
@@ -1078,8 +1332,9 @@ private static class SpeciesConfig {
             if (mustBuild) {
                 float dynamicScale = PHYSICAL_CHUNK_SIZE / (float) targetSegments;
                 Mesh chunkMesh = TerrainMesh.generateTerrainChunk(gl, targetSegments, dynamicScale, cx, cz, worldNoise);
-                Model chunkModel = new Model("chunk_" + cx + "_" + cz + "_seg" + targetSegments, chunkMesh, globalModelMatrix, terrainShader, terrainMaterial, terrainRenderer, lights, camera);
+                                Model chunkModel = new Model("chunk_" + cx + "_" + cz + "_seg" + targetSegments, chunkMesh, globalModelMatrix, terrainShader, terrainMaterial, terrainRenderer, lights, camera);
                 chunkCache.put(key, chunkModel);
+                chunkBounds.put(key, chunkBoundingSphere(cx, cz));
             }
         }
         
@@ -1157,6 +1412,7 @@ private static class SpeciesConfig {
 
         totalGrassInstances = 0;
         boolean generatedThisFrame = false; 
+        long grassDeadline = System.nanoTime() + grassBudgetNanos;
 
         for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
@@ -1166,7 +1422,8 @@ private static class SpeciesConfig {
                 if (chunkGrassData == null) {
                     int distanceFromPlayer = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
                     boolean prioritizeNearbyChunk = distanceFromPlayer <= 3;
-                    if (generatedThisFrame && !forceImmediate && !prioritizeNearbyChunk) {
+                    boolean overBudget = System.nanoTime() > grassDeadline;
+                    if (generatedThisFrame && overBudget && !forceImmediate && !prioritizeNearbyChunk) {
                         continue; 
                     }
 
@@ -1260,18 +1517,33 @@ private static class SpeciesConfig {
                 gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
             }
 
-            persistentGrassBuffer.clear();
+                        persistentGrassBuffer.clear();
+            int writtenGrassInstances = 0;
+
 
             for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
                 for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-                    String key = cx + "_" + cz;
+                                        String key = cx + "_" + cz;
                     float[] chunkGrassData = grassCache.get(key);
                     if (chunkGrassData != null) {
-                        persistentGrassBuffer.put(chunkGrassData);
+                        // Far grass is thinned: it shrinks below a pixel and fades into fog,
+                        // but drawing every blade out to the horizon was the costliest pass
+                        int ring = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+                        int stride = ring <= 4 ? 1 : ring <= 8 ? 2 : ring <= 14 ? 4 : 8;
+                        if (stride == 1) {
+                            persistentGrassBuffer.put(chunkGrassData);
+                            writtenGrassInstances += chunkGrassData.length / 5;
+                        } else {
+                            for (int blade = 0; blade * 5 < chunkGrassData.length; blade += stride) {
+                                persistentGrassBuffer.put(chunkGrassData, blade * 5, 5);
+                                writtenGrassInstances++;
+                            }
+                        }
                     }
                 }
             }
-            persistentGrassBuffer.flip();
+                        persistentGrassBuffer.flip();
+            totalGrassInstances = writtenGrassInstances;
 
             gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
             gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
@@ -1305,13 +1577,47 @@ private static class SpeciesConfig {
                     );
                     for (InfrastructureObject obj : spawnedObjects) {
                         if (obj.type == InfrastructureObject.Type.BATCH) {
-                            obj.initializeBatch(gl, solidShader, terrainRenderer, lights, camera);
+                            obj.initializeBatch(gl, solidShader, terrainShader, terrainRenderer, lights, camera);
                         }
                     }
                     infraCache.put(key, spawnedObjects);
                 }
             }
         }
+    }
+
+
+        /** Placement matrix and regional leaf colours never change for a tree, so they are computed once. */
+    private void cacheFloraInstance(FloraInstance inst) {
+        Matrix4 m = Matrix4Transform.translate(inst.pos);
+        m = Matrix4.multiply(m, Matrix4Transform.rotateAroundY(inst.rotationY));
+        inst.modelMatrix = Matrix4.multiply(m, Matrix4Transform.scale(inst.scale, inst.scale, inst.scale));
+
+        SpeciesConfig sc = speciesConfigs[inst.speciesIndex];
+        int cx = (int) Math.floor((inst.pos.x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+        int cz = (int) Math.floor((inst.pos.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+        float climateVal = this.leafColourFactor.evaluate(cx, cz, inst.pos.x, inst.pos.z);
+        Vector3 regional = new Vector3(
+                sc.dyingColor.x + (sc.healthyColor.x - sc.dyingColor.x) * climateVal,
+                sc.dyingColor.y + (sc.healthyColor.y - sc.dyingColor.y) * climateVal,
+                sc.dyingColor.z + (sc.healthyColor.z - sc.dyingColor.z) * climateVal);
+        inst.leafDark = leafDarkColour(regional);
+        inst.leafLight = leafLightColour(regional);
+    }
+
+    /** Sphere around a terrain chunk, from its corner and centre heights plus slack for peaks between them. */
+    private float[] chunkBoundingSphere(int cx, int cz) {
+        float half = PHYSICAL_CHUNK_SIZE / 2.0f;
+        float centreX = cx * PHYSICAL_CHUNK_SIZE, centreZ = cz * PHYSICAL_CHUNK_SIZE;
+        float low = Float.MAX_VALUE, high = -Float.MAX_VALUE;
+        float[][] samples = {{0, 0}, {-half, -half}, {half, -half}, {-half, half}, {half, half}};
+        for (float[] o : samples) {
+            float h = TerrainMesh.getLayeredHeight(centreX + o[0], centreZ + o[1], worldNoise);
+            low = Math.min(low, h);
+            high = Math.max(high, h);
+        }
+        float halfHeight = (high - low) / 2.0f + 40.0f;
+        return new float[] {centreX, (low + high) / 2.0f, centreZ, (float) Math.sqrt(2 * half * half + halfHeight * halfHeight)};
     }
 
     private void render() {
@@ -1332,16 +1638,20 @@ private static class SpeciesConfig {
             isToTeleport = false;
         }
 
-        if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
-
-        if (deltaTime > 0) {
-            double instantFps = 1.0 / deltaTime;
-            smoothedFps = (smoothedFps * fpsSmoothing) + (instantFps * (1.0f - fpsSmoothing));
-            
+        // Frames counted over half-second windows give the true rate; the old per-frame
+        // estimate replaced any frame slower than 0.1 s with 1/60 s, so slow frames read as 60 fps
+        fpsFrameCount++;
+        if (elapsedTime - fpsWindowStart >= FPS_WINDOW_SECONDS) {
+            double measuredFps = fpsFrameCount / (elapsedTime - fpsWindowStart);
+            fpsFrameCount = 0;
+            fpsWindowStart = elapsedTime;
             if (this.gameHUD != null) {
-                this.gameHUD.setGameFps((int) Math.round(smoothedFps));
+                this.gameHUD.setGameFps((int) Math.round(measuredFps));
             }
         }
+
+        // Movement uses a capped step so a long hitch doesn't fling the camera
+        if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
         boolean moveW = keyboard.w;
         boolean moveS = keyboard.s;
@@ -1414,7 +1724,8 @@ private static class SpeciesConfig {
         
         ambientLight = new Vector3(currentR, currentG, currentB);
 
-        float skyDayR = 0.976f, skyDayG = 0.725f, skyDayB = 0.043f;
+        float[] zenith = worldArt.palette().skyZenith;
+        float skyDayR = zenith[0], skyDayG = zenith[1], skyDayB = zenith[2];
         float skyNightR = 0.05f, skyNightG = 0.05f, skyNightB = 0.08f; 
         
         float curSkyR = skyDayR + nightProportion * (skyNightR - skyDayR);
@@ -1439,14 +1750,24 @@ private static class SpeciesConfig {
         gl.glEnable(GL3.GL_DEPTH_TEST);
         gl.glEnable(GL3.GL_CULL_FACE);
 
-        depthPrePassShader.use(gl);
-        
-        Matrix4 view = camera.getViewMatrix();
-        Matrix4 projection = camera.getPerspectiveMatrix(); 
-        Matrix4 viewProjection = Matrix4.multiply(projection, view); 
+                depthPrePassShader.use(gl);
 
-        for (Model plane : chunkCache.values()) { 
-            plane.renderDepthPass(gl, depthPrePassShader, viewProjection); 
+        Matrix4 view = camera.getViewMatrix();
+        Matrix4 projection = camera.getPerspectiveMatrix();
+        Matrix4 viewProjection = Matrix4.multiply(projection, view);
+        frustum.update(viewProjection);
+
+        // Only chunks inside the view volume are drawn, in both the depth and colour passes
+        visibleChunks.clear();
+        for (Map.Entry<String, Model> chunk : chunkCache.entrySet()) {
+            float[] b = chunkBounds.get(chunk.getKey());
+            if (b == null || frustum.intersectsSphere(b[0], b[1], b[2], b[3])) {
+                visibleChunks.add(chunk.getValue());
+            }
+        }
+
+        for (Model plane : visibleChunks) {
+            plane.renderDepthPass(gl, depthPrePassShader, viewProjection);
         }
         
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
@@ -1501,13 +1822,23 @@ private static class SpeciesConfig {
             terrainShader.setInt(gl, "skyTexture", 2);
         }
 
-        for (Model plane : chunkCache.values()) { 
-            plane.render(gl, ambientLight, nightProportion); 
+                        // Only the ground takes the regional soil colour; trunks and walls share this shader
+        gl.glActiveTexture(GL3.GL_TEXTURE6);
+        textures.get("soil_regions").bind(gl);
+        terrainShader.setInt(gl, "soilRegionMap", 6);
+        terrainShader.setFloat(gl, "regionWidth", TOTAL_REGION_WIDTH);
+        terrainShader.setFloat(gl, "useSoilRegions", 1.0f);
+        for (Model plane : visibleChunks) {
+            plane.render(gl, ambientLight, nightProportion);
         }
+        terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
         
         // ==========================================
         // --- MULTI-SPECIES FLORA RENDERING PASS ---
         // ==========================================
+        // Visible trees are collected first, then drawn as all branches followed by all leaves,
+        // so the GPU switches shader twice per frame rather than twice per tree
+        visibleFlora.clear();
         for (List<FloraInstance> positions : floraCache.values()) {
             for (FloraInstance inst : positions) {
                 float dx = inst.pos.x - currentPos.x;
@@ -1516,67 +1847,36 @@ private static class SpeciesConfig {
                 float distSq = dx*dx + dy*dy + dz*dz;
 
                 if (distSq > maxFloraDistSq) continue;
+                float radius = FLORA_CULL_RADIUS * inst.scale;
+                if (!frustum.intersectsSphere(inst.pos.x, inst.pos.y + radius * 0.5f, inst.pos.z, radius)) continue;
 
-                float dotProduct = dx * camForward.x + dy * camForward.y + dz * camForward.z;
-                if (dotProduct < -12.0f) continue;
-
-                int lodIndex = 0;
-                if (distSq > 135f * 135f) {
-                    lodIndex = 2;
-                } else if (distSq > 65f * 65f) {
-                    lodIndex = 1;
+                inst.lodIndex = distSq > 135f * 135f ? 2 : (distSq > 65f * 65f ? 1 : 0);
+                if (inst.modelMatrix == null) {
+                    cacheFloraInstance(inst);
                 }
-
-                Matrix4 m = Matrix4Transform.translate(inst.pos);
-                m = Matrix4.multiply(m, Matrix4Transform.rotateAroundY(inst.rotationY));
-                m = Matrix4.multiply(m, Matrix4Transform.scale(inst.scale, inst.scale, inst.scale));
-                
-                SpeciesConfig sc = speciesConfigs[inst.speciesIndex];
-
-                // 1. Draw Branch (Uses species config parameters)
-                floraBranchModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].setModelMatrix(m);
-                floraBranchModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
-                
-                // 2. Prepare Regional Phenotype Color Blending for Leaves
-                int cx = (int) Math.floor((inst.pos.x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-                int cz = (int) Math.floor((inst.pos.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-
-                float climateVal = this.leafColourFactor.evaluate(cx, cz, inst.pos.x, inst.pos.z);
-
-                // Mix using species-specific color boundaries
-                float rOut = sc.dyingColor.x + (sc.healthyColor.x - sc.dyingColor.x) * climateVal;
-                float gOut = sc.dyingColor.y + (sc.healthyColor.y - sc.dyingColor.y) * climateVal;
-                float bOut = sc.dyingColor.z + (sc.healthyColor.z - sc.dyingColor.z) * climateVal;
-
-                Vector3 dynamicOuterColor = new Vector3(rOut, gOut, bOut);
-
-                // Scale inner lightness structure
-                float lightScale = 1.3f; 
-                float rIn = Math.min(dynamicOuterColor.x * lightScale, 1.0f);
-                float gIn = Math.min(dynamicOuterColor.y * lightScale, 1.0f);
-                float bIn = Math.min(dynamicOuterColor.z * lightScale, 1.0f);
-
-                Vector3 dynamicInnerColor = new Vector3(rIn, gIn, bIn);
-
-                // 3. Update Material Uniform State
-                leafShader.use(gl);
-                leafShader.setVec3(gl, "u_OuterLeafColor", dynamicOuterColor);
-                leafShader.setVec3(gl, "u_InnerLeafColor", dynamicInnerColor);
-
-                // --- NEW: Pass Fog/Sky data to the leaf shader ---
-                gl.glUniformMatrix4fv(gl.glGetUniformLocation(leafShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-                
-                if (textures.get(skyTextureKey) != null) {
-                    gl.glActiveTexture(GL3.GL_TEXTURE2);
-                    textures.get(skyTextureKey).bind(gl); 
-                    leafShader.setInt(gl, "skyTexture", 2);
-                }
-                // -------------------------------------------------
-
-                // 4. Draw Leaves (Uses the species leaf asset variation maps)
-                floraLeafModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].setModelMatrix(m);
-                floraLeafModelsLOD[inst.speciesIndex][lodIndex][inst.modelIndex].render(gl, ambientLight, nightProportion);
+                visibleFlora.add(inst);
             }
+        }
+
+        for (FloraInstance inst : visibleFlora) {
+            Model branch = floraBranchModelsLOD[inst.speciesIndex][inst.lodIndex][inst.modelIndex];
+            branch.setModelMatrix(inst.modelMatrix);
+            branch.render(gl, ambientLight, nightProportion);
+        }
+
+        leafShader.use(gl);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(leafShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        if (textures.get(skyTextureKey) != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get(skyTextureKey).bind(gl);
+            leafShader.setInt(gl, "skyTexture", 2);
+        }
+        for (FloraInstance inst : visibleFlora) {
+            leafShader.setVec3(gl, "u_LeafDarkColor", inst.leafDark);
+            leafShader.setVec3(gl, "u_LeafLightColor", inst.leafLight);
+            Model leaves = floraLeafModelsLOD[inst.speciesIndex][inst.lodIndex][inst.modelIndex];
+            leaves.setModelMatrix(inst.modelMatrix);
+            leaves.render(gl, ambientLight, nightProportion);
         }
 
         // ==========================================
@@ -1604,9 +1904,10 @@ private static class SpeciesConfig {
                 if (dotProduct < -12.0f - obj.boundingRadius) continue;
 
                 // Batches are culled by their bounds, since their anchor is only the middle of their contents
-                if (obj.type == InfrastructureObject.Type.BATCH) {
+                                if (obj.type == InfrastructureObject.Type.BATCH) {
                     float reach = maxFloraRenderDistance + obj.boundingRadius;
-                    if (distSq > reach * reach) {
+                    if (distSq > reach * reach
+                            || !frustum.intersectsSphere(obj.position.x, obj.position.y, obj.position.z, obj.boundingRadius)) {
                         continue;
                     }
                     obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, null, 0, 0);
@@ -1616,8 +1917,9 @@ private static class SpeciesConfig {
                 // Frustum / Distance Culling
                 if (distSq > maxFloraDistSq) continue;
 
-                if (obj.type == InfrastructureObject.Type.SIGN) {
-                    if (distSq > SIGN_DRAW_DISTANCE * SIGN_DRAW_DISTANCE) {
+                                if (obj.type == InfrastructureObject.Type.SIGN) {
+                    if (distSq > SIGN_DRAW_DISTANCE * SIGN_DRAW_DISTANCE
+                            || !frustum.intersectsSphere(obj.position.x, obj.position.y + 30.0f, obj.position.z, 45.0f)) {
                         continue;
                     }
                     signboardShader.use(gl);
@@ -1680,7 +1982,10 @@ private static class SpeciesConfig {
 
             gl.glActiveTexture(GL3.GL_TEXTURE0);
             textures.get("grass_atlas").bind(gl);
-            grassShader.setInt(gl, "grassTexture", 0);
+                        grassShader.setInt(gl, "grassTexture", 0);
+            float[] dry = worldArt.palette().grassDry, lush = worldArt.palette().grassLush;
+            grassShader.setVec3(gl, "u_GrassDry", new Vector3(dry[0], dry[1], dry[2]));
+            grassShader.setVec3(gl, "u_GrassLush", new Vector3(lush[0], lush[1], lush[2]));
 
             gl.glBindVertexArray(grassVAO);
             gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 6, totalGrassInstances);
@@ -1704,13 +2009,19 @@ private static class SpeciesConfig {
         waterShader.setVec2(gl, "windowSize", new Vector2((float)currentWidth, (float)currentHeight));
 
         waterShader.setVec3(gl, "sunPos", sunPos);
-        waterShader.setVec3(gl, "lightSpecular", new Vector3(1.0f, 1.0f, 1.0f));
+                // The glint on the water is the sun's own colour
+        float[] sunTint = worldArt.palette().sunTint;
+        waterShader.setVec3(gl, "lightSpecular", new Vector3(sunTint[0], sunTint[1], sunTint[2]));
         
         waterShader.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
         waterShader.setFloat(gl, "matShininess", waterMaterial.getShininess());
 
         waterShader.setVec3(gl, "ambientLight", ambientLight);
         waterShader.setVec3(gl, "skyColour", skyColour);
+        float[] shallow = worldArt.palette().seaShallowTint();
+        float[] deepOcean = worldArt.palette().seaDeepOcean();
+        waterShader.setVec3(gl, "u_ShallowTint", new Vector3(shallow[0], shallow[1], shallow[2]));
+        waterShader.setVec3(gl, "u_DeepOceanColour", new Vector3(deepOcean[0], deepOcean[1], deepOcean[2]));
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(waterShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
 
         if (textures.get(skyTextureKey) != null) {
@@ -1761,7 +2072,27 @@ private static class SpeciesConfig {
 
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
-        assignHeatmapToMinimap(currentDebugFactor);
+        if (!IS_DEBUG_MODE_ACTIVE) return;
+        // The first heatmap takes seconds to evaluate; build it off the UI thread so the
+        // loading screen keeps animating
+        FactorName initialFactor = currentDebugFactor;
+        RegionalFactor factor = factorFor(initialFactor);
+        if (factor == null) {
+            assignHeatmapToMinimap(initialFactor);
+            return;
+        }
+        Thread heatmapThread = new Thread(() -> {
+            BufferedImage snapshot = this.regionalManager.generateHeatmap(
+                TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factor, initialFactor.toString());
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (currentDebugFactor != initialFactor) return;
+                minimap.setHeatmapOverlay(snapshot);
+                minimap.setHeatmapVisible(true);
+                minimap.setHeatmapName(initialFactor.toString());
+            });
+        }, "initial-heatmap");
+        heatmapThread.setDaemon(true);
+        heatmapThread.start();
     }
 
     public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
@@ -1808,28 +2139,7 @@ private static class SpeciesConfig {
             }
 
             // 2. Otherwise, look up and evaluate standard noise/growth parameters
-            RegionalFactor targetFactor = switch (currentDebugFactor) {
-                case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
-                case GRASS_HEIGHT -> this.grassHeightFactor;
-                case GRASS_COLOUR -> this.grassColourFactor;
-                case LEAF_COLOUR -> this.leafColourFactor;
-                case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
-                case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
-                case MOISTURE -> this.grassMoistureFactor;
-                case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
-                case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
-                case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
-                case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
-                case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
-                case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
-                case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
-                case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
-                case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
-                case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
-                case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
-                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
-                default -> null; 
-            };
+            RegionalFactor targetFactor = factorFor(currentDebugFactor);
             
             if (targetFactor != null) {
                 BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(
@@ -1840,6 +2150,33 @@ private static class SpeciesConfig {
                 minimap.setHeatmapName(currentDebugFactor.toString());
             }
         }
+    }
+
+    private RegionalFactor factorFor(FactorName factorName) {
+            return switch (factorName) {
+                case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
+                case GRASS_HEIGHT -> this.grassHeightFactor;
+                case GRASS_COLOUR -> this.grassColourFactor;
+                case LEAF_COLOUR -> this.leafColourFactor;
+                case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
+                case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
+                case MOISTURE -> this.grassMoistureFactor;
+                case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
+                case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
+                case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
+                                case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
+                case SOIL_COLOUR_VARIANT_A -> this.soilVariantAFactor;
+                case SOIL_COLOUR_VARIANT_B -> this.soilVariantBFactor;
+                case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
+                case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
+                case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
+                case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
+                case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
+                case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
+                case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
+                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
+                default -> null; 
+            };
     }
 
     public void setCompassHUD(CompassHUD compassHUD) {
@@ -1897,8 +2234,8 @@ private static class SpeciesConfig {
             g2d.dispose();
 
             try {
-                // Saves to the root directory of your project
-                File outputDebugFile = new File("debug_atlas_nation_" + alphabetId + ".png");
+                // Kept with this run's other generated images, which are wiped on the next launch
+                File outputDebugFile = new File(WorldArtGenerator.OUTPUT_DIR, "debug_atlas_nation_" + alphabetId + ".png");
                 ImageIO.write(atlasImage, "png", outputDebugFile);
                 System.out.println("Saved debug atlas to: " + outputDebugFile.getAbsolutePath());
             } catch (IOException e) {

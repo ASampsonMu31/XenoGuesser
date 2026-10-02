@@ -49,11 +49,11 @@ public class RoadLineStyle {
     }
 
     /**
-     * Deals out styles so that the first nations all get a different
-     * placement/double/dashed layout and a different colour; once the layouts run
-     * out they repeat, but paired with a different colour.
+     * The whole world paints its roads in just two or three colours, and both the colour
+     * and the line layout spread in geographic blocs, so neighbouring nations usually
+     * share conventions while distant ones may differ. Dash proportions drift gradually.
      */
-    public static Map<Integer, RoadLineStyle> generateForNations(long seed, int numNations) {
+    public static Map<Integer, RoadLineStyle> generateForNations(long seed, int numNations, NationKinship kinship) {
         Random rand = new Random(seed + 3131L);
 
         List<int[]> layouts = new ArrayList<>();
@@ -71,17 +71,21 @@ public class RoadLineStyle {
             colourOrder.add(i);
         }
         Collections.shuffle(colourOrder, rand);
+        int worldColourCount = rand.nextFloat() < 0.4f ? 3 : 2;
+
+        int[] colourBloc = kinship.clusters(rand, worldColourCount, 0.1f);
+        int[] layoutBloc = kinship.clusters(rand, 3, 0.15f);
+        float[] dashDrift = kinship.gradient(rand, 0.1f);
+        float[] widthDrift = kinship.gradient(rand, 0.1f);
 
         Map<Integer, RoadLineStyle> styles = new HashMap<>();
         for (int n = 1; n <= numNations; n++) {
-            int slot = n - 1;
-            int[] layout = layouts.get(slot % layouts.size());
-            int colourSlot = (slot + slot / layouts.size()) % colourOrder.size();
-            float[] rgb = LINE_COLOURS[colourOrder.get(colourSlot)];
+            int[] layout = layouts.get(layoutBloc[n]);
+            float[] rgb = LINE_COLOURS[colourOrder.get(colourBloc[n])];
 
-            float dashLength = 8.0f + rand.nextFloat() * 18.0f;
-            float gapLength = 6.0f + rand.nextFloat() * 18.0f;
-            float lineWidth = 0.9f + rand.nextFloat() * 0.7f;
+            float dashLength = 8.0f + dashDrift[n] * 18.0f;
+            float gapLength = 6.0f + (1.0f - dashDrift[n]) * 18.0f;
+            float lineWidth = 0.9f + widthDrift[n] * 0.7f;
             float doubleSpacing = 0.8f + rand.nextFloat() * 0.7f;
             float edgeInset = 1.5f + rand.nextFloat() * 2.0f;
 

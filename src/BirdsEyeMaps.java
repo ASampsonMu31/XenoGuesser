@@ -75,11 +75,6 @@ public class BirdsEyeMaps {
 
         drawRoadClass(g, infrastructure, RoadPath.RoadClass.LANE, LANE_COLOUR, LANE_STROKE);
         drawRoadClass(g, infrastructure, RoadPath.RoadClass.STREET, STREET_COLOUR, STREET_STROKE);
-        g.setColor(STREET_COLOUR);
-        for (RoadPath.CulDeSac culDeSac : infrastructure.getCulDeSacs()) {
-            float radius = Math.max(STREET_STROKE, culDeSac.radius * detailResolution / totalRegionWidth);
-            g.fill(new Ellipse2D.Float(worldToPixel(culDeSac.x) - radius, worldToPixel(culDeSac.z) - radius, radius * 2, radius * 2));
-        }
         drawRoadClass(g, infrastructure, RoadPath.RoadClass.HIGHWAY, HIGHWAY_COLOUR, HIGHWAY_STROKE);
 
         g.dispose();
@@ -103,18 +98,17 @@ public class BirdsEyeMaps {
         return finish(canvas);
     }
 
+    private static final Color BUILDING_COLOUR = new Color(240, 228, 196);
+
     public BufferedImage[] renderBuildingMap(InfrastructureManager infrastructure) {
         BufferedImage canvas = createLandCanvas(false, BUILDING_LAND);
         Graphics2D g = createGraphics(canvas);
         float pixelsPerUnit = detailResolution / totalRegionWidth;
         AffineTransform identity = g.getTransform();
 
+        // One colour for every building, so the map shows where people live rather than hinting at nations
+        g.setColor(BUILDING_COLOUR);
         infrastructure.forEachBuilding((x, z, rotationY, width, depth, nationId) -> {
-            BuildingStyle style = infrastructure.getBuildingStyle(nationId);
-            Vector3 roof = style != null ? style.roofColour : new Vector3(0.6f, 0.6f, 0.6f);
-            // Keep each nation's roof hue but lift it to full brightness so it stands out on the dark ground
-            float[] hsb = Color.RGBtoHSB(clampChannel(roof.x), clampChannel(roof.y), clampChannel(roof.z), null);
-            g.setColor(Color.getHSBColor(hsb[0], Math.min(hsb[1], 0.75f), 1.0f));
 
             float pixelWidth = Math.max(MIN_BUILDING_PIXELS, width * pixelsPerUnit);
             float pixelDepth = Math.max(MIN_BUILDING_PIXELS, depth * pixelsPerUnit);

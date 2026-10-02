@@ -31,7 +31,9 @@ public final class BuildingMeshes {
                 return createGableRoof();
             case HIP:
                 return createHipRoof(style.hipRidgeHalfLength());
-            case PYRAMID:
+                        case PYRAMID:
+            case SPIRE:
+            case DOME:
                 return createPyramidRoof();
             case SHED:
                 return createShedRoof();

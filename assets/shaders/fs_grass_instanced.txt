@@ -14,9 +14,9 @@ uniform mat4 skyRotation;
 
 const float PI = 3.14159265359;
 
-// Natural colour palette boundaries
-const vec3 lightBrown = vec3(0.54, 0.43, 0.31);
-const vec3 darkGreen  = vec3(0.08, 0.32, 0.10);
+// Seeded per world: grass colour where conditions are poor, and where they are best
+uniform vec3 u_GrassDry;
+uniform vec3 u_GrassLush;
 
 void main() {
     vec4 texColour = texture(grassTexture, TexCoords);
@@ -30,7 +30,7 @@ void main() {
     float biasedPhenotype = fColourPhenotype;
     
     // Mix equation colour blending
-    vec3 proceduralGrassColour = mix(lightBrown, darkGreen, biasedPhenotype);
+        vec3 proceduralGrassColour = mix(u_GrassDry, u_GrassLush, biasedPhenotype);
     
     vec3 finalLight = clamp(3.0 * ambientLight, 0.0, 1.5);
     vec3 baseGrassColour = proceduralGrassColour * finalLight;

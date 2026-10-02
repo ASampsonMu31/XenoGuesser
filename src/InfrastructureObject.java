@@ -33,15 +33,17 @@ public class InfrastructureObject {
         final int[] indices;
         final Material material;
         final boolean doubleSided;
-        final boolean paint;
+                final boolean paint;
+        final boolean textured;
         Model model;
 
-        public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint) {
+        public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured) {
             this.vertices = vertices;
             this.indices = indices;
             this.material = material;
             this.doubleSided = doubleSided;
             this.paint = paint;
+            this.textured = textured;
         }
     }
 
@@ -101,12 +103,13 @@ public class InfrastructureObject {
         return batch;
     }
 
-    /** Uploads the batch meshes; must run on the GL thread. */
-    public void initializeBatch(GL3 gl, Shader shader, Renderer renderer, Light[] lights, Camera camera) {
+        /** Uploads the batch meshes; must run on the GL thread. Textured parts use the texturing shader. */
+    public void initializeBatch(GL3 gl, Shader shader, Shader texturedShader, Renderer renderer, Light[] lights, Camera camera) {
         for (BatchPart part : batchParts) {
             if (part.model == null && part.indices.length > 0) {
                 Mesh mesh = new Mesh(gl, part.vertices, part.indices);
-                part.model = new Model("infrastructure_batch", mesh, new Matrix4(1), shader, part.material, renderer, lights, camera);
+                part.model = new Model("infrastructure_batch", mesh, new Matrix4(1), part.textured ? texturedShader : shader,
+                        part.material, renderer, lights, camera);
             }
         }
     }

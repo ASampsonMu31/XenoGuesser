@@ -13,7 +13,8 @@ import com.xenoguesser.math.Vector3;
  * highways routed across the terrain between neighbouring settlements,
  * street grids filling each settlement's urban area, and winding country
  * lanes that always run from one road to another. A final pass joins any
- * loose road end to a nearby road, or closes it with a cul-de-sac.
+ * loose road end to a nearby road or runs it down to the shore; any end left
+ * over becomes a dead end, which InfrastructureManager finishes with a house.
  */
 public class RoadNetworkBuilder {
     private static final float ROAD_STEP = 70.0f;
@@ -46,11 +47,14 @@ public class RoadNetworkBuilder {
     private static final float LANE_WANDER = 0.6f;
     private static final float LANE_JOIN_DISTANCE = ROAD_STEP * 0.9f;
 
-    // Loose ends: join to a road ahead if one is close, otherwise build a turning circle
+    // Loose ends: join to a road ahead if one is close, run on to the shore if the sea is
+    // close, otherwise leave a dead end for a house
     private static final float STREET_JOIN_DISTANCE = 240.0f;
     private static final float HIGHWAY_JOIN_DISTANCE = 600.0f;
     private static final float JOIN_CONE_COS = 0.34f;
-    private static final float CUL_DE_SAC_RADIUS_FACTOR = 1.1f;
+    private static final float SHORE_SEARCH_DISTANCE = ROAD_STEP * 3.0f;
+    private static final float SHORE_SEARCH_STEP = 10.0f;
+    private static final float SHORE_STOP_BACK = 4.0f;
     // Highways may ride a short causeway across a dip below sea level rather than stopping
     private static final int MAX_CAUSEWAY_POINTS = 3;
 
@@ -70,7 +74,7 @@ public class RoadNetworkBuilder {
     private final boolean[] cellHasHighway;
     private final Map<Long, List<float[]>> highwayPointsByCell = new HashMap<>();
     private final List<RoadPath> roads = new ArrayList<>();
-    private final List<RoadPath.CulDeSac> culDeSacs = new ArrayList<>();
+    private final List<RoadPath.DeadEnd> deadEnds = new ArrayList<>();
 
     // Spatial index of finished roads: cell -> {path index, point index} of each segment start
     private final Map<Long, List<int[]>> segmentIndex = new HashMap<>();
@@ -91,13 +95,13 @@ public class RoadNetworkBuilder {
                               SettlementManager settlementManager, NationGenerationManager nationManager) {
         this.seed = seed;
         this.totalRegionWidth = totalRegionWidth;
-        this.halfRegion = totalRegionWidth * 0.5f;
+                this.halfRegion = totalRegionWidth * 0.5f + RegionalGenerationManager.GENERATION_MARGIN;
         this.seaLevelHeight = seaLevelHeight;
         this.terrainNoise = terrainNoise;
         this.settlementManager = settlementManager;
         this.nationManager = nationManager;
 
-        this.routingResolution = (int) Math.ceil(totalRegionWidth / ROUTING_CELL_SIZE);
+                this.routingResolution = (int) Math.ceil(halfRegion * 2.0f / ROUTING_CELL_SIZE);
         int cellCount = routingResolution * routingResolution;
         this.cellHeight = new float[cellCount];
         this.cellPassable = new boolean[cellCount];
@@ -138,13 +142,13 @@ public class RoadNetworkBuilder {
         buildLanes();
         int laneCount = roads.size() - highwayCount - streetCount;
         closeLooseEnds();
-        System.out.printf("[ROADS] %d highway, %d street and %d lane paths, %d cul-de-sacs generated in %d ms%n",
-                highwayCount, streetCount, laneCount, culDeSacs.size(), System.currentTimeMillis() - startTime);
+        System.out.printf("[ROADS] %d highway, %d street and %d lane paths, %d dead ends generated in %d ms%n",
+                highwayCount, streetCount, laneCount, deadEnds.size(), System.currentTimeMillis() - startTime);
         return roads;
     }
 
-    public List<RoadPath.CulDeSac> getCulDeSacs() {
-        return culDeSacs;
+    public List<RoadPath.DeadEnd> getDeadEnds() {
+        return deadEnds;
     }
 
     // ==========================================
@@ -516,21 +520,33 @@ public class RoadNetworkBuilder {
                 continue;
             }
 
-            int nationId = nationManager.getNationAtWorld(settlement.x, settlement.z, totalRegionWidth);
+                        int nationId = nationManager.getNationAtWorld(settlement.x, settlement.z, totalRegionWidth);
             float[] style = streetStyles.getOrDefault(nationId, new float[] { 450.0f, 1.2f, 30.0f });
-            float blockSize = style[0];
-            float blockAspect = style[1];
-            float wander = style[2];
+            // Each settlement has its own character within its nation's tendency: some are
+            // strict grids, some wind like old villages, with their own block size and how
+            // tightly their streets curve
+            float character = streetRand.nextFloat();
+            float wander;
+            if (character < 0.2f) {
+                wander = 0.0f;
+            } else if (character < 0.4f) {
+                wander = 60.0f + streetRand.nextFloat() * 60.0f;
+            } else {
+                wander = style[2] * (0.3f + streetRand.nextFloat() * 1.4f);
+            }
+            float wanderFrequency = 0.0006f + streetRand.nextFloat() * 0.0022f;
+            float blockSize = style[0] * (0.75f + streetRand.nextFloat() * 0.5f);
+            float blockAspect = style[1] * (0.85f + streetRand.nextFloat() * 0.3f);
 
-            layStreetFamily(settlement, extent, heading, blockSize, phaseA, wander, wanderNoise);
+            layStreetFamily(settlement, extent, heading, blockSize, phaseA, wander, wanderFrequency, wanderNoise);
             layStreetFamily(settlement, extent, heading + (float) Math.PI * 0.5f, blockSize * blockAspect,
-                    phaseB, wander, wanderNoise);
+                    phaseB, wander, wanderFrequency, wanderNoise);
         }
     }
 
     /** One set of parallel streets across the settlement, cut wherever it leaves the urban area or meets water. */
     private void layStreetFamily(SettlementManager.Settlement settlement, float extent, float heading,
-                                 float spacing, float phase, float wander, PerlinNoise wanderNoise) {
+                                                                  float spacing, float phase, float wander, float wanderFrequency, PerlinNoise wanderNoise) {
         float dirX = (float) Math.cos(heading);
         float dirZ = (float) Math.sin(heading);
         float sideX = -dirZ;
@@ -546,7 +562,7 @@ public class RoadNetworkBuilder {
 
             List<float[]> run = new ArrayList<>();
             for (float t = -extent; t <= extent + 0.001f; t += ROAD_STEP) {
-                float drift = wander * wanderNoise.eval(t * 0.0012f, noiseRow);
+                                float drift = wander * wanderNoise.eval(t * wanderFrequency, noiseRow);
                 float x = settlement.x + dirX * t + sideX * (offset + drift);
                 float z = settlement.z + dirZ * t + sideZ * (offset + drift);
 
@@ -728,7 +744,7 @@ public class RoadNetworkBuilder {
 
     /**
      * Every highway or street end that doesn't already meet another road is
-     * extended to a road just ahead of it, or finished with a turning circle.
+     * extended to a road just ahead of it or to the shore, or left as a dead end.
      */
     private void closeLooseEnds() {
         int pathCount = roads.size();
@@ -782,14 +798,30 @@ public class RoadNetworkBuilder {
             return;
         }
 
-        float radius = path.roadClass.width * CUL_DE_SAC_RADIUS_FACTOR;
-        float centreX = end.x + dirX * radius * 0.5f;
-        float centreZ = end.z + dirZ * radius * 0.5f;
-        if (TerrainMesh.getLayeredHeight(centreX, centreZ, terrainNoise) > seaLevelHeight + 0.5f) {
-            culDeSacs.add(new RoadPath.CulDeSac(centreX, centreZ, radius));
-        } else {
-            culDeSacs.add(new RoadPath.CulDeSac(end.x, end.z, radius));
+        // Heading for the sea? Run the road on to the water's edge
+        for (float d = SHORE_SEARCH_STEP; d <= SHORE_SEARCH_DISTANCE; d += SHORE_SEARCH_STEP) {
+            if (TerrainMesh.getLayeredHeight(end.x + dirX * d, end.z + dirZ * d, terrainNoise) > seaLevelHeight) {
+                continue;
+            }
+            float reachShore = d - SHORE_STOP_BACK;
+            List<Vector3> toShore = new ArrayList<>();
+            int steps = Math.max(1, (int) Math.ceil(reachShore / ROAD_STEP));
+            for (int step = 1; step <= steps && reachShore > 0; step++) {
+                float t = reachShore * step / steps;
+                toShore.add(groundPoint(end.x + dirX * t, end.z + dirZ * t));
+            }
+            if (atStart) {
+                for (Vector3 point : toShore) {
+                    points.add(0, point);
+                }
+            } else {
+                points.addAll(toShore);
+            }
+            indexPath(pathIndex);
+            return;
         }
+
+        deadEnds.add(new RoadPath.DeadEnd(pathIndex, atStart));
     }
 
     // ==========================================

@@ -45,12 +45,15 @@ public class SettlementManager {
         }
     }
 
-    private static final int SETTLEMENT_COUNT = 120;
+        // A few cities, many towns and a long tail of small villages
+    private static final int SETTLEMENT_COUNT = 340;
+    private static final float SMALLEST_RADIUS = 190.0f;
+    private static final int PLACEMENT_DRAWS = 600;
     private static final int CANDIDATE_SAMPLES = 14000;
     private static final float LARGEST_RADIUS = 3200.0f;
-    private static final float RADIUS_RANK_FALLOFF = 0.55f;
+        private static final float RADIUS_RANK_FALLOFF = 0.5f;
     // Settlements keep this many (summed) sigmas apart so they read as separate places
-    private static final float SPACING_FACTOR = 2.4f;
+    private static final float SPACING_FACTOR = 2.1f;
     private static final float SITE_PREFERENCE_POWER = 2.0f;
     private static final float INFLUENCE_CUTOFF_SIGMAS = 3.5f;
 
@@ -83,7 +86,9 @@ public class SettlementManager {
 
     public SettlementManager(long seed, float totalRegionWidth, float physicalChunkSize, float seaLevelHeight,
                              PerlinNoise terrainNoise, RegionalGenerationManager regionalManager) {
-        this.halfRegion = totalRegionWidth * 0.5f;
+                // Grids and sites extend past the playable edge so towns carry on beyond it
+        this.halfRegion = totalRegionWidth * 0.5f + RegionalGenerationManager.GENERATION_MARGIN;
+        totalRegionWidth = halfRegion * 2.0f;
         this.physicalChunkSize = physicalChunkSize;
         this.seaLevelHeight = seaLevelHeight;
         this.terrainNoise = terrainNoise;
@@ -184,46 +189,44 @@ public class SettlementManager {
             }
         }
 
+        // Sites are drawn at random in proportion to how appealing they are, rejecting any too
+        // close to an existing settlement; scanning every candidate for every settlement
+        // grew too slow once there were hundreds of villages
+        float[] cumulative = new float[candidates.size()];
+        float running = 0.0f;
+        for (int c = 0; c < candidates.size(); c++) {
+            running += candidates.get(c)[2];
+            cumulative[c] = running;
+        }
         List<Settlement> placed = new ArrayList<>();
         boolean[] used = new boolean[candidates.size()];
-        float[] weights = new float[candidates.size()];
+        if (candidates.isEmpty()) {
+            return placed;
+        }
 
         for (int rank = 0; rank < SETTLEMENT_COUNT; rank++) {
-            float radius = LARGEST_RADIUS * (float) Math.pow(rank + 1, -RADIUS_RANK_FALLOFF);
+            float radius = Math.max(SMALLEST_RADIUS, LARGEST_RADIUS * (float) Math.pow(rank + 1, -RADIUS_RANK_FALLOFF));
             float intensity = 0.55f + 0.45f * (float) Math.pow(rank + 1, -0.35);
 
-            float totalWeight = 0.0f;
-            for (int c = 0; c < candidates.size(); c++) {
-                weights[c] = 0.0f;
-                if (used[c]) {
-                    continue;
-                }
-                float[] candidate = candidates.get(c);
-                if (isClearOfSettlements(candidate[0], candidate[1], radius, placed)) {
-                    weights[c] = candidate[2];
-                    totalWeight += candidate[2];
-                }
-            }
-            if (totalWeight <= 0.0f) {
-                break;
-            }
-
-            float pick = rand.nextFloat() * totalWeight;
             int chosen = -1;
-            for (int c = 0; c < candidates.size(); c++) {
-                if (weights[c] <= 0.0f) {
-                    continue;
+            for (int draw = 0; draw < PLACEMENT_DRAWS && chosen < 0; draw++) {
+                float pick = rand.nextFloat() * running;
+                int lo = 0, hi = cumulative.length - 1;
+                while (lo < hi) {
+                    int mid = (lo + hi) >>> 1;
+                    if (cumulative[mid] < pick) lo = mid + 1; else hi = mid;
                 }
-                chosen = c;
-                pick -= weights[c];
-                if (pick <= 0.0f) {
-                    break;
+                float[] candidate = candidates.get(lo);
+                if (!used[lo] && isClearOfSettlements(candidate[0], candidate[1], radius, placed)) {
+                    chosen = lo;
                 }
             }
-
+            if (chosen < 0) {
+                continue;
+            }
             used[chosen] = true;
             float[] site = candidates.get(chosen);
-            placed.add(new Settlement(site[0], site[1], rank, radius, intensity));
+            placed.add(new Settlement(site[0], site[1], placed.size(), radius, intensity));
         }
         return placed;
     }

@@ -24,10 +24,15 @@ uniform float time;
 uniform vec3 ambientLight;   
 uniform mat4 skyRotation;
 
+// Seeded per world: colour seen through shallow water, and of open deep ocean
+uniform vec3 u_ShallowTint;
+uniform vec3 u_DeepOceanColour;
+
 const float SHALLOW_OPACITY_FLOOR = 0.09;  
 const float EDGE_FADE_DISTANCE    = 0.5;   
 const float DEPTH_FALLOFF_SPEED   = 0.20;  
 const float RIPPLE_SPEED          = 0.04;
+const float RIPPLE_STRENGTH       = 9.0;
 const float PI                    = 3.14159265359;
 
 float nearPlane = 10.0;
@@ -70,8 +75,8 @@ void main() {
     vec3 combinedTex = (tex1 * tex2) + (tex3 * tex4);
     vec3 waterSurfaceTex = clamp(combinedTex * 1.5, 0.0, 1.0);
 
-    vec3 shallowColourTint = vec3(0.0, 0.50, 0.60);
-    vec3 deepOceanColour = vec3(0.01, 0.10, 0.30);  
+    vec3 shallowColourTint = u_ShallowTint;
+    vec3 deepOceanColour = u_DeepOceanColour;
     
     float factor = transparencyFactor.g;
     vec3 shallowWaterBlend = mix(shallowColourTint, waterSurfaceTex, factor);
@@ -81,12 +86,20 @@ void main() {
     float baseOpacity = mix(SHALLOW_OPACITY_FLOOR, 1.0, 1.0 - factor);
     float opacity = baseOpacity * edgeFade;
 
-    vec3 normal = vec3(0.0, 1.0, 0.0); 
+        // Ripple normals: the slope of the blended surface pattern, worked out in world space
+    // from screen-space derivatives, so the sun's reflection breaks up across the ripples
+    float rippleHeight = dot(combinedTex, vec3(0.333));
+    vec2 heightDerivs = vec2(dFdx(rippleHeight), dFdy(rippleHeight));
+    mat2 worldDerivs = mat2(dFdx(aPos.xz), dFdy(aPos.xz));
+    float det = determinant(worldDerivs);
+    vec2 slope = abs(det) > 1e-6 ? inverse(transpose(worldDerivs)) * heightDerivs : vec2(0.0);
+    vec3 normal = normalize(vec3(-slope.x * RIPPLE_STRENGTH, 1.0, -slope.y * RIPPLE_STRENGTH)); 
     vec3 lightDir = normalize(sunPos - aPos);
     vec3 halfwayDir = normalize(lightDir + viewDir);
     
-    float specFactor = pow(max(dot(normal, halfwayDir), 0.0), matShininess);
-    vec3 specularHighlight = lightSpecular * matSpecular * specFactor;
+    float facing = max(dot(normal, halfwayDir), 0.0);
+    // A tight, bright core plus a broader glitter that the ripples scatter across the water
+    vec3 specularHighlight = lightSpecular * (matSpecular * pow(facing, matShininess) + 0.9 * pow(facing, 160.0));
 
     vec3 baseWaterColourWithSpecular = waterBaseColour + specularHighlight;
 

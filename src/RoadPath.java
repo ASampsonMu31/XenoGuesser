@@ -26,16 +26,17 @@ public class RoadPath {
         this.roadClass = roadClass;
     }
 
-    /** A turning circle at the closed end of a road in a built-up area. */
-    public static final class CulDeSac {
-        public final float x;
-        public final float z;
-        public final float radius;
+    /**
+     * A road end that meets neither another road nor the sea. InfrastructureManager
+     * finishes every one of these with a house facing back down the road.
+     */
+    public static final class DeadEnd {
+        public final int pathIndex;
+        public final boolean atStart;
 
-        public CulDeSac(float x, float z, float radius) {
-            this.x = x;
-            this.z = z;
-            this.radius = radius;
+        public DeadEnd(int pathIndex, boolean atStart) {
+            this.pathIndex = pathIndex;
+            this.atStart = atStart;
         }
     }
 }

@@ -31,6 +31,11 @@ uniform vec2 scale;
 uniform vec3 ambientLight;
 uniform mat4 skyRotation;
 
+// Regional soil colour (terrain only): a whole-region map of colour ratios, stored halved
+uniform sampler2D soilRegionMap;
+uniform float regionWidth;
+uniform float useSoilRegions;
+
 const float PI = 3.14159265359;
 
 void main() {
@@ -39,7 +44,11 @@ void main() {
     // Sample the base texture color
     vec3 sampledColor = texture(diffuse_texture, scaledUV).rgb;
 
-    vec3 texColor = sampledColor;
+        vec3 texColor = sampledColor;
+    if (useSoilRegions > 0.5) {
+        vec2 regionUV = aPos.xz / regionWidth + 0.5;
+        texColor *= texture(soilRegionMap, regionUV).rgb * 2.0;
+    }
 
     // Multiplicative blending for ambient lighting
     vec3 ambient = ambientLight * material.ambient * texColor;
