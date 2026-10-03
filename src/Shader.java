@@ -12,6 +12,8 @@ public class Shader {
   private static final boolean DISPLAY_SHADERS = false;
   
   private int ID;
+  // glGetUniformLocation is a slow driver call, and set* runs thousands of times a frame
+  private final java.util.Map<String, Integer> uniformLocations = new java.util.HashMap<>();
   private String vertexShaderSource;
   private String fragmentShaderSource;
   
@@ -32,49 +34,58 @@ public class Shader {
     return ID;
   }
   
+  private int location(GL3 gl, String name) {
+    Integer cached = uniformLocations.get(name);
+    if (cached == null) {
+      cached = gl.glGetUniformLocation(ID, name);
+      uniformLocations.put(name, cached);
+    }
+    return cached;
+  }
+
   public void use(GL3 gl) {
     gl.glUseProgram(ID);
   }
   
   public void setInt(GL3 gl, String name, int value) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform1i(location, value);
   }
   
   public void setFloat(GL3 gl, String name, float value) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform1f(location, value);
   }
   
   public void setFloat(GL3 gl, String name, float f1, float f2) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform2f(location, f1, f2);
   }
   
   public void setFloat(GL3 gl, String name, float f1, float f2, float f3) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform3f(location, f1, f2, f3);
   }
   
   public void setFloat(GL3 gl, String name, float f1, float f2, float f3, float f4) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform4f(location, f1, f2, f3, f4);
   }
   
   public void setFloatArray(GL3 gl, String name, float[] f) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniformMatrix4fv(location, 1, false, f, 0);
   }
   
   /* I declare that the modifications here are my own work based on setVec3 */
   public void setVec2(GL3 gl, String name, Vector2 v) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform2f(location, v.x, v.y);
   }
   /* Modified by Alexander Sampson, asampson1@sheffield.ac.uk */
 
   public void setVec3(GL3 gl, String name, Vector3 v) {
-    int location = gl.glGetUniformLocation(ID, name);
+    int location = location(gl, name);
     gl.glUniform3f(location, v.x, v.y, v.z);
   }
   

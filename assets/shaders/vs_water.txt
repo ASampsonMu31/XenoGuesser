@@ -1,0 +1,117 @@
+#version 330 core
+
+// The water surface: a camera-centred grid, densest under the viewer, displaced by
+// Gerstner waves whose size comes from the wave map (nothing on small lakes, rolling
+// swell on the open ocean)
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 texCoord;
+
+out vec3 aPos;
+out vec3 aNormal;
+out vec2 aTexCoord;
+out float PlanarDepth;
+out float vCrest;
+out float vWaveStrength;
+
+uniform mat4 model;
+uniform mat4 viewProjection;
+uniform vec3 viewPos;
+uniform float time;
+
+// Red: how big the waves are here; green: distance to the nearest shore in world units
+uniform sampler2D waveMap;
+uniform vec2 waveMapOrigin;
+uniform float waveMapWidth;
+uniform float waveMapTexel;
+
+// World units: the viewer's eyes are about 20 above the ground
+const float GRAVITY = 140.0;
+const float SWELL_HEIGHT = 7.0;
+const float CHOP_HEIGHT = 2.2;
+const int WAVE_COUNT = 6;
+
+// Wavelength, share of its set's height, set (0 swell, 1 chop), how much its crests wander
+const vec4 WAVES[WAVE_COUNT] = vec4[](
+    vec4(620.0, 1.00, 0.0, 1.2),
+    vec4(410.0, 0.60, 0.0, 2.0),
+    vec4(150.0, 1.00, 1.0, 2.5),
+    vec4(108.0, 0.70, 1.0, 3.5),
+    vec4( 84.0, 0.55, 1.0, 4.5),
+    vec4(128.0, 0.60, 1.0, 3.0)
+);
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+
+vec2 sampleMap(vec2 worldXZ) {
+    return textureLod(waveMap, clamp((worldXZ - waveMapOrigin) / waveMapWidth, 0.0, 1.0), 0.0).rg;
+}
+
+void main() {
+    vec3 world = vec3(model * vec4(position, 1.0));
+    vec2 base = world.xz;
+
+    vec2 map = sampleMap(base);
+    float strength = map.r;
+    float shoreDistance = map.g;
+
+    // Waves travel down the slope of the distance to shore, so their crests run along the
+    // coast and they always roll in towards land
+    float h = waveMapTexel;
+    vec2 slope = vec2(sampleMap(base + vec2(h, 0.0)).g - sampleMap(base - vec2(h, 0.0)).g,
+                      sampleMap(base + vec2(0.0, h)).g - sampleMap(base - vec2(0.0, h)).g) / (2.0 * h);
+    float slopeLength = length(slope);
+    vec2 dir = slopeLength > 1e-4 ? -slope / slopeLength : vec2(1.0, 0.0);
+    // Where waves from two coasts meet the distance has no clear slope; they die away there
+    float coherence = smoothstep(0.15, 0.55, slopeLength);
+
+    // Small waves alias between the sparse far vertices, so they fade out with distance
+    float distanceToEye = length(base - viewPos.xz);
+    float chopFade = 1.0 - smoothstep(500.0, 1300.0, distanceToEye);
+    float swellHeight = SWELL_HEIGHT * smoothstep(0.55, 1.0, strength) * coherence;
+    float chopHeight = CHOP_HEIGHT * smoothstep(0.0, 0.45, strength) * chopFade * mix(0.5, 1.0, coherence);
+
+    vec3 displaced = world;
+    vec3 n = vec3(0.0, 1.0, 0.0);
+    float height = 0.0;
+    float maxHeight = 0.0001;
+    for (int i = 0; i < WAVE_COUNT; i++) {
+        vec4 wave = WAVES[i];
+        float amplitude = wave.y * (wave.z < 0.5 ? swellHeight : chopHeight);
+        float k = 6.2831853 / wave.x;
+        float omega = sqrt(GRAVITY * k);
+        // Steepness shared out so the crests sharpen without folding over
+        float q = amplitude > 0.0 ? min(1.0, 0.55 / (k * amplitude * float(WAVE_COUNT))) : 0.0;
+        // Crests wander gently so they aren't perfectly parallel to the shore
+        // (Not right around the viewer, so a swimmer's bobbing can follow the waves exactly:
+        // see RegionalGenerationManager.waveSurfaceAt)
+        float wander = wave.w * valueNoise(base / (900.0 + 230.0 * float(i)) + float(i) * 13.1)
+                * smoothstep(40.0, 260.0, distanceToEye);
+        float phase = -k * shoreDistance + wander - omega * time + float(i) * 1.7;
+        float c = cos(phase), s = sin(phase);
+        displaced.xz += q * amplitude * dir * c;
+        displaced.y += amplitude * s;
+        n.x -= dir.x * k * amplitude * c;
+        n.z -= dir.y * k * amplitude * c;
+        n.y -= q * k * amplitude * s;
+        height += amplitude * s;
+        maxHeight += amplitude;
+    }
+
+    gl_Position = viewProjection * vec4(displaced, 1.0);
+    PlanarDepth = gl_Position.w;
+    aPos = displaced;
+    aNormal = normalize(n);
+    aTexCoord = texCoord;
+    vCrest = height / maxHeight * 0.5 + 0.5;
+    vWaveStrength = strength;
+}

@@ -4,6 +4,8 @@ in vec3 aPos;
 in vec3 aNormal;
 in vec2 aTexCoord;
 in float PlanarDepth;
+in float vCrest;
+in float vWaveStrength;
 
 out vec4 fragColour;
 
@@ -24,14 +26,32 @@ uniform float time;
 uniform vec3 ambientLight;   
 uniform mat4 skyRotation;
 
+// Seeded per world: colour seen through shallow water, and of open deep ocean
+uniform vec3 u_ShallowTint;
+uniform vec3 u_DeepOceanColour;
+
 const float SHALLOW_OPACITY_FLOOR = 0.09;  
 const float EDGE_FADE_DISTANCE    = 0.5;   
 const float DEPTH_FALLOFF_SPEED   = 0.20;  
-const float RIPPLE_SPEED          = 0.04;
+const float RIPPLE_SPEED          = 0.11;
+const float RIPPLE_STRENGTH       = 16.0;
+const float FINE_RIPPLE_SCALE     = 0.034;
+const float FINE_RIPPLE_SPEED     = 0.23;
+const float SKY_REFLECTION        = 0.5;
 const float PI                    = 3.14159265359;
 
-float nearPlane = 10.0;
-float farPlane = 2500.0;
+// Must match the scene projection, which pulls its near plane in while swimming
+uniform float nearPlane;
+uniform float farPlane;
+
+vec3 skyAlong(vec3 worldDir) {
+    vec3 localSkyDir = transpose(mat3(skyRotation)) * worldDir;
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) {
+        theta += 2.0 * PI;
+    }
+    return texture(skyTexture, vec2(theta / (2.0 * PI), asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5)).rgb;
+}
 
 float linearizeDepth(float rawDepth) {
     float zNDC = rawDepth * 2.0 - 1.0; 
@@ -67,11 +87,16 @@ void main() {
     vec3 tex3 = texture(diffuse_texture, worldUV3).rgb;
     vec3 tex4 = texture(diffuse_texture, worldUV4).rgb;
 
-    vec3 combinedTex = (tex1 * tex2) + (tex3 * tex4);
+        vec3 combinedTex = (tex1 * tex2) + (tex3 * tex4);
+
+    // A finer, quicker set of ripples drifting across the wind
+    vec3 fine1 = texture(diffuse_texture, aPos.xz * FINE_RIPPLE_SCALE + vec2(time * FINE_RIPPLE_SPEED, time * 0.07)).rgb;
+    vec3 fine2 = texture(diffuse_texture, aPos.xz * FINE_RIPPLE_SCALE * 1.37 + vec2(-time * 0.09, -time * FINE_RIPPLE_SPEED)).rgb;
+    float fineRipples = dot(fine1 * fine2, vec3(0.333));
     vec3 waterSurfaceTex = clamp(combinedTex * 1.5, 0.0, 1.0);
 
-    vec3 shallowColourTint = vec3(0.0, 0.50, 0.60);
-    vec3 deepOceanColour = vec3(0.01, 0.10, 0.30);  
+    vec3 shallowColourTint = u_ShallowTint;
+    vec3 deepOceanColour = u_DeepOceanColour;
     
     float factor = transparencyFactor.g;
     vec3 shallowWaterBlend = mix(shallowColourTint, waterSurfaceTex, factor);
@@ -81,14 +106,47 @@ void main() {
     float baseOpacity = mix(SHALLOW_OPACITY_FLOOR, 1.0, 1.0 - factor);
     float opacity = baseOpacity * edgeFade;
 
-    vec3 normal = vec3(0.0, 1.0, 0.0); 
+        // Ripple normals: the slope of the blended surface pattern, worked out in world space
+    // from screen-space derivatives, so the sun's reflection breaks up across the ripples
+        float rippleHeight = dot(combinedTex, vec3(0.333)) + 0.6 * fineRipples;
+    vec2 heightDerivs = vec2(dFdx(rippleHeight), dFdy(rippleHeight));
+    mat2 worldDerivs = mat2(dFdx(aPos.xz), dFdy(aPos.xz));
+    float det = determinant(worldDerivs);
+    vec2 slope = abs(det) > 1e-6 ? inverse(transpose(worldDerivs)) * heightDerivs : vec2(0.0);
+        // Ripples fade into the distance, where they would only shimmer, and ride on the waves
+    float rippleFade = 1.0 - smoothstep(60.0, 480.0, length(viewPos - aPos));
+    vec2 rippleTilt = -slope * RIPPLE_STRENGTH * rippleFade;
+    vec3 waveNormal = normalize(aNormal);
+    vec3 normal = normalize(waveNormal + vec3(rippleTilt.x, 0.0, rippleTilt.y)); 
     vec3 lightDir = normalize(sunPos - aPos);
     vec3 halfwayDir = normalize(lightDir + viewDir);
     
-    float specFactor = pow(max(dot(normal, halfwayDir), 0.0), matShininess);
-    vec3 specularHighlight = lightSpecular * matSpecular * specFactor;
+    float facing = max(dot(normal, halfwayDir), 0.0);
+    // A tight, bright core plus a broader glitter that the ripples scatter across the water
+    vec3 specularHighlight = lightSpecular * (matSpecular * pow(facing, matShininess) + 0.9 * pow(facing, 160.0));
 
-    vec3 baseWaterColourWithSpecular = waterBaseColour + specularHighlight;
+        // Wave faces turned to the sun are lighter, those turned away darker
+    float waveLight = dot(waveNormal, lightDir);
+    waterBaseColour *= 0.82 + 0.3 * waveLight;
+
+    // The sky reflected in the surface, strongest at glancing angles; this is what makes the
+    // ripples visible everywhere, not just in the sun's glitter
+    vec3 reflected = reflect(-viewDir, normal);
+    reflected.y = abs(reflected.y);
+    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(normal, viewDir), 0.0), 5.0);
+    waterBaseColour = mix(waterBaseColour, skyAlong(reflected), clamp(fresnel * SKY_REFLECTION, 0.0, SKY_REFLECTION));
+
+    // Foam: whitecaps on the crests of big waves, and a lapping line along the shore
+    vec3 foamColour = mix(vec3(0.92), u_ShallowTint, 0.15);
+    float foamPattern = smoothstep(0.35, 0.75, dot(tex1 * tex3, vec3(0.333)) * 2.2 + fineRipples * 0.6);
+    float whitecaps = smoothstep(0.78, 0.97, vCrest) * smoothstep(0.4, 0.9, vWaveStrength);
+    float shoreBand = 1.0 - smoothstep(0.6, 4.5, totalThickness);
+    float lapping = 0.5 + 0.5 * sin(totalThickness * 1.6 - time * 1.8 + fineRipples * 5.0);
+    float foam = clamp(whitecaps * foamPattern + shoreBand * lapping * foamPattern * 0.8, 0.0, 1.0);
+    waterBaseColour = mix(waterBaseColour, foamColour, foam);
+    opacity = max(opacity, foam * edgeFade);
+
+    vec3 baseWaterColourWithSpecular = waterBaseColour + specularHighlight * (1.0 - foam);
 
     // --- PERFECT SKY-SPHERE INVERSION TRANSFORM ---
     float radialDistance = length(viewPos - aPos);

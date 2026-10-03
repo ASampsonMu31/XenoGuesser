@@ -12,9 +12,9 @@ uniform sampler2D diffuse_texture;
 uniform vec3 viewPos;
 uniform vec3 ambientLight;
 
-// Uniforms for regional leaf colors
-uniform vec3 u_OuterLeafColor;
-uniform vec3 u_InnerLeafColor;
+// Regional leaf colours: the greyscale leaf texture maps black to dark and white to light
+uniform vec3 u_LeafDarkColor;
+uniform vec3 u_LeafLightColor;
 
 // --- NEW UNIFORMS FOR FOG ---
 uniform sampler2D skyTexture; 
@@ -31,13 +31,8 @@ void main() {
         discard;
     }
 
-    // 3. Color Replacement using Channel Masking
-    vec3 finalLeafColor = vec3(0.0);
-    finalLeafColor += texColor.r * u_OuterLeafColor;
-    finalLeafColor += texColor.b * u_InnerLeafColor;
-    
-    float maskSum = clamp(texColor.r + texColor.b, 0.0, 1.0);
-    finalLeafColor += (1.0 - maskSum) * texColor.rgb;
+    // 3. Continuous colour mapping of the procedural greyscale leaf
+    vec3 finalLeafColor = mix(u_LeafDarkColor, u_LeafLightColor, texColor.r);
 
     // 4. Apply Lighting to your newly calculated color
     vec3 norm = normalize(aNormal);

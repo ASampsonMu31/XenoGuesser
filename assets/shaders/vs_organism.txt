@@ -1,0 +1,27 @@
+#version 330 core
+
+// Organisms: each vertex is moved by the world matrix of the body part (bone) it belongs to
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 texCoord;
+layout (location = 3) in float boneIndex;
+layout (location = 4) in float partKind;
+
+out vec3 aPos;
+out vec3 aNormal;
+out vec2 vUV;
+flat out int vPart;
+
+uniform mat4 bones[48];
+uniform mat4 viewProjection;
+
+void main() {
+    mat4 bone = bones[int(boneIndex + 0.5)];
+    vec4 world = bone * vec4(position, 1.0);
+    aPos = world.xyz;
+    aNormal = normalize(mat3(bone) * normal);
+    vUV = texCoord;
+    vPart = int(partKind + 0.5);
+    gl_Position = viewProjection * world;
+}

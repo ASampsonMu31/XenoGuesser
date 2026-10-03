@@ -22,6 +22,8 @@ import java.awt.AlphaComposite;
 import java.awt.geom.Point2D;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.MouseWheelEvent;
+import java.awt.geom.AffineTransform;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.RenderingHints;
@@ -31,6 +33,7 @@ import java.awt.Font;
 import java.awt.FontMetrics;
 import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.Shape;
 import java.util.List;
 import java.util.ArrayList;
 
@@ -51,8 +54,20 @@ public class MapPanel extends JPanel {
     }
 
     private BufferedImage mapImage;
-    private BufferedImage heatmapOverlay; 
-    private boolean showHeatmap = false;   
+    // Fully composed map shown in place of the plain map while an overlay is active
+    private volatile BufferedImage overlayImage;
+    // Optional higher-resolution versions used once the map is zoomed in
+    private volatile BufferedImage overlayDetail;
+    private volatile BufferedImage baseMapDetail;
+
+    // Scroll-wheel zoom of the enlarged map: magnification and the visible centre in 0..1 map space
+    private static final float MAX_ZOOM = 8.0f;
+    private static final float ZOOM_STEP = 1.25f;
+    private static final float DETAIL_SWITCH_ZOOM = 1.3f;
+    private float zoom = 1.0f;
+    private float viewCentreU = 0.5f;
+    private float viewCentreV = 0.5f;
+private volatile boolean showHeatmap = false;   
     
     private static final int BORDER_SIZE = 10;       
     private static final int EXTRA_BOTTOM_SPACE = 55; 
@@ -131,7 +146,7 @@ public class MapPanel extends JPanel {
 
     private float physicalChunkSize;
 
-    private String heatmapName;
+    private volatile String heatmapName;
 
     private XenoGuesser_GLEventListener listener;
 
@@ -234,12 +249,10 @@ public class MapPanel extends JPanel {
                 if (isHovered || isFullScreenReveal) {
                     int mapLeft = (visualMapX != 0) ? visualMapX : (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
                     int mapTop = (visualMapY != 0) ? visualMapY : BORDER_SIZE;
-                    float scaleFromCore = (float) currentMapSize / mapImage.getWidth();
-
                     for (int i = savedNotes.size() - 1; i >= 0; i--) {
                         MapNote note = savedNotes.get(i);
-                        int nx = mapLeft + (int) (note.coreX * scaleFromCore);
-                        int ny = mapTop + (int) (note.coreY * scaleFromCore);
+                        int nx = coreToScreenX(note.coreX, mapLeft);
+                        int ny = coreToScreenY(note.coreY, mapTop);
 
                         boolean hitTriangle = (clickX >= nx - 14 && clickX <= nx + 14 && clickY >= ny - 22 && clickY <= ny);
                         boolean hitTextbox = false;
@@ -348,8 +361,8 @@ public class MapPanel extends JPanel {
                         int localizedY = clickY - visualMapY;
                         float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
                         
-                        pinX = (int) (localizedX * scaleToCore);
-                        pinY = (int) (localizedY * scaleToCore);
+                        pinX = (int) screenToCoreX(clickX, visualMapX);
+                        pinY = (int) screenToCoreY(clickY, visualMapY);
                         hasPin = true;
                         repaint(); 
                     }
@@ -365,9 +378,8 @@ public class MapPanel extends JPanel {
                     int localizedY = clickY - visualMapY;
 
                     if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < currentMapSize) {
-                        float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
-                        float corePixelX = localizedX * scaleToCore;
-                        float corePixelY = localizedY * scaleToCore;
+                        float corePixelX = screenToCoreX(clickX, visualMapX);
+                        float corePixelY = screenToCoreY(clickY, visualMapY);
 
                         float worldX = (corePixelX / mapImage.getWidth()) * totalRegionWidth - halfRegion;
                         float worldZ = (corePixelY / mapImage.getHeight()) * totalRegionWidth - halfRegion;
@@ -404,12 +416,75 @@ public class MapPanel extends JPanel {
 
                 if (isHovered) {
                     isHovered = false;
-                    currentMapSize = 150; 
+                    currentMapSize = 150;
+                    resetZoom();
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
                 }
             }
         });
+
+        this.addMouseWheelListener(this::handleMouseWheel);
+    }
+
+    /** Zooms the enlarged map about the cursor, keeping the point under it fixed. */
+    private void handleMouseWheel(MouseWheelEvent e) {
+        if (!(isHovered || isFullScreenReveal)) {
+            return;
+        }
+        int mapLeft = visualMapX;
+        int mapTop = visualMapY;
+        float fractionX = (float) (e.getX() - mapLeft) / currentMapSize;
+        float fractionY = (float) (e.getY() - mapTop) / currentMapSize;
+        if (fractionX < 0.0f || fractionX > 1.0f || fractionY < 0.0f || fractionY > 1.0f) {
+            return;
+        }
+
+        float cursorU = viewLeft() + fractionX / zoom;
+        float cursorV = viewTop() + fractionY / zoom;
+        float newZoom = zoom * (float) Math.pow(ZOOM_STEP, -e.getPreciseWheelRotation());
+        zoom = Math.max(1.0f, Math.min(MAX_ZOOM, newZoom));
+
+        float halfView = 0.5f / zoom;
+        viewCentreU = clampCentre(cursorU - fractionX / zoom + halfView);
+        viewCentreV = clampCentre(cursorV - fractionY / zoom + halfView);
+        repaint();
+    }
+
+    private void resetZoom() {
+        zoom = 1.0f;
+        viewCentreU = 0.5f;
+        viewCentreV = 0.5f;
+    }
+
+    private float clampCentre(float centre) {
+        float halfView = 0.5f / zoom;
+        return Math.max(halfView, Math.min(1.0f - halfView, centre));
+    }
+
+    private float viewLeft() {
+        return viewCentreU - 0.5f / zoom;
+    }
+
+    private float viewTop() {
+        return viewCentreV - 0.5f / zoom;
+    }
+
+    // Conversions between core map pixels (the mapImage grid) and screen pixels, respecting the zoom
+    private int coreToScreenX(float coreX, int mapLeft) {
+        return mapLeft + Math.round((coreX / mapImage.getWidth() - viewLeft()) * zoom * currentMapSize);
+    }
+
+    private int coreToScreenY(float coreY, int mapTop) {
+        return mapTop + Math.round((coreY / mapImage.getHeight() - viewTop()) * zoom * currentMapSize);
+    }
+
+    private float screenToCoreX(int screenX, int mapLeft) {
+        return (viewLeft() + (float) (screenX - mapLeft) / (currentMapSize * zoom)) * mapImage.getWidth();
+    }
+
+    private float screenToCoreY(int screenY, int mapTop) {
+        return (viewTop() + (float) (screenY - mapTop) / (currentMapSize * zoom)) * mapImage.getHeight();
     }
 
     private void commitNote() {
@@ -443,9 +518,64 @@ public class MapPanel extends JPanel {
         MapPanel.this.repaint();
     }
 
+    /** Shows a chunk-resolution heatmap over the land, leaving the sea in its usual colour. */
     public void setHeatmapOverlay(BufferedImage heatmap) {
-        this.heatmapOverlay = heatmap;
+        this.overlayDetail = null;
+        this.overlayImage = composeChunkHeatmap(heatmap);
         repaint();
+    }
+
+    /**
+     * Shows an image covering the whole map region as-is, e.g. a bird's-eye road
+     * map, with an optional sharper version for when the map is zoomed in.
+     */
+    public void setFullMapOverlay(BufferedImage image, BufferedImage detail) {
+        this.overlayDetail = detail;
+        this.overlayImage = image;
+        repaint();
+    }
+
+    /** A sharper version of the plain map, used once the map is zoomed in. */
+    public void setBaseMapDetail(BufferedImage detail) {
+        this.baseMapDetail = detail;
+        repaint();
+    }
+
+    private BufferedImage composeChunkHeatmap(BufferedImage heatmap) {
+        int baseW = mapImage.getWidth();
+        int baseH = mapImage.getHeight();
+
+        BufferedImage combinedImage = new BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_RGB);
+        int oceanRGB = new Color(25, 80, 160).getRGB();
+
+        int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+        int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+
+        int overlayW = heatmap.getWidth();
+        int overlayH = heatmap.getHeight();
+
+        for (int y = 0; y < baseH; y++) {
+            float worldZ = ((float) y / baseH) * totalRegionWidth - halfRegion;
+            int cz = (int) Math.floor(worldZ / physicalChunkSize);
+            int hy = cz - minChunkZ;
+            hy = Math.max(0, Math.min(overlayH - 1, hy));
+
+            for (int x = 0; x < baseW; x++) {
+                int baseColour = mapImage.getRGB(x, y);
+
+                if (baseColour == oceanRGB) {
+                    combinedImage.setRGB(x, y, oceanRGB); 
+                } else {
+                    float worldX = ((float) x / baseW) * totalRegionWidth - halfRegion;
+                    int cx = (int) Math.floor(worldX / physicalChunkSize);
+                    int hx = cx - minChunkX;
+                    hx = Math.max(0, Math.min(overlayW - 1, hx));
+                    
+                    combinedImage.setRGB(x, y, heatmap.getRGB(hx, hy));
+                }
+            }
+        }
+        return combinedImage;
     }
 
     public void setHeatmapVisible(boolean visible) {
@@ -457,6 +587,8 @@ public class MapPanel extends JPanel {
         this.isGuessed = true;
         this.isFullScreenReveal = true;
         this.isHovered = false;
+        // The reveal starts from the whole map so both the guess and the answer are visible
+        resetZoom();
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN; 
         this.lineProgress = 0.0f;
         
@@ -681,42 +813,36 @@ public class MapPanel extends JPanel {
             g2d.setPaint(new LinearGradientPaint(new Point(startX + mapFrameW - BORDER_SIZE, startY), new Point(startX + mapFrameW + 2, startY), fractions, colours));
             g2d.fill(rightFrame);
 
-            if (showHeatmap && heatmapOverlay != null) {
-                int baseW = mapImage.getWidth();
-                int baseH = mapImage.getHeight();
-                
-                BufferedImage combinedImage = new BufferedImage(baseW, baseH, BufferedImage.TYPE_INT_RGB);
-                int oceanRGB = new Color(25, 80, 160).getRGB();
+            BufferedImage overlay = this.overlayImage;
+            boolean overlayShown = showHeatmap && overlay != null;
+            BufferedImage mapSource = overlayShown ? overlay : mapImage;
+            BufferedImage detailSource = overlayShown ? overlayDetail : baseMapDetail;
+            if (zoom >= DETAIL_SWITCH_ZOOM && detailSource != null) {
+                mapSource = detailSource;
+            }
+            Shape frameClip = g2d.getClip();
+            g2d.clipRect(mapX, mapY, currentMapSize, currentMapSize);
+            AffineTransform mapTransform = new AffineTransform();
+            mapTransform.translate(mapX - viewLeft() * zoom * currentMapSize, mapY - viewTop() * zoom * currentMapSize);
+            mapTransform.scale(zoom * currentMapSize / mapSource.getWidth(), zoom * currentMapSize / mapSource.getHeight());
+            g2d.drawImage(mapSource, mapTransform, null);
+            g2d.setClip(frameClip);
 
-                int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
-                int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
+            if (zoom > 1.01f) {
+                String zoomLabel = String.format("%.1fx", zoom);
+                g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
+                FontMetrics zoomFm = g2d.getFontMetrics();
+                int zoomW = zoomFm.stringWidth(zoomLabel) + 12;
+                int zoomH = zoomFm.getAscent() + 8;
+                int zoomX = mapX + currentMapSize - zoomW - 8;
+                int zoomY = mapY + currentMapSize - zoomH - 8;
+                g2d.setColor(new Color(25, 25, 27, 195));
+                g2d.fillRoundRect(zoomX, zoomY, zoomW, zoomH, 8, 8);
+                g2d.setColor(Color.WHITE);
+                g2d.drawString(zoomLabel, zoomX + 6, zoomY + zoomFm.getAscent() + 3);
+            }
 
-                int overlayW = heatmapOverlay.getWidth();
-                int overlayH = heatmapOverlay.getHeight();
-
-                for (int y = 0; y < baseH; y++) {
-                    float worldZ = ((float) y / baseH) * totalRegionWidth - halfRegion;
-                    int cz = (int) Math.floor(worldZ / physicalChunkSize);
-                    int hy = cz - minChunkZ;
-                    hy = Math.max(0, Math.min(overlayH - 1, hy));
-
-                    for (int x = 0; x < baseW; x++) {
-                        int baseColour = mapImage.getRGB(x, y);
-
-                        if (baseColour == oceanRGB) {
-                            combinedImage.setRGB(x, y, oceanRGB); 
-                        } else {
-                            float worldX = ((float) x / baseW) * totalRegionWidth - halfRegion;
-                            int cx = (int) Math.floor(worldX / physicalChunkSize);
-                            int hx = cx - minChunkX;
-                            hx = Math.max(0, Math.min(overlayW - 1, hx));
-                            
-                            combinedImage.setRGB(x, y, heatmapOverlay.getRGB(hx, hy));
-                        }
-                    }
-                }
-                g2d.drawImage(combinedImage, mapX, mapY, currentMapSize, currentMapSize, null);
-
+            if (showHeatmap) {
                 if (heatmapName != null && !heatmapName.isEmpty()) {
                     g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 13f));
                     FontMetrics labelFm = g2d.getFontMetrics();
@@ -740,9 +866,6 @@ public class MapPanel extends JPanel {
                     g2d.setColor(Color.WHITE);
                     g2d.drawString(heatmapName, boxX + padX, boxY + padY + textH - 1);
                 }
-
-            } else {
-                g2d.drawImage(mapImage, mapX, mapY, currentMapSize, currentMapSize, null);
             }
 
             if (isHovered && !isFullScreenReveal) {
@@ -765,11 +888,12 @@ public class MapPanel extends JPanel {
             }
 
             if (isHovered || isFullScreenReveal) {
-                float scaleFromCore = (float) currentMapSize / mapImage.getWidth();
-                
                 for (MapNote note : savedNotes) {
-                    int drawX = mapX + (int) (note.coreX * scaleFromCore);
-                    int drawY = mapY + (int) (note.coreY * scaleFromCore);
+                    int drawX = coreToScreenX(note.coreX, mapX);
+                    int drawY = coreToScreenY(note.coreY, mapY);
+                    if (drawX < mapX || drawX > mapX + currentMapSize || drawY < mapY || drawY > mapY + currentMapSize) {
+                        continue;
+                    }
 
                     Polygon tri = new Polygon();
                     tri.addPoint(drawX, drawY);             
@@ -850,12 +974,14 @@ public class MapPanel extends JPanel {
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
 
-                float scaleFromCore = (float) currentMapSize / mapImage.getWidth();
-                int displayPinX = mapX + (int) (pinX * scaleFromCore);
-                int displayPinY = mapY + (int) (pinY * scaleFromCore);
+                int displayPinX = coreToScreenX(pinX, mapX);
+                int displayPinY = coreToScreenY(pinY, mapY);
 
-                int displayGoalX = mapX + (int) (goalX * scaleFromCore);
-                int displayGoalY = mapY + (int) (goalY * scaleFromCore);
+                int displayGoalX = coreToScreenX(goalX, mapX);
+                int displayGoalY = coreToScreenY(goalY, mapY);
+
+                Shape markerClip = g2d.getClip();
+                g2d.clipRect(mapX, mapY, currentMapSize, currentMapSize);
 
                 if (isFullScreenReveal) {
                     int targetLineX = displayPinX + (int) ((displayGoalX - displayPinX) * lineProgress);
@@ -904,6 +1030,8 @@ public class MapPanel extends JPanel {
                     g2d.setColor(Color.BLACK);
                     g2d.draw(flagPoly);
                 }
+
+                g2d.setClip(markerClip);
 
                 if (isFullScreenReveal) {
                     boolean resultsReady = (currentPhase != RevealPhase.SHOW_PLAYER_PIN);
@@ -994,7 +1122,8 @@ public class MapPanel extends JPanel {
         this.isFullScreenReveal = false;
         this.isHovered = false;
         this.hasPin = false;
-        this.currentMapSize = 150; 
+        this.currentMapSize = 150;
+        resetZoom();
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         
