@@ -76,7 +76,12 @@ public class SettlementManager {
     private final float physicalChunkSize;
     private final float seaLevelHeight;
     private final PerlinNoise terrainNoise;
-    private final RegionalGenerationManager regionalManager;
+        private final RegionalGenerationManager regionalManager;
+    private final NationGenerationManager nations;
+    private final float playableWidth;
+    // A settlement's whole built-up area, out to this many sigmas, must lie in one nation
+    private static final float ONE_NATION_SIGMAS = 2.2f;
+
 
     private final float urbanCellSize;
     private final float[] urbanGrid;
@@ -84,8 +89,11 @@ public class SettlementManager {
     private final float[] habitabilityGrid;
     private final List<Settlement> settlements;
 
-    public SettlementManager(long seed, float totalRegionWidth, float physicalChunkSize, float seaLevelHeight,
-                             PerlinNoise terrainNoise, RegionalGenerationManager regionalManager) {
+        public SettlementManager(long seed, float totalRegionWidth, float physicalChunkSize, float seaLevelHeight,
+                             PerlinNoise terrainNoise, RegionalGenerationManager regionalManager,
+                             NationGenerationManager nations) {
+        this.nations = nations;
+        this.playableWidth = totalRegionWidth;
                 // Grids and sites extend past the playable edge so towns carry on beyond it
         this.halfRegion = totalRegionWidth * 0.5f + RegionalGenerationManager.GENERATION_MARGIN;
         totalRegionWidth = halfRegion * 2.0f;
@@ -217,7 +225,8 @@ public class SettlementManager {
                     if (cumulative[mid] < pick) lo = mid + 1; else hi = mid;
                 }
                 float[] candidate = candidates.get(lo);
-                if (!used[lo] && isClearOfSettlements(candidate[0], candidate[1], radius, placed)) {
+                                if (!used[lo] && isClearOfSettlements(candidate[0], candidate[1], radius, placed)
+                        && liesWithinOneNation(candidate[0], candidate[1], radius)) {
                     chosen = lo;
                 }
             }
@@ -229,6 +238,30 @@ public class SettlementManager {
             placed.add(new Settlement(site[0], site[1], placed.size(), radius, intensity));
         }
         return placed;
+    }
+
+        /**
+     * True if every bit of land the settlement would build on belongs to the nation at its
+     * centre, so cities never straddle a border. Sea inside the footprint doesn't matter.
+     */
+    private boolean liesWithinOneNation(float x, float z, float radius) {
+        int home = nations.getNationAtWorld(x, z, playableWidth);
+        float reach = radius * ONE_NATION_SIGMAS;
+        int rings = 4;
+        for (int ring = 1; ring <= rings; ring++) {
+            float r = reach * ring / rings;
+            int spokes = 8 * ring;
+            for (int s = 0; s < spokes; s++) {
+                double angle = (s + 0.5 * (ring & 1)) * Math.PI * 2.0 / spokes;
+                float px = x + r * (float) Math.cos(angle);
+                float pz = z + r * (float) Math.sin(angle);
+                if (nations.getNationAtWorld(px, pz, playableWidth) != home
+                        && TerrainMesh.getLayeredHeight(px, pz, terrainNoise) > seaLevelHeight) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private boolean isClearOfSettlements(float x, float z, float radius, List<Settlement> placed) {

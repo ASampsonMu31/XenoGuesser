@@ -221,16 +221,20 @@ public final class ProceduralTextures {
      * Only alpha matters to the shader, which colours blades itself; edges are soft so
      * the shader's fwidth() alpha sharpening can anti-alias them.
      */
+        public static final int GRASS_ATLAS_COLUMNS = 4;
+
     public static BufferedImage grassAtlas(long seed) {
         Random rng = WorldPalette.rng(seed, 0x6A55L);
-        int w = 512, h = 512, colW = w / 2;
+                // Four blade shapes side by side; each grass instance picks one
+        int columns = GRASS_ATLAS_COLUMNS;
+        int w = 1024, h = 512, colW = w / columns;
         float baseWidth = 0.10f + rng.nextFloat() * 0.12f;   // fraction of column width
         float taperPower = 1.0f + rng.nextFloat() * 1.2f;
         float bendAmount = 0.05f + rng.nextFloat() * 0.25f;
         float forkChance = rng.nextFloat() < 0.2f ? 0.5f : 0f;  // some worlds grow forked blades
         float[] alpha = new float[w * h];
 
-        for (int col = 0; col < 2; col++) {
+                for (int col = 0; col < columns; col++) {
             int blades = 1 + rng.nextInt(3);
             for (int b = 0; b < blades; b++) {
                 float rootX = 0.5f + (rng.nextFloat() - 0.5f) * 0.35f;

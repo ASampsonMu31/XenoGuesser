@@ -352,6 +352,147 @@ public class BuildingStyle {
         }
     }
 
+        /**
+     * One house form a world's builders use: footprint, proportions, height and roof.
+     * Sizes are relative to the nation's usual house, so a nation's bungalows and towers
+     * keep its own scale. A world has a handful; every nation builds mostly its own
+     * traditional form plus its own mix of these.
+     */
+    public static final class FormVariant {
+        public Footprint footprint;
+        public int sides;
+        public float taper;
+        public RoofType roofType;
+        public float sizeScale;
+        public float depthRatio;
+        public float heightScale;
+        public float roofPitch;
+        public float overhangScale;
+    }
+
+    /** How common each house form is in this nation: index 0 is its own tradition, then the world's forms. */
+    public float[] formWeights;
+
+    public static java.util.List<FormVariant> generateFormVariants(long seed) {
+        Random rand = new Random(seed + 6161L);
+        int count = 6 + rand.nextInt(4);
+        java.util.List<FormVariant> forms = new java.util.ArrayList<>();
+        for (int v = 0; v < count; v++) {
+            FormVariant form = new FormVariant();
+            // The first is always a plain pitched box, so every world has some familiar houses
+            float shapeRoll = v == 0 ? 0f : rand.nextFloat();
+            if (shapeRoll < 0.5f) {
+                form.footprint = Footprint.BOX;
+                form.sides = 4;
+            } else if (shapeRoll < 0.72f) {
+                form.footprint = Footprint.ROUND;
+                form.sides = 20;
+            } else {
+                form.footprint = Footprint.POLYGON;
+                form.sides = POLYGON_SIDES[rand.nextInt(POLYGON_SIDES.length)];
+            }
+            float slantRoll = rand.nextFloat();
+            form.taper = v == 0 || slantRoll < 0.55f ? 1.0f
+                    : (slantRoll < 0.88f ? 0.7f + rand.nextFloat() * 0.2f : 1.04f + rand.nextFloat() * 0.06f);
+            form.roofType = v == 0 ? RoofType.GABLE
+                    : form.footprint == Footprint.BOX ? BOX_ROOFS[rand.nextInt(BOX_ROOFS.length)]
+                    : CENTRED_ROOFS[rand.nextInt(CENTRED_ROOFS.length)];
+            form.sizeScale = 0.65f + rand.nextFloat() * 0.75f;
+            form.depthRatio = form.footprint == Footprint.BOX ? 0.5f + rand.nextFloat() * 0.45f : 0.85f + rand.nextFloat() * 0.15f;
+            // Bungalows, ordinary houses and the occasional tower
+            float heightRoll = rand.nextFloat();
+            form.heightScale = heightRoll < 0.3f ? 0.6f + rand.nextFloat() * 0.25f
+                    : heightRoll < 0.78f ? 0.9f + rand.nextFloat() * 0.4f
+                    : 1.7f + rand.nextFloat() * 1.0f;
+            form.roofPitch = rand.nextFloat();
+            form.overhangScale = 0.5f + rand.nextFloat();
+            forms.add(form);
+        }
+        return forms;
+    }
+
+    /**
+     * This nation's house in another form: the nation's colours, doors, windows and
+     * finishes on the form's footprint, proportions, height and roof.
+     */
+    public BuildingStyle withForm(FormVariant form, Random rand) {
+        float newWidth = Math.max(35.0f, Math.min(150.0f, width * form.sizeScale));
+        float newDepth = newWidth * form.depthRatio;
+        float newWallHeight = Math.max(18.0f, Math.min(220.0f, wallHeight * form.heightScale));
+        float pitch = form.roofPitch;
+        float newRoofHeight;
+        float newOverhang;
+        switch (form.roofType) {
+            case FLAT -> { newRoofHeight = 3.0f + pitch * 3.0f; newOverhang = 1.0f + form.overhangScale * 1.5f; }
+            case SPIRE -> { newRoofHeight = newDepth * (1.0f + pitch * 0.9f); newOverhang = 2.0f + form.overhangScale * 2.0f; }
+            case DOME -> { newRoofHeight = newDepth * (0.35f + pitch * 0.25f); newOverhang = 1.0f + form.overhangScale * 1.5f; }
+            default -> { newRoofHeight = newDepth * (0.3f + pitch * 0.5f); newOverhang = 3.0f + form.overhangScale * 4.0f; }
+        }
+        BuildingStyle style = new BuildingStyle(form.roofType, newWidth, newDepth, newWallHeight, newRoofHeight, newOverhang,
+                Math.min(newWidth * 0.2f, doorWidth), doorHeight, signChance, wallColour, roofColour, doorColour);
+        style.footprint = form.footprint;
+        style.sides = form.sides;
+        style.taper = form.taper;
+        style.wallFinish = wallFinish;
+        style.bond = bond;
+        style.courseHeight = courseHeight;
+        style.brickAspect = brickAspect;
+        style.mortarFraction = mortarFraction;
+        style.brickColourVariation = brickColourVariation;
+        style.mortarColour = mortarColour;
+        style.wallTileWidth = wallTileWidth;
+        style.wallTileHeight = wallTileHeight;
+        style.wallVariantWeights = wallVariantWeights;
+        style.formWeights = formWeights;
+        style.roofFinish = roofFinish;
+        style.roofTileSize = roofTileSize;
+
+        style.floors = Math.max(1, Math.round(newWallHeight / 26.0f));
+        style.windowWidth = windowWidth;
+        style.windowHeight = Math.min(newWallHeight / style.floors * 0.55f, windowHeight);
+        int maxFront = Math.max(1, (int) ((newWidth - style.doorWidth) / (windowWidth * 2.2f)));
+        style.windowsFront = Math.max(1, Math.min(windowsFront + rand.nextInt(2), maxFront));
+        int maxSide = Math.max(0, (int) (newDepth / (windowWidth * 2.2f)));
+        style.windowsSide = Math.min(Math.max(windowsSide, rand.nextInt(2)), maxSide);
+        style.frameSize = frameSize;
+        style.glassColour = glassColour;
+        style.frameColour = frameColour;
+
+        boolean canExtend = form.footprint == Footprint.BOX && form.taper == 1.0f;
+        style.extensionChance = canExtend ? Math.max(extensionChance, rand.nextFloat() < 0.5f ? 0.0f : 0.4f) : 0.0f;
+        style.extensionWidthRatio = extensionWidthRatio;
+        style.extensionDepthRatio = extensionDepthRatio;
+        style.extensionHeightRatio = extensionHeightRatio;
+        return style;
+    }
+
+    /**
+     * Gives every nation its mix of house forms. A nation mostly builds its own traditional
+     * house, but each world form's popularity spreads smoothly across the map, so a form
+     * common in one country tends to turn up next door as well.
+     */
+    public static void assignFormWeights(long seed, Map<Integer, BuildingStyle> styles,
+                                         java.util.List<FormVariant> forms, NationKinship kinship) {
+        Random rand = new Random(seed + 6262L);
+        float[][] popularity = new float[forms.size()][];
+        for (int f = 0; f < forms.size(); f++) {
+            popularity[f] = kinship.gradient(rand, 0.15f);
+        }
+        for (Map.Entry<Integer, BuildingStyle> entry : styles.entrySet()) {
+            int n = entry.getKey();
+            float[] weights = new float[forms.size() + 1];
+            weights[0] = 1.6f;
+            float total = weights[0];
+            for (int f = 0; f < forms.size(); f++) {
+                float p = popularity[f][n];
+                weights[f + 1] = 0.06f + 0.8f * p * p;
+                total += weights[f + 1];
+            }
+            for (int f = 0; f < weights.length; f++) weights[f] /= total;
+            entry.getValue().formWeights = weights;
+        }
+    }
+
     /**
      * Half-length of the hip roof ridge in unit roof space, chosen so the end
      * slopes run in as far as the side slopes.

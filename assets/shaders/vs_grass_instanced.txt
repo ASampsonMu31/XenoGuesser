@@ -8,7 +8,8 @@ layout (location = 4) in float aBladeHeight;     // Driven directly from CPU
 
 out vec2 TexCoords;
 out vec3 fWorldPos;
-out float fColourPhenotype; 
+out float fColourPhenotype;
+out float fBladeShade; 
 
 uniform mat4 view;
 uniform mat4 projection;
@@ -22,18 +23,26 @@ float hash2D(vec2 p, float seedOffset) {
 
 void main() {
     // 1. DYNAMIC ATLAS SELECTION
+        // One of four blade shapes, and this blade's own width, lean, height and shade
     float atlasHash = hash2D(aInstancePos.xz, float(worldSeed));
+    float widthHash = hash2D(aInstancePos.xz, float(worldSeed) + 17.0);
+    float leanHash = hash2D(aInstancePos.xz, float(worldSeed) + 31.0);
+    float shadeHash = hash2D(aInstancePos.xz, float(worldSeed) + 53.0);
     vec2 modifiedUV = aTexCoords;
-    modifiedUV.x = (aTexCoords.x * 0.5) + (step(0.5, atlasHash) * 0.5);
+    modifiedUV.x = (aTexCoords.x + floor(atlasHash * 4.0)) * 0.25;
     TexCoords = modifiedUV;
+    fBladeShade = shadeHash;
 
     // 2. PASS-THROUGH PHENOTYPE FROM VBO STREAM
     fColourPhenotype = aColourPhenotype;
-    float finalBladeHeight = aBladeHeight;
+        float finalBladeHeight = aBladeHeight * (0.85 + 0.3 * fract(widthHash * 7.13));
 
     // 3. STABLE CYLINDRICAL BILLBOARDING & MESH TRANSFORM
     vec3 localVertexPos = aPos;
-    localVertexPos.y *= finalBladeHeight; 
+        localVertexPos.y *= finalBladeHeight;
+    localVertexPos.x *= 0.7 + 0.8 * widthHash;
+    // Blades lean a little either way, more at the tip
+    localVertexPos.x += (leanHash - 0.5) * 0.35 * localVertexPos.y; 
 
     vec3 dirToCamera = normalize(vec3(cameraPos.x - aInstancePos.x, 0.0, cameraPos.z - aInstancePos.z));
     vec3 billboardRight = vec3(-dirToCamera.z, 0.0, dirToCamera.x);

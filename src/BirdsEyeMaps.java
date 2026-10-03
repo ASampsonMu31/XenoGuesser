@@ -12,7 +12,7 @@ import com.xenoguesser.math.Vector3;
 
 /**
  * Top-down minimap layers of the generated world: the plain land and sea, the
- * road network, how urban each area is, and where every building stands.
+ * road network and where every building stands.
  * Each is drawn once at a detail resolution (used when the minimap is zoomed
  * in) and box-filtered down to the overview resolution.
  */
@@ -36,16 +36,6 @@ public class BirdsEyeMaps {
 
     private static final Color BUILDING_LAND = new Color(44, 48, 52);
     private static final float MIN_BUILDING_PIXELS = 2.5f;
-
-    // Rural green through yellow and orange to a deep red city core
-    private static final float[] URBAN_STOPS = { 0.0f, 0.12f, 0.35f, 0.6f, 1.0f };
-    private static final Color[] URBAN_COLOURS = {
-        new Color(62, 118, 60),
-        new Color(150, 180, 80),
-        new Color(236, 204, 72),
-        new Color(232, 124, 40),
-        new Color(176, 24, 42)
-    };
 
     private final int outputResolution;
     private final int detailResolution;
@@ -78,23 +68,6 @@ public class BirdsEyeMaps {
         drawRoadClass(g, infrastructure, RoadPath.RoadClass.HIGHWAY, HIGHWAY_COLOUR, HIGHWAY_STROKE);
 
         g.dispose();
-        return finish(canvas);
-    }
-
-    public BufferedImage[] renderUrbannessMap(SettlementManager settlements) {
-        float[] heights = getDetailHeights();
-        BufferedImage canvas = new BufferedImage(detailResolution, detailResolution, BufferedImage.TYPE_INT_RGB);
-        for (int y = 0; y < detailResolution; y++) {
-            float worldZ = pixelToWorld(y + 0.5f);
-            for (int x = 0; x < detailResolution; x++) {
-                if (heights[y * detailResolution + x] <= seaLevelHeight) {
-                    canvas.setRGB(x, y, WATER.getRGB());
-                    continue;
-                }
-                float urbanness = settlements.getUrbanness(pixelToWorld(x + 0.5f), worldZ);
-                canvas.setRGB(x, y, urbanColour(urbanness));
-            }
-        }
         return finish(canvas);
     }
 
@@ -204,16 +177,6 @@ public class BirdsEyeMaps {
         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
         g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
         return g;
-    }
-
-    private int urbanColour(float urbanness) {
-        for (int i = 1; i < URBAN_STOPS.length; i++) {
-            if (urbanness <= URBAN_STOPS[i]) {
-                float t = (urbanness - URBAN_STOPS[i - 1]) / (URBAN_STOPS[i] - URBAN_STOPS[i - 1]);
-                return lerpColour(URBAN_COLOURS[i - 1], URBAN_COLOURS[i], t);
-            }
-        }
-        return URBAN_COLOURS[URBAN_COLOURS.length - 1].getRGB();
     }
 
     private float pixelToWorld(float pixel) {

@@ -32,6 +32,7 @@ public class XenoGuesser extends JFrame {
   private GameHUD gameHUD;
 
   public static void main(String[] args) {
+    RunFiles.prepare();
     SwingUtilities.invokeLater(new Runnable() {
         @Override
         public void run() {
@@ -138,7 +139,7 @@ public class XenoGuesser extends JFrame {
       loadingProgress.begin(LoadingProgress.Stage.WRITING_SYSTEMS);
       try (GlyphGenerator generator = new GlyphGenerator("models/cvae_generator.pt")) {
           int totalDatasetAlphabets = 30; // Matches Omniglot training bounds
-          generator.generateAllSystems(totalDatasetAlphabets, "assets/textures/generated_alphabets", worldSeed);
+          generator.generateAllSystems(totalDatasetAlphabets, RunFiles.ALPHABETS_DIR, worldSeed);
       } catch (Exception e) {
           System.err.println("CRITICAL ERROR: Failed to generate writing systems.");
           e.printStackTrace();
@@ -169,7 +170,8 @@ public class XenoGuesser extends JFrame {
       WorldArtGenerator art = WorldArtGenerator.generate(worldSeed, listener.getSpeciesCount(), listener.getNationTextureJobs(), loadingProgress);
             listener.setWorldArt(art);
       javax.imageio.ImageIO.write(listener.buildSoilRegionMap(art.palette()), "png",
-          new java.io.File(WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS)));
+                    new java.io.File(WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS)));
+            listener.buildWaveMap();
 
       loadingProgress.begin(LoadingProgress.Stage.WINDOW);
       glWarmUp.join();

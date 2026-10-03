@@ -1,3 +1,4 @@
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Affine.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ArchitectureTextures.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\BirdsEyeMaps.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\BuildingMeshes.java
@@ -18,6 +19,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GlyphGenerator.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GuardRailStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureObject.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Inhabitants.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InsideSphere.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Light.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingProgress.java
@@ -31,7 +33,12 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Model.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MyKeyboardInput.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\NationGenerationManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\NationKinship.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\OrganismManager.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\OrganismMesh.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\OrganismParts.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\OrganismSpecies.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PerlinNoise.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlayerBody.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ProceduralTextures.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalFactor.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalGenerationManager.java
@@ -39,6 +46,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Renderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadLineStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadNetworkBuilder.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadPath.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RunFiles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SettlementManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Shader.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Sphere.java

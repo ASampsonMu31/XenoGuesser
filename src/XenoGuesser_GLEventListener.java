@@ -123,7 +123,22 @@ private static class SpeciesConfig {
     private float seaLevelHeight;
     private Model waterPlaneModel;
     private Shader waterShader;
-    private Material waterMaterial; 
+    private Material waterMaterial;
+        // Bugs and, in time, other creatures; their ranges follow the land, not nation borders
+        private OrganismManager organismManager;
+    // The people who built the towns: generated anew each game, dressed by nation
+    private Inhabitants inhabitants;
+    // The player's own spacesuited body, and whether they are swimming
+    private final PlayerBody playerBody = new PlayerBody();
+    private boolean swimming;
+    private float waterSurfaceHere;
+    // Eyes this far above the water when swimming; deeper than this and the player swims
+    private static final float SWIM_EYE_HEIGHT = 2.4f;
+    // The scene's near plane: far enough out for depth precision on land, close in when the
+    // eyes are just above the water so the surface around the swimmer isn't cut away
+    private static final float NEAR_PLANE = 10.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
+    private float currentNearPlane = NEAR_PLANE;
+    private int waveMapTexture;
 
     private Model skyModel;
 
@@ -174,7 +189,7 @@ private static class SpeciesConfig {
     private int totalGrassInstances = 0;
     
     private final int GRASS_VIEW_DISTANCE = 21;
-    private final int MAX_GRASS_LIMIT = 800;
+        private final int MAX_GRASS_LIMIT = 1200;
     private final float GRASS_BASE_ABUNDANCE;
 
     // --- Optimized Zero-Allocation VRAM Streaming Fields ---
@@ -229,11 +244,13 @@ private static class SpeciesConfig {
     // Bird's-eye minimap layers, rendered on a background thread at startup
     private static final int BIRDS_EYE_MAP_RESOLUTION = 750;
     private volatile BufferedImage roadNetworkMap;
-    private volatile BufferedImage urbannessMap;
+    
+
     private volatile BufferedImage buildingMap;
     // Three times the resolution, swapped in when the player zooms the minimap
     private volatile BufferedImage roadNetworkMapDetail;
-    private volatile BufferedImage urbannessMapDetail;
+    
+
     private volatile BufferedImage buildingMapDetail;
 
     // Cities thin out trees and draw fewer distant details to pay for their extra buildings
@@ -282,9 +299,17 @@ private static class SpeciesConfig {
       SHRUB_2_ABUNDANCE,
       SHRUB_3_ABUNDANCE,
       SHRUB_4_ABUNDANCE,
+            ORGANISM_1_HABITAT,
+      ORGANISM_2_HABITAT,
+      ORGANISM_3_HABITAT,
+      ORGANISM_4_HABITAT,
+      ORGANISM_5_HABITAT,
+      ORGANISM_6_HABITAT,
+      ORGANISM_7_HABITAT,
+      ORGANISM_8_HABITAT,
       NATION_TERRITORIES,
       ROAD_NETWORK,
-      URBANNESS,
+      
       BUILDINGS
     }
 
@@ -323,7 +348,7 @@ private static class SpeciesConfig {
         float GRASS_WATER_STD_DEV = 80.0f;
         float GRASS_DENSITY_SCALE = 2e-5f;
         float GRASS_VARIATION_SCALE = 1e-5f;
-        this.GRASS_BASE_ABUNDANCE = 700f;
+                this.GRASS_BASE_ABUNDANCE = 1050f;
 
         this.grassTemperateFactor = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
@@ -513,12 +538,16 @@ private static class SpeciesConfig {
 
         // Settlements decide where cities grow; the road network and buildings follow from them
         this.settlementManager = new SettlementManager(worldSeed, TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE,
-                seaLevelHeight, worldNoise, regionalManager);
+                                seaLevelHeight, worldNoise, regionalManager, nationManager);
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
+        this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, TOTAL_REGION_WIDTH, worldNoise);
+        System.out.println("[INHABITANTS] " + inhabitants.describe());
                 this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
         this.soilVariantAFactor = this.regionalManager.createNoiseMap(1.4e-5f);
-        this.soilVariantBFactor = this.regionalManager.createNoiseMap(2.1e-5f);
+                this.soilVariantBFactor = this.regionalManager.createNoiseMap(2.1e-5f);
+        this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
+        this.organismManager.setUrbanness((x, z) -> infraManager.getUrbanness(x, z));
         startBirdsEyeMapRendering();
     }
 
@@ -534,10 +563,7 @@ private static class SpeciesConfig {
                 }
             });
 
-            BufferedImage[] urban = maps.renderUrbannessMap(settlementManager);
-            urbannessMapDetail = urban[1];
-            urbannessMap = urban[0];
-            onBirdsEyeMapReady(FactorName.URBANNESS);
+            
 
             BufferedImage[] roads = maps.renderRoadMap(infraManager);
             roadNetworkMapDetail = roads[1];
@@ -638,12 +664,14 @@ private static class SpeciesConfig {
         this.currentHeight = height;
         gl.glViewport(0, 0, width, height);
         
-        float aspect = (float) width / (float) height;
-        float farClippingPlane = 3000.0f; 
-        Matrix4 perspectiveMatrix = Matrix4Transform.perspective(45, aspect, 10.0f, farClippingPlane);
-        camera.setPerspectiveMatrix(perspectiveMatrix);
+                applyProjection();
 
         createDepthFramebuffer(gl, width, height);
+    }
+
+        private void applyProjection() {
+        float aspect = (float) currentWidth / (float) Math.max(1, currentHeight);
+        camera.setPerspectiveMatrix(Matrix4Transform.perspective(45, aspect, currentNearPlane, FAR_PLANE));
     }
 
     @Override
@@ -665,14 +693,17 @@ private static class SpeciesConfig {
 
         // Hand over from the loading screen only once a real frame of the round exists
         if (!loading.isFinished() && ++framesRenderedSinceReady >= 2) {
-            if (IS_DEBUG_MODE_ACTIVE) saveFirstFrame(gl);
+            if (IS_DEBUG_MODE_ACTIVE) saveFrame(gl, "first_frame.png");
             loading.finish();
             if (onWorldReady != null) javax.swing.SwingUtilities.invokeLater(onWorldReady);
+        } else if (IS_DEBUG_MODE_ACTIVE && loading.isFinished() && ++framesRenderedSinceReady == 150) {
+            // A second capture a moment later shows what has moved
+            saveFrame(gl, "later_frame.png");
         }
     }
 
-    /** Debug aid: writes the round's first frame next to this run's generated textures. */
-    private void saveFirstFrame(GL3 gl) {
+    /** Debug aid: writes the current frame next to this run's generated textures. */
+    private void saveFrame(GL3 gl, String fileName) {
         int w = currentWidth, h = currentHeight;
         java.nio.ByteBuffer pixels = com.jogamp.common.nio.Buffers.newDirectByteBuffer(w * h * 4);
         gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
@@ -686,7 +717,7 @@ private static class SpeciesConfig {
                 }
             }
             try {
-                ImageIO.write(img, "png", new File(WorldArtGenerator.OUTPUT_DIR, "first_frame.png"));
+                ImageIO.write(img, "png", new File(WorldArtGenerator.OUTPUT_DIR, fileName));
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -745,6 +776,27 @@ private static class SpeciesConfig {
         return map;
     }
 
+        /** Wave size over every body of water; see RegionalGenerationManager.buildWaveMap. */
+        public void buildWaveMap() {
+        regionalManager.buildWaveMap(PHYSICAL_CHUNK_SIZE);
+    }
+
+    /** Uploads the wave map: wave size and distance to shore, as a two-channel float texture. */
+    private int createWaveMapTexture() {
+        int n = regionalManager.waveMapResolution();
+        int[] id = new int[1];
+        gl.glGenTextures(1, id, 0);
+        gl.glBindTexture(GL3.GL_TEXTURE_2D, id[0]);
+        gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RG32F, n, n, 0, GL3.GL_RG, GL3.GL_FLOAT,
+                com.jogamp.common.nio.Buffers.newDirectFloatBuffer(regionalManager.waveMapTexels()));
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE);
+        gl.glBindTexture(GL3.GL_TEXTURE_2D, 0);
+        return id[0];
+    }
+
     /** Every nation's architecture texture generators, for WorldArtGenerator. */
     public Map<String, java.util.function.Supplier<BufferedImage>> getNationTextureJobs() {
         return infraManager.textureJobs();
@@ -776,6 +828,9 @@ private static class SpeciesConfig {
     @Override
     public void dispose(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
+                if (organismManager != null) organismManager.dispose(gl);
+        if (inhabitants != null) inhabitants.dispose(gl);
+        playerBody.dispose(gl);
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
@@ -979,7 +1034,7 @@ private static class SpeciesConfig {
         java.util.Random signConfigRand = new java.util.Random(this.worldSeed + 999L);
         
         // Dynamically count subdirectories inside generated_alphabets
-        java.io.File alphabetsDir = new java.io.File("assets/textures/generated_alphabets");
+        java.io.File alphabetsDir = new java.io.File(RunFiles.ALPHABETS_DIR);
         java.io.File[] alphabetFolders = alphabetsDir.listFiles(java.io.File::isDirectory);
         
         int totalAvailableAlphabets = (alphabetFolders != null) ? alphabetFolders.length : 0;
@@ -1002,7 +1057,7 @@ private static class SpeciesConfig {
                     nationAtlases.put(n, atlas);
                     
                     // Count files safely to determine the number of available characters
-                    java.io.File alphabetDir = new java.io.File("assets/textures/generated_alphabets/alphabet" + alphabetId);
+                    java.io.File alphabetDir = new java.io.File(RunFiles.ALPHABETS_DIR, "alphabet" + alphabetId);
                     java.io.File[] glyphFiles = alphabetDir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
                     int glyphCount = (glyphFiles != null) ? glyphFiles.length : 0;
                     nationAtlasSizes.put(n, glyphCount);
@@ -1082,8 +1137,48 @@ private static class SpeciesConfig {
         }
     }
 
+        // Vertices along each side of the water grid; spacing grows from about 2 units under the
+    // viewer to about 30 at the edge, fine enough for the waves where they can be seen
+    private static final int WATER_GRID_SIZE = 256;
+    private static final float WATER_GRID_CENTRE_DENSITY = 0.12f;
+
+    /** A unit square of water, densest at its centre, for the wave shader to displace. */
+    private static Mesh createWaterGrid(GL3 gl) {
+        int n = WATER_GRID_SIZE;
+        float[] coordinate = new float[n + 1];
+        for (int i = 0; i <= n; i++) {
+            float t = i / (float) n * 2.0f - 1.0f;
+            coordinate[i] = 0.5f * t * (WATER_GRID_CENTRE_DENSITY + (1.0f - WATER_GRID_CENTRE_DENSITY) * Math.abs(t));
+        }
+        float[] vertices = new float[(n + 1) * (n + 1) * 8];
+        int v = 0;
+        for (int j = 0; j <= n; j++) {
+            for (int i = 0; i <= n; i++) {
+                vertices[v++] = coordinate[i];
+                vertices[v++] = 0.0f;
+                vertices[v++] = coordinate[j];
+                vertices[v++] = 0.0f;
+                vertices[v++] = 1.0f;
+                vertices[v++] = 0.0f;
+                vertices[v++] = i / (float) n;
+                vertices[v++] = j / (float) n;
+            }
+        }
+        int[] indices = new int[n * n * 6];
+        int k = 0;
+        for (int j = 0; j < n; j++) {
+            for (int i = 0; i < n; i++) {
+                int a = j * (n + 1) + i, b = a + 1, c = a + n + 1, d = c + 1;
+                indices[k++] = a; indices[k++] = c; indices[k++] = b;
+                indices[k++] = b; indices[k++] = c; indices[k++] = d;
+            }
+        }
+        return new Mesh(gl, vertices, indices);
+    }
+
     private void initialiseWaterAndGrass() {
-        waterShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_water.txt");
+                waterShader = new Shader(gl, "assets/shaders/vs_water.txt", "assets/shaders/fs_water.txt");
+                waveMapTexture = createWaveMapTexture();
         
         waterMaterial = new Material(
             new Vector3(0.01f, 0.31f, 0.55f),  
@@ -1095,7 +1190,7 @@ private static class SpeciesConfig {
 
         Renderer waterRenderer = new Renderer(); 
         Matrix4 waterModelMatrix = new Matrix4(1);
-        Mesh waterMesh = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);  
+                Mesh waterMesh = createWaterGrid(gl);  
         waterPlaneModel = new Model("ocean_surface", waterMesh, waterModelMatrix, waterShader, waterMaterial, waterRenderer, lights, camera);
 
         textures.add(gl, "grass_atlas", WorldArtGenerator.pathFor(WorldArtGenerator.GRASS_ATLAS));
@@ -1156,7 +1251,10 @@ private static class SpeciesConfig {
         gl.glBindVertexArray(0);
     }
 
-    private void finishInitialise() {
+        private void finishInitialise() {
+                organismManager.initialise(gl);
+        inhabitants.initialise(gl);
+        playerBody.initialise(gl);
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
 
@@ -1218,6 +1316,72 @@ private static class SpeciesConfig {
             foundDryLand = true;
         }
 
+                        if ("street".equals(System.getProperty("xenoguesser.view"))) {
+            // Developer aid: on a town pavement among the inhabitants
+            float[] view = inhabitants.streetViewpoint(dynamicRand);
+            if (view != null) {
+                spawnX = view[0];
+                spawnZ = view[1];
+                lookX = view[2];
+                lookZ = view[3];
+                foundDryLand = true;
+            }
+        }
+
+        if ("zoo".equals(System.getProperty("xenoguesser.view"))) {
+            float[] view = organismManager.zooViewpoint(dynamicRand, TOTAL_REGION_WIDTH);
+            if (view != null) {
+                spawnX = view[0];
+                spawnZ = view[1];
+                lookX = view[2];
+                lookZ = view[3];
+                foundDryLand = true;
+            }
+        }
+
+        if ("bug".equals(System.getProperty("xenoguesser.view"))) {
+            // Developer aid: stand in some species' range with one of them just ahead
+            float[] view = organismManager.showcaseViewpoint(dynamicRand, TOTAL_REGION_WIDTH);
+            if (view != null) {
+                spawnX = view[0];
+                spawnZ = view[1];
+                lookX = view[2];
+                lookZ = view[3];
+                foundDryLand = true;
+            }
+        }
+
+        String devView = System.getProperty("xenoguesser.view");
+        if ("shore".equals(devView) || "swim".equals(devView)) {
+            // Developer aid: stand on a coast facing the open sea, to watch the waves
+            for (int attempt = 0; attempt < 200000; attempt++) {
+                float x = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
+                float z = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
+                if (TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight + 2.0f) continue;
+                int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
+                if (regionalManager.getChunkDistanceToWater(cx, cz) != 2) continue;
+                float best = 0f;
+                for (int a = 0; a < 16; a++) {
+                    float ax = (float) Math.cos(a * Math.PI / 8), az = (float) Math.sin(a * Math.PI / 8);
+                    float strength = regionalManager.waveStrengthAt(x + ax * 900f, z + az * 900f, PHYSICAL_CHUNK_SIZE);
+                    if (strength > best) { best = strength; lookX = ax; lookZ = az; }
+                }
+                if (best > 0.75f) {
+                    spawnX = x;
+                    spawnZ = z;
+                    if ("swim".equals(devView)) {
+                        // Out in the water, looking back at the waves rolling in
+                        spawnX += lookX * 600f;
+                        spawnZ += lookZ * 600f;
+                        lookX = -lookX;
+                        lookZ = -lookZ;
+                    }
+                    foundDryLand = true;
+                    break;
+                }
+            }
+        }
+
         while (!foundDryLand) {
             spawnX = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
             spawnZ = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
@@ -1237,6 +1401,9 @@ private static class SpeciesConfig {
         }
 
         moveToLocation(spawnX, spawnZ, lookX, lookZ);
+        // Developer aid: -Dxenoguesser.pitch=-60 starts the round looking down by that many degrees
+        String pitch = System.getProperty("xenoguesser.pitch");
+        if (pitch != null) camera.updateYawPitch(0f, Float.parseFloat(pitch) / camera.MOUSE_SPEED);
     }
 
     public void moveToLocation(float spawnX, float spawnZ) {
@@ -1265,10 +1432,12 @@ private static class SpeciesConfig {
 
         lastChunkX = Integer.MAX_VALUE;
         lastChunkZ = Integer.MAX_VALUE;
-        totalGrassInstances = 0; 
+                totalGrassInstances = 0;
+        organismManager.clear();
+        inhabitants.clear();
 
         if (minimap != null) {
-            minimap.resetMapState(); 
+            minimap.resetMapState();
         }
 
         spawnPlayerAtRandomLocation();
@@ -1669,9 +1838,22 @@ private static class SpeciesConfig {
 
         Vector3 currentPos = camera.getPosition();
         float rawGroundHeight = TerrainMesh.getLayeredHeight(currentPos.x, currentPos.z, worldNoise);
-        float targetCameraHeight = rawGroundHeight + playerEyeHeight;
+                float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
-        float dynamicSmoothingFactor = 6.0f * (float)deltaTime;
+        // Too deep to stand: swim, eyes just above the waves and riding them
+        waterSurfaceHere = regionalManager.waveSurfaceAt(currentPos.x, currentPos.z, (float) elapsedTime,
+                seaLevelHeight, PHYSICAL_CHUNK_SIZE);
+        swimming = targetCameraHeight < waterSurfaceHere + SWIM_EYE_HEIGHT;
+        if (swimming) {
+            targetCameraHeight = waterSurfaceHere + SWIM_EYE_HEIGHT;
+        }
+        float wantedNear = swimming ? SWIMMING_NEAR_PLANE : NEAR_PLANE;
+        if (wantedNear != currentNearPlane) {
+            currentNearPlane = wantedNear;
+            applyProjection();
+        }
+
+        float dynamicSmoothingFactor = (swimming ? 10.0f : 6.0f) * (float)deltaTime;
         if (dynamicSmoothingFactor > 1.0f) dynamicSmoothingFactor = 1.0f;
 
         float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
@@ -1947,6 +2129,19 @@ private static class SpeciesConfig {
             }
         }
         
+                // --- CREATURES ---
+        organismManager.update((float) deltaTime, currentPos.x, currentPos.z);
+        float[] sunTintForCreatures = worldArt.palette().sunTint;
+        float daylight = 1.0f - nightProportion;
+        organismManager.render(gl, viewProjection, frustum, camera.getPosition(), sunPos,
+                new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
+                ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+
+        inhabitants.update((float) deltaTime, currentPos.x, currentPos.z);
+        inhabitants.render(gl, viewProjection, frustum, camera.getPosition(), sunPos,
+                new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
+                ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+
         // --- INSTANCED GRASS PASS ---
         if (totalGrassInstances > 0) {
             gl.glDisable(GL.GL_CULL_FACE); 
@@ -2005,7 +2200,9 @@ private static class SpeciesConfig {
         waterMatrix = Matrix4.multiply(waterMatrix, Matrix4Transform.scale(waterCoverageSize, 1.0f, waterCoverageSize));
 
         waterShader.use(gl);
-        waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
+                waterShader.setFloat(gl, "seaLevelHeight", seaLevelHeight);
+        waterShader.setFloat(gl, "nearPlane", currentNearPlane);
+        waterShader.setFloat(gl, "farPlane", FAR_PLANE);
         waterShader.setVec2(gl, "windowSize", new Vector2((float)currentWidth, (float)currentHeight));
 
         waterShader.setVec3(gl, "sunPos", sunPos);
@@ -2034,12 +2231,32 @@ private static class SpeciesConfig {
         gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
         waterShader.setInt(gl, "terrainDepthTexture", 1);
 
-        waterShader.setFloat(gl, "time", (float)elapsedTime);
+                waterShader.setFloat(gl, "time", (float)elapsedTime);
+        waterShader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+        gl.glActiveTexture(GL3.GL_TEXTURE3);
+                gl.glBindTexture(GL3.GL_TEXTURE_2D, waveMapTexture);
+        waterShader.setInt(gl, "waveMap", 3);
+        float chunk = PHYSICAL_CHUNK_SIZE;
+        float origin = regionalManager.waveMapOrigin(chunk);
+        waterShader.setVec2(gl, "waveMapOrigin", new Vector2(origin, origin));
+                waterShader.setFloat(gl, "waveMapWidth", regionalManager.waveMapWidth(chunk));
+        waterShader.setFloat(gl, "waveMapTexel", regionalManager.waveMapWidth(chunk) / regionalManager.waveMapResolution());
+        // Wave crests can be seen from either side
+        gl.glDisable(GL.GL_CULL_FACE);
 
         waterPlaneModel.setModelMatrix(waterMatrix);
-        waterPlaneModel.render(gl, ambientLight, nightProportion);
+                waterPlaneModel.render(gl, ambientLight, nightProportion);
 
+                gl.glEnable(GL.GL_CULL_FACE);
         gl.glDisable(GL.GL_BLEND);
+
+        // --- THE PLAYER'S OWN BODY, drawn last and nearest ---
+        playerBody.update((float) deltaTime, camera.getPosition(), swimming);
+        float[] deep = worldArt.palette().seaShallowTint();
+        float daylightOnBody = 1.0f - nightProportion;
+        playerBody.render(gl, camera, (float) currentWidth / Math.max(1, currentHeight), sunPos,
+                new float[] { sunTint[0] * daylightOnBody, sunTint[1] * daylightOnBody, sunTint[2] * daylightOnBody },
+                ambientLight, skyRotation, textures.get(skyTextureKey), waterSurfaceHere, deep);
     }
 
     private double getSeconds() {
@@ -2114,16 +2331,16 @@ private static class SpeciesConfig {
 
             // Bird's-eye layers are pre-rendered in the background and cover the whole map
             if (currentDebugFactor == FactorName.ROAD_NETWORK
-                    || currentDebugFactor == FactorName.URBANNESS
+                    
                     || currentDebugFactor == FactorName.BUILDINGS) {
                 BufferedImage layer = switch (currentDebugFactor) {
                     case ROAD_NETWORK -> this.roadNetworkMap;
-                    case URBANNESS -> this.urbannessMap;
+                    
                     default -> this.buildingMap;
                 };
                 BufferedImage detail = switch (currentDebugFactor) {
                     case ROAD_NETWORK -> this.roadNetworkMapDetail;
-                    case URBANNESS -> this.urbannessMapDetail;
+                    
                     default -> this.buildingMapDetail;
                 };
                 if (layer != null) {
@@ -2174,7 +2391,15 @@ private static class SpeciesConfig {
                 case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
                 case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
                 case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
-                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
+                                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
+                case ORGANISM_1_HABITAT -> organismManager.habitat(0);
+                case ORGANISM_2_HABITAT -> organismManager.habitat(1);
+                case ORGANISM_3_HABITAT -> organismManager.habitat(2);
+                case ORGANISM_4_HABITAT -> organismManager.habitat(3);
+                case ORGANISM_5_HABITAT -> organismManager.habitat(4);
+                case ORGANISM_6_HABITAT -> organismManager.habitat(5);
+                case ORGANISM_7_HABITAT -> organismManager.habitat(6);
+                case ORGANISM_8_HABITAT -> organismManager.habitat(7);
                 default -> null; 
             };
     }
@@ -2211,7 +2436,7 @@ private static class SpeciesConfig {
 
     private Texture createAlphabetAtlas(GL3 gl, int alphabetId) {
         try {
-            File dir = new File("assets/textures/generated_alphabets/alphabet" + alphabetId);
+            File dir = new File(RunFiles.ALPHABETS_DIR, "alphabet" + alphabetId);
             File[] glyphFiles = dir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
             
             if (glyphFiles == null || glyphFiles.length == 0) return null;

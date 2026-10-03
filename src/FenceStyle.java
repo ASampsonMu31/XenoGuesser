@@ -22,6 +22,19 @@ public class FenceStyle {
     /** World units covered by one repeat of the fence texture. */
     public final float tileSize;
 
+    /** Tall security boundaries: steel bars, high walls topped with spikes, or wire mesh. */
+    public enum SecurityType { BARS, HIGH_WALL, MESH }
+
+    /**
+     * How security-minded the nation is, 0 to 1: the higher it is, the more of its houses
+     * stand behind a tall security fence, above all in built-up areas. It drifts smoothly
+     * between neighbours, so whole regions tend to be guarded or open.
+     */
+    public float securityLevel;
+    public SecurityType securityType;
+    public float securityHeight;
+    public Vector3 securityColour;
+
     private FenceStyle(Type type, float fenceChance, float height, float postSpacing, float thickness,
                        Vector3 colour, Surface surface, float tileSize) {
         this.type = type;
@@ -89,7 +102,30 @@ public class FenceStyle {
             styles.put(n, new FenceStyle(type, fenceChance, height, 7.0f + rand.nextFloat() * 6.0f, thickness,
                     colour, surface, tileSize));
         }
+
+        // Separate stream, so the established fences above stay as they were
+        Random secure = new Random(seed + 5252L);
+        float[] security = kinship.gradient(secure, 0.2f);
+        int[] securityBloc = kinship.clusters(secure, 3, 0.25f);
+        SecurityType[] blocSecurity = new SecurityType[3];
+        for (int b = 0; b < 3; b++) blocSecurity[b] = SecurityType.values()[secure.nextInt(SecurityType.values().length)];
+        for (int n = 1; n <= numNations; n++) {
+            FenceStyle style = styles.get(n);
+            // A few nations are strongly security-minded; many hardly at all
+            style.securityLevel = (float) Math.pow(security[n], 1.8);
+            style.securityType = blocSecurity[securityBloc[n]];
+            style.securityHeight = 13.0f + secure.nextFloat() * 11.0f;
+            float roll = secure.nextFloat();
+            style.securityColour = roll < 0.5f ? new Vector3(0.12f, 0.12f, 0.13f)
+                    : roll < 0.75f ? new Vector3(0.55f, 0.57f, 0.6f)
+                    : hsbVector(secure.nextFloat(), 0.45f, 0.35f);
+        }
         return styles;
+    }
+
+    private static Vector3 hsbVector(float hue, float saturation, float brightness) {
+        java.awt.Color c = java.awt.Color.getHSBColor(hue, saturation, brightness);
+        return new Vector3(c.getRed() / 255.0f, c.getGreen() / 255.0f, c.getBlue() / 255.0f);
     }
 
     private static boolean isWood(Vector3 colour) {

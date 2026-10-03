@@ -2,7 +2,8 @@
 
 in vec2 TexCoords;
 in vec3 fWorldPos;
-in float fColourPhenotype; 
+in float fColourPhenotype;
+in float fBladeShade; 
 
 out vec4 fragColour;
 
@@ -27,13 +28,14 @@ void main() {
     
     // Applying a power curve skews variations toward 0.0 (dark forest green).
     // This creates lush green grass overall, broken up by natural patches of light brown.
-    float biasedPhenotype = fColourPhenotype;
+        // Neighbouring blades differ a little in colour and shade
+    float biasedPhenotype = clamp(fColourPhenotype + (fBladeShade - 0.5) * 0.18, 0.0, 1.0);
     
     // Mix equation colour blending
         vec3 proceduralGrassColour = mix(u_GrassDry, u_GrassLush, biasedPhenotype);
     
     vec3 finalLight = clamp(3.0 * ambientLight, 0.0, 1.5);
-    vec3 baseGrassColour = proceduralGrassColour * finalLight;
+        vec3 baseGrassColour = proceduralGrassColour * finalLight * (0.88 + 0.24 * fract(fBladeShade * 5.31));
     
     // Anti-Aliasing Alpha Edge Sharpening
     float adjustedAlpha = texColour.a;

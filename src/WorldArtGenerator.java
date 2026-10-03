@@ -18,14 +18,14 @@ import javax.imageio.ImageIO;
  */
 public final class WorldArtGenerator {
 
-    public static final String OUTPUT_DIR = "assets/textures/generated_world";
+    public static final String OUTPUT_DIR = RunFiles.WORLD_DIR;
 
     public static final String SOIL = "soil";
     public static final String SEA = "sea";
     public static final String SKY = "sky";
     public static final String SUN_GLOW = "sun_glow";
         public static final String GRASS_ATLAS = "grass_atlas";
-    public static final String SOIL_REGIONS = "soil_regions";
+        public static final String SOIL_REGIONS = "soil_regions";
 
     public static String leafName(int species) {
         return "leaf_species" + species;

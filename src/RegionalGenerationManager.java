@@ -209,6 +209,260 @@ public class RegionalGenerationManager {
         }
     }
 
+        // Bodies of water smaller than this (in chunks) are calm; waves reach full size at the upper bound
+    private static final double CALM_BODY_CHUNKS = 400.0;
+    private static final double FULL_WAVE_BODY_CHUNKS = 400_000.0;
+    private static final float SHORE_WAVE_FLOOR = 0.2f;
+    private static final float OPEN_WATER_CHUNKS = 8.0f;
+
+        private float[] waveStrength;
+
+    /** The wave map's value at a point (0 calm to 1 full ocean swell), or 0 before it is built. */
+    public float waveStrengthAt(float worldX, float worldZ, float physicalChunkSize) {
+        if (waveStrength == null) return 0f;
+        int i = Math.max(0, Math.min(waterFieldSize - 1, (int) Math.floor(worldX / physicalChunkSize) - waterFieldMin));
+        int j = Math.max(0, Math.min(waterFieldSize - 1, (int) Math.floor(worldZ / physicalChunkSize) - waterFieldMin));
+        return waveStrength[j * waterFieldSize + i];
+    }
+
+    /** World coordinate of the wave map's first texel edge, and the width it covers. */
+    public float waveMapOrigin(float physicalChunkSize) {
+        return waterFieldMin * physicalChunkSize;
+    }
+
+    public float waveMapWidth(float physicalChunkSize) {
+        return waterFieldSize * physicalChunkSize;
+    }
+
+    /**
+     * How big the waves are across every body of water, one texel per chunk in the red
+     * channel: nothing on ponds and small lakes, rising with the size of the body to full
+     * ocean swell, and easing off near the shore. Rows run along +Z like the soil map.
+     */
+    public void buildWaveMap(float physicalChunkSize) {
+        int n = waterFieldSize;
+        int[] body = new int[n * n];
+        java.util.Arrays.fill(body, -1);
+        int[] queue = new int[n * n];
+        java.util.List<Integer> bodySizes = new java.util.ArrayList<>();
+
+        // Label each connected body of water and count its chunks
+        for (int start = 0; start < n * n; start++) {
+            if (waterField[start] != 0 || body[start] >= 0) continue;
+            int label = bodySizes.size();
+            int head = 0, tail = 0;
+            queue[tail++] = start;
+            body[start] = label;
+            while (head < tail) {
+                int cell = queue[head++];
+                int i = cell % n, j = cell / n;
+                if (i > 0) tail = joinBody(cell - 1, label, body, queue, tail);
+                if (i < n - 1) tail = joinBody(cell + 1, label, body, queue, tail);
+                if (j > 0) tail = joinBody(cell - n, label, body, queue, tail);
+                if (j < n - 1) tail = joinBody(cell + n, label, body, queue, tail);
+            }
+            bodySizes.add(tail);
+        }
+
+        // Distance from the shore out into the water
+        short[] offshore = new short[n * n];
+        java.util.Arrays.fill(offshore, (short) -1);
+        int head = 0, tail = 0;
+        for (int cell = 0; cell < n * n; cell++) {
+            if (waterField[cell] != 0) {
+                offshore[cell] = 0;
+                queue[tail++] = cell;
+            }
+        }
+        while (head < tail) {
+            int cell = queue[head++];
+            int i = cell % n, j = cell / n;
+            short next = (short) Math.min(Short.MAX_VALUE, offshore[cell] + 1);
+            int[] neighbours = { i > 0 ? cell - 1 : -1, i < n - 1 ? cell + 1 : -1, j > 0 ? cell - n : -1, j < n - 1 ? cell + n : -1 };
+            for (int other : neighbours) {
+                if (other >= 0 && offshore[other] < 0) {
+                    offshore[other] = next;
+                    queue[tail++] = other;
+                }
+            }
+        }
+
+        float[] strength = new float[n * n];
+        double low = Math.log(CALM_BODY_CHUNKS), high = Math.log(FULL_WAVE_BODY_CHUNKS);
+        for (int cell = 0; cell < n * n; cell++) {
+            if (body[cell] < 0) continue;
+            float size = (float) ((Math.log(bodySizes.get(body[cell])) - low) / (high - low));
+            size = Math.max(0f, Math.min(1f, size));
+            size = size * size * (3 - 2 * size);
+            float open = Math.min(1f, offshore[cell] / OPEN_WATER_CHUNKS);
+            strength[cell] = size * (SHORE_WAVE_FLOOR + (1 - SHORE_WAVE_FLOOR) * open * open * (3 - 2 * open));
+        }
+                        strength = boxBlur(boxBlur(strength, n, 2), n, 2);
+        waveStrength = strength;
+
+        // True (Euclidean) distance to the nearest land, smoothed so its contours are gentle
+        // curves: wave crests follow these contours, so they always roll in towards the shore
+        float[] squared = new float[n * n];
+        for (int cell = 0; cell < n * n; cell++) {
+            squared[cell] = waterField[cell] != 0 ? 0f : 1e12f;
+        }
+        distanceTransform2D(squared, n);
+        float[] distance = new float[n * n];
+        for (int cell = 0; cell < n * n; cell++) {
+            distance[cell] = (float) Math.sqrt(squared[cell]) * physicalChunkSize;
+        }
+        shoreDistance = boxBlur(boxBlur(distance, n, 2), n, 2);
+    }
+
+    private float[] shoreDistance;
+
+    /**
+     * The wave map as interleaved pairs per texel, row by row along +Z: wave size (0 to 1)
+     * and distance to the nearest shore in world units. Built by buildWaveMap.
+     */
+    public float[] waveMapTexels() {
+        int n = waterFieldSize;
+        float[] texels = new float[n * n * 2];
+        for (int cell = 0; cell < n * n; cell++) {
+            texels[cell * 2] = waveStrength[cell];
+            texels[cell * 2 + 1] = shoreDistance[cell];
+        }
+        return texels;
+    }
+
+    // The wave set in vs_water.txt, which this must match: wavelength, share of its set's
+    // height, and whether it is swell (0) or chop (1)
+    private static final float[][] WAVES = {
+        { 620f, 1.00f, 0f }, { 410f, 0.60f, 0f }, { 150f, 1.00f, 1f },
+        { 108f, 0.70f, 1f }, { 84f, 0.55f, 1f }, { 128f, 0.60f, 1f }
+    };
+    private static final float WAVE_GRAVITY = 140f, SWELL_HEIGHT = 7f, CHOP_HEIGHT = 2.2f;
+
+    /**
+     * Height of the sea surface at a point right beside the viewer at the given time, as the
+     * water shader draws it there, so a swimmer can bob on the waves.
+     */
+    public float waveSurfaceAt(float worldX, float worldZ, float time, float seaLevel, float physicalChunkSize) {
+        if (waveStrength == null || shoreDistance == null) return seaLevel;
+        float texel = physicalChunkSize;
+        float strength = bilinear(waveStrength, worldX, worldZ, texel);
+        float distance = bilinear(shoreDistance, worldX, worldZ, texel);
+        float slopeX = (bilinear(shoreDistance, worldX + texel, worldZ, texel) - bilinear(shoreDistance, worldX - texel, worldZ, texel)) / (2 * texel);
+        float slopeZ = (bilinear(shoreDistance, worldX, worldZ + texel, texel) - bilinear(shoreDistance, worldX, worldZ - texel, texel)) / (2 * texel);
+        float coherence = smoothstep(0.15f, 0.55f, (float) Math.sqrt(slopeX * slopeX + slopeZ * slopeZ));
+        float swell = SWELL_HEIGHT * smoothstep(0.55f, 1.0f, strength) * coherence;
+        float chop = CHOP_HEIGHT * smoothstep(0.0f, 0.45f, strength) * (0.5f + 0.5f * coherence);
+        float height = 0f;
+        for (int i = 0; i < WAVES.length; i++) {
+            float amplitude = WAVES[i][1] * (WAVES[i][2] < 0.5f ? swell : chop);
+            float k = (float) (2 * Math.PI / WAVES[i][0]);
+            float omega = (float) Math.sqrt(WAVE_GRAVITY * k);
+            height += amplitude * (float) Math.sin(-k * distance - omega * time + i * 1.7f);
+        }
+        return seaLevel - 0.05f + height;
+    }
+
+    private float bilinear(float[] grid, float worldX, float worldZ, float texel) {
+        int n = waterFieldSize;
+        float gx = Math.max(0f, Math.min(n - 1.001f, (worldX - waterFieldMin * texel) / texel - 0.5f));
+        float gz = Math.max(0f, Math.min(n - 1.001f, (worldZ - waterFieldMin * texel) / texel - 0.5f));
+        int i = (int) gx, j = (int) gz;
+        float fx = gx - i, fz = gz - j;
+        float top = grid[j * n + i] + (grid[j * n + i + 1] - grid[j * n + i]) * fx;
+        float bottom = grid[(j + 1) * n + i] + (grid[(j + 1) * n + i + 1] - grid[(j + 1) * n + i]) * fx;
+        return top + (bottom - top) * fz;
+    }
+
+    private static float smoothstep(float edge0, float edge1, float value) {
+        float t = Math.max(0f, Math.min(1f, (value - edge0) / (edge1 - edge0)));
+        return t * t * (3f - 2f * t);
+    }
+
+    public int waveMapResolution() {
+        return waterFieldSize;
+    }
+
+    /** Squared Euclidean distance transform in place (Felzenszwalb and Huttenlocher), in cells. */
+    private static void distanceTransform2D(float[] grid, int n) {
+        float[] line = new float[n], result = new float[n], z = new float[n + 1];
+        int[] v = new int[n];
+        for (int j = 0; j < n; j++) {
+            for (int i = 0; i < n; i++) line[i] = grid[j * n + i];
+            distanceTransform1D(line, result, v, z, n);
+            for (int i = 0; i < n; i++) grid[j * n + i] = result[i];
+        }
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) line[j] = grid[j * n + i];
+            distanceTransform1D(line, result, v, z, n);
+            for (int j = 0; j < n; j++) grid[j * n + i] = result[j];
+        }
+    }
+
+    private static void distanceTransform1D(float[] f, float[] d, int[] v, float[] z, int n) {
+        // Lower envelope of parabolas rooted at each cell; doubles keep the far-off "no land"
+        // values from swamping the arithmetic
+        double[] zz = new double[n + 1];
+        int k = 0;
+        v[0] = 0;
+        zz[0] = Double.NEGATIVE_INFINITY;
+        zz[1] = Double.POSITIVE_INFINITY;
+        for (int q = 1; q < n; q++) {
+            double s = intersection(f, v[k], q);
+            while (s <= zz[k]) {
+                k--;
+                s = intersection(f, v[k], q);
+            }
+            k++;
+            v[k] = q;
+            zz[k] = s;
+            zz[k + 1] = Double.POSITIVE_INFINITY;
+        }
+        k = 0;
+        for (int q = 0; q < n; q++) {
+            while (zz[k + 1] < q) k++;
+            double dq = q - v[k];
+            d[q] = (float) Math.min(1e12, dq * dq + f[v[k]]);
+        }
+    }
+
+    private static double intersection(float[] f, int p, int q) {
+        return (((double) f[q] + (double) q * q) - ((double) f[p] + (double) p * p)) / (2.0 * q - 2.0 * p);
+    }
+
+    private int joinBody(int cell, int label, int[] body, int[] queue, int tail) {
+        if (waterField[cell] != 0 || body[cell] >= 0) return tail;
+        body[cell] = label;
+        queue[tail] = cell;
+        return tail + 1;
+    }
+
+    private static float[] boxBlur(float[] values, int n, int radius) {
+        float[] across = new float[n * n], result = new float[n * n];
+        for (int j = 0; j < n; j++) {
+            for (int i = 0; i < n; i++) {
+                float sum = 0;
+                int count = 0;
+                for (int d = -radius; d <= radius; d++) {
+                    int x = i + d;
+                    if (x >= 0 && x < n) { sum += values[j * n + x]; count++; }
+                }
+                across[j * n + i] = sum / count;
+            }
+        }
+        for (int j = 0; j < n; j++) {
+            for (int i = 0; i < n; i++) {
+                float sum = 0;
+                int count = 0;
+                for (int d = -radius; d <= radius; d++) {
+                    int y = j + d;
+                    if (y >= 0 && y < n) { sum += across[y * n + i]; count++; }
+                }
+                result[j * n + i] = sum / count;
+            }
+        }
+        return result;
+    }
+
     private int visit(int cell, short distance, int[] queue, int tail) {
         if (waterField[cell] >= 0) return tail;
         waterField[cell] = distance;
