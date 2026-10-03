@@ -94,6 +94,9 @@
                     <classpathScope>compile</classpathScope>
                     
                     <arguments>
+                        <!-- Garbage collection without long pauses keeps the loading screen smooth -->
+                        <argument>-XX:+UseZGC</argument>
+                        <argument>-XX:+ZGenerational</argument>
                         <argument>--add-exports</argument>
                         <argument>java.base/java.lang=ALL-UNNAMED</argument>
                         <argument>--add-exports</argument>

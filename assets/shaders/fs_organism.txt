@@ -21,13 +21,22 @@ uniform vec3 accentColour;
 uniform vec3 bellyColour;
 uniform vec3 limbColour;
 uniform vec3 eyeColour;
-uniform int patternType;     // 0 bands, 1 spots, 2 stripes along the body, 3 mottling
+uniform int patternType;     // 0 bands, 1 spots, 2 stripes along the body, 3 mottling, 4 plain, 5 zigzags, 6 checks, 7 diagonals
 uniform float patternScale;
 uniform float gloss;
 uniform vec3 trimColour;     // boots, gloves and fittings
 // Anything below the water line is seen through the water
 uniform float waterLevel;
 uniform vec3 waterTint;
+// Optional cloth texture (the player's spacesuit); 0 leaves surfaces plain
+uniform sampler2D detailTexture;
+uniform float detailAmount;
+// People: their hair, and the flag some wear on the chest of their top
+uniform vec3 hairColour;
+uniform sampler2D flagTexture;
+uniform int flagOnTop;
+// Goods (produce and packets): their nation's packaging texture, which u and v point into
+uniform sampler2D productTexture;
 
 const float PI = 3.14159265359;
 
@@ -55,8 +64,19 @@ vec3 bodyColour() {
         mark = 1.0 - smoothstep(0.18, 0.26, length(cell - centre));
     } else if (patternType == 2) {
         mark = smoothstep(0.6, 0.7, sin(vUV.x * 2.0 * PI * floor(patternScale)) * 0.5 + 0.5);
-    } else {
+    } else if (patternType == 3) {
         mark = smoothstep(0.55, 0.7, valueNoise(vec2(vUV.x * 8.0, vUV.y * patternScale * 1.5)));
+    } else if (patternType == 5) {
+        // Zigzags running round
+        float zig = abs(fract(vUV.x * 6.0) - 0.5) * 2.0;
+        mark = smoothstep(0.35, 0.45, abs(fract(vUV.y * patternScale + zig * 0.35) - 0.5));
+    } else if (patternType == 6) {
+        // Checks
+        vec2 cell = floor(vec2(vUV.x * floor(patternScale * 2.0 + 2.0), vUV.y * patternScale));
+        mark = mod(cell.x + cell.y, 2.0);
+    } else if (patternType == 7) {
+        // Diagonal stripes
+        mark = smoothstep(0.45, 0.55, fract(vUV.x * 5.0 + vUV.y * patternScale) );
     }
     // Markings show on the back, not the belly
     return mix(colour, accentColour, mark * smoothstep(-0.2, 0.3, dorsal));
@@ -67,6 +87,21 @@ void main() {
     float shine = gloss;
     if (vPart == 0) {
         albedo = bodyColour();
+    } else if (vPart == 17) {
+        // A top, perhaps with the flag on its chest (u runs round the body, the chest at 0.25)
+        albedo = bodyColour();
+        if (flagOnTop == 1) {
+            vec2 f = vec2((vUV.x - 0.16) / 0.18, (vUV.y - 0.48) / 0.26);
+            if (f.x > 0.0 && f.x < 1.0 && f.y > 0.0 && f.y < 1.0) albedo = texture(flagTexture, f).rgb;   // stored bottom row first, as v runs up the body
+        }
+    } else if (vPart == 15) {
+        albedo = texture(productTexture, vUV).rgb;
+        shine = 0.45;
+    } else if (vPart == 16) {
+        // Hair, streaked along its strands
+        float streak = valueNoise(vec2(vUV.x * 40.0, vUV.y * 3.0));
+        albedo = hairColour * (0.75 + 0.45 * streak);
+        shine = 0.35;
     } else if (vPart == 5) {
         albedo = eyeColour;
         shine = 1.0;
@@ -77,6 +112,33 @@ void main() {
     } else if (vPart == 7) {
         albedo = trimColour;
         shine = 0.5;
+    } else if (vPart == 9) {
+        // Polished brass
+        albedo = vec3(0.80, 0.60, 0.26);
+        shine = 0.9;
+    } else if (vPart == 10) {
+        // The compass card: cream, with a ring of ticks, longer at the cardinal points
+        float rim = clamp((1.0 - vUV.y) * 4.0, 0.0, 1.0);   // 1 at the edge, 0 in the middle
+        float eighth = vUV.x * 8.0;
+        float tick = 1.0 - smoothstep(0.04, 0.09, abs(fract(eighth + 0.5) - 0.5) * (1.0 + 2.0 * rim));
+        bool cardinal = mod(floor(eighth + 0.5), 2.0) < 0.5;
+        float inner = cardinal ? 0.55 : 0.75;
+        float ring = smoothstep(0.86, 0.88, rim) * (1.0 - smoothstep(0.9, 0.92, rim));
+        float mark = max(tick * step(inner, rim) * step(rim, 0.86), ring);
+        albedo = mix(vec3(0.93, 0.9, 0.8), vec3(0.12, 0.11, 0.1), mark);
+        shine = 0.2;
+    } else if (vPart == 11) {
+        albedo = vec3(0.85, 0.12, 0.1);
+        shine = 0.6;
+    } else if (vPart == 12) {
+        albedo = vec3(0.9, 0.9, 0.92);
+        shine = 0.6;
+    } else if (vPart == 14) {
+        albedo = vec3(0.015, 0.015, 0.018);
+        shine = 0.0;
+    } else if (vPart == 13) {
+        albedo = vec3(0.62, 0.64, 0.68);
+        shine = 0.55;
     } else if (vPart == 6) {
         // Horns and pincers darken towards their tips
         albedo = mix(limbColour, limbColour * 0.25, vUV.y);
@@ -85,6 +147,11 @@ void main() {
         float joint = smoothstep(0.75, 1.0, abs(vUV.y * 2.0 - 1.0));
         albedo = mix(limbColour, limbColour * 0.45, joint);
         shine *= 0.7;
+    }
+
+    if (detailAmount > 0.0 && (vPart == 0 || vPart == 1 || vPart == 17)) {
+        float cloth = texture(detailTexture, vUV * vec2(2.0, 3.0)).r;
+        albedo *= mix(1.0, cloth * 1.08, detailAmount);
     }
 
     vec3 n = normalize(aNormal);

@@ -161,6 +161,13 @@ public class Camera {
     up.normalize();
   }
 
+  /** Moves across the ground without turning the view. */
+  public void setGroundPosition(float x, float z) {
+    this.position.x = x;
+    this.position.z = z;
+    this.target = Vector3.add(this.position, this.front);
+  }
+
   public void setHeight(float newY) {
     this.position.y = newY;
     this.target = Vector3.add(this.position, this.front);

@@ -55,7 +55,33 @@ public class TerrainMesh {
         float rawNoise5 = noise.eval(worldX * f5, worldZ * f5);
         float roughnessLayer = (1.0f - Math.abs(rawNoise5)) * a5;
 
-        return baseHeight + hillLayer + roughnessLayer;
+        return baseHeight + hillLayer + roughnessLayer + mountainRidges(worldX, worldZ, baseHeight + hillLayer, noise);
+    }
+
+    /**
+     * High ground turns mountainous: sharp ridged noise (crests where the noise crosses zero,
+     * each octave weighted by the one above so ridges branch into ridges) rising with
+     * altitude, plus fine crags near the tops. Low ground is left alone.
+     */
+    private static float mountainRidges(float worldX, float worldZ, float height, PerlinNoise noise) {
+        float t = (height - 120.0f) / 380.0f;
+        if (t <= 0.0f) return 0.0f;
+        float mask = t >= 1.0f ? 1.0f : t * t * (3.0f - 2.0f * t);
+        float total = 0.0f, weight = 1.0f;
+        float frequency = 0.0016f, amplitude = 260.0f;
+        for (int octave = 0; octave < 4; octave++) {
+            // Offsets keep each octave's pattern independent of the other layers
+            float n = noise.eval(worldX * frequency + 37.1f * (octave + 1), worldZ * frequency - 19.7f * (octave + 1));
+            float ridge = 1.0f - Math.abs(n);
+            ridge *= ridge;
+            ridge *= weight;
+            weight = Math.min(1.0f, ridge * 1.6f);
+            total += ridge * amplitude;
+            frequency *= 2.3f;
+            amplitude *= 0.5f;
+        }
+        float crags = (1.0f - Math.abs(noise.eval(worldX * 0.035f + 11.3f, worldZ * 0.035f - 5.9f))) * 10.0f;
+        return mask * (total - 80.0f + crags * mask);
     }
 
     // Calculates real normal data based on terrain elevation changes

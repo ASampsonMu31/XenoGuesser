@@ -22,7 +22,12 @@ public class RoadNetworkBuilder {
     // Highway routing grid
     private static final float ROUTING_CELL_SIZE = 400.0f;
     private static final float ROUTING_LAND_MARGIN = 3.0f;
-    private static final float SLOPE_COST = 25.0f;
+    private static final float SLOPE_COST = 60.0f;
+    // Rugged cells (steep ground within them, not just between centres) cost extra to cross
+    private static final float RUGGED_COST = 40.0f;
+    // Finished roads are nudged sideways, up to this far a pass, to ease their gradients
+    private static final float EASE_OFFSET = 30.0f;
+    private static final int EASE_PASSES = 6;
     // Following an existing highway is cheaper, so routes merge into trunk roads
     private static final float EXISTING_ROAD_COST = 0.35f;
     private static final float HEURISTIC_WEIGHT = 0.6f;
@@ -70,6 +75,7 @@ public class RoadNetworkBuilder {
 
     private final int routingResolution;
     private final float[] cellHeight;
+    private final float[] cellRugged;
     private final boolean[] cellPassable;
     private final boolean[] cellHasHighway;
     private final Map<Long, List<float[]>> highwayPointsByCell = new HashMap<>();
@@ -104,6 +110,7 @@ public class RoadNetworkBuilder {
                 this.routingResolution = (int) Math.ceil(halfRegion * 2.0f / ROUTING_CELL_SIZE);
         int cellCount = routingResolution * routingResolution;
         this.cellHeight = new float[cellCount];
+        this.cellRugged = new float[cellCount];
         this.cellPassable = new boolean[cellCount];
         this.cellHasHighway = new boolean[cellCount];
         this.routeCost = new float[cellCount];
@@ -117,6 +124,12 @@ public class RoadNetworkBuilder {
                 float height = TerrainMesh.getLayeredHeight(cellCentreX(i), cellCentreZ(j), terrainNoise);
                 cellHeight[cell] = height;
                 cellPassable[cell] = height > seaLevelHeight + ROUTING_LAND_MARGIN;
+                if (cellPassable[cell]) {
+                    float x = cellCentreX(i), z = cellCentreZ(j), d = ROUTING_CELL_SIZE * 0.35f;
+                    float gx = TerrainMesh.getLayeredHeight(x + d, z, terrainNoise) - TerrainMesh.getLayeredHeight(x - d, z, terrainNoise);
+                    float gz = TerrainMesh.getLayeredHeight(x, z + d, terrainNoise) - TerrainMesh.getLayeredHeight(x, z - d, terrainNoise);
+                    cellRugged[cell] = (float) Math.hypot(gx, gz) / (2.0f * d);
+                }
             }
         }
 
@@ -361,7 +374,7 @@ public class RoadNetworkBuilder {
         for (int pass = 0; pass < SMOOTHING_PASSES; pass++) {
             smoothed = chaikin(smoothed);
         }
-        List<float[]> resampled = resample(smoothed, ROAD_STEP);
+        List<float[]> resampled = easeGradients(resample(smoothed, ROAD_STEP), 3);
         for (RoadPath path : splitOverWater(resampled, RoadPath.RoadClass.HIGHWAY)) {
             roads.add(path);
             for (Vector3 point : path.points) {
@@ -423,7 +436,8 @@ public class RoadNetworkBuilder {
                     }
 
                     float slope = Math.abs(cellHeight[next] - cellHeight[cell]) / stepLength;
-                    float stepCost = stepLength * (1.0f + SLOPE_COST * slope * slope);
+                    float rugged = cellRugged[next];
+                    float stepCost = stepLength * (1.0f + SLOPE_COST * slope * slope + RUGGED_COST * rugged * rugged);
                     if (cellHasHighway[next]) {
                         stepCost *= EXISTING_ROAD_COST;
                     }
@@ -674,6 +688,7 @@ public class RoadNetworkBuilder {
             float turn = wrapAngle(desired - heading) * LANE_STEERING;
             turn = Math.max(-0.35f, Math.min(0.35f, turn));
             heading += turn + (random.nextFloat() - 0.5f) * LANE_WANDER;
+            heading = flattestHeading(x, z, heading);
             x += (float) Math.cos(heading) * ROAD_STEP;
             z += (float) Math.sin(heading) * ROAD_STEP;
 
@@ -1024,6 +1039,69 @@ public class RoadNetworkBuilder {
             pieces.add(current);
         }
         return pieces;
+    }
+
+    /**
+     * Of a few headings either side of the one wanted, the one that climbs or falls least
+     * over the next step, with a little preference for turning less.
+     */
+    private float flattestHeading(float x, float z, float heading) {
+        float here = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+        float best = heading, bestScore = Float.MAX_VALUE;
+        for (float offset : new float[] { 0f, 0.3f, -0.3f, 0.6f, -0.6f }) {
+            float h = heading + offset;
+            float nx = x + (float) Math.cos(h) * ROAD_STEP, nz = z + (float) Math.sin(h) * ROAD_STEP;
+            float grade = Math.abs(TerrainMesh.getLayeredHeight(nx, nz, terrainNoise) - here) / ROAD_STEP;
+            float score = grade * grade * 8.0f + Math.abs(offset) * 0.15f;
+            if (score < bestScore) {
+                bestScore = score;
+                best = h;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Nudges a road's points sideways (keeping `fixedEnds` points at each end where they are)
+     * wherever that eases the climb to and from its neighbours, so the road bends round
+     * steep ground; a small bending penalty keeps it from zigzagging.
+     */
+    private List<float[]> easeGradients(List<float[]> points, int fixedEnds) {
+        int n = points.size();
+        if (n < fixedEnds * 2 + 1) return points;
+        float[][] p = points.toArray(new float[0][]);
+        float[] h = new float[n];
+        for (int i = 0; i < n; i++) h[i] = TerrainMesh.getLayeredHeight(p[i][0], p[i][1], terrainNoise);
+        for (int pass = 0; pass < EASE_PASSES; pass++) {
+            for (int i = fixedEnds; i < n - fixedEnds; i++) {
+                float[] a = p[i - 1], c = p[i + 1];
+                float tx = c[0] - a[0], tz = c[1] - a[1];
+                float tl = (float) Math.hypot(tx, tz);
+                if (tl < 1e-3f) continue;
+                float nx = -tz / tl, nz = tx / tl;
+                float midX = (a[0] + c[0]) * 0.5f, midZ = (a[1] + c[1]) * 0.5f;
+                float bestX = p[i][0], bestZ = p[i][1], bestH = h[i];
+                float bestScore = Float.MAX_VALUE;
+                for (float offset : new float[] { 0f, -EASE_OFFSET * 0.5f, EASE_OFFSET * 0.5f, -EASE_OFFSET, EASE_OFFSET }) {
+                    float x = p[i][0] + nx * offset, z = p[i][1] + nz * offset;
+                    float height = offset == 0f ? h[i] : TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+                    if (height <= seaLevelHeight + 1.0f) continue;
+                    float la = (float) Math.hypot(x - a[0], z - a[1]), lc = (float) Math.hypot(x - c[0], z - c[1]);
+                    float ga = Math.abs(height - h[i - 1]) / Math.max(1f, la), gc = Math.abs(h[i + 1] - height) / Math.max(1f, lc);
+                    float bend = (float) Math.hypot(x - midX, z - midZ) / ROAD_STEP;
+                    float score = (ga * ga * la + gc * gc * lc) * 10.0f + bend * bend * 6.0f;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestX = x;
+                        bestZ = z;
+                        bestH = height;
+                    }
+                }
+                p[i] = new float[] { bestX, bestZ };
+                h[i] = bestH;
+            }
+        }
+        return new ArrayList<>(java.util.Arrays.asList(p));
     }
 
     private Vector3 groundPoint(float x, float z) {

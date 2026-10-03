@@ -4,6 +4,10 @@ import javax.swing.JFrame;
 import javax.swing.JPanel;
 import javax.swing.JLayeredPane;
 import javax.swing.SwingUtilities;
+import javax.swing.text.JTextComponent;
+import java.awt.image.BufferedImage;
+import java.util.HashSet;
+import java.util.Set;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.awt.GLCanvas; 
 import com.jogamp.opengl.util.FPSAnimator;
@@ -22,17 +26,39 @@ public class XenoGuesser extends JFrame {
   private Point lockedWindowPosition = null;
   private Point permanentWindowPosition = null;
 
-  private CompassHUD compassHUD;
+  // Mouse look: while the game has the mouse its pointer is hidden and kept near the middle
+  // of the view, and every movement turns the view. The large map, the results and the
+  // settings give the pointer back.
+  private static final float LOOK_SENSITIVITY = 0.0012f;
+  private static final int RECENTRE_DISTANCE = 80;
+  private Robot robot;
+  private Cursor hiddenCursor;
+  private boolean mouseCaptured;
+  private Point lastMouse;
+  private Camera camera;
+  private MyKeyboardInput keyboardInput;
+  private SettingsMenu settingsMenu;
+  private boolean settingsOpen;
+  private volatile boolean inGame;
+  private final Set<Integer> keysDown = new HashSet<>();
 
   private final long worldSeed;
   private final LoadingProgress loadingProgress = new LoadingProgress();
   private LoadingScreen loadingScreen;
+  private MainMenu mainMenu;
+  private KeyAdapter escapeQuitListener;
   private JLayeredPane layeredPane;
   private MapPanel minimap;
   private GameHUD gameHUD;
 
   public static void main(String[] args) {
     RunFiles.prepare();
+    // Keep the loading screen smooth: GL work runs on the animator's own thread rather than
+    // the UI thread that draws the screen, and the background generators leave a core free
+    com.jogamp.opengl.Threading.disableSingleThreading();
+    int spare = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+    System.setProperty("ai.djl.pytorch.num_threads", Integer.toString(spare));
+    System.setProperty("ai.djl.pytorch.num_interop_threads", "1");
     SwingUtilities.invokeLater(new Runnable() {
         @Override
         public void run() {
@@ -78,9 +104,9 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.awt.noerasebackground", "true"); 
     System.setProperty("sun.java2d.noddraw", "true");
 
-    // 3. The loading screen covers everything from launch until the round's first frame
-    loadingScreen = new LoadingScreen(loadingProgress, worldSeed);
-    layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
+    // 3. The main menu first; the loading screen then covers everything until the round's first frame
+    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
 
     this.addComponentListener(new ComponentAdapter() {
         @Override
@@ -116,16 +142,60 @@ public class XenoGuesser extends JFrame {
     KeyAdapter escapeQuitListener = new KeyAdapter() {
         @Override
         public void keyPressed(KeyEvent e) {
-            if (e.getKeyCode() == KeyEvent.VK_ESCAPE) {
+            // Until the game starts Esc quits; after that it opens the settings
+            if (e.getKeyCode() == KeyEvent.VK_ESCAPE && !inGame) {
                 shutdownGame();
             }
         }
     };
     this.addKeyListener(escapeQuitListener);
+    this.escapeQuitListener = escapeQuitListener;
 
-    // 4. Everything that doesn't need the GL context is generated off the UI thread
+    // Developer aid: -Dxenoguesser.skipmenu (or taking the menu's picture) goes straight to loading
+    if (System.getProperty("xenoguesser.skipmenu") != null || System.getProperty("xenoguesser.menushot") != null) {
+      startSingleplayer();
+    }
+  }
+
+  /**
+   * Play Multiplayer: not available yet. The cockpit plays the multiplayer message while
+   * trying to reach the partner pod, then says it's coming soon and returns to the menu.
+   */
+  private void startMultiplayer() {
+    if (loadingScreen != null) return;
+    LoadingScreen[] holder = new LoadingScreen[1];
+    LoadingScreen preview = new LoadingScreen(new LoadingProgress(), worldSeed, true, () -> backToMenu(holder[0]));
+    holder[0] = preview;
+    loadingScreen = preview;
+    preview.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+    layeredPane.add(preview, JLayeredPane.DRAG_LAYER);
+    layeredPane.remove(mainMenu);
+    layeredPane.repaint();
+  }
+
+  private void backToMenu(LoadingScreen preview) {
+    layeredPane.remove(preview);
+    loadingScreen = null;
+    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    mainMenu.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+    layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
+    layeredPane.repaint();
+  }
+
+  /** Play Singleplayer: the loading screen replaces the menu while a world is generated. */
+  private void startSingleplayer() {
+    if (loadingScreen != null) return;
+    loadingScreen = new LoadingScreen(loadingProgress, worldSeed);
+    loadingScreen.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+    layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
+    layeredPane.remove(mainMenu);
+    layeredPane.repaint();
+    requestFocus();
+
+    // Everything that doesn't need the GL context is generated off the UI thread
     Thread worldGeneration = new Thread(() -> generateWorld(escapeQuitListener), "world-generation");
     worldGeneration.setDaemon(true);
+    worldGeneration.setPriority(Thread.NORM_PRIORITY - 2);
     worldGeneration.start();
   }
 
@@ -190,13 +260,15 @@ public class XenoGuesser extends JFrame {
     glEventListener = listener;
 
     GLCapabilities glcapabilities = new GLCapabilities(GLProfile.get(GLProfile.GL3));
+    // JOGL asks for a 16-bit depth buffer by default, too coarse for close, thin parts
+    glcapabilities.setDepthBits(24);
     canvas = new GLCanvas(glcapabilities); 
     canvas.setBackground(Color.BLACK); 
 
     gameHUD = new GameHUD();
     glEventListener.setGameHUD(gameHUD);
-    
-    compassHUD = new CompassHUD();
+    this.camera = camera;
+    this.keyboardInput = keyboardInput;
 
     minimap = new MapPanel(
       750,
@@ -205,52 +277,215 @@ public class XenoGuesser extends JFrame {
       seaLevelHeight,
       worldNoise,
       physicalChunkSize,
-      glEventListener,
-      compassHUD
+      glEventListener
     );
 
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
     glEventListener.setMinimap(minimap);
-    glEventListener.setCompassHUD(compassHUD);
     glEventListener.setLoading(loadingProgress, this::onWorldReady);
+    minimap.setOnSizeChanged(this::onMapChanged);
+
+    settingsMenu = new SettingsMenu(() -> setSettingsOpen(false), this::shutdownGame);
 
     canvas.addGLEventListener(glEventListener);
-    canvas.addMouseMotionListener(new MyMouseInput(camera, minimap)); 
-    canvas.addKeyListener(keyboardInput);
-    canvas.addKeyListener(escapeQuitListener);
+    installControls();
 
-    layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);   
-    layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);  
-    layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);       
-    layeredPane.add(compassHUD, JLayeredPane.MODAL_LAYER);
+    layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);
+    layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);
+    layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);
+    layeredPane.add(settingsMenu, JLayeredPane.POPUP_LAYER);
     layoutComponents();
 
     animator = new FPSAnimator(canvas, 60);
     animator.start();
   }
 
-  /** Called on the UI thread once the first frame of the round has been drawn. */
+  /** Called on the UI thread once the first frame of the round has been drawn; the player then chooses when to start. */
   private void onWorldReady() {
+    // A HUD test run goes straight in
+    if (System.getProperty("xenoguesser.hudtest") != null) enterGame();
+    else loadingScreen.setWorldReady(this::enterGame);
+  }
+
+  private void enterGame() {
     loadingScreen.stop();
     layeredPane.remove(loadingScreen);
     layeredPane.repaint();
     canvas.requestFocus();
+    inGame = true;
+    runHudTest();
+    updateMouseMode();
+  }
+
+  /**
+   * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, M enlarges
+   * or shrinks the map, C uses the compass and Esc opens the settings. Mouse
+   * movement anywhere in the window turns the view while the game has the mouse.
+   */
+  private void installControls() {
+    try {
+      robot = new Robot();
+    } catch (AWTException e) {
+      System.err.println("Mouse look unavailable: " + e.getMessage());
+    }
+    hiddenCursor = Toolkit.getDefaultToolkit().createCustomCursor(
+        new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), new Point(0, 0), "hidden");
+
+    KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(e -> {
+      if (!inGame) return false;
+      if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof JTextComponent) return false;
+      int code = e.getKeyCode();
+      if (e.getID() == KeyEvent.KEY_PRESSED) {
+        boolean firstPress = keysDown.add(code);   // ignore key repeat
+        if (code == KeyEvent.VK_ESCAPE) {
+          if (firstPress) setSettingsOpen(!settingsOpen);
+          return true;
+        }
+        if (settingsOpen) return true;
+        if (firstPress) {
+          switch (code) {
+            case KeyEvent.VK_M: minimap.toggleSize(); break;
+            case KeyEvent.VK_SPACE: glEventListener.jump(); break;
+            case KeyEvent.VK_C:
+              if (!minimap.isFullScreenRevealMode()) glEventListener.useCompass();
+              break;
+            default: break;
+          }
+        }
+        keyboardInput.keyPressed(e);
+      } else if (e.getID() == KeyEvent.KEY_RELEASED) {
+        keysDown.remove(code);
+        keyboardInput.keyReleased(e);
+      }
+      return false;
+    });
+
+    Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
+      if (!mouseCaptured) return;
+      MouseEvent e = (MouseEvent) event;
+      if (e.getID() != MouseEvent.MOUSE_MOVED && e.getID() != MouseEvent.MOUSE_DRAGGED) return;
+      Point p = e.getLocationOnScreen();
+      if (lastMouse != null) {
+        int dx = p.x - lastMouse.x, dy = p.y - lastMouse.y;
+        if (dx != 0 || dy != 0) glEventListener.look(dx * LOOK_SENSITIVITY, -dy * LOOK_SENSITIVITY);
+      }
+      lastMouse = p;
+      Point centre = viewCentreOnScreen();
+      if (robot != null && (Math.abs(p.x - centre.x) > RECENTRE_DISTANCE || Math.abs(p.y - centre.y) > RECENTRE_DISTANCE)) {
+        // The jump back is not a movement: the next position read starts afresh
+        robot.mouseMove(centre.x, centre.y);
+        lastMouse = null;
+      }
+    }, AWTEvent.MOUSE_MOTION_EVENT_MASK);
+
+    addWindowFocusListener(new WindowAdapter() {
+      @Override
+      public void windowGainedFocus(WindowEvent e) {
+        updateMouseMode();
+      }
+
+      @Override
+      public void windowLostFocus(WindowEvent e) {
+        keysDown.clear();
+        keyboardInput.releaseAll();
+        updateMouseMode();
+      }
+    });
+  }
+
+  private Point viewCentreOnScreen() {
+    Point origin = canvas.getLocationOnScreen();
+    return new Point(origin.x + canvas.getWidth() / 2, origin.y + canvas.getHeight() / 2);
+  }
+
+  /** Takes or gives back the mouse to suit what is on screen. */
+  private void updateMouseMode() {
+    if (canvas == null || !canvas.isShowing()) return;
+    boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode();
+    boolean capture = inGame && !pointerNeeded && isFocused() && robot != null;
+    if (capture == mouseCaptured) return;
+    mouseCaptured = capture;
+    lastMouse = null;
+    Cursor cursor = capture ? hiddenCursor : Cursor.getDefaultCursor();
+    setCursor(cursor);
+    canvas.setCursor(cursor);
+    if (robot == null || !isFocused()) return;
+    if (capture) {
+      Point centre = viewCentreOnScreen();
+      robot.mouseMove(centre.x, centre.y);
+    } else if (minimap.isLargeMap() && !settingsOpen) {
+      // The pointer appears over the middle of the map, ready to place a marker
+      Point origin = minimap.getLocationOnScreen();
+      robot.mouseMove(origin.x + minimap.getWidth() / 2, origin.y + minimap.getHeight() / 2);
+    }
+  }
+
+  private void onMapChanged() {
+    gameHUD.setVisible(minimap.isFullScreenRevealMode());
+    updateMouseMode();
+  }
+
+  private void setSettingsOpen(boolean open) {
+    settingsOpen = open;
+    settingsMenu.setVisible(open);
+    if (open) {
+      keysDown.removeIf(k -> k != KeyEvent.VK_ESCAPE);
+      keyboardInput.releaseAll();
+    }
+    glEventListener.setMenuOpen(open);
+    updateMouseMode();
+    layeredPane.repaint();
+  }
+
+  /**
+   * Developer aid: -Dxenoguesser.hudtest=large,compass,settings,shot sets the HUD up
+   * once the game starts, and "shot" saves a picture of the whole window a moment later.
+   */
+  private void runHudTest() {
+    String test = System.getProperty("xenoguesser.hudtest");
+    if (test == null) return;
+    // A test run leaves the mouse alone
+    robot = null;
+    for (String step : test.split(",")) {
+      switch (step.trim()) {
+        case "large": minimap.toggleSize(); break;
+        case "compass": {
+          javax.swing.Timer later = new javax.swing.Timer(1200, e -> glEventListener.useCompass());
+          later.setRepeats(false);
+          later.start();
+          break;
+        }
+        case "settings": setSettingsOpen(true); break;
+        default: break;
+      }
+    }
+    if (test.contains("shot")) {
+      javax.swing.Timer shot = new javax.swing.Timer(2600, e -> {
+        try {
+          Rectangle area = new Rectangle(getLocationOnScreen(), getSize());
+          javax.imageio.ImageIO.write(new Robot().createScreenCapture(area), "png",
+              new java.io.File(RunFiles.WORLD_DIR, "window_shot.png"));
+        } catch (Exception ex) {
+          ex.printStackTrace();
+        }
+      });
+      shot.setRepeats(false);
+      shot.start();
+    }
   }
 
   private void layoutComponents() {
     int paneWidth = layeredPane.getWidth();
     int paneHeight = layeredPane.getHeight();
-    loadingScreen.setBounds(0, 0, paneWidth, paneHeight);
+    if (mainMenu != null) mainMenu.setBounds(0, 0, paneWidth, paneHeight);
+    if (loadingScreen != null) loadingScreen.setBounds(0, 0, paneWidth, paneHeight);
     if (canvas == null) return;
 
     canvas.setBounds(0, 0, paneWidth - 2, paneHeight - 2);
     updateMinimapBounds(layeredPane, minimap);
-    gameHUD.setBounds(0, 0, gameHUD.getWidth(), gameHUD.getHeight());
-    
-    int compassW = compassHUD.getPreferredSize().width;
-    int compassH = compassHUD.getPreferredSize().height;
-    compassHUD.setBounds(0, paneHeight - compassH - 2, compassW, compassH);
+    gameHUD.setBounds(HudStyle.HUD_MARGIN, HudStyle.HUD_MARGIN, gameHUD.getWidth(), gameHUD.getHeight());
+    settingsMenu.setBounds((paneWidth - SettingsMenu.W) / 2, (paneHeight - SettingsMenu.H) / 2, SettingsMenu.W, SettingsMenu.H);
   }
 
   public void lockWindowDragging() {
@@ -301,39 +536,5 @@ public class XenoGuesser extends JFrame {
 
   public boolean getIsDebugModeActive() {
     return IS_DEBUG_MODE_ACTIVE;
-  }
-
-  class MyMouseInput extends MouseMotionAdapter {
-    private Point lastpoint;
-    private Camera camera;
-    private MapPanel minimap; 
-    
-    public MyMouseInput(Camera camera, MapPanel minimap) {
-        this.camera = camera;
-        this.minimap = minimap;
-    }
-        
-    @Override
-    public void mouseDragged(MouseEvent e) {
-        Point ms = e.getPoint();
-        if (minimap != null && minimap.isFullScreenRevealMode()) {
-            lastpoint = ms; 
-            return; 
-        }
-        
-        float sensitivity = 0.001f;
-        float dx = (float) (ms.x - lastpoint.x) * sensitivity;
-        float dy = (float) (ms.y - lastpoint.y) * sensitivity;
-        
-        if (e.getModifiersEx() == MouseEvent.BUTTON1_DOWN_MASK) {
-            camera.updateYawPitch(-dx, dy);
-        }
-        lastpoint = ms;
-    }
-
-    @Override
-    public void mouseMoved(MouseEvent e) {   
-        lastpoint = e.getPoint(); 
-    }
   }
 }

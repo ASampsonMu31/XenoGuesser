@@ -65,7 +65,6 @@ public class InfrastructureManager {
     private static final float BUILDING_MAX_GROUND_DROP = 25.0f;
     private static final float BUILDING_FOUNDATION_DEPTH = 3.0f;
         private static final float DOOR_OFFSET = 0.5f;
-    private static final float GLASS_OFFSET = 0.35f;
     private static final float FRAME_OFFSET = 0.2f;
     private static final float PLOT_INDEX_CELL = 250.0f;
 
@@ -97,6 +96,31 @@ public class InfrastructureManager {
     private final List<RoadSegment> landSegments = new ArrayList<>();
     private final Map<Long, List<RoadSegment>> roadSegmentsByChunk = new HashMap<>();
     private final List<House> houses = new ArrayList<>();
+    private final Map<Integer, FlagDesigner.Spec> flags;
+    // Each nation's writing, and the goods in its shops
+    private NationScripts scripts;
+    private Products products;
+    // Shops: some of the buildings in the middle of towns
+    private final List<Shop> shops = new ArrayList<>();
+    private final Map<Integer, Vector3[]> shopColours = new HashMap<>();
+    private final Map<Long, Object[]> goodsGeometry = new java.util.concurrent.ConcurrentHashMap<>();
+    private RoadRoutes routes;
+    // How proudly each nation flies its flag, 0 to 1: how often flags appear on houses,
+    // flagpoles and signs
+    private final Map<Integer, Float> patriotism = new HashMap<>();
+    // Maps for signs are drawn here, off the GL thread
+    private static final java.util.concurrent.ExecutorService SIGN_MAP_ARTIST = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "sign-map-artist");
+        thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY);
+        return thread;
+    });
+    private final float windAngle;
+    // Solid shapes recorded as each chunk is built, for collision: {kind, ax, az, bx, bz, size}
+    // per shape, kind 0 a wall/fence/rail segment of half-width size, 1 a post of radius size.
+    // The world never changes, so a chunk's shapes stay valid after its meshes are dropped.
+    private final Map<Long, float[]> obstaclesByChunk = new java.util.concurrent.ConcurrentHashMap<>();
+    private List<float[]> recording;
     private final Map<Long, List<House>> housesByChunk = new HashMap<>();
     private float maxHouseReach;
     private float maxPlotReach;
@@ -183,6 +207,7 @@ public class InfrastructureManager {
         private boolean sharedRight;
         private float[] paddock;
         private Doorway doorway;
+        private Shop shop;
 
 
         private float plotCentreLocalX() {
@@ -206,6 +231,22 @@ public class InfrastructureManager {
 
         private float houseMaxX() {
             return width * 0.5f + (extensionSide > 0 ? extensionWidth : 0.0f);
+        }
+    }
+
+    /** A shop: a building in a town centre with a shop front, its name over it and goods in its windows. */
+    public static final class Shop {
+        private final House house;
+        public final int nationId;
+        public final int colour;
+        public final boolean grocer;
+        private int[] name;
+
+        private Shop(House house, Random rand) {
+            this.house = house;
+            this.nationId = house.nationId;
+            this.colour = rand.nextInt(4);
+            this.grocer = rand.nextFloat() < 0.5f;
         }
     }
 
@@ -249,6 +290,28 @@ public class InfrastructureManager {
         BuildingStyle.assignWallVariants(seed, buildingStyles, wallVariants, kinship);
         this.guardRailStyles = GuardRailStyle.generateForNations(seed, numNations);
         this.fenceStyles = FenceStyle.generateForNations(seed, numNations, kinship);
+        this.flags = FlagDesigner.design(seed, numNations, kinship);
+        this.scripts = new NationScripts(seed, numNations);
+        this.products = new Products(seed, numNations, kinship);
+        for (int n = 1; n <= numNations; n++) {
+            // Shop fronts are painted in strong colours, unlike the houses round them
+            Random paint = new Random(seed * 29L + n * 101L);
+            Vector3[] colours = new Vector3[4];
+            float hue = paint.nextFloat();
+            for (int k = 0; k < 4; k++) {
+                float[] c = WorldPalette.hsv(hue + k * 0.25f + (paint.nextFloat() - 0.5f) * 0.1f, 0.45f + paint.nextFloat() * 0.4f,
+                        0.45f + paint.nextFloat() * 0.45f);
+                colours[k] = new Vector3(c[0], c[1], c[2]);
+            }
+            shopColours.put(n, colours);
+        }
+        for (int n = 1; n <= numNations; n++) {
+            // Most nations are fairly reserved; a few fly flags everywhere
+            float roll = new Random(seed * 53L + n * 977L).nextFloat();
+            patriotism.put(n, 0.05f + 0.95f * (float) Math.pow(roll, 1.4));
+        }
+        // The wind that every flag in this world flies in
+        this.windAngle = new Random(seed * 71L + 5L).nextFloat() * (float) Math.PI * 2;
                 this.formVariants = BuildingStyle.generateFormVariants(seed);
         BuildingStyle.assignFormWeights(seed, buildingStyles, formVariants, kinship);
         for (Map.Entry<Integer, BuildingStyle> entry : buildingStyles.entrySet()) {
@@ -269,6 +332,13 @@ public class InfrastructureManager {
     }
 
         /** Texture name for a nation's walls, roofs or fences ("wall", "roof" or "fence"). */
+    /** This world's curtain fabrics: soft, fairly muted colours, a different set each world. */
+    private Vector3 curtainColour(int k) {
+        Random rand = new Random(worldSeed * 43L + k * 7919L);
+        float[] c = WorldPalette.hsv(rand.nextFloat(), 0.3f + 0.4f * rand.nextFloat(), 0.4f + 0.45f * rand.nextFloat());
+        return new Vector3(c[0], c[1], c[2]);
+    }
+
     public static String nationTextureName(String part, int nationId) {
         return part + "_nation" + nationId;
     }
@@ -295,6 +365,22 @@ public class InfrastructureManager {
             int nation = entry.getKey();
             FenceStyle style = entry.getValue();
             jobs.put(nationTextureName("fence", nation), () -> ArchitectureTextures.fence(worldSeed * 37L + nation, style));
+        }
+        for (Map.Entry<Integer, FlagDesigner.Spec> entry : flags.entrySet()) {
+            FlagDesigner.Spec spec = entry.getValue();
+            int nation = entry.getKey();
+            jobs.put(nationTextureName("flag", nation), () -> FlagDesigner.render(spec));
+            jobs.put(nationTextureName("packaging", nation), () -> {
+                java.awt.image.BufferedImage art = PackagingArt.render(worldSeed, nation, products,
+                        scripts.glyphs(nation), scripts.direction(nation), FlagDesigner.render(spec), patriotismOf(nation));
+                if (System.getProperty("xenoguesser.dumpart") != null) {
+                    try {
+                        javax.imageio.ImageIO.write(art, "png", new java.io.File(WorldArtGenerator.OUTPUT_DIR, "packaging_" + nation + ".png"));
+                    } catch (java.io.IOException ignored) {
+                    }
+                }
+                return art;
+            });
         }
         return jobs;
     }
@@ -387,6 +473,57 @@ public class InfrastructureManager {
             this.urbanness = urbanness;
             this.id = id;
         }
+    }
+
+    /**
+     * A way on foot along a road from near (ax, az) to near (bx, bz): points just inside the
+     * road's edge on A's side, following the road's bends, so walkers keep to the street
+     * rather than cutting across gardens. Empty if the road isn't known.
+     */
+    public List<float[]> streetWalk(int path, float ax, float az, float bx, float bz) {
+        List<float[]> points = new ArrayList<>();
+        List<RoadSegment> all = segmentsByPath.get(path);
+        if (all == null) return points;
+        List<RoadSegment> segs = new ArrayList<>();
+        for (RoadSegment segment : all) if (!segment.culDeSac) segs.add(segment);
+        if (segs.isEmpty()) return points;
+        int ia = nearestSegment(segs, ax, az), ib = nearestSegment(segs, bx, bz);
+        RoadSegment first = segs.get(ia);
+        float[] onA = nearestOnSegment(ax, az, first);
+        float dirX = first.end.x - first.start.x, dirZ = first.end.z - first.start.z;
+        float side = dirX * (az - onA[1]) - dirZ * (ax - onA[0]) >= 0f ? 1f : -1f;
+        points.add(walkPoint(first, ax, az, side));
+        if (ia < ib) {
+            for (int k = ia; k < ib; k++) points.add(walkPoint(segs.get(k), segs.get(k).end.x, segs.get(k).end.z, side));
+        } else {
+            for (int k = ia; k > ib; k--) points.add(walkPoint(segs.get(k), segs.get(k).start.x, segs.get(k).start.z, side));
+        }
+        points.add(walkPoint(segs.get(ib), bx, bz, side));
+        return points;
+    }
+
+    private static int nearestSegment(List<RoadSegment> segs, float x, float z) {
+        int best = 0;
+        float bestDistance = Float.MAX_VALUE;
+        for (int i = 0; i < segs.size(); i++) {
+            float[] p = nearestOnSegment(x, z, segs.get(i));
+            float d = (p[0] - x) * (p[0] - x) + (p[1] - z) * (p[1] - z);
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /** The point on a segment nearest (x, z), moved out to just inside the road edge on one side. */
+    private static float[] walkPoint(RoadSegment segment, float x, float z, float side) {
+        float[] on = nearestOnSegment(x, z, segment);
+        float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
+        float length = (float) Math.sqrt(dx * dx + dz * dz);
+        if (length < 1e-4f) return on;
+        float offset = Math.max(1.5f, segment.width * 0.5f - 2.5f) * side;
+        return new float[] { on[0] - dz / length * offset, on[1] + dx / length * offset };
     }
 
     /** Every house's doorway with its centre inside the rectangle. */
@@ -511,6 +648,7 @@ public class InfrastructureManager {
         long startTime = System.currentTimeMillis();
         placeHouses();
         System.out.printf("[HOUSES] %d houses placed along the roads in %d ms%n", houses.size(), System.currentTimeMillis() - startTime);
+        chooseShops();
         for (List<RoadSegment> bucket : roadSegmentsByChunk.values()) {
             for (RoadSegment segment : bucket) {
                                 boolean playable = Math.abs(segment.start.x) < regionWidth * 0.5f && Math.abs(segment.start.z) < regionWidth * 0.5f;
@@ -555,6 +693,71 @@ public class InfrastructureManager {
      * A random point on a road over dry land, for spawning the player.
      * Returns {x, z, directionX, directionZ}, or null if the world has no roads.
      */
+    // Kept free of signs: where the landing pod stands this round {x, z, radius}
+    private volatile float[] keepClear;
+
+    /** Nothing new (signs) is put within radius of (x, z); for the landing pod. */
+    public void setKeepClear(float x, float z, float radius) {
+        keepClear = new float[] { x, z, radius };
+    }
+
+    private boolean inKeepClear(float x, float z) {
+        float[] k = keepClear;
+        return k != null && (x - k[0]) * (x - k[0]) + (z - k[1]) * (z - k[1]) < k[2] * k[2];
+    }
+
+    /**
+     * Somewhere for the landing pod to have come down: near a road (on it now and then, but
+     * usually a little way off to one side), clear of every house, garden and fence, on dry
+     * land. Returns {spawnX, spawnZ, dirX, dirZ}: where the player stands on its stairs and
+     * the way the stairs face, towards the road. Null if nowhere suitable turns up.
+     *
+     * @param standsAt   distance from the pod's middle to where the player stands
+     * @param reach      how far the pod and its stairs reach from its middle
+     * @param dryLand    whether a point is above the sea
+     */
+    public float[] landingSite(Random rand, float standsAt, float reach, java.util.function.BiPredicate<Float, Float> dryLand) {
+        if (landSegments.isEmpty()) return null;
+        for (int attempt = 0; attempt < 400; attempt++) {
+            RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
+            if (segment.railed) continue;   // not over a guard rail
+            float t = rand.nextFloat();
+            float rx = segment.start.x + (segment.end.x - segment.start.x) * t;
+            float rz = segment.start.z + (segment.end.z - segment.start.z) * t;
+            float alongX = (segment.end.x - segment.start.x) / segment.length;
+            float alongZ = (segment.end.z - segment.start.z) / segment.length;
+            float side = rand.nextBoolean() ? 1f : -1f;
+            float acrossX = -alongZ * side, acrossZ = alongX * side;
+            float cx, cz, dirX, dirZ;
+            if (rand.nextFloat() < 0.2f) {
+                // Down on the road itself, stairs along it
+                cx = rx;
+                cz = rz;
+                dirX = alongX * side;
+                dirZ = alongZ * side;
+            } else {
+                // Off to one side, stairs towards the road
+                float off = segment.width * 0.5f + reach * 0.75f + rand.nextFloat() * 45f;
+                cx = rx + acrossX * off;
+                cz = rz + acrossZ * off;
+                dirX = -acrossX;
+                dirZ = -acrossZ;
+            }
+            float sx = cx + dirX * standsAt, sz = cz + dirZ * standsAt;
+            float fx = cx + dirX * reach, fz = cz + dirZ * reach;
+            if (isPlotLocation(cx, cz, reach) || isPlotLocation(sx, sz, 8f) || isPlotLocation(fx, fz, 8f)) continue;
+            if (!dryLand.test(cx, cz) || !dryLand.test(sx, sz) || !dryLand.test(fx, fz)) continue;
+            boolean feetDry = true;
+            for (int leg = 0; leg < 4 && feetDry; leg++) {
+                double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
+                feetDry = dryLand.test(cx + (float) Math.cos(a) * 36f, cz + (float) Math.sin(a) * 36f);
+            }
+            if (!feetDry) continue;
+            return new float[] { sx, sz, dirX, dirZ };
+        }
+        return null;
+    }
+
     public float[] randomRoadPoint(Random rand) {
         if (landSegments.isEmpty()) {
             return null;
@@ -1091,11 +1294,12 @@ public class InfrastructureManager {
                     continue;
                 }
                 String part = entry.getKey();
-                boolean doubleSided = part.equals("rail") || part.equals("band") || part.equals("fence") || part.equals("security");
+                boolean doubleSided = part.equals("rail") || part.equals("band") || part.equals("fence") || part.equals("security")
+                        || part.startsWith("curtain") || part.equals("flag") || part.equals("goods");
                                 boolean paint = part.equals("line");
                 Material material = material(part, nationId);
                 parts.add(new InfrastructureObject.BatchPart(entry.getValue().vertexArray(), entry.getValue().indexArray(),
-                        material, doubleSided, paint, material.diffuseMapExists()));
+                        material, doubleSided, paint, material.diffuseMapExists(), part.equals("glass")));
             }
             if (parts.isEmpty() || minX > maxX) {
                 return null;
@@ -1117,19 +1321,33 @@ public class InfrastructureManager {
         List<float[]> signPositions = new ArrayList<>();
         Map<Integer, NationBatch> batches = new HashMap<>();
         long key = chunkKey(cx, cz);
+        recording = new ArrayList<>();
 
         List<House> chunkHouses = housesByChunk.get(key);
         if (chunkHouses != null) {
             for (House house : chunkHouses) {
                 NationBatch batch = batches.computeIfAbsent(house.nationId, NationBatch::new);
-                bakeHouse(batch, house);
+                bakeHouse(batch, house, objects);
                 if (house.fenced) {
                     bakeFence(batch, house);
                 }
+                // In town, a tall flagpole at the front corner of some plots
+                float urban = settlementManager.getUrbanness(house.x, house.z);
+                Random poleRand = new Random(house.seed ^ 0x9013L);
+                if (urban > 0.25f && poleRand.nextFloat() < patriotismOf(house.nationId) * 0.45f * urban) {
+                    float side = poleRand.nextBoolean() ? 1f : -1f;
+                    float[] at = localToWorld(house.x, house.z, house.rotationY,
+                            side > 0 ? house.plotMaxX - 4f : house.plotMinX + 4f, house.plotMaxZ - 4f);
+                    if (!inKeepClear(at[0], at[1]) && !isRoadLocation(at[0], at[1], 2f)) {
+                        flagpole(batch, house.nationId, at[0], at[1], 40f + poleRand.nextFloat() * 14f);
+                    }
+                }
                 if (signRand.nextDouble() < buildingStyles.get(house.nationId).signChance) {
                     InfrastructureObject sign = createHouseSign(house, signRand);
+                    if (sign != null && inKeepClear(sign.position.x, sign.position.z)) sign = null;
                     if (sign != null) {
                         objects.add(sign);
+                        recordSignPosts(sign);
                         signPositions.add(new float[] { sign.position.x, sign.position.z });
                     }
                 }
@@ -1146,8 +1364,10 @@ public class InfrastructureManager {
                 }
                 appendRoadSegment(batch, segment);
                 InfrastructureObject sign = tryCreateRoadsideSign(segment, signRand, signPositions);
+                if (sign != null && inKeepClear(sign.position.x, sign.position.z)) sign = null;
                 if (sign != null) {
                     objects.add(sign);
+                    recordSignPosts(sign);
                     signPositions.add(new float[] { sign.position.x, sign.position.z });
                 }
             }
@@ -1159,7 +1379,49 @@ public class InfrastructureManager {
                 objects.add(object);
             }
         }
+        float[] packed = new float[recording.size() * 7];
+        for (int i = 0; i < recording.size(); i++) System.arraycopy(recording.get(i), 0, packed, i * 7, 7);
+        obstaclesByChunk.put(key, packed);
+        recording = null;
         return objects;
+    }
+
+    private void recordSegment(float ax, float az, float bx, float bz, float halfWidth) {
+        recordSegment(ax, az, bx, bz, halfWidth, Float.POSITIVE_INFINITY);
+    }
+
+    /** A solid line standing top high above the ground (for jumping over). */
+    private void recordSegment(float ax, float az, float bx, float bz, float halfWidth, float top) {
+        if (recording != null) recording.add(new float[] { 0f, ax, az, bx, bz, halfWidth, top });
+    }
+
+    /** A sign stands on two posts either side of its board, which is up out of the way. */
+    private void recordSignPosts(InfrastructureObject sign) {
+        for (com.xenoguesser.math.Matrix4 post : new com.xenoguesser.math.Matrix4[] { sign.leftPostMatrix, sign.rightPostMatrix }) {
+            if (post == null) continue;
+            float[] m = post.toFloatArrayForGLSL();
+            recordCircle(m[12], m[14], 0.9f);
+        }
+    }
+
+    private void recordCircle(float x, float z, float radius) {
+        if (recording != null) recording.add(new float[] { 1f, x, z, 0f, 0f, radius, Float.POSITIVE_INFINITY });
+    }
+
+    /** Walls, fences, guard rails and sign posts near a point, from the chunks built so far. */
+    public void obstaclesNear(float x, float z, float reach, Collision.Sink sink) {
+        // A chunk's shapes can reach past its edge (fences round a plot, a rail along a road)
+        float margin = reach + 120f;
+        for (int cz = chunkIndex(z - margin); cz <= chunkIndex(z + margin); cz++) {
+            for (int cx = chunkIndex(x - margin); cx <= chunkIndex(x + margin); cx++) {
+                float[] shapes = obstaclesByChunk.get(chunkKey(cx, cz));
+                if (shapes == null) continue;
+                for (int i = 0; i < shapes.length; i += 7) {
+                    if (shapes[i] == 0f) sink.segment(shapes[i + 1], shapes[i + 2], shapes[i + 3], shapes[i + 4], shapes[i + 5], shapes[i + 6]);
+                    else sink.circle(shapes[i + 1], shapes[i + 2], shapes[i + 5], shapes[i + 6]);
+                }
+            }
+        }
     }
 
         /**
@@ -1209,6 +1471,27 @@ public class InfrastructureManager {
                     return new Material(building.doorColour, building.doorColour, specular, 2.0f);
                 case "glass":
                     return new Material(building.glassColour, building.glassColour, new Vector3(0.6f, 0.6f, 0.6f), 64.0f);
+                case "flag":
+                    return texturedOr(nationTextureName("flag", nationId), new Vector3(0.8f, 0.8f, 0.8f), new Vector3(0.05f, 0.05f, 0.05f), 4.0f);
+                case "goods":
+                    return texturedOr(nationTextureName("packaging", nationId), new Vector3(0.8f, 0.6f, 0.4f), new Vector3(0.15f, 0.15f, 0.15f), 12.0f);
+                case "shopinterior":
+                    // A brightly lit shop seen through the glass
+                    return new Material(new Vector3(1.1f, 1.05f, 0.92f), new Vector3(0.95f, 0.92f, 0.82f), new Vector3(0f, 0f, 0f), 2.0f);
+                case "shelf":
+                    return new Material(new Vector3(0.75f, 0.72f, 0.66f), new Vector3(0.7f, 0.67f, 0.6f), new Vector3(0.1f, 0.1f, 0.1f), 8.0f);
+                case "shopwall0": case "shopwall1": case "shopwall2": case "shopwall3": {
+                    Vector3 paint = shopColours.get(nationId)[part.charAt(8) - '0'];
+                    return new Material(paint, paint, new Vector3(0.08f, 0.08f, 0.08f), 6.0f);
+                }
+                case "flagpole":
+                    return new Material(new Vector3(0.72f, 0.73f, 0.75f), new Vector3(0.72f, 0.73f, 0.75f), new Vector3(0.5f, 0.5f, 0.5f), 32.0f);
+                case "interior":
+                    return new Material(new Vector3(0.025f, 0.025f, 0.03f), new Vector3(0.03f, 0.03f, 0.035f), new Vector3(0f, 0f, 0f), 2.0f);
+                case "curtain0": case "curtain1": case "curtain2": case "curtain3": {
+                    Vector3 cloth = curtainColour(part.charAt(7) - '0');
+                    return new Material(cloth, cloth, new Vector3(0.02f, 0.02f, 0.02f), 2.0f);
+                }
                 case "frame":
                     return new Material(building.frameColour, building.frameColour, specular, 2.0f);
                 case "security": {
@@ -1542,6 +1825,7 @@ public class InfrastructureManager {
             }
             float[] start = railBase(base, t0);
             float[] end = railBase(base, t1);
+            recordSegment(start[0], start[2], end[0], end[2], 0.5f, style.railHeight + style.railSize * 0.5f);
             // Profile "out" points back towards the traffic
             float[] towardRoad0 = towardRoad(segment, t0, side);
             float[] towardRoad1 = towardRoad(segment, t1, side);
@@ -1626,7 +1910,7 @@ public class InfrastructureManager {
     //          HOUSE GEOMETRY
     // ==========================================
 
-        private void bakeHouse(NationBatch batch, House house) {
+        private void bakeHouse(NationBatch batch, House house, List<InfrastructureObject> objects) {
         BuildingStyle style = styleOf(house);
         float scale = house.sizeScale;
         float overhang = style.roofOverhang * scale;
@@ -1634,7 +1918,8 @@ public class InfrastructureManager {
         boolean smooth = style.footprint == BuildingStyle.Footprint.ROUND;
 
                 BuildingStyle.WallVariant variant = wallVariants.get(house.wallVariant);
-        String wallPart = wallVariantTextureName(house.wallVariant);
+        // Shops are painted, standing out from the houses round them
+        String wallPart = house.shop != null ? "shopwall" + house.shop.colour : wallVariantTextureName(house.wallVariant);
         HouseWall[] walls = extrudeWalls(batch.builder(wallPart), house, footprint, house.mainWallHeight, style.taper, smooth,
                 variant.tileWidth, variant.tileHeight);
 
@@ -1670,8 +1955,21 @@ public class InfrastructureManager {
                 addWindow(batch, house, style, wingFront, 0.5f,
                         house.doorBase + style.wallHeight * scale * style.extensionHeightRatio * 0.45f);
             }
+            emitWalls(batch.builder(wallPart), house, wingWalls, variant.tileWidth, variant.tileHeight);
         }
         appendWindows(batch, house, style, walls, front);
+        Random signs = new Random(house.seed ^ 0x51C4L);
+        if (house.shop != null) shopFront(batch, house, style, front, objects);
+        float urbanHere = settlementManager.getUrbanness(house.x, house.z);
+        if (house.shop != null ? signs.nextFloat() < 0.6f : urbanHere > 0.45f && signs.nextFloat() < 0.2f * urbanHere) {
+            wallPoster(house, walls, front, objects, signs);
+        }
+        // Now and then a flag flies from a short pole above the door, more often in town
+        float urbanness = settlementManager.getUrbanness(house.x, house.z);
+        if (new Random(house.seed ^ 0xF1A6L).nextFloat() < patriotismOf(house.nationId) * (0.1f + 0.3f * urbanness)) {
+            wallFlag(batch, house, front, house.doorBase + style.doorHeight * scale + 3.5f);
+        }
+        emitWalls(batch.builder(wallPart), house, walls, variant.tileWidth, variant.tileHeight);
 
         float roofTop = house.baseY + house.mainWallHeight + style.roofHeight * scale;
         batch.include(house.x, roofTop, house.z, Math.max(house.plotMaxX - house.plotMinX, house.plotMaxZ - house.plotMinZ));
@@ -1683,6 +1981,13 @@ public class InfrastructureManager {
         float[] normal;                          // outward, house-local
         float length;
         int index;
+        // For building the face once its windows are known: normals at each end (smoothed
+        // on round buildings), where its texture starts, its slanted height, and the window
+        // openings cut through it as {s0, s1, y0, y1} (s along the wall from A to B, 0..1)
+        float[] normalA, normalB;
+        float u;
+        float slant;
+        final List<float[]> openings = new ArrayList<>();
     }
 
     /**
@@ -1730,6 +2035,11 @@ public class InfrastructureManager {
 
         HouseWall[] walls = new HouseWall[n];
         for (int i = 0; i < n; i++) {
+            float[] wa = localToWorld(house.x, house.z, house.rotationY, footprint[i][0], footprint[i][1]);
+            float[] wb = localToWorld(house.x, house.z, house.rotationY, footprint[(i + 1) % n][0], footprint[(i + 1) % n][1]);
+            recordSegment(wa[0], wa[1], wb[0], wb[1], 0.6f);
+        }
+        for (int i = 0; i < n; i++) {
             float[] a = footprint[i], b = footprint[(i + 1) % n];
             HouseWall wall = new HouseWall();
             wall.index = i;
@@ -1750,21 +2060,75 @@ public class InfrastructureManager {
         float u = 0;
         for (int i = 0; i < n; i++) {
             HouseWall wall = walls[i];
-            float[] nA = wall.normal, nB = wall.normal;
+            wall.normalA = wall.normal;
+            wall.normalB = wall.normal;
             if (smooth) {
-                nA = normalise(add(wall.normal, walls[(i + n - 1) % n].normal));
-                nB = normalise(add(wall.normal, walls[(i + 1) % n].normal));
+                wall.normalA = normalise(add(wall.normal, walls[(i + n - 1) % n].normal));
+                wall.normalB = normalise(add(wall.normal, walls[(i + 1) % n].normal));
             }
-            float slant = dist(mid(wall.topA, wall.topB), mid(wall.bottomA, wall.bottomB));
-            float u0 = u / tileWidth, u1 = (u + wall.length) / tileWidth, vTop = slant / tileHeight;
-            int ba = houseVertex(builder, house, wall.bottomA, nA, u0, 0);
-            int bb = houseVertex(builder, house, wall.bottomB, nB, u1, 0);
-            int tb = houseVertex(builder, house, wall.topB, nB, u1, vTop);
-            int ta = houseVertex(builder, house, wall.topA, nA, u0, vTop);
-            addOutwardQuad(builder, house, ba, bb, tb, ta, wall.bottomA, wall.bottomB, wall.topB, wall.normal);
+            wall.slant = dist(mid(wall.topA, wall.topB), mid(wall.bottomA, wall.bottomB));
+            wall.u = u;
             u += wall.length;
         }
         return walls;
+    }
+
+    /** A point on a wall's face: s along it from A to B (0..1) at height y, house-local. */
+    private static float[] wallPoint(HouseWall wall, float s, float y) {
+        float[] bottom = lerp(wall.bottomA, wall.bottomB, s);
+        float[] top = lerp(wall.topA, wall.topB, s);
+        float[] p = lerp(bottom, top, Math.max(0f, Math.min(1f, y / wall.topA[1])));
+        p[1] = y;
+        return p;
+    }
+
+    /**
+     * Builds the walls' faces, leaving a hole wherever a window was cut: the wall is split
+     * into horizontal bands at the windows' tops and bottoms, and each band into pieces
+     * either side of the windows crossing it.
+     */
+    private void emitWalls(MeshBuilder builder, House house, HouseWall[] walls, float tileWidth, float tileHeight) {
+        for (HouseWall wall : walls) {
+            float height = wall.topA[1];
+            java.util.TreeSet<Float> levels = new java.util.TreeSet<>();
+            levels.add(0f);
+            levels.add(height);
+            for (float[] o : wall.openings) {
+                levels.add(Math.max(0f, Math.min(height, o[2])));
+                levels.add(Math.max(0f, Math.min(height, o[3])));
+            }
+            Float[] ys = levels.toArray(new Float[0]);
+            for (int b = 0; b + 1 < ys.length; b++) {
+                float ya = ys[b], yb = ys[b + 1];
+                if (yb - ya < 1e-4f) continue;
+                List<float[]> holes = new ArrayList<>();
+                for (float[] o : wall.openings) {
+                    if (o[2] <= ya + 1e-4f && o[3] >= yb - 1e-4f) holes.add(o);
+                }
+                holes.sort((p, q) -> Float.compare(p[0], q[0]));
+                float s = 0f;
+                for (float[] hole : holes) {
+                    wallPiece(builder, house, wall, s, hole[0], ya, yb, tileWidth, tileHeight);
+                    s = Math.max(s, hole[1]);
+                }
+                wallPiece(builder, house, wall, s, 1f, ya, yb, tileWidth, tileHeight);
+            }
+        }
+    }
+
+    private void wallPiece(MeshBuilder builder, House house, HouseWall wall, float s0, float s1, float y0, float y1,
+                           float tileWidth, float tileHeight) {
+        if (s1 - s0 < 1e-4f) return;
+        float height = wall.topA[1];
+        float[][] corners = { wallPoint(wall, s0, y0), wallPoint(wall, s1, y0), wallPoint(wall, s1, y1), wallPoint(wall, s0, y1) };
+        float[] ss = { s0, s1, s1, s0 }, yy = { y0, y0, y1, y1 };
+        int[] index = new int[4];
+        for (int i = 0; i < 4; i++) {
+            float[] n = normalise(lerp(wall.normalA, wall.normalB, ss[i]));
+            index[i] = houseVertex(builder, house, corners[i], n, (wall.u + ss[i] * wall.length) / tileWidth,
+                    wall.slant * (yy[i] / height) / tileHeight);
+        }
+        addOutwardQuad(builder, house, index[0], index[1], index[2], index[3], corners[0], corners[1], corners[2], wall.normal);
     }
 
     /**
@@ -1917,6 +2281,8 @@ public class InfrastructureManager {
                     count = Math.min(3, (int) (wall.length / (windowWidth * 2.4f)));
                 }
                 if (count <= 0) continue;
+                // A shop's ground floor front is its shop window
+                if (house.shop != null && wall == front && floor == 0) continue;
                 float margin = Math.min(0.45f, (windowWidth * 0.5f + 4.0f) / wall.length);
                 if (wall == front && floor == 0) {
                     // Ground-floor front windows sit in two groups either side of the door
@@ -1945,13 +2311,551 @@ public class InfrastructureManager {
     }
 
     /** A glass pane, with an optional frame behind it, set into a wall at fraction s along it. */
+    /**
+     * A window: a hole through the wall, lined (sides, sill and head) back to a dark panel,
+     * with drawn curtains hanging in folds just in front of that, a pane of glass set a
+     * little back from the wall's face, and a frame round the outside.
+     */
     private void addWindow(NationBatch batch, House house, BuildingStyle style, HouseWall wall, float s, float centreY) {
         float halfW = Math.min(style.windowWidth * house.sizeScale, wall.length * 0.8f) * 0.5f;
         float halfH = style.windowHeight * house.sizeScale * 0.5f;
-        if (style.frameSize > 0.0f) {
-            wallPanel(batch.builder("frame"), house, wall, s, centreY, halfW + style.frameSize, halfH + style.frameSize, FRAME_OFFSET);
+        float s0 = Math.max(0.02f, s - halfW / wall.length), s1 = Math.min(0.98f, s + halfW / wall.length);
+        float y0 = centreY - halfH, y1 = Math.min(centreY + halfH, wall.topA[1] - 0.5f);
+        if (s1 - s0 < 0.02f || y1 - y0 < 1f) return;
+        wall.openings.add(new float[] { s0, s1, y0, y1 });
+
+        float[] n = wall.normal;
+        float[] along = normalise(sub(wallPoint(wall, s1, y0), wallPoint(wall, s0, y0)));
+        float[] up = { 0f, 1f, 0f };
+
+        // The lining of the opening, back to the panel behind it
+        MeshBuilder reveal = batch.builder("frame");
+        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s0, y1, 0), inset(wall, s0, y1, WINDOW_DEPTH), inset(wall, s0, y0, WINDOW_DEPTH), along);
+        localQuad(reveal, house, inset(wall, s1, y0, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, WINDOW_DEPTH), inset(wall, s1, y0, WINDOW_DEPTH), scale3(along, -1));
+        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s1, y0, 0), inset(wall, s1, y0, WINDOW_DEPTH), inset(wall, s0, y0, WINDOW_DEPTH), up);
+        localQuad(reveal, house, inset(wall, s0, y1, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, WINDOW_DEPTH), inset(wall, s0, y1, WINDOW_DEPTH), scale3(up, -1));
+        // The dark room behind, closing the hole
+        localQuad(batch.builder("interior"), house, inset(wall, s0, y0, WINDOW_DEPTH), inset(wall, s1, y0, WINDOW_DEPTH),
+                inset(wall, s1, y1, WINDOW_DEPTH), inset(wall, s0, y1, WINDOW_DEPTH), n);
+
+        // Drawn curtains, two panels hanging in soft folds, meeting with a narrow gap
+        Random rand = new Random(house.seed ^ ((long) (s * 1000) * 31L) ^ (long) (centreY * 17));
+        int colour = (int) Math.floorMod(house.seed, (long) CURTAIN_COLOURS);
+        MeshBuilder cloth = batch.builder("curtain" + colour);
+        float gap = (0.01f + 0.03f * rand.nextFloat()) * (s1 - s0);
+        float sm = (s0 + s1) * 0.5f;
+        curtainPanel(cloth, house, wall, s0, sm - gap, y0 + 0.15f, y1 - 0.1f, along, rand);
+        curtainPanel(cloth, house, wall, sm + gap, s1, y0 + 0.15f, y1 - 0.1f, along, rand);
+
+        // The pane, set back a little from the wall
+        localQuad(batch.builder("glass"), house, inset(wall, s0, y0, GLASS_SETBACK), inset(wall, s1, y0, GLASS_SETBACK),
+                inset(wall, s1, y1, GLASS_SETBACK), inset(wall, s0, y1, GLASS_SETBACK), n);
+
+        // The frame: a flat surround just proud of the wall
+        float f = style.frameSize;
+        if (f > 0f) {
+            float fs = f / wall.length;
+            MeshBuilder frame = batch.builder("frame");
+            float[][][] strips = {
+                { { s0 - fs, y1 }, { s1 + fs, y1 }, { s1 + fs, y1 + f }, { s0 - fs, y1 + f } },
+                { { s0 - fs, y0 - f }, { s1 + fs, y0 - f }, { s1 + fs, y0 }, { s0 - fs, y0 } },
+                { { s0 - fs, y0 }, { s0, y0 }, { s0, y1 }, { s0 - fs, y1 } },
+                { { s1, y0 }, { s1 + fs, y0 }, { s1 + fs, y1 }, { s1, y1 } } };
+            for (float[][] strip : strips) {
+                float[][] c = new float[4][];
+                for (int i = 0; i < 4; i++) c[i] = inset(wall, Math.max(0f, Math.min(1f, strip[i][0])), strip[i][1], -FRAME_OFFSET);
+                localQuad(frame, house, c[0], c[1], c[2], c[3], n);
+            }
         }
-        wallPanel(batch.builder("glass"), house, wall, s, centreY, halfW, halfH, GLASS_OFFSET);
+    }
+
+    // How deep the window is set into the wall, and how far back its glass sits
+    private static final float WINDOW_DEPTH = 1.8f, GLASS_SETBACK = 0.4f, CURTAIN_DEPTH = 1.35f;
+    private static final int CURTAIN_COLOURS = 4;
+
+    /** A point on the wall's face pushed straight in (or out, if depth is negative) from it. */
+    private static float[] inset(HouseWall wall, float s, float y, float depth) {
+        return sub(wallPoint(wall, s, y), scale3(wall.normal, depth));
+    }
+
+    /** One curtain: a sheet in vertical folds, a strip of quads whose depth ripples across it. */
+    private void curtainPanel(MeshBuilder builder, House house, HouseWall wall, float s0, float s1, float y0, float y1,
+                              float[] along, Random rand) {
+        if (s1 - s0 < 1e-3f) return;
+        float width = (s1 - s0) * wall.length;
+        int folds = Math.max(2, Math.round(width / 1.6f));
+        int steps = folds * 4;
+        float amplitude = 0.22f;
+        float phase = rand.nextFloat() * (float) Math.PI * 2;
+        int[] bottom = new int[steps + 1], top = new int[steps + 1];
+        for (int i = 0; i <= steps; i++) {
+            float t = i / (float) steps;
+            float angle = phase + t * folds * (float) Math.PI * 2;
+            float depth = CURTAIN_DEPTH + amplitude * (float) Math.sin(angle);
+            float slope = amplitude * (float) Math.cos(angle) * folds * (float) Math.PI * 2 / width;
+            float[] normal = normalise(add(wall.normal, scale3(along, slope)));
+            float s = s0 + (s1 - s0) * t;
+            bottom[i] = houseVertex(builder, house, inset(wall, s, y0, depth), normal, t, 0f);
+            top[i] = houseVertex(builder, house, inset(wall, s, y1, depth), normal, t, 1f);
+        }
+        for (int i = 0; i < steps; i++) {
+            addOutwardQuad(builder, house, bottom[i], bottom[i + 1], top[i + 1], top[i],
+                    inset(wall, s0, y0, 0f), inset(wall, s1, y0, 0f), inset(wall, s1, y1, 0f), wall.normal);
+        }
+    }
+
+    // ------------------------------------------------------------------ SHOPS
+
+    private void chooseShops() {
+        for (House house : houses) {
+            float urban = settlementManager.getUrbanness(house.x, house.z);
+            float chance = Math.max(0f, Math.min(0.55f, (urban - 0.5f) * 1.2f));
+            Random rand = new Random(house.seed ^ 0x5409L);
+            if (chance <= 0f || rand.nextFloat() >= chance) continue;
+            BuildingStyle style = styleOf(house);
+            if (frontLength(style, house) < style.doorWidth * house.sizeScale * 2.2f + 14f) continue;
+            house.shop = new Shop(house, rand);
+            shops.add(house.shop);
+        }
+        System.out.printf("[SHOPS] %d shops in the town centres%n", shops.size());
+    }
+
+    /** How long the wall facing the road is. */
+    private static float frontLength(BuildingStyle style, House house) {
+        float[][] outline = footprint(style, house.width, house.depth, 0f, 0f);
+        float best = -Float.MAX_VALUE, length = 0f;
+        for (int i = 0; i < outline.length; i++) {
+            float[] a = outline[i], b = outline[(i + 1) % outline.length];
+            float midZ = (a[1] + b[1]) * 0.5f;
+            if (midZ > best) {
+                best = midZ;
+                length = (float) Math.hypot(b[0] - a[0], b[1] - a[1]);
+            }
+        }
+        return length;
+    }
+
+    /** A developer aid: {x, z, lookX, lookZ} out in the road in front of a random shop, facing it; null if none. */
+    public float[] shopViewpoint(Random rand) {
+        if (shops.isEmpty()) return null;
+        Shop shop = shops.get(rand.nextInt(shops.size()));
+        Doorway door = doorwayOf(shop.house);
+        float dx = door.kerbX - door.doorX, dz = door.kerbZ - door.doorZ;
+        float length = Math.max(1e-3f, (float) Math.hypot(dx, dz));
+        dx /= length;
+        dz /= length;
+        float back = Float.parseFloat(System.getProperty("xenoguesser.shopdistance", "50"));
+        float side = Float.parseFloat(System.getProperty("xenoguesser.shopside", "0"));
+        return new float[] { door.kerbX + dx * back + door.roadDirX * side, door.kerbZ + dz * back + door.roadDirZ * side, -dx, -dz };
+    }
+
+    /** The shop nearest a point within reach, preferring one in the same nation; null if none. */
+    public Shop nearestShop(float x, float z, float reach, int nationId) {
+        Shop best = null;
+        float bestScore = reach * reach;
+        for (Shop shop : shops) {
+            float dx = shop.house.x - x, dz = shop.house.z - z;
+            float score = (dx * dx + dz * dz) * (shop.nationId == nationId ? 1f : 4f);
+            if (score < bestScore) { bestScore = score; best = shop; }
+        }
+        return best;
+    }
+
+    /** A shop's name, in its nation's letters: a word or two, short enough for any shop front. */
+    public int[] shopName(Shop shop) {
+        if (shop.name != null) return shop.name;
+        int maxGlyphs = Math.max(2, mainListener != null ? mainListener.getNationAtlasSize(shop.nationId) : 10);
+        Random rand = new Random(shop.house.seed ^ 0x4A3EL);
+        boolean vertical = scripts.direction(shop.nationId) >= 2;
+        List<Integer> letters = new ArrayList<>();
+        int words = vertical ? 1 : (rand.nextFloat() < 0.4f ? 2 : 1);
+        for (int w = 0; w < words; w++) {
+            if (w > 0) letters.add(0);
+            int count = vertical ? 2 + rand.nextInt(4) : 3 + rand.nextInt(4);
+            for (int i = 0; i < count; i++) letters.add(1 + rand.nextInt(maxGlyphs - 1));
+        }
+        int[] name = new int[Math.min(InfrastructureObject.TITLE_CAPACITY, letters.size())];
+        for (int i = 0; i < name.length; i++) name[i] = letters.get(i);
+        shop.name = name;
+        return name;
+    }
+
+    private synchronized RoadRoutes routes() {
+        if (routes == null) routes = new RoadRoutes(this);
+        return routes;
+    }
+
+    private static final float DISPLAY_DEPTH = 7f;
+
+    /** The ground floor of a shop's front: two big display windows either side of the door, and its name above. */
+    private void shopFront(NationBatch batch, House house, BuildingStyle style, HouseWall front, List<InfrastructureObject> objects) {
+        float scale = house.sizeScale;
+        float floorHeight = style.wallHeight * scale / style.floors;
+        float wallTop = front.topA[1];
+        float doorHalfW = Math.min(style.doorWidth * scale, front.length * 0.7f) * 0.5f;
+        float doorH = style.doorHeight * scale;
+        float fasciaH = 4.2f;
+        float upperBottom = style.floors > 1 ? house.doorBase + floorHeight * 1.55f - style.windowHeight * scale * 0.5f : wallTop;
+        float y0 = house.doorBase + 1.3f;
+        float y1 = house.doorBase + Math.max(doorH + 1f, floorHeight * 0.8f);
+        y1 = Math.min(y1, Math.min(upperBottom, wallTop) - fasciaH - 1.0f);
+        if (y1 - y0 < 4f) y1 = y0 + 4f;
+        float gap = (doorHalfW + 1.4f) / front.length, margin = 1.6f / front.length;
+        Random rand = new Random(house.seed ^ 0x5D0FL);
+        displayWindow(batch, house, style, front, margin, 0.5f - gap, y0, y1, rand);
+        displayWindow(batch, house, style, front, 0.5f + gap, 1f - margin, y0, y1, rand);
+
+        // The name: across a board over the windows, or for a script that runs down the page,
+        // on a tall board sticking out from the corner into the street
+        int[] name = shopName(house.shop);
+        boolean vertical = scripts.direction(house.nationId) >= 2;
+        float[] n = horizontal(front.normal);
+        float[] worldNormal = localToWorld(0f, 0f, house.rotationY, n[0], n[2]);
+        InfrastructureObject sign;
+        if (!vertical) {
+            float yc = y1 + 0.5f + fasciaH * 0.5f;
+            float[] at = add(wallPoint(front, 0.5f, yc), scale3(n, 0.45f + standOff(front, 0.5f, yc, fasciaH)));
+            float[] world = localToWorldPoint(house, at);
+            float width = Math.min(70f, front.length * (1f - 2f * margin) * 0.95f);
+            sign = InfrastructureObject.createWallSign(new Vector3(world[0], world[1], world[2]), house.nationId,
+                    facingRotation(worldNormal[0], worldNormal[1]), width, fasciaH, true, false, null);
+        } else {
+            float side = rand.nextBoolean() ? 0.06f : 0.94f;
+            float bladeW = 5f;
+            float bottom = y1 + 0.5f;
+            float height = Math.max(8f, Math.min(18f, wallTop - bottom - 1f));
+            float[] at = add(wallPoint(front, side, bottom + height * 0.5f), scale3(n, bladeW * 0.5f + 0.6f));
+            float[] world = localToWorldPoint(house, at);
+            float[] along = normalise(sub(front.bottomB, front.bottomA));
+            float[] worldAlong = localToWorld(0f, 0f, house.rotationY, along[0], along[2]);
+            sign = InfrastructureObject.createWallSign(new Vector3(world[0], world[1], world[2]), house.nationId,
+                    facingRotation(worldAlong[0], worldAlong[1]), bladeW, height, true, true, null);
+        }
+        System.arraycopy(name, 0, sign.titleString, 0, name.length);
+        sign.titleLength = name.length;
+        letter(sign, rand);
+        float[] paint = new float[] { shopColours.get(house.nationId)[house.shop.colour].x, shopColours.get(house.nationId)[house.shop.colour].y,
+                shopColours.get(house.nationId)[house.shop.colour].z };
+        // The board contrasts with the paintwork, the letters with the board
+        boolean darkBoard = rand.nextFloat() < 0.45f;
+        float[] hsv = WorldPalette.toHsv(paint);
+        sign.boardColour = darkBoard ? WorldPalette.hsv(hsv[0] + 0.5f, 0.5f, 0.18f + rand.nextFloat() * 0.12f)
+                : WorldPalette.hsv(hsv[0] + 0.1f, 0.08f + rand.nextFloat() * 0.15f, 0.9f + rand.nextFloat() * 0.08f);
+        sign.titleColour = darkBoard ? WorldPalette.hsv(rand.nextFloat(), 0.3f + rand.nextFloat() * 0.5f, 0.92f)
+                : WorldPalette.hsv(hsv[0] + rand.nextFloat() * 0.3f, 0.7f + rand.nextFloat() * 0.3f, 0.25f + rand.nextFloat() * 0.3f);
+        objects.add(sign);
+    }
+
+    /** A wide, deep window full of goods on shelves, brightly lit inside, with no curtains. */
+    private void displayWindow(NationBatch batch, House house, BuildingStyle style, HouseWall wall, float s0, float s1,
+                               float y0, float y1, Random rand) {
+        if (s1 - s0 < 0.04f || (s1 - s0) * wall.length < 4f) return;
+        wall.openings.add(new float[] { s0, s1, y0, y1 });
+        float[] n = wall.normal;
+        float[] along = normalise(sub(wallPoint(wall, s1, y0), wallPoint(wall, s0, y0)));
+        float[] up = { 0f, 1f, 0f };
+        float d = DISPLAY_DEPTH;
+
+        MeshBuilder reveal = batch.builder("frame");
+        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s0, y1, 0), inset(wall, s0, y1, d), inset(wall, s0, y0, d), along);
+        localQuad(reveal, house, inset(wall, s1, y0, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, d), inset(wall, s1, y0, d), scale3(along, -1));
+        localQuad(reveal, house, inset(wall, s0, y1, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, d), inset(wall, s0, y1, d), scale3(up, -1));
+        localQuad(batch.builder("shelf"), house, inset(wall, s0, y0, 0), inset(wall, s1, y0, 0), inset(wall, s1, y0, d), inset(wall, s0, y0, d), up);
+        localQuad(batch.builder("shopinterior"), house, inset(wall, s0, y0, d), inset(wall, s1, y0, d),
+                inset(wall, s1, y1, d), inset(wall, s0, y1, d), n);
+
+        // Shelves: one or two, stepping up towards the back
+        float height = y1 - y0;
+        int shelves = height > 7.5f ? 2 : 1;
+        float[] levels = new float[shelves + 1];
+        float[] tops = new float[shelves + 1];
+        levels[0] = y0;
+        for (int i = 1; i <= shelves; i++) levels[i] = y0 + height * i / (shelves + 1f);
+        for (int i = 0; i <= shelves; i++) tops[i] = i < shelves ? levels[i + 1] : y1;
+        MeshBuilder shelf = batch.builder("shelf");
+        for (int i = 1; i <= shelves; i++) {
+            float y = levels[i], front = 2.2f;
+            localQuad(shelf, house, inset(wall, s0, y, front), inset(wall, s1, y, front), inset(wall, s1, y, d), inset(wall, s0, y, d), up);
+            localQuad(shelf, house, inset(wall, s0, y - 0.3f, front), inset(wall, s1, y - 0.3f, front), inset(wall, s1, y, front),
+                    inset(wall, s0, y, front), n);
+        }
+        stockWindow(batch.builder("goods"), house, wall, s0, s1, levels, tops, rand);
+
+        // The glass, and a frame like the house's other windows
+        localQuad(batch.builder("glass"), house, inset(wall, s0, y0, GLASS_SETBACK), inset(wall, s1, y0, GLASS_SETBACK),
+                inset(wall, s1, y1, GLASS_SETBACK), inset(wall, s0, y1, GLASS_SETBACK), n);
+        float f = Math.max(0.5f, style.frameSize);
+        float fs = f / wall.length;
+        MeshBuilder frame = batch.builder("frame");
+        float[][][] strips = {
+            { { s0 - fs, y1 }, { s1 + fs, y1 }, { s1 + fs, y1 + f }, { s0 - fs, y1 + f } },
+            { { s0 - fs, y0 - f }, { s1 + fs, y0 - f }, { s1 + fs, y0 }, { s0 - fs, y0 } },
+            { { s0 - fs, y0 }, { s0, y0 }, { s0, y1 }, { s0 - fs, y1 } },
+            { { s1, y0 }, { s1 + fs, y0 }, { s1 + fs, y1 }, { s1, y1 } } };
+        for (float[][] strip : strips) {
+            float[][] c = new float[4][];
+            for (int i = 0; i < 4; i++) c[i] = inset(wall, Math.max(0f, Math.min(1f, strip[i][0])), strip[i][1], -FRAME_OFFSET);
+            localQuad(frame, house, c[0], c[1], c[2], c[3], n);
+        }
+    }
+
+    /**
+     * Fills each level of a display window with goods: heaps of produce and rows of
+     * packets, a few of each kind together, sized to the shelf they stand on.
+     */
+    private void stockWindow(MeshBuilder goods, House house, HouseWall wall, float s0, float s1, float[] levels, float[] tops, Random rand) {
+        int nation = house.nationId;
+        boolean grocer = house.shop.grocer;
+        List<Products.Produce> crops = products.produce(nation);
+        List<Products.Packet> packets = products.packets(nation);
+        float width = (s1 - s0) * wall.length;
+        float[] outward = horizontal(wall.normal);
+        float[] up = { 0f, 1f, 0f };
+        float[] across = cross(up, outward);
+        for (int level = 0; level < levels.length; level++) {
+            float room = tops[level] - levels[level] - 0.4f;
+            if (room < 1f) continue;
+            float frontDepth = level == 0 ? 1.4f : 2.6f, backDepth = DISPLAY_DEPTH - 0.9f;
+            float t = 0.5f;
+            int remaining = 0;
+            boolean packet = false;
+            int index = 0;
+            while (t < width - 0.5f) {
+                if (remaining <= 0) {
+                    packet = grocer ? rand.nextFloat() < 0.2f : rand.nextFloat() < 0.75f;
+                    index = rand.nextInt(packet ? packets.size() : crops.size());
+                    remaining = 2 + rand.nextInt(3);
+                }
+                remaining--;
+                float footprint;
+                if (packet) {
+                    Products.Packet k = packets.get(index);
+                    float scale = Math.min(1f, room * 0.92f / (k.height + 0.2f));
+                    footprint = k.width * scale + 0.25f;
+                    if (t + footprint > width - 0.3f) break;
+                    float s = s0 + (t + footprint * 0.5f) / wall.length;
+                    for (float depth : new float[] { frontDepth + k.depth * scale * 0.5f, backDepth - k.depth * scale * 0.5f }) {
+                        float[] origin = inset(wall, s, levels[level], depth);
+                        appendGoods(goods, house, origin, across, up, outward, scale, (rand.nextFloat() - 0.5f) * 0.25f,
+                                goodsGeometry(nation, true, index));
+                    }
+                } else {
+                    Products.Produce p = crops.get(index);
+                    float tall = p.shape == Products.Shape.DISC ? p.size * 0.45f : p.size;
+                    float scale = Math.min(1f, room * 0.85f / tall);
+                    float wide = Math.max(p.size * p.width, p.shape == Products.Shape.POD ? p.size * 0.6f : 0f) * scale;
+                    footprint = wide + 0.2f;
+                    if (t + footprint > width - 0.3f) break;
+                    float s = s0 + (t + footprint * 0.5f) / wall.length;
+                    // A little heap: a few pieces one behind the other, turned this way and that
+                    int pieces = 2 + rand.nextInt(3);
+                    for (int i = 0; i < pieces; i++) {
+                        float depth = frontDepth + wide * 0.5f + (backDepth - frontDepth - wide) * i / Math.max(1f, pieces - 1f);
+                        float[] origin = inset(wall, s + (rand.nextFloat() - 0.5f) * 0.3f / wall.length, levels[level], depth);
+                        appendGoods(goods, house, origin, across, up, outward, scale * (0.85f + rand.nextFloat() * 0.25f),
+                                rand.nextFloat() * 6.28f, goodsGeometry(nation, false, index));
+                    }
+                }
+                t += footprint;
+            }
+        }
+    }
+
+    /** A product's geometry at unit scale, built once: {vertices (OrganismMesh layout), indices}. */
+    private Object[] goodsGeometry(int nationId, boolean packet, int index) {
+        long key = nationId * 64L + (packet ? 32 : 0) + index;
+        return goodsGeometry.computeIfAbsent(key, k -> {
+            OrganismMesh.Builder b = new OrganismMesh.Builder();
+            if (packet) Products.buildPacket(b, products.packets(nationId).get(index), 1f, Affine.identity());
+            else Products.buildProduce(b, products.produce(nationId).get(index), 1f, Affine.identity());
+            return new Object[] { b.vertices(), b.indices() };
+        });
+    }
+
+    /** Copies a product into a builder, standing at a house-local point, its front facing front, turned by yaw. */
+    private void appendGoods(MeshBuilder builder, House house, float[] origin, float[] across, float[] up, float[] front,
+                             float scale, float yaw, Object[] geometry) {
+        float[] v = (float[]) geometry[0];
+        int[] idx = (int[]) geometry[1];
+        float cos = (float) Math.cos(yaw), sin = (float) Math.sin(yaw);
+        int stride = OrganismMesh.STRIDE;
+        int first = -1;
+        for (int i = 0; i + stride <= v.length; i += stride) {
+            float x = v[i] * cos + v[i + 2] * sin, y = v[i + 1], z = -v[i] * sin + v[i + 2] * cos;
+            float nx = v[i + 3] * cos + v[i + 5] * sin, ny = v[i + 4], nz = -v[i + 3] * sin + v[i + 5] * cos;
+            float[] p = add(origin, add(add(scale3(across, x * scale), scale3(up, y * scale)), scale3(front, z * scale)));
+            float[] normal = add(add(scale3(across, nx), scale3(up, ny)), scale3(front, nz));
+            int index = houseVertex(builder, house, p, normal, v[i + 6], v[i + 7]);
+            if (first < 0) first = index;
+        }
+        if (first < 0) return;
+        for (int i = 0; i + 2 < idx.length; i += 3) builder.addTriangle(first + idx[i], first + idx[i + 1], first + idx[i + 2]);
+    }
+
+    /** How far a leaning wall's face comes out past where it is at height y, over a board height tall centred there. */
+    private static float standOff(HouseWall wall, float s, float y, float height) {
+        float[] n = horizontal(wall.normal);
+        float[] centre = wallPoint(wall, s, y);
+        float below = dot3(sub(wallPoint(wall, s, Math.max(0f, y - height * 0.5f)), centre), n);
+        float above = dot3(sub(wallPoint(wall, s, y + height * 0.5f), centre), n);
+        return Math.max(0f, Math.max(below, above));
+    }
+
+    private static float[] horizontal(float[] v) {
+        return normalise(new float[] { v[0], 0f, v[2] });
+    }
+
+    /**
+     * Now and then a poster pasted flat on a wall, often an advert for a shop nearby: on a
+     * stretch of wall clear of windows and doors.
+     */
+    private void wallPoster(House house, HouseWall[] walls, HouseWall front, List<InfrastructureObject> objects, Random rand) {
+        float scale = 0.5f + rand.nextFloat() * 0.2f;
+        float w = 30f * scale, h = 22f * scale;
+        int start = rand.nextInt(walls.length);
+        for (int k = 0; k < walls.length; k++) {
+            HouseWall wall = walls[(start + k) % walls.length];
+            if (wall == front && house.shop == null) continue;
+            if (wall.length < w + 3f || wall.topA[1] < house.doorBase + h + 4f) continue;
+            float yc = house.doorBase + Math.min(wall.topA[1] - house.doorBase - h * 0.5f - 1.5f, h * 0.5f + 4f);
+            // Clear of the ground, wherever it rises against this wall
+            float[] foot = localToWorldPoint(house, wallPoint(wall, 0.5f, 0f));
+            float ground = Math.max(TerrainMesh.getLayeredHeight(foot[0], foot[2], terrainNoise),
+                    Math.max(TerrainMesh.getLayeredHeight(localToWorldPoint(house, wallPoint(wall, 0.5f - (w * 0.5f) / wall.length, 0f))[0],
+                            localToWorldPoint(house, wallPoint(wall, 0.5f - (w * 0.5f) / wall.length, 0f))[2], terrainNoise),
+                            TerrainMesh.getLayeredHeight(localToWorldPoint(house, wallPoint(wall, 0.5f + (w * 0.5f) / wall.length, 0f))[0],
+                                    localToWorldPoint(house, wallPoint(wall, 0.5f + (w * 0.5f) / wall.length, 0f))[2], terrainNoise)));
+            yc = Math.max(yc, ground + 3f - house.baseY + h * 0.5f);
+            if (yc + h * 0.5f > wall.topA[1] - 1f) continue;
+            float halfS = (w * 0.5f + 0.8f) / wall.length;
+            boolean clear = true;
+            for (float[] o : wall.openings) {
+                if (o[1] > 0.5f - halfS && o[0] < 0.5f + halfS && o[3] > yc - h * 0.5f - 0.8f && o[2] < yc + h * 0.5f + 0.8f) {
+                    clear = false;
+                    break;
+                }
+            }
+            if (wall == front) {
+                // Beside a shop's door
+                float doorHalf = styleOf(house).doorWidth * house.sizeScale * 0.5f / wall.length;
+                if (0.5f - halfS < 0.5f + doorHalf + 0.02f && 0.5f + halfS > 0.5f - doorHalf - 0.02f) clear = false;
+            }
+            if (!clear) continue;
+            float[] n = horizontal(wall.normal);
+            float[] at = add(wallPoint(wall, 0.5f, yc), scale3(n, 0.3f + standOff(wall, 0.5f, yc, h)));
+            float[] world = localToWorldPoint(house, at);
+            float[] worldNormal = localToWorld(0f, 0f, house.rotationY, n[0], n[2]);
+            int maxGlyphs = Math.max(1, mainListener != null ? mainListener.getNationAtlasSize(house.nationId) : 10);
+            InfrastructureObject poster = InfrastructureObject.createWallSign(new Vector3(world[0], world[1], world[2]), house.nationId,
+                    facingRotation(worldNormal[0], worldNormal[1]), w, h, false, false, randomText(rand, maxGlyphs, 40, 120));
+            decorateSign(poster, rand, maxGlyphs, true);
+            objects.add(poster);
+            return;
+        }
+    }
+
+    // ------------------------------------------------------------------ FLAGS
+
+    /** A tall pole standing in the ground with the nation's flag at the top, flying in the wind. */
+    private void flagpole(NationBatch batch, int nationId, float x, float z, float height) {
+        float ground = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+        MeshBuilder pole = batch.builder("flagpole");
+        addBox(pole, x, ground - 1f, z, 1f, 0f, 0.45f, 0.45f, height + 1.5f);
+        addBox(pole, x, ground + height + 0.4f, z, 1f, 0f, 0.9f, 0.9f, 0.8f);   // the finial
+        float flagH = 9f + height * 0.05f, flagW = flagH * FlagDesigner.WIDTH / FlagDesigner.HEIGHT;
+        float dirX = (float) Math.cos(windAngle), dirZ = (float) Math.sin(windAngle);
+        flagCloth(batch.builder("flag"), new float[] { x, ground + height - 0.5f, z }, new float[] { dirX, 0f, dirZ },
+                new float[] { 0f, -1f, 0f }, flagW, flagH, x * 0.13f + z * 0.07f);
+        batch.include(x, ground + height + 2f, z, flagW + 2f);
+        recordCircle(x, z, 0.8f);
+    }
+
+    /** A short pole angled up and out from a wall, a flag hanging along it. */
+    private void wallFlag(NationBatch batch, House house, HouseWall wall, float y) {
+        if (y > wall.topA[1] - 2f) return;
+        float s = (house.seed & 1) == 0 ? 0.22f : 0.78f;
+        float[] base = wallPoint(wall, s, y);
+        float[] out = wall.normal;
+        float lift = 0.75f;
+        float[] dir = normalise(new float[] { out[0], lift, out[2] });
+        float length = 11f;
+        float[] tip = add(base, scale3(dir, length));
+        float[] baseWorld = localToWorldPoint(house, base), tipWorld = localToWorldPoint(house, tip);
+        MeshBuilder pole = batch.builder("flagpole");
+        addRod(pole, baseWorld, tipWorld, 0.3f);
+        // The flag hangs from the pole, its top edge along it and its face across the wall
+        float[] along = normalise(sub(tipWorld, baseWorld));
+        float flagW = length * 0.8f, flagH = flagW * FlagDesigner.HEIGHT / FlagDesigner.WIDTH;
+        float[] start = add(baseWorld, scale3(along, length * 0.18f));
+        float[] down = { 0f, -1f, 0f };
+        flagCloth(batch.builder("flag"), start, along, down, flagW, flagH, house.x * 0.11f);
+    }
+
+    /**
+     * A flag's cloth: hoist edge at start, flying along fly for width, hanging along down for
+     * height, rippling across itself more towards its free end. u runs hoist to fly, v top to bottom.
+     */
+    private void flagCloth(MeshBuilder builder, float[] start, float[] fly, float[] down, float width, float height, float phase) {
+        float[] across = normalise(cross(fly, down));
+        int columns = 12, rows = 3;
+        int[][] index = new int[columns + 1][rows + 1];
+        for (int i = 0; i <= columns; i++) {
+            float u = i / (float) columns;
+            float wave = (float) Math.sin(u * Math.PI * 3.0 + phase) * 0.9f * u;
+            float slope = (float) Math.cos(u * Math.PI * 3.0 + phase) * 0.9f * u * (float) Math.PI * 3.0f / width;
+            float[] normal = normalise(sub(across, scale3(fly, slope)));
+            for (int j = 0; j <= rows; j++) {
+                float v = j / (float) rows;
+                // The free end droops a little
+                float droop = u * u * height * 0.12f;
+                float[] p = add(add(add(start, scale3(fly, u * width)), scale3(down, v * height + droop)), scale3(across, wave));
+                // Textures made from images are stored bottom row first, so v counts up from the flag's foot
+                index[i][j] = builder.addVertex(p[0], p[1], p[2], normal[0], normal[1], normal[2], u, 1f - v);
+            }
+        }
+        for (int i = 0; i < columns; i++) {
+            for (int j = 0; j < rows; j++) {
+                builder.addTriangle(index[i][j], index[i + 1][j], index[i + 1][j + 1]);
+                builder.addTriangle(index[i][j], index[i + 1][j + 1], index[i][j + 1]);
+            }
+        }
+    }
+
+    /** A square rod between two world points. */
+    private void addRod(MeshBuilder builder, float[] a, float[] b, float half) {
+        float[] axis = normalise(sub(b, a));
+        float[] side = normalise(cross(axis, Math.abs(axis[1]) > 0.9f ? new float[] { 1f, 0f, 0f } : new float[] { 0f, 1f, 0f }));
+        float[] up = normalise(cross(side, axis));
+        float[][] corners = { add(scale3(side, half), scale3(up, half)), add(scale3(side, -half), scale3(up, half)),
+                add(scale3(side, -half), scale3(up, -half)), add(scale3(side, half), scale3(up, -half)) };
+        for (int k = 0; k < 4; k++) {
+            float[] c0 = corners[k], c1 = corners[(k + 1) % 4];
+            float[] n = normalise(add(c0, c1));
+            float[][] q = { add(a, c0), add(a, c1), add(b, c1), add(b, c0) };
+            int i0 = builder.addVertex(q[0][0], q[0][1], q[0][2], n[0], n[1], n[2], 0, 0);
+            int i1 = builder.addVertex(q[1][0], q[1][1], q[1][2], n[0], n[1], n[2], 1, 0);
+            int i2 = builder.addVertex(q[2][0], q[2][1], q[2][2], n[0], n[1], n[2], 1, 1);
+            int i3 = builder.addVertex(q[3][0], q[3][1], q[3][2], n[0], n[1], n[2], 0, 1);
+            builder.addTriangle(i0, i1, i2);
+            builder.addTriangle(i0, i2, i3);
+            builder.addTriangle(i0, i2, i1);
+            builder.addTriangle(i0, i3, i2);
+        }
+    }
+
+    private float[] localToWorldPoint(House house, float[] p) {
+        float[] w = localToWorld(house.x, house.z, house.rotationY, p[0], p[2]);
+        return new float[] { w[0], house.baseY + p[1], w[1] };
+    }
+
+    /** A flat four-cornered face in house-local space, wound to face along outward. */
+    private void localQuad(MeshBuilder builder, House house, float[] a, float[] b, float[] c, float[] d, float[] outward) {
+        float[] normal = normalise(outward);
+        int ia = houseVertex(builder, house, a, normal, 0f, 0f);
+        int ib = houseVertex(builder, house, b, normal, 1f, 0f);
+        int ic = houseVertex(builder, house, c, normal, 1f, 1f);
+        int id = houseVertex(builder, house, d, normal, 0f, 1f);
+        addOutwardQuad(builder, house, ia, ib, ic, id, a, b, c, normal);
     }
 
     /**
@@ -2271,6 +3175,7 @@ public class InfrastructureManager {
             float[] a = localToWorld(house.x, house.z, house.rotationY, localPoints.get(i)[0], localPoints.get(i)[1]);
             float[] b = localToWorld(house.x, house.z, house.rotationY, localPoints.get(i + 1)[0], localPoints.get(i + 1)[1]);
             fenceRun(batch, builder, style, house.secure, a[0], a[1], b[0], b[1]);
+            recordSegment(a[0], a[1], b[0], b[1], house.secure ? 0.8f : 0.4f, house.secure ? style.securityHeight : style.height);
         }
     }
 
@@ -2481,19 +3386,36 @@ public class InfrastructureManager {
         return createSign(new Vector3(signX, signY, signZ), segment.nationId, facingRotation(-outwardX, -outwardZ), rand);
     }
 
+    public NationScripts scripts() {
+        return scripts;
+    }
+
+    public Products products() {
+        return products;
+    }
+
+    /** How proudly a nation flies its flag, 0 to 1. */
+    public float patriotismOf(int nationId) {
+        return patriotism.getOrDefault(nationId, 0.3f);
+    }
+
     private InfrastructureObject createSign(Vector3 position, int nationId, float rotationY, Random rand) {
-        int minLen = 80;
-        int maxLen = 200;
-        int stringLength = minLen + rand.nextInt(maxLen - minLen + 1);
-
-        int[] textString = new int[stringLength];
-
         int maxGlyphs = mainListener != null ? mainListener.getNationAtlasSize(nationId) : 10;
         if (maxGlyphs <= 0) maxGlyphs = 1;
+        int[] textString = randomText(rand, maxGlyphs, 80, 200);
+        InfrastructureObject sign = new InfrastructureObject(InfrastructureObject.Type.SIGN, position, nationId, rotationY, textString);
+        // Separate streams, so the pictures and title don't change what else the chunk holds
+        Random design = new Random(rand.nextLong());
+        decorateSign(sign, design, maxGlyphs, false);
+        return sign;
+    }
 
+    /** Words of random letters, separated by spaces. */
+    private static int[] randomText(Random rand, int maxGlyphs, int minLen, int maxLen) {
+        int stringLength = minLen + rand.nextInt(maxLen - minLen + 1);
+        int[] textString = new int[stringLength];
         int wordLengthCounter = 0;
         int targetWordLength = 3 + rand.nextInt(6);
-
         for (int c = 0; c < stringLength; c++) {
             if (wordLengthCounter >= targetWordLength) {
                 textString[c] = 0;
@@ -2504,8 +3426,192 @@ public class InfrastructureManager {
                 wordLengthCounter++;
             }
         }
+        return textString;
+    }
 
-        return new InfrastructureObject(InfrastructureObject.Type.SIGN, position, nationId, rotationY, textString);
+    /**
+     * Gives a sign its pictures (none to three: the flag, a map, the locals, their goods)
+     * and perhaps a title. Some signs are adverts for a shop nearby: titled with the shop's
+     * name, showing its goods, people holding them, or a map of the way there.
+     */
+    private void decorateSign(InfrastructureObject sign, Random rand, int maxGlyphs, boolean poster) {
+        int nation = sign.nationId;
+        boolean vertical = scripts.direction(nation) >= 2;
+        Shop shop = nearestShop(sign.position.x, sign.position.z, 2600f, nation);
+        boolean advert = shop != null && rand.nextFloat() < (poster ? 0.8f : 0.4f);
+        float patriotism = patriotismOf(nation);
+
+        if (advert) {
+            int[] name = shopName(shop);
+            System.arraycopy(name, 0, sign.titleString, 0, name.length);
+            sign.titleLength = name.length;
+        } else if (rand.nextFloat() < 0.55f) {
+            // A title of a word or two, short enough to fit its line whole: a line of a
+            // vertical script holds six of its big letters, a horizontal one fourteen
+            int most = vertical ? 6 : 12;
+            int length = 0;
+            int words = rand.nextFloat() < (vertical ? 0.2f : 0.6f) ? 2 : 1;
+            for (int word = 0; word < words; word++) {
+                int letters = 2 + rand.nextInt(vertical ? 3 : 5);
+                if (length + (word > 0 ? 1 : 0) + letters > most) break;
+                if (word > 0) sign.titleString[length++] = 0;
+                for (int i = 0; i < letters; i++) sign.titleString[length++] = 1 + rand.nextInt(maxGlyphs);
+            }
+            sign.titleLength = length;
+        }
+        if (sign.titleLength > 0) letter(sign, rand);
+        if (advert && rand.nextFloat() < 0.5f) {
+            // Adverts are often printed on a coloured ground
+            sign.boardColour = WorldPalette.hsv(rand.nextFloat(), 0.12f + rand.nextFloat() * 0.18f, 0.9f + rand.nextFloat() * 0.08f);
+        }
+
+        List<Integer> kinds = new ArrayList<>();
+        if (advert) {
+            if (rand.nextFloat() < 0.55f) kinds.add(InfrastructureObject.PICTURE_MAP);
+            if (rand.nextFloat() < 0.65f) kinds.add(InfrastructureObject.PICTURE_ADVERT);
+            if (rand.nextFloat() < 0.45f) kinds.add(InfrastructureObject.PICTURE_PRODUCT);
+            if (rand.nextFloat() < 0.1f * patriotism) kinds.add(InfrastructureObject.PICTURE_FLAG);
+            if (kinds.isEmpty()) kinds.add(rand.nextBoolean() ? InfrastructureObject.PICTURE_ADVERT : InfrastructureObject.PICTURE_PRODUCT);
+        } else {
+            float roll = rand.nextFloat();
+            int count = roll < 0.45f ? 0 : roll < 0.8f ? 1 : roll < 0.95f ? 2 : 3;
+            for (int i = 0; i < count; i++) {
+                float flagWeight = 0.3f * patriotism;
+                boolean hasMap = kinds.contains(InfrastructureObject.PICTURE_MAP);
+                float mapWeight = hasMap ? 0f : 0.3f;
+                float total = flagWeight + mapWeight + 0.25f + 0.18f + 0.07f;
+                float pick = rand.nextFloat() * total;
+                int kind;
+                if ((pick -= flagWeight) < 0f) kind = InfrastructureObject.PICTURE_FLAG;
+                else if ((pick -= mapWeight) < 0f) kind = InfrastructureObject.PICTURE_MAP;
+                else if ((pick -= 0.25f) < 0f) kind = InfrastructureObject.PICTURE_PORTRAIT;
+                else if ((pick -= 0.18f) < 0f) kind = InfrastructureObject.PICTURE_FIGURE;
+                else kind = InfrastructureObject.PICTURE_PRODUCT;
+                kinds.add(kind);
+            }
+        }
+        while (kinds.size() > InfrastructureObject.MAX_PICTURES) kinds.remove(kinds.size() - 1);
+        java.util.Collections.shuffle(kinds, rand);
+        float[][] rects = layoutPictures(kinds, vertical, sign.titleLength > 0, rand);
+        for (int i = 0; i < kinds.size(); i++) {
+            sign.addPicture(kinds.get(i), rects[i], rand.nextInt(1 << 16));
+            if (kinds.get(i) == InfrastructureObject.PICTURE_MAP) scheduleMap(sign, rects[i], advert ? shop : null, rand);
+        }
+    }
+
+    /** A title's lettering: weight, slant, width, perhaps outlined or shadowed, and an ink of its own. */
+    private void letter(InfrastructureObject sign, Random rand) {
+        float weight = new float[] { 0.25f, 0.35f, 0.5f, 0.62f }[rand.nextInt(4)];
+        float slant = rand.nextFloat() < 0.35f ? (rand.nextBoolean() ? 0.22f : -0.18f) : 0f;
+        float width = 0.75f + rand.nextFloat() * 0.4f;
+        boolean outline = rand.nextFloat() < 0.15f;
+        sign.titleFont = new float[] { weight, slant, width, outline ? 1f : 0f };
+        sign.titleShadow = !outline && rand.nextFloat() < 0.2f;
+        float inkRoll = rand.nextFloat();
+        if (inkRoll < 0.4f) {
+            sign.titleColour = new float[] { 0.05f, 0.05f, 0.06f };
+        } else if (inkRoll < 0.65f && flags.containsKey(sign.nationId)) {
+            // One of the flag's colours, if it shows on white
+            List<float[]> colours = flags.get(sign.nationId).colours;
+            float[] c = colours.get(rand.nextInt(colours.size()));
+            boolean pale = c[0] + c[1] + c[2] > 2.2f;
+            sign.titleColour = pale ? new float[] { 0.05f, 0.05f, 0.06f } : c;
+        } else {
+            sign.titleColour = WorldPalette.hsv(rand.nextFloat(), 0.6f + rand.nextFloat() * 0.3f, 0.3f + rand.nextFloat() * 0.3f);
+        }
+    }
+
+    /**
+     * Where each picture goes, as fractions of the text area: in different corners (or, a
+     * lone picture, now and then taking up most of the board), clear of the title's lines.
+     */
+    private static float[][] layoutPictures(List<Integer> kinds, boolean vertical, boolean title, Random rand) {
+        int count = kinds.size();
+        float[][] rects = new float[count][];
+        // The title takes the first two of twelve lines: rows for a horizontal script, columns for a vertical one
+        float ax = title && vertical ? 2f / 12f + 0.01f : 0f;
+        float ay = title && !vertical ? 2f / 12f + 0.02f : 0f;
+        float availW = 1f - ax, availH = 1f - ay;
+        boolean large = count == 1 && rand.nextFloat() < 0.3f;
+        float maxW = count == 1 ? (large ? Math.min(0.72f, availW) : 0.45f) : count == 2 ? 0.44f : 0.38f;
+        float maxH = count == 1 ? (large ? availH : Math.min(0.62f, availH)) : (availH - 0.1f) / 2f;
+        List<Integer> corners = new ArrayList<>(List.of(0, 1, 2, 3));
+        java.util.Collections.shuffle(corners, rand);
+        for (int i = 0; i < count; i++) {
+            int kind = kinds.get(i);
+            // Width over height in world units
+            float aspect = switch (kind) {
+                case InfrastructureObject.PICTURE_FLAG -> 1.5f;
+                case InfrastructureObject.PICTURE_FIGURE -> 0.6f;
+                case InfrastructureObject.PICTURE_MAP -> 0.8f + rand.nextFloat() * 1.0f;
+                default -> 0.75f;
+            };
+            float f = large ? 1f : 0.75f + rand.nextFloat() * 0.25f;
+            float w = maxW * f;
+            float h = w * 27.6f / 19.36f / aspect;
+            if (h > maxH * f) {
+                h = maxH * f;
+                w = h * aspect * 19.36f / 27.6f;
+            }
+            int corner = corners.get(i);
+            float x0 = corner % 2 == 0 ? ax : 1f - w;
+            float y0 = corner < 2 ? ay : 1f - h;
+            rects[i] = new float[] { x0, y0, x0 + w, y0 + h };
+        }
+        return rects;
+    }
+
+    /**
+     * Draws a sign's map off the GL thread: of the area round the sign at any scale, or, on
+     * an advert, of the way from the sign to the shop.
+     */
+    private void scheduleMap(InfrastructureObject sign, float[] rect, Shop shop, Random rand) {
+        float worldW = (rect[2] - rect[0]) * sign.boardWidth * 0.92f, worldH = (rect[3] - rect[1]) * sign.boardHeight * 0.88f;
+        int mapW = worldW >= worldH ? 256 : Math.max(64, Math.round(256 * worldW / worldH));
+        int mapH = worldW >= worldH ? Math.max(64, Math.round(256 * worldH / worldW)) : 256;
+        sign.mapWidth = mapW;
+        sign.mapHeight = mapH;
+        float px = sign.position.x, pz = sign.position.z;
+        float aspect = mapW / (float) mapH;
+        float cx, cz, halfWidth;
+        float[] here, destination = null;
+        boolean route = false;
+        java.awt.image.BufferedImage badge = null;
+        if (shop != null) {
+            Doorway door = doorwayOf(shop.house);
+            destination = new float[] { door.doorX, door.doorZ };
+            cx = (px + door.doorX) * 0.5f;
+            cz = (pz + door.doorZ) * 0.5f;
+            halfWidth = Math.max(Math.abs(door.doorX - px) * 0.5f, Math.abs(door.doorZ - pz) * 0.5f * aspect) * 1.45f + 90f;
+            here = rand.nextFloat() < 0.75f ? new float[] { px, pz } : null;
+            route = here != null && rand.nextFloat() < 0.85f;
+            int[] name = shopName(shop);
+            List<java.awt.image.BufferedImage> glyphs = scripts.glyphs(shop.nationId);
+            for (int letter : name) {
+                if (letter > 0 && letter < glyphs.size()) { badge = glyphs.get(letter); break; }
+            }
+        } else {
+            halfWidth = (float) (150.0 * Math.pow(25.0, rand.nextFloat())) * (mapW / (float) Math.max(mapW, mapH));
+            float halfHeight = halfWidth / aspect;
+            cx = px + (rand.nextFloat() - 0.5f) * halfWidth * 0.8f;
+            cz = pz + (rand.nextFloat() - 0.5f) * halfHeight * 0.8f;
+            here = rand.nextFloat() < 0.6f ? new float[] { px, pz } : null;
+        }
+        long style = worldSeed * 61L + sign.nationId * 17L;
+        PerlinNoise noise = terrainNoise;
+        float sea = seaLevel;
+        float[] hereMark = here, shopMark = destination;
+        boolean withRoute = route;
+        java.awt.image.BufferedImage letter = badge;
+        float centreX = cx, centreZ = cz, half = halfWidth;
+        SIGN_MAP_ARTIST.submit(() -> {
+            try {
+                List<float[]> way = withRoute ? routes().route(hereMark[0], hereMark[1], shopMark[0], shopMark[1]) : null;
+                sign.mapPixels = SignMap.render(this, noise, sea, style, centreX, centreZ, half, mapW, mapH, hereMark, shopMark, way, letter);
+            } catch (RuntimeException e) {
+                System.err.println("[SIGNS] Map failed: " + e);
+            }
+        });
     }
 
     // ==========================================
