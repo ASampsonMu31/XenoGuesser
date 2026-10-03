@@ -85,7 +85,9 @@ private volatile boolean showHeatmap = false;
     private float totalRegionWidth;
     private float halfRegion;
 
-    private boolean isGuessed = false;
+    private volatile boolean isGuessed = false;
+    // The next round's answer, waiting for the results to close
+    private int[] pendingGoal;
     private int goalX; 
     private int goalY; 
 
@@ -110,7 +112,11 @@ private volatile boolean showHeatmap = false;
 
     private List<MapNote> savedNotes = new ArrayList<>();
 
-    private boolean isHovered = false;
+    // The map is small or large, switched with M; only the large map takes the mouse
+    public enum MapSize { SMALL, LARGE }
+    private MapSize mapSize = MapSize.SMALL;
+    private boolean isLarge = false;
+    private Runnable onSizeChanged;
     private boolean isFullScreenReveal = false; 
     private int currentMapSize = 150; 
 
@@ -139,7 +145,11 @@ private volatile boolean showHeatmap = false;
     
     private float lineProgress = 0.0f; 
 
-    private boolean nextRoundRequested = false;
+        private boolean nextRoundRequested = false;
+    // While the next round is being built the button turns pale, says Loading and shows a spinner
+    private boolean roundLoading = false;
+    private long roundLoadingStart;
+    private javax.swing.Timer spinnerTimer;
 
     private GameHUD gameHUD;
     private XenoGuesser mainApp;
@@ -150,7 +160,6 @@ private volatile boolean showHeatmap = false;
 
     private XenoGuesser_GLEventListener listener;
 
-    private CompassHUD compassHUD;
 
     public MapPanel(
             int maxMapWidth,
@@ -159,15 +168,13 @@ private volatile boolean showHeatmap = false;
             float seaLevelHeight,
             PerlinNoise noise,
             float physicalChunkSize,
-            XenoGuesser_GLEventListener listener,
-            CompassHUD compassHUD
+            XenoGuesser_GLEventListener listener
         ) {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
         this.physicalChunkSize = physicalChunkSize;
         this.listener = listener;
-        this.compassHUD = compassHUD;
 
         this.setOpaque(false);
         this.setLayout(null); 
@@ -243,10 +250,12 @@ private volatile boolean showHeatmap = false;
         this.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
+                // The small and medium maps are only looked at; the mouse steers the view then
+                if (!isLarge && !isFullScreenReveal) return;
                 int clickX = e.getX();
                 int clickY = e.getY();
                 
-                if (isHovered || isFullScreenReveal) {
+                if (isLarge || isFullScreenReveal) {
                     int mapLeft = (visualMapX != 0) ? visualMapX : (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
                     int mapTop = (visualMapY != 0) ? visualMapY : BORDER_SIZE;
                     for (int i = savedNotes.size() - 1; i >= 0; i--) {
@@ -340,12 +349,11 @@ private volatile boolean showHeatmap = false;
                         }
 
                         if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                            if (MapPanel.this.gameHUD != null) {
-                                MapPanel.this.gameHUD.advanceRound();
+                                                        boolean resultsReady = currentPhase != RevealPhase.SHOW_PLAYER_PIN;
+                            if (resultsReady && !roundLoading) {
+                                startRoundLoading();
                             }
-                            MapPanel.this.resetMapState(); 
-                            MapPanel.this.nextRoundRequested = true; 
-                            return; 
+                            return;  
                         }
                     }
 
@@ -366,7 +374,7 @@ private volatile boolean showHeatmap = false;
                         hasPin = true;
                         repaint(); 
                     }
-                    else if (isHovered && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
+                    else if (isLarge && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                         if (hasPin) {
                             startRevealSequence();
                         }
@@ -390,38 +398,6 @@ private volatile boolean showHeatmap = false;
                     }
                 }
             }
-
-            @Override
-            public void mouseEntered(MouseEvent e) {
-                if (!isHovered && !isFullScreenReveal) {
-                    isHovered = true;
-                    if (getParent() != null) {
-                        currentMapSize = (int)(getParent().getHeight() * 0.60f); 
-                    } else {
-                        currentMapSize = 550; 
-                    }
-                    updateGeometryLayouts();
-                    triggerParentLayoutUpdate();
-                }
-            }
-
-            @Override
-            public void mouseExited(MouseEvent e) {
-                if (isGuessed || isFullScreenReveal) return;
-
-                Point mousePos = getMousePosition();
-                if (mousePos != null && mousePos.x >= 0 && mousePos.x < getWidth() && mousePos.y >= 0 && mousePos.y < getHeight()) {
-                    return; 
-                }
-
-                if (isHovered) {
-                    isHovered = false;
-                    currentMapSize = 150;
-                    resetZoom();
-                    updateGeometryLayouts();
-                    triggerParentLayoutUpdate();
-                }
-            }
         });
 
         this.addMouseWheelListener(this::handleMouseWheel);
@@ -429,7 +405,7 @@ private volatile boolean showHeatmap = false;
 
     /** Zooms the enlarged map about the cursor, keeping the point under it fixed. */
     private void handleMouseWheel(MouseWheelEvent e) {
-        if (!(isHovered || isFullScreenReveal)) {
+        if (!(isLarge || isFullScreenReveal)) {
             return;
         }
         int mapLeft = visualMapX;
@@ -586,7 +562,8 @@ private volatile boolean showHeatmap = false;
     private void startRevealSequence() {
         this.isGuessed = true;
         this.isFullScreenReveal = true;
-        this.isHovered = false;
+        this.isLarge = false;
+        this.mapSize = MapSize.SMALL;
         // The reveal starts from the whole map so both the guess and the answer are visible
         resetZoom();
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN; 
@@ -597,7 +574,6 @@ private volatile boolean showHeatmap = false;
         this.currentScoreScale = 1.0f;
         this.slamProgress = 0.0f;
 
-        this.compassHUD.setVisible(false);
 
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
@@ -612,6 +588,7 @@ private volatile boolean showHeatmap = false;
 
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
+        if (onSizeChanged != null) onSizeChanged.run();
 
         final float lineRevealSpeed = 0.05f; 
         final long COUNT_UP_DURATION_MS = 500; 
@@ -681,9 +658,28 @@ private volatile boolean showHeatmap = false;
         return this.isFullScreenReveal; 
     }
 
-    public void setPlayerSpawnLocation(float spawnX, float spawnZ) {
-        this.goalX = (int) (((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth());
-        this.goalY = (int) (((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight());
+    /**
+     * Where the player really is this round. The next round's spot arrives while the results
+     * are still showing (it is built behind them), so it is held back until they close
+     * rather than moving the answer flag on screen and giving the next round away.
+     */
+    public synchronized void setPlayerSpawnLocation(float spawnX, float spawnZ) {
+        int x = (int) (((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth());
+        int y = (int) (((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight());
+        if (isGuessed) {
+            pendingGoal = new int[] { x, y };
+        } else {
+            goalX = x;
+            goalY = y;
+        }
+    }
+
+    private synchronized void applyPendingGoal() {
+        if (pendingGoal != null) {
+            goalX = pendingGoal[0];
+            goalY = pendingGoal[1];
+            pendingGoal = null;
+        }
     }
 
     public void updateGeometryLayouts() {
@@ -714,7 +710,7 @@ private volatile boolean showHeatmap = false;
                 }
             }
         } else {
-            boolean needsExtraSpace = isHovered;
+            boolean needsExtraSpace = isLarge;
             int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
             
             int panelWidth = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET + 2;
@@ -868,7 +864,7 @@ private volatile boolean showHeatmap = false;
                 }
             }
 
-            if (isHovered && !isFullScreenReveal) {
+            if (isLarge && !isFullScreenReveal) {
                 g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
                 g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
 
@@ -887,7 +883,7 @@ private volatile boolean showHeatmap = false;
                 g2d.drawString(btnText, textX, textY);
             }
 
-            if (isHovered || isFullScreenReveal) {
+            if (isLarge || isFullScreenReveal) {
                 for (MapNote note : savedNotes) {
                     int drawX = coreToScreenX(note.coreX, mapX);
                     int drawY = coreToScreenY(note.coreY, mapY);
@@ -1054,7 +1050,10 @@ private volatile boolean showHeatmap = false;
                         g2d.drawString(noteBtnText, noteBtnX + (noteBtnWidth - noteStrW) / 2, noteBtnY + (noteBtnHeight + noteStrH) / 2 - 2);
                     }
 
-                    g2d.setColor(resultsReady ? btnNextRoundBlue : btnDisabledGrey);
+                                        // Paler while the next round loads
+                    Color nextColour = !resultsReady ? btnDisabledGrey
+                            : roundLoading ? blend(btnNextRoundBlue, Color.WHITE, 0.45f) : btnNextRoundBlue;
+                    g2d.setColor(nextColour);
                     g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
 
                     g2d.setColor(new Color(255, 255, 255, resultsReady ? 60 : 30));
@@ -1065,12 +1064,23 @@ private volatile boolean showHeatmap = false;
                     g2d.setColor(btnTextWhite);
                     g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 20f));
                     FontMetrics fm = g2d.getFontMetrics();
-                    String endText = "Next Round";
+                                        String endText = roundLoading ? "Loading" : "Next Round";
                     int stringWidth = fm.stringWidth(endText);
                     int stringHeight = fm.getAscent();
-                    int textX = btnX + (btnWidth - stringWidth) / 2;
+                    int spinnerSize = roundLoading ? Math.round(btnHeight * 0.45f) : 0;
+                    int spinnerGap = roundLoading ? 12 : 0;
+                    int textX = btnX + (btnWidth - stringWidth + spinnerSize + spinnerGap) / 2;
                     int textY = btnY + (btnHeight + stringHeight) / 2 - 2;
                     g2d.drawString(endText, textX, textY);
+                    if (roundLoading) {
+                        // A half-circle outline turning round, to show work is going on
+                        int spinnerX = textX - spinnerGap - spinnerSize;
+                        int spinnerY = btnY + (btnHeight - spinnerSize) / 2;
+                        int angle = (int) (((System.currentTimeMillis() - roundLoadingStart) * 0.4) % 360);
+                        g2d.setStroke(new BasicStroke(3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                        g2d.drawArc(spinnerX, spinnerY, spinnerSize, spinnerSize, -angle, 180);
+                        g2d.setStroke(originalStroke);
+                    }
                 }
 
                 if (shouldDrawScoreText) {
@@ -1088,8 +1098,8 @@ private volatile boolean showHeatmap = false;
                         int centerMapX = mapX + (currentMapSize / 2);
                         int centerMapY = mapY + (currentMapSize / 2);
                         
-                        int targetHUDX = isFullScreenReveal ? 40 : (-getX() + 30);
-                        int targetHUDY = isFullScreenReveal ? 50 : (-getY() + 45);
+                        int targetHUDX = -getX() + HudStyle.HUD_MARGIN + HudStyle.SCORE_TARGET_X;
+                        int targetHUDY = -getY() + HudStyle.HUD_MARGIN + HudStyle.SCORE_TARGET_Y;
                         
                         int drawX = (int) (centerMapX + (targetHUDX - centerMapX) * slamProgress) - (textW / 2);
                         int drawY = (int) (centerMapY + (targetHUDY - centerMapY) * slamProgress) + (textH / 2);
@@ -1118,9 +1128,11 @@ private volatile boolean showHeatmap = false;
     }
 
     public void resetMapState() {
+        applyPendingGoal();
         this.isGuessed = false;
         this.isFullScreenReveal = false;
-        this.isHovered = false;
+        this.isLarge = false;
+        this.mapSize = MapSize.SMALL;
         this.hasPin = false;
         this.currentMapSize = 150;
         resetZoom();
@@ -1152,10 +1164,75 @@ private volatile boolean showHeatmap = false;
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
         repaint();
+        if (onSizeChanged != null) onSizeChanged.run();
+    }
+
+    /** M: enlarges the small map, or shrinks the large one. */
+    public void toggleSize() {
+        setMapSize(mapSize == MapSize.SMALL ? MapSize.LARGE : MapSize.SMALL);
+    }
+
+    public MapSize getMapSize() {
+        return mapSize;
+    }
+
+    public boolean isLargeMap() {
+        return isLarge;
+    }
+
+    /** Called on the UI thread whenever the map changes size or the results open or close. */
+    public void setOnSizeChanged(Runnable onSizeChanged) {
+        this.onSizeChanged = onSizeChanged;
+    }
+
+    private void setMapSize(MapSize size) {
+        if (isFullScreenReveal || isGuessed) return;
+        mapSize = size;
+        isLarge = size == MapSize.LARGE;
+        int parentHeight = getParent() != null ? getParent().getHeight() : 900;
+        currentMapSize = switch (size) {
+            case SMALL -> 150;
+            case LARGE -> (int) (parentHeight * 0.60f);
+        };
+        if (!isLarge) resetZoom();
+        updateGeometryLayouts();
+        triggerParentLayoutUpdate();
+        repaint();
+        if (onSizeChanged != null) onSizeChanged.run();
+    }
+
+        /** Shows the button's loading state, then asks for the next round once that has been painted. */
+    private void startRoundLoading() {
+        roundLoading = true;
+        roundLoadingStart = System.currentTimeMillis();
+        if (spinnerTimer == null) {
+            spinnerTimer = new javax.swing.Timer(30, e -> repaint());
+        }
+        spinnerTimer.start();
+        repaint();
+        javax.swing.Timer delay = new javax.swing.Timer(80, e -> nextRoundRequested = true);
+        delay.setRepeats(false);
+        delay.start();
+    }
+
+    /** Called once the next round's surroundings are built: closes the results and starts the round. */
+    public void finishRoundLoading() {
+        roundLoading = false;
+        if (spinnerTimer != null) spinnerTimer.stop();
+        if (gameHUD != null) {
+            gameHUD.advanceRound();
+        }
+        resetMapState();
     }
 
     public boolean isNextRoundRequested() {
         return nextRoundRequested;
+    }
+
+        private static Color blend(Color from, Color to, float t) {
+        return new Color(Math.round(from.getRed() + (to.getRed() - from.getRed()) * t),
+                Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * t),
+                Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * t));
     }
 
     public void clearNextRoundRequest() {

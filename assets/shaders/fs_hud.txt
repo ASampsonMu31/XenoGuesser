@@ -1,0 +1,12 @@
+#version 330 core
+
+in vec2 uv;
+out vec4 fragColour;
+
+uniform sampler2D image;
+uniform vec4 tint;        // used instead of the image when useImage is 0
+uniform int useImage;
+
+void main() {
+    fragColour = useImage == 1 ? texture(image, uv) : tint;
+}

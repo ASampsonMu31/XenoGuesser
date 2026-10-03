@@ -74,10 +74,12 @@ public final class WorldArtGenerator {
             jobs.add(job.getValue());
         }
 
-        int threads = Math.max(1, Math.min(jobs.size(), Runtime.getRuntime().availableProcessors()));
+        // One core is left for the loading screen
+        int threads = Math.max(1, Math.min(jobs.size(), Runtime.getRuntime().availableProcessors() - 1));
         ExecutorService pool = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "world-art");
             t.setDaemon(true);
+            t.setPriority(Thread.MIN_PRIORITY);
             return t;
         });
         AtomicInteger done = new AtomicInteger();

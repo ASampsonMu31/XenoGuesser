@@ -27,6 +27,11 @@ public class OrganismMesh {
     public static final int PART_HORN = 6;
     public static final int PART_TRIM = 7;
     public static final int PART_SKIN = 8;
+    // The player's compass
+    public static final int PART_BRASS = 9;
+    public static final int PART_DIAL = 10;
+    public static final int PART_NEEDLE_NORTH = 11;
+    public static final int PART_NEEDLE_SOUTH = 12;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];
@@ -77,6 +82,12 @@ public class OrganismMesh {
         void at(float t, float[] out);
     }
 
+    /** A rumpling of a cloth surface: a radius multiplier by distance along a part and angle around it. */
+    @FunctionalInterface
+    public interface Folds {
+        float at(float along, float angle);
+    }
+
     /** Collects parts on the CPU; each is placed by the current transform and tagged with the current bone and part kind. */
     public static final class Builder {
         private float[] vertices = new float[4096 * STRIDE];
@@ -86,6 +97,7 @@ public class OrganismMesh {
         private float[] transform = Affine.identity();
         private int bone;
         private int part;
+        private Folds folds;
 
         public Builder bone(int bone) {
             this.bone = bone;
@@ -100,6 +112,15 @@ public class OrganismMesh {
         /** Places the next parts in the bone's space by this transform. */
         public Builder transform(float[] transform) {
             this.transform = transform;
+            return this;
+        }
+
+        /**
+         * Rumples the surface of cloth parts (body and limb sections) added from now on: the
+         * radius is scaled by folds.at(distance along the part, angle around it). Null for smooth.
+         */
+        public Builder folds(Folds folds) {
+            this.folds = folds;
             return this;
         }
 
@@ -118,6 +139,12 @@ public class OrganismMesh {
          * fixed. Normals are taken from the finished surface, so any profile shades smoothly.
          */
         public void lathe(int around, int along, Profile profile) {
+            Folds rumple = part == PART_BODY || part == PART_LEG ? folds : null;
+            if (rumple != null) {
+                // Enough detail for the folds to show
+                around *= 2;
+                along *= 3;
+            }
             float[] sample = new float[5];
             float[][] centres = new float[along + 1][];
             float[][] radii = new float[along + 1][];
@@ -133,8 +160,9 @@ public class OrganismMesh {
                 float[] up = Affine.normalise(Affine.cross(tangent, side));
                 for (int i = 0; i < around; i++) {
                     double angle = i / (double) around * Math.PI * 2.0;
-                    float cx = (float) Math.cos(angle) * radii[j][0];
-                    float cy = (float) Math.sin(angle) * radii[j][1];
+                    float wrinkle = rumple == null ? 1f : rumple.at(centres[j][2], (float) angle);
+                    float cx = (float) Math.cos(angle) * radii[j][0] * wrinkle;
+                    float cy = (float) Math.sin(angle) * radii[j][1] * wrinkle;
                     grid[j][i] = new float[] {
                         centres[j][0] + side[0] * cx + up[0] * cy,
                         centres[j][1] + side[1] * cx + up[1] * cy,
@@ -198,6 +226,15 @@ public class OrganismMesh {
             indices[indexCount++] = a;
             indices[indexCount++] = b;
             indices[indexCount++] = c;
+        }
+
+        /** The vertices so far, STRIDE floats each, for drawing on the CPU. */
+        public float[] vertices() {
+            return Arrays.copyOf(vertices, vertexFloats);
+        }
+
+        public int[] indices() {
+            return Arrays.copyOf(indices, indexCount);
         }
 
         public int triangleCount() {

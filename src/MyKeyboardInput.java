@@ -27,6 +27,11 @@ class MyKeyboardInput implements KeyListener {
   @Override
   public void keyTyped(KeyEvent e) {}
 
+  /** Lets go of every key, e.g. when a menu opens or the window loses focus. */
+  public void releaseAll() {
+    w = a = s = d = g = h = false;
+  }
+
   private void setKey(int keyCode, boolean isPressed) {
     switch (keyCode) {
       case KeyEvent.VK_W: w = isPressed; break;

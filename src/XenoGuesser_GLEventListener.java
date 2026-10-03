@@ -196,7 +196,13 @@ private static class SpeciesConfig {
     private java.nio.FloatBuffer persistentGrassBuffer;
     private int currentGrassGPUCapacityFloats = 0;
 
-    private CompassHUD compassHUD;
+    // The HUD drawn over the 3D view, and what each picture last showed
+    private final HudOverlay hud = new HudOverlay();
+    private int hudScoreVersion = -1, hudFps = -1;
+    private float hudScale = -1f;
+    private MapPanel.MapSize hudMapSize;
+    private volatile boolean menuOpen;
+    private volatile boolean compassWanted;
 
     // --- ECOSYSTEM SPAWNING MANAGER DATA ---
     private RegionalGenerationManager regionalManager;
@@ -268,8 +274,14 @@ private static class SpeciesConfig {
     private boolean worldReady = false;
     private int framesRenderedSinceReady = 0;
     // While loading, grass seeding may keep going for this long per frame; in play it seeds one far chunk per frame
-    private static final long LOADING_GRASS_BUDGET_NANOS = 120_000_000L;
-    private long grassBudgetNanos = 0;
+    private static final long LOADING_GRASS_BUDGET_NANOS = 45_000_000L;
+        private long grassBudgetNanos = 0;
+    // Between rounds the new surroundings are built in slices of this long per frame
+    private static final long ROUND_LOADING_BUDGET_NANOS = 45_000_000L;
+    private boolean roundLoading = false;
+    private long roundChunkDeadline;
+    private long roundLoadingStarted;
+    private int roundLoadingFrames;
     private static final float LEAF_DARK_SCALE = 0.65f;
     private static final float LEAF_LIGHT_SCALE = 1.3f;
 
@@ -624,13 +636,19 @@ private static class SpeciesConfig {
             loading.begin(LoadingProgress.Stage.FLORA);
             return false;
         }
-        int floraSteps = NUM_SPECIES * FLORA_VARIATIONS;
-        int floraStep = loadingStep - 1;
-        if (floraStep < floraSteps) {
-            initialiseFloraVariation(floraStep / FLORA_VARIATIONS, floraStep % FLORA_VARIATIONS);
-            loading.report((floraStep + 1) / (float) floraSteps);
-            loadingStep++;
-            if (floraStep + 1 == floraSteps) loading.begin(LoadingProgress.Stage.TERRAIN);
+        // Trees are built a detail level at a time, as many as fit in a slice of each frame,
+        // so the loading screen keeps moving
+        int floraSteps = NUM_SPECIES * FLORA_VARIATIONS * 3;
+        if (loadingStep - 1 < floraSteps) {
+            long sliceEnd = System.nanoTime() + LOADING_GRASS_BUDGET_NANOS;
+            do {
+                int floraStep = loadingStep - 1;
+                int tree = floraStep / 3;
+                initialiseFloraVariation(tree / FLORA_VARIATIONS, tree % FLORA_VARIATIONS, floraStep % 3);
+                loadingStep++;
+            } while (loadingStep - 1 < floraSteps && System.nanoTime() < sliceEnd);
+            loading.report((loadingStep - 1) / (float) floraSteps);
+            if (loadingStep - 1 == floraSteps) loading.begin(LoadingProgress.Stage.TERRAIN);
             return false;
         }
         if (loadingStep == floraSteps + 1) {
@@ -640,7 +658,7 @@ private static class SpeciesConfig {
         }
         // Distant grass is seeded within a time budget per frame so the loading screen keeps moving
         int grassChunksTotal = (GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1);
-        if (grassCache.size() < grassChunksTotal) {
+        if (grassCache.size() < grassChunksTotal || !surroundingsBuilt()) {
             grassBudgetNanos = LOADING_GRASS_BUDGET_NANOS;
             updateVisibleChunks(false);
             grassBudgetNanos = 0;
@@ -684,12 +702,39 @@ private static class SpeciesConfig {
             worldReady = true;
         }
 
+                // The next round is built behind the results screen, a slice per frame so the
+        // Loading button keeps spinning, and the results only close once it is ready
+        if (minimap != null && minimap.isNextRoundRequested()) {
+            minimap.clearNextRoundRequest();
+            roundLoading = true;
+            roundLoadingStarted = System.currentTimeMillis();
+            roundLoadingFrames = 0;
+            resetToNextRound(gl);
+        }
+        if (roundLoading) {
+            grassBudgetNanos = ROUND_LOADING_BUDGET_NANOS;
+            updateVisibleChunks(false);
+            grassBudgetNanos = 0;
+            roundLoadingFrames++;
+            if (grassCache.size() >= (GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1) && surroundingsBuilt()) {
+                roundLoading = false;
+                System.out.printf("[ROUND] Next round built in %d ms over %d frames%n",
+                        System.currentTimeMillis() - roundLoadingStarted, roundLoadingFrames);
+                javax.swing.SwingUtilities.invokeLater(() -> {
+                    if (minimap != null) minimap.finishRoundLoading();
+                });
+            }
+            gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+            return;
+        }
+
         if (minimap != null && minimap.isFullScreenRevealMode()) {
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
             return;
         }
 
         render();
+        drawHud(drawable);
 
         // Hand over from the loading screen only once a real frame of the round exists
         if (!loading.isFinished() && ++framesRenderedSinceReady >= 2) {
@@ -831,6 +876,7 @@ private static class SpeciesConfig {
                 if (organismManager != null) organismManager.dispose(gl);
         if (inhabitants != null) inhabitants.dispose(gl);
         playerBody.dispose(gl);
+        hud.dispose(gl);
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
@@ -1088,7 +1134,7 @@ private static class SpeciesConfig {
         initialiseWaterAndGrass();
     }
 
-    private void initialiseFloraVariation(int s, int variation) {
+    private void initialiseFloraVariation(int s, int variation, int onlyLod) {
         int[] lodSlices = {12, 8, 4};
         {
             SpeciesConfig sc = speciesConfigs[s];
@@ -1123,7 +1169,7 @@ private static class SpeciesConfig {
                 Material leafMat = new Material(new Vector3(0.9f, 0.9f, 0.9f), new Vector3(0.2f, 0.2f, 0.2f), new Vector3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
-                for (int lod = 0; lod < 3; lod++) {
+                for (int lod = onlyLod; lod <= onlyLod; lod++) {
                     
                     Flora.FloraBundle fBundle = Flora.generateFloraBundle(
                         gl, worldSeed + (i * 7382L) + s * 8831L, 
@@ -1255,6 +1301,7 @@ private static class SpeciesConfig {
                 organismManager.initialise(gl);
         inhabitants.initialise(gl);
         playerBody.initialise(gl);
+        hud.initialise(gl);
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
 
@@ -1419,7 +1466,7 @@ private static class SpeciesConfig {
         lastChunkZ = (int) Math.floor((spawnZ + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         
         // During the initial load, distant grass is seeded over later loading frames instead
-        updateVisibleChunks(worldReady);
+                updateVisibleChunks(worldReady && !roundLoading);
     }
 
     public void resetToNextRound(GL3 gl) {
@@ -1433,17 +1480,29 @@ private static class SpeciesConfig {
         lastChunkX = Integer.MAX_VALUE;
         lastChunkZ = Integer.MAX_VALUE;
                 totalGrassInstances = 0;
-        organismManager.clear();
+                organismManager.clear();
         inhabitants.clear();
-
-        if (minimap != null) {
-            minimap.resetMapState();
-        }
 
         spawnPlayerAtRandomLocation();
     }
 
+    /**
+     * While the world is loading (at launch or between rounds), whether this frame's slice of
+     * time is spent; nearby chunks always build. Slicing keeps the loading screen moving.
+     */
+    private boolean overRoundBudget(int cx, int cz) {
+        int ring = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+        return (roundLoading || !worldReady) && ring > 2 && System.nanoTime() > roundChunkDeadline;
+    }
+
+    /** Whether every terrain, flora and building chunk in view has been built. */
+    private boolean surroundingsBuilt() {
+        int viewChunks = (VIEW_DISTANCE * 2 + 1) * (VIEW_DISTANCE * 2 + 1);
+        return chunkCache.size() >= viewChunks && floraCache.size() >= viewChunks && infraCache.size() >= viewChunks;
+    }
+
     private void updateVisibleChunks(boolean forceImmediate) {
+        roundChunkDeadline = System.nanoTime() + ROUND_LOADING_BUDGET_NANOS;
         infraManager.prepareRoadNetwork(
             PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
         );
@@ -1498,6 +1557,9 @@ private static class SpeciesConfig {
                 mustBuild = true;
             }
 
+            if (mustBuild && overRoundBudget(cx, cz)) {
+                continue;
+            }
             if (mustBuild) {
                 float dynamicScale = PHYSICAL_CHUNK_SIZE / (float) targetSegments;
                 Mesh chunkMesh = TerrainMesh.generateTerrainChunk(gl, targetSegments, dynamicScale, cx, cz, worldNoise);
@@ -1519,7 +1581,7 @@ private static class SpeciesConfig {
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
                 String key = cx + "_" + cz;
-                if (!floraCache.containsKey(key)) {
+                if (!floraCache.containsKey(key) && !overRoundBudget(cx, cz)) {
                     List<FloraInstance> instances = new ArrayList<>();
                     float urbanness = infraManager.getUrbanness((cx + 0.5f) * PHYSICAL_CHUNK_SIZE, (cz + 0.5f) * PHYSICAL_CHUNK_SIZE);
                     
@@ -1740,7 +1802,7 @@ private static class SpeciesConfig {
         for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
             for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
                 String key = cx + "_" + cz;
-                if (!infraCache.containsKey(key)) {
+                if (!infraCache.containsKey(key) && !overRoundBudget(cx, cz)) {
                     List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
                         cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
                     );
@@ -1794,13 +1856,9 @@ private static class SpeciesConfig {
         double elapsedTime = getSeconds() - startTime;
         double deltaTime = elapsedTime - lastElapsedTime;
         lastElapsedTime = elapsedTime;
+        applyLook();
 
-        if (minimap != null && minimap.isNextRoundRequested()) {
-            minimap.clearNextRoundRequest();
-            minimap.resetMapState(); 
-            resetToNextRound(gl);
-            return;
-        }
+        
 
         if (IS_DEBUG_MODE_ACTIVE && isToTeleport) {
             moveToLocation(teleportX, teleportZ);
@@ -1915,10 +1973,6 @@ private static class SpeciesConfig {
         float curSkyB = skyDayB + nightProportion * (skyNightB - skyDayB);
         Vector3 skyColour = new Vector3(curSkyR, curSkyG, curSkyB);
 
-        if (this.compassHUD != null) {
-            Vector3 cameraLookDir = camera.getForwardDirection(); 
-            this.compassHUD.updateHeading(cameraLookDir);
-        }
 
         String skyTextureKey = "sky"; 
 
@@ -2251,12 +2305,89 @@ private static class SpeciesConfig {
         gl.glDisable(GL.GL_BLEND);
 
         // --- THE PLAYER'S OWN BODY, drawn last and nearest ---
+        if (compassWanted) {
+            compassWanted = false;
+            playerBody.useCompass();
+        }
         playerBody.update((float) deltaTime, camera.getPosition(), swimming);
         float[] deep = worldArt.palette().seaShallowTint();
         float daylightOnBody = 1.0f - nightProportion;
         playerBody.render(gl, camera, (float) currentWidth / Math.max(1, currentHeight), sunPos,
                 new float[] { sunTint[0] * daylightOnBody, sunTint[1] * daylightOnBody, sunTint[2] * daylightOnBody },
                 ambientLight, skyRotation, textures.get(skyTextureKey), waterSurfaceHere, deep);
+    }
+
+    /**
+     * The HUD over the finished frame: the round and score at the top left, the FPS in the
+     * top right corner, the inventory at the bottom left and the map's keys above the map.
+     * Each picture is repainted only when what it shows changes.
+     */
+    private void drawHud(GLAutoDrawable drawable) {
+        GL3 gl = drawable.getGL().getGL3();
+        // Pictures are painted at the screen's pixel density so they stay sharp when Windows scales the display
+        float scale = drawable instanceof java.awt.Component c && c.getWidth() > 0 ? currentWidth / (float) c.getWidth() : 1f;
+        boolean rescaled = scale != hudScale;
+        hudScale = scale;
+        int margin = Math.round(HudStyle.HUD_MARGIN * scale);
+        java.awt.Graphics2D[] g = new java.awt.Graphics2D[1];
+
+        if (gameHUD != null && (rescaled || gameHUD.getVersion() != hudScoreVersion)) {
+            hudScoreVersion = gameHUD.getVersion();
+            BufferedImage image = HudStyle.canvas(HudStyle.SCORE_W, HudStyle.SCORE_H, scale, g);
+            gameHUD.paintPanel(g[0], true);
+            g[0].dispose();
+            hud.put("score", image, margin, margin);
+        }
+
+        if (GameSettings.showFps() && gameHUD != null) {
+            int fps = gameHUD.getGameFps();
+            if (rescaled || fps != hudFps || !hud.has("fps")) {
+                hudFps = fps;
+                BufferedImage image = HudStyle.canvas(HudStyle.FPS_W, HudStyle.FPS_H, scale, g);
+                HudStyle.paintFps(g[0], fps);
+                g[0].dispose();
+                hud.put("fps", image, currentWidth - image.getWidth() - Math.round(8 * scale), Math.round(6 * scale));
+            }
+        } else {
+            hud.setVisible("fps", false);
+            hudFps = -1;
+        }
+
+        if (rescaled || !hud.has("inventory")) {
+            java.util.List<HudStyle.Item> items = java.util.List.of(new HudStyle.Item("Compass", "C", HudStyle::paintCompassIcon));
+            int h = HudStyle.inventoryHeight(items.size());
+            BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
+            HudStyle.paintInventory(g[0], items);
+            g[0].dispose();
+            hud.put("inventory", image, margin, currentHeight - image.getHeight() - margin);
+        }
+
+        if (minimap != null) {
+            MapPanel.MapSize size = minimap.getMapSize();
+            if (rescaled || size != hudMapSize) {
+                hudMapSize = size;
+                String[] keys = switch (size) {
+                    case SMALL -> new String[] { "M", "Expand map" };
+                    case LARGE -> new String[] { "M", "Contract map", "", "Click the map to place your marker" };
+                };
+                BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+                java.awt.Graphics2D pg = probe.createGraphics();
+                HudStyle.smooth(pg);
+                int w = HudStyle.hintWidth(pg, keys);
+                pg.dispose();
+                BufferedImage image = HudStyle.canvas(w, HudStyle.HINT_H, scale, g);
+                HudStyle.paintHint(g[0], w, keys);
+                g[0].dispose();
+                hud.put("mapHint", image, 0, 0);
+            }
+            // Just above the map, lined up with its right-hand edge
+            java.awt.Rectangle map = minimap.getBounds();
+            hud.move("mapHint", Math.round((map.x + map.width - 12) * scale) - hud.width("mapHint"),
+                    Math.round((map.y - 8) * scale) - Math.round(HudStyle.HINT_H * scale));
+        }
+
+        hud.setDim(menuOpen ? 0.45f : 0f);
+        hud.draw(gl, currentWidth, currentHeight);
     }
 
     private double getSeconds() {
@@ -2404,8 +2535,29 @@ private static class SpeciesConfig {
             };
     }
 
-    public void setCompassHUD(CompassHUD compassHUD) {
-        this.compassHUD = compassHUD;
+    // Mouse look gathered on the UI thread, applied at the start of the next frame
+    private float lookYaw, lookPitch;
+
+    /** Turns the view; safe to call from any thread. */
+    public synchronized void look(float yaw, float pitch) {
+        lookYaw += yaw;
+        lookPitch += pitch;
+    }
+
+    private synchronized void applyLook() {
+        if (lookYaw != 0f || lookPitch != 0f) camera.updateYawPitch(lookYaw, lookPitch);
+        lookYaw = 0f;
+        lookPitch = 0f;
+    }
+
+    /** C: the player takes out the compass and looks at it for a moment. */
+    public void useCompass() {
+        compassWanted = true;
+    }
+
+    /** While the settings are open the view behind them is darkened. */
+    public void setMenuOpen(boolean open) {
+        menuOpen = open;
     }
 
     private Model makeSkybox(GL3 gl, String fragmentPath, Texture skyTexture) {
