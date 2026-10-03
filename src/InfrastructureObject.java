@@ -27,13 +27,16 @@ public class InfrastructureObject {
     public int[] textString;
     public int stringLength;
 
-    // --- A SIGN'S PICTURE AND TITLE ---
-    public static final int PICTURE_NONE = 0, PICTURE_FLAG = 1, PICTURE_MAP = 2, PICTURE_PORTRAIT = 3, PICTURE_FIGURE = 4;
+    // --- A SIGN'S PICTURES AND TITLE ---
+    public static final int PICTURE_NONE = 0, PICTURE_FLAG = 1, PICTURE_MAP = 2, PICTURE_PORTRAIT = 3, PICTURE_FIGURE = 4,
+            PICTURE_ADVERT = 5, PICTURE_PRODUCT = 6;
+    public static final int MAX_PICTURES = 3;
     public static final int TITLE_CAPACITY = 16;
-    public int pictureKind = PICTURE_NONE;
-    // Where the picture sits: {x0, y0, x1, y1} as fractions of the text area, y downwards
-    public float[] pictureRect = { 0f, 0f, 0f, 0f };
-    public int pictureVariant;
+    // Up to three pictures, each placed by {x0, y0, x1, y1} as fractions of the text area, y downwards
+    public final int[] pictureKinds = new int[MAX_PICTURES];
+    public final float[][] pictureRects = new float[MAX_PICTURES][4];
+    public final int[] pictureVariants = new int[MAX_PICTURES];
+    public int pictureCount;
     // A map is drawn off the GL thread; its pixels arrive here, then become a texture
     public volatile int[] mapPixels;
     public int mapWidth = 1, mapHeight = 1;
@@ -44,6 +47,32 @@ public class InfrastructureObject {
     public float[] titleFont = { 0.5f, 0f, 1f, 0f };
     public float[] titleColour = { 0.05f, 0.05f, 0.05f };
     public boolean titleShadow;
+    public float[] boardColour = { 1f, 1f, 1f };
+
+    // --- SIGNS ON WALLS ---
+    // Fixed flat to a wall (or sticking out from one) rather than standing on posts. A banner
+    // is a shop's name in one line of big letters across a coloured board.
+    public boolean wallMounted;
+    public boolean banner;
+    public boolean bothSides;
+    public float boardWidth = 30f, boardHeight = 22f;
+
+    public void addPicture(int kind, float[] rect, int variant) {
+        if (pictureCount >= MAX_PICTURES) return;
+        pictureKinds[pictureCount] = kind;
+        pictureRects[pictureCount] = rect;
+        pictureVariants[pictureCount] = variant;
+        pictureCount++;
+    }
+
+    /** Height above the anchor of the middle of what's drawn, and how far it reaches from there, for culling. */
+    public float drawnCentreY() {
+        return wallMounted ? 0f : 30f;
+    }
+
+    public float drawnRadius() {
+        return wallMounted ? Math.max(boardWidth, boardHeight) * 0.6f + 2f : 45f;
+    }
 
     /** One mesh of a batch, drawn with a single material. */
     public static final class BatchPart {
@@ -120,6 +149,25 @@ public class InfrastructureObject {
             Matrix4 backTransform = Matrix4.multiply(boardShift, Matrix4.multiply(backRot, boardScale));
             this.backBoardMatrix = Matrix4.multiply(this.modelMatrix, backTransform);
         }
+    }
+
+    /**
+     * A board fixed to a wall: centred on position, facing the way rotationY turns a standing
+     * sign to face, width by height. bothSides draws the same face on the back too, for a sign
+     * that sticks out from a wall into the street.
+     */
+    public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
+                                                      boolean banner, boolean bothSides, int[] textString) {
+        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, position, nationId, rotationY, textString);
+        sign.wallMounted = true;
+        sign.banner = banner;
+        sign.bothSides = bothSides;
+        sign.boardWidth = width;
+        sign.boardHeight = height;
+        Matrix4 face = Matrix4.multiply(Matrix4Transform.rotateAroundX(90.0f), Matrix4Transform.scale(width, 1.0f, height));
+        sign.frontBoardMatrix = Matrix4.multiply(sign.modelMatrix, face);
+        sign.backBoardMatrix = Matrix4.multiply(sign.modelMatrix, Matrix4.multiply(Matrix4Transform.rotateAroundY(180.0f), face));
+        return sign;
     }
 
     public static InfrastructureObject createBatch(Vector3 position, int nationId, float boundingRadius, List<BatchPart> parts) {
@@ -232,11 +280,13 @@ public class InfrastructureObject {
 
             if (billboardModel != null && postModel != null) {
                 // Render Support Posts
-                postModel.setModelMatrix(this.leftPostMatrix);
-                postModel.render(gl, ambientLight, nightProportion);
+                if (!wallMounted) {
+                    postModel.setModelMatrix(this.leftPostMatrix);
+                    postModel.render(gl, ambientLight, nightProportion);
 
-                postModel.setModelMatrix(this.rightPostMatrix);
-                postModel.render(gl, ambientLight, nightProportion);
+                    postModel.setModelMatrix(this.rightPostMatrix);
+                    postModel.render(gl, ambientLight, nightProportion);
+                }
 
                 // Setup Billboard Shader
                 Shader signShader = billboardModel.shader;
@@ -256,35 +306,47 @@ public class InfrastructureObject {
                     signShader.setInt(gl, "alphabetAtlas", 3);
                 }
 
-                // The picture, which the text flows around on the front
-                int shownKind = PICTURE_NONE;
-                boolean ready = true;
-                float aspect = 1f;
-                boolean flip = false;
-                gl.glActiveTexture(GL3.GL_TEXTURE4);
-                if (pictureKind == PICTURE_FLAG && flag != null) {
-                    flag.bind(gl);
-                    shownKind = 1;
-                    aspect = FlagDesigner.WIDTH / (float) FlagDesigner.HEIGHT;
-                } else if (pictureKind == PICTURE_MAP) {
-                    shownKind = 2;
-                    aspect = mapWidth / (float) mapHeight;
-                    ready = uploadMap(gl);
-                    if (ready) gl.glBindTexture(GL3.GL_TEXTURE_2D, mapTexture);
-                } else if ((pictureKind == PICTURE_PORTRAIT || pictureKind == PICTURE_FIGURE) && people != null && people.length >= 2) {
-                    int half = people.length / 2;
-                    int index = (pictureKind == PICTURE_FIGURE ? half : 0) + Math.floorMod(pictureVariant, half);
-                    gl.glBindTexture(GL3.GL_TEXTURE_2D, people[index]);
-                    shownKind = 3;
-                    aspect = Inhabitants.PICTURE_WIDTH / (float) Inhabitants.PICTURE_HEIGHT;
-                    flip = true;
+                // The pictures, which the text flows around on the front
+                for (int i = 0; i < MAX_PICTURES; i++) {
+                    int shownKind = PICTURE_NONE;
+                    boolean ready = true;
+                    float aspect = 1f;
+                    boolean flip = false;
+                    gl.glActiveTexture(GL3.GL_TEXTURE4 + i);
+                    int kind = i < pictureCount ? pictureKinds[i] : PICTURE_NONE;
+                    if (kind == PICTURE_FLAG && flag != null) {
+                        flag.bind(gl);
+                        shownKind = 1;
+                        aspect = FlagDesigner.WIDTH / (float) FlagDesigner.HEIGHT;
+                        // Made from an image, so stored bottom row first
+                        flip = true;
+                    } else if (kind == PICTURE_MAP) {
+                        shownKind = 2;
+                        aspect = mapWidth / (float) mapHeight;
+                        ready = uploadMap(gl);
+                        if (ready) gl.glBindTexture(GL3.GL_TEXTURE_2D, mapTexture);
+                    } else if (kind >= PICTURE_PORTRAIT && people != null) {
+                        int index = Inhabitants.pictureIndex(kind, pictureVariants[i]);
+                        if (index >= 0 && index < people.length) {
+                            gl.glBindTexture(GL3.GL_TEXTURE_2D, people[index]);
+                            shownKind = 3;
+                            aspect = Inhabitants.PICTURE_WIDTH / (float) Inhabitants.PICTURE_HEIGHT;
+                            flip = true;
+                        }
+                    }
+                    String n = "[" + i + "]";
+                    signShader.setInt(gl, "picture" + i, 4 + i);
+                    signShader.setInt(gl, "pictureKind" + n, shownKind);
+                    signShader.setInt(gl, "pictureReady" + n, ready ? 1 : 0);
+                    signShader.setInt(gl, "pictureFlip" + n, flip ? 1 : 0);
+                    signShader.setFloat(gl, "pictureAspect" + n, aspect);
+                    float[] r = pictureRects[i];
+                    signShader.setFloat(gl, "pictureRect" + n, r[0], r[1], r[2], r[3]);
                 }
-                signShader.setInt(gl, "pictureTexture", 4);
-                signShader.setInt(gl, "pictureKind", shownKind);
-                signShader.setInt(gl, "pictureReady", ready ? 1 : 0);
-                signShader.setInt(gl, "pictureFlip", flip ? 1 : 0);
-                signShader.setFloat(gl, "pictureAspect", aspect);
-                signShader.setFloat(gl, "pictureRect", pictureRect[0], pictureRect[1], pictureRect[2], pictureRect[3]);
+                signShader.setInt(gl, "bannerMode", banner ? 1 : 0);
+                float areaW = banner ? boardWidth * 0.94f : boardWidth * 0.92f, areaH = banner ? boardHeight * 0.9f : boardHeight * 0.88f;
+                signShader.setFloat(gl, "areaSize", areaW, areaH);
+                signShader.setFloat(gl, "boardColour", boardColour[0], boardColour[1], boardColour[2]);
 
                 // The title, in its own lettering
                 int titleLoc = gl.glGetUniformLocation(signShader.getID(), "titleString");
@@ -299,10 +361,19 @@ public class InfrastructureObject {
                 billboardModel.setModelMatrix(this.frontBoardMatrix);
                 billboardModel.render(gl, ambientLight, nightProportion);
 
+                if (bothSides) {
+                    // Sticking out into the street: the same face both ways
+                    billboardModel.setModelMatrix(this.backBoardMatrix);
+                    billboardModel.render(gl, ambientLight, nightProportion);
+                    return;
+                }
+                if (wallMounted) return;
+
                 // --- 2. BACK SIDE (Forces string length to 0 = Blank surface) ---
                 signShader.setInt(gl, "stringLength", 0);
-                signShader.setInt(gl, "pictureKind", 0);
+                for (int i = 0; i < MAX_PICTURES; i++) signShader.setInt(gl, "pictureKind[" + i + "]", 0);
                 signShader.setInt(gl, "titleLength", 0);
+                signShader.setInt(gl, "bannerMode", 0);
                 billboardModel.setModelMatrix(this.backBoardMatrix);
                 billboardModel.render(gl, ambientLight, nightProportion);
             }

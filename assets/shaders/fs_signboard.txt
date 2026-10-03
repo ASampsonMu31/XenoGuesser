@@ -35,25 +35,28 @@ uniform int stringLength;
 uniform int atlasSize;
 uniform int writingDirection; // 0: L->R, 1: R->L, 2: U->D, 3: D->U
 
-// A picture (the nation's flag, a map of the area, or one of its people) somewhere on the
-// board, which the text flows around in reading order
-uniform sampler2D pictureTexture;
-uniform int pictureKind;      // 0 none, 1 flag, 2 map, 3 person
-uniform vec4 pictureRect;     // x0, y0, x1, y1 as fractions of the text area, y downwards
-uniform float pictureAspect;  // the picture's width over its height
-uniform int pictureFlip;      // 1 when its rows run bottom-up
-uniform int pictureReady;     // 0 while a map is still being drawn
+// Up to three pictures (the nation's flag, a map, its people, its goods) on the board, which
+// the text flows around in reading order
+uniform sampler2D picture0;
+uniform sampler2D picture1;
+uniform sampler2D picture2;
+uniform int pictureKind[3];      // 0 none, 1 flag, 2 map, 3 a picture of people or goods
+uniform vec4 pictureRect[3];     // x0, y0, x1, y1 as fractions of the text area, y downwards
+uniform float pictureAspect[3];  // each picture's width over its height
+uniform int pictureFlip[3];      // 1 when its rows run bottom-up
+uniform int pictureReady[3];     // 0 while a map is still being drawn
 // A title at the beginning of the text, twice the size, in its own lettering
 uniform int titleString[16];
 uniform int titleLength;
 uniform vec4 titleFont;       // ink threshold (weight), slant, width, outline
 uniform vec3 titleColour;
 uniform int titleShadow;
+// A banner shows only the title, in one line of big letters filling the board
+uniform int bannerMode;
+uniform vec2 areaSize;        // the text area's size, in world units
+uniform vec3 boardColour;
 
 const float PI = 3.14159265359;
-// The text area's size on the board, in world units
-const float AREA_W = 27.6;
-const float AREA_H = 19.36;
 
 float glyphInk(int glyph, vec2 uv, float threshold) {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return 0.0;
@@ -77,8 +80,58 @@ float titleInk(int glyph, vec2 uv) {
     return ink;
 }
 
+vec3 titleGlyph(vec3 albedo, int glyph, vec2 uv) {
+    if (glyph <= 0) return albedo;
+    if (titleShadow == 1) {
+        albedo = mix(albedo, albedo * 0.45, titleInk(glyph, uv - vec2(0.07, 0.07)) * 0.8);
+    }
+    return mix(albedo, titleColour, titleInk(glyph, uv));
+}
+
+vec3 samplePicture(int i, vec2 st) {
+    if (i == 0) return texture(picture0, st).rgb;
+    if (i == 1) return texture(picture1, st).rgb;
+    return texture(picture2, st).rgb;
+}
+
+vec3 pictureBackdrop(int i, vec2 st) {
+    if (i == 0) return textureLod(picture0, st, 0.0).rgb;
+    if (i == 1) return textureLod(picture1, st, 0.0).rgb;
+    return textureLod(picture2, st, 0.0).rgb;
+}
+
 void main() {
-    vec3 albedo = vec3(1.0, 1.0, 1.0); // Pure white background
+    vec3 albedo = boardColour;
+
+    if (bannerMode == 1) {
+        // A shop's name across its board, as big as fits
+        float bx = (aTexCoord.x - 0.03) / 0.94, by = 1.0 - (aTexCoord.y - 0.05) / 0.9;
+        if (gl_FrontFacing && bx > 0.0 && bx < 1.0 && by > 0.0 && by < 1.0 && titleLength > 0 && atlasSize > 0) {
+            vec2 world = vec2(bx, by) * areaSize;
+            bool horizontal = writingDirection < 2;
+            float n = float(titleLength);
+            // Glyph boxes: tall as the board in a row, wide as it in a column
+            float across = horizontal ? areaSize.y : areaSize.x;
+            float alongSize = across * 0.85;
+            float room = horizontal ? areaSize.x : areaSize.y;
+            if (alongSize * n > room * 0.96) { alongSize = room * 0.96 / n; }
+            float acrossSize = min(across, alongSize / 0.85);
+            float start = (room - alongSize * n) * 0.5;
+            float along = horizontal ? world.x : world.y;
+            float side = horizontal ? world.y : world.x;
+            float offsetAcross = (across - acrossSize) * 0.5;
+            float k = (along - start) / alongSize;
+            if (k >= 0.0 && k < n && side >= offsetAcross && side <= offsetAcross + acrossSize) {
+                int index = int(floor(k));
+                // Right to left and bottom to top read from the far end
+                if (writingDirection == 1 || writingDirection == 3) index = titleLength - 1 - index;
+                vec2 uv = horizontal ? vec2(fract(k), (side - offsetAcross) / acrossSize)
+                                     : vec2((side - offsetAcross) / acrossSize, fract(k));
+                uv = (uv - 0.06) / 0.88;
+                albedo = titleGlyph(albedo, titleString[index], uv);
+            }
+        }
+    } else {
 
     float marginX = 0.04;
     float marginY = 0.06;
@@ -102,37 +155,43 @@ void main() {
                : writingDirection == 2 ? rowF : ROWS - rowF;
     float lineF = horizontal ? rowF : colF;
 
-    // The picture's cells, on the board and in reading order
-    int c0 = int(floor(pictureRect.x * gridCols + 0.5)), c1 = int(floor(pictureRect.z * gridCols + 0.5));
-    int r0 = int(floor(pictureRect.y * ROWS + 0.5)), r1 = int(floor(pictureRect.w * ROWS + 0.5));
-    bool hasPicture = pictureKind > 0 && c1 > c0 && r1 > r0;
-    int l0 = 0, l1 = 0, p0 = 0, p1 = 0;
-    if (hasPicture) {
+    // Each picture's cells, on the board and in reading order
+    ivec4 board[3];
+    ivec4 reading[3];   // first line, last line + 1, first place, last place + 1
+    bool present[3];
+    for (int i = 0; i < 3; i++) {
+        int c0 = int(floor(pictureRect[i].x * gridCols + 0.5)), c1 = int(floor(pictureRect[i].z * gridCols + 0.5));
+        int r0 = int(floor(pictureRect[i].y * ROWS + 0.5)), r1 = int(floor(pictureRect[i].w * ROWS + 0.5));
+        present[i] = pictureKind[i] > 0 && c1 > c0 && r1 > r0;
+        board[i] = ivec4(c0, r0, c1, r1);
         if (horizontal) {
-            l0 = r0; l1 = r1;
-            p0 = writingDirection == 0 ? c0 : int(gridCols) - c1;
-            p1 = writingDirection == 0 ? c1 : int(gridCols) - c0;
+            reading[i] = ivec4(r0, r1, writingDirection == 0 ? c0 : int(gridCols) - c1, writingDirection == 0 ? c1 : int(gridCols) - c0);
         } else {
-            l0 = c0; l1 = c1;
-            p0 = writingDirection == 2 ? r0 : int(ROWS) - r1;
-            p1 = writingDirection == 2 ? r1 : int(ROWS) - r0;
+            reading[i] = ivec4(c0, c1, writingDirection == 2 ? r0 : int(ROWS) - r1, writingDirection == 2 ? r1 : int(ROWS) - r0);
         }
     }
 
-    // The title takes the first two lines, beside the picture if there's room for it all
-    // there, or else above it, the picture moving down (or across) out of its way
+    // The title takes the first two lines, beside the pictures if there's room for it all
+    // there, or else above them, the pictures moving down (or across) out of its way
     int titleLines = 0, titleStart = 0, titleEnd = int(places);
     if (titleLength > 0) {
-        if (hasPicture && l0 < 2 && l1 > 0) {
-            int room = p0 <= 0 ? int(places) - p1 : p0;
-            if (room >= 2 * titleLength) {
-                if (p0 <= 0) titleStart = p1; else titleEnd = p0;
-            } else {
-                int shift = 2 - l0;
-                l0 += shift;
-                l1 = min(l1 + shift, int(LINES));
-                if (horizontal) { r0 = l0; r1 = l1; } else { c0 = l0; c1 = l1; }
-                hasPicture = l1 > l0;
+        for (int i = 0; i < 3; i++) {
+            if (present[i] && reading[i].x < 2 && reading[i].y > 0) {
+                if (reading[i].z <= 0) titleStart = max(titleStart, reading[i].w); else titleEnd = min(titleEnd, reading[i].z);
+            }
+        }
+        if (titleEnd - titleStart < 2 * titleLength) {
+            titleStart = 0;
+            titleEnd = int(places);
+            for (int i = 0; i < 3; i++) {
+                if (present[i] && reading[i].x < 2 && reading[i].y > 0) {
+                    int shift = 2 - reading[i].x;
+                    reading[i].x += shift;
+                    reading[i].y = min(reading[i].y + shift, int(LINES));
+                    if (horizontal) { board[i].y = reading[i].x; board[i].w = reading[i].y; }
+                    else { board[i].x = reading[i].x; board[i].z = reading[i].y; }
+                    present[i] = reading[i].y > reading[i].x;
+                }
             }
         }
         titleLines = 2;
@@ -150,14 +209,20 @@ void main() {
         // Where a glyph sits within its cell; in vertical scripts it takes the left of a wider column
         float colLocalU = horizontal ? fract(colF) : fract(colF) * (28.0 / 12.0);
         float rowLocalV = fract(rowF);
-        bool inPicture = hasPicture && line >= l0 && line < l1 && pos >= p0 && pos < p1;
+        bool inPicture = false;
+        int skipped = 0;
+        for (int i = 0; i < 3; i++) {
+            if (!present[i]) continue;
+            ivec4 r = reading[i];
+            int w = r.w - r.z;
+            if (line >= r.x && line < r.y && pos >= r.z && pos < r.w) inPicture = true;
+            // Count the picture's cells before this one in reading order
+            skipped += max(0, min(line, r.y) - max(r.x, titleLines)) * w;
+            if (line >= r.x && line < r.y && pos >= r.w) skipped += w;
+        }
         if (!inPicture && colLocalU >= pad && colLocalU <= 1.0 - pad && rowLocalV >= pad && rowLocalV <= 1.0 - pad) {
             isTextSpace = true;
-            // Count the cells before this one in reading order, leaving out the picture's
-            int w = hasPicture ? p1 - p0 : 0;
-            int skippedLines = hasPicture ? max(0, min(line, l1) - max(l0, titleLines)) : 0;
-            int skippedHere = (hasPicture && line >= l0 && line < l1 && pos >= p1) ? w : 0;
-            cellIndex = (line - titleLines) * int(places) - skippedLines * w + pos - skippedHere;
+            cellIndex = (line - titleLines) * int(places) + pos - skipped;
             localU = (colLocalU - pad) / (1.0 - 2.0 * pad);
             localV = (rowLocalV - pad) / (1.0 - 2.0 * pad);
         }
@@ -172,33 +237,28 @@ void main() {
         float b = horizontal ? lineF / 2.0 : mappedX * 14.0;
         vec2 uv = horizontal ? vec2(writingDirection == 0 ? a : 1.0 - a, b) : vec2(b, writingDirection == 2 ? a : 1.0 - a);
         uv = (uv - 0.06) / 0.88;
-        int glyph = titleString[k];
-        if (glyph > 0) {
-            if (titleShadow == 1) {
-                albedo = mix(albedo, vec3(0.62), titleInk(glyph, uv - vec2(0.07, 0.07)) * 0.8);
-            }
-            albedo = mix(albedo, titleColour, titleInk(glyph, uv));
-        }
+        albedo = titleGlyph(albedo, titleString[k], uv);
     }
 
-    // The picture, inset a little from the text, with a thin dark frame
-    if (inArea && hasPicture) {
-        vec2 rmin = vec2(float(c0) / gridCols, float(r0) / ROWS) + vec2(0.3 / AREA_W, 0.3 / AREA_H);
-        vec2 rmax = vec2(float(c1) / gridCols, float(r1) / ROWS) - vec2(0.3 / AREA_W, 0.3 / AREA_H);
+    // The pictures, inset a little from the text, each with a thin dark frame
+    for (int i = 0; i < 3; i++) {
+        if (!inArea || !present[i]) continue;
+        vec2 rmin = vec2(float(board[i].x) / gridCols, float(board[i].y) / ROWS) + vec2(0.3, 0.3) / areaSize;
+        vec2 rmax = vec2(float(board[i].z) / gridCols, float(board[i].w) / ROWS) - vec2(0.3, 0.3) / areaSize;
         vec2 q = (vec2(mappedX, invY) - rmin) / (rmax - rmin);
-        vec2 sizeW = (rmax - rmin) * vec2(AREA_W, AREA_H);
+        vec2 sizeW = (rmax - rmin) * areaSize;
         float rectAspect = sizeW.x / sizeW.y;
         vec2 t;
         vec2 frameSize = sizeW;
-        if (pictureKind == 2) {
+        if (pictureKind[i] == 2) {
             // A map fills its space, trimmed to fit
-            vec2 keep = rectAspect > pictureAspect ? vec2(1.0, pictureAspect / rectAspect) : vec2(rectAspect / pictureAspect, 1.0);
+            vec2 keep = rectAspect > pictureAspect[i] ? vec2(1.0, pictureAspect[i] / rectAspect) : vec2(rectAspect / pictureAspect[i], 1.0);
             t = (q - 0.5) * keep + 0.5;
         } else {
-            // A flag or a person is shown whole
-            vec2 grow = rectAspect > pictureAspect ? vec2(rectAspect / pictureAspect, 1.0) : vec2(1.0, pictureAspect / rectAspect);
+            // A flag or a picture is shown whole
+            vec2 grow = rectAspect > pictureAspect[i] ? vec2(rectAspect / pictureAspect[i], 1.0) : vec2(1.0, pictureAspect[i] / rectAspect);
             t = (q - 0.5) * grow + 0.5;
-            if (pictureKind == 1) {
+            if (pictureKind[i] == 1) {
                 // The frame hugs the flag itself
                 q = t;
                 frameSize = sizeW / grow;
@@ -208,15 +268,15 @@ void main() {
         if (q.x >= -edge.x && q.x <= 1.0 + edge.x && q.y >= -edge.y && q.y <= 1.0 + edge.y) {
             bool frame = q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0;
             vec2 st = vec2(clamp(t.x, 0.0, 1.0), clamp(t.y, 0.0, 1.0));
-            if (pictureFlip == 1) st.y = 1.0 - st.y;
+            if (pictureFlip[i] == 1) st.y = 1.0 - st.y;
             vec3 picture;
-            if (pictureReady == 0) {
+            if (pictureReady[i] == 0) {
                 picture = vec3(0.86, 0.86, 0.84);
             } else if (t.x < 0.0 || t.x > 1.0 || t.y < 0.0 || t.y > 1.0) {
-                // Beside a person: their backdrop carried on
-                picture = textureLod(pictureTexture, vec2(0.01, pictureFlip == 1 ? 0.99 : 0.01), 0.0).rgb;
+                // Beside a picture: its backdrop carried on
+                picture = pictureBackdrop(i, vec2(0.01, pictureFlip[i] == 1 ? 0.99 : 0.01));
             } else {
-                picture = texture(pictureTexture, st).rgb;
+                picture = samplePicture(i, st);
             }
             albedo = frame ? vec3(0.15) : picture;
         }
@@ -230,6 +290,8 @@ void main() {
             vec3 textInkColor = vec3(0.05, 0.05, 0.05);
             albedo = mix(albedo, textInkColor, glyphCoverage);
         }
+    }
+
     }
 
     // Standard Lighting Calculations

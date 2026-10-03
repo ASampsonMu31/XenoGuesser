@@ -24,11 +24,13 @@ public final class SignMap {
 
     /**
      * Draws the map, centred on (centreX, centreZ) and halfWidth world units from middle to
-     * left and right edges, as ARGB pixels in rows from the top. North (-z) is up.
+     * left and right edges, as ARGB pixels in rows from the top. North (-z) is up. Optional:
+     * a mark where the sign stands (here), a business it advertises (destination, its badge
+     * showing a letter of its name) and the way along the roads between them.
      */
     public static int[] render(InfrastructureManager infrastructure, PerlinNoise terrain, float seaLevel, long styleSeed,
                                float centreX, float centreZ, float halfWidth, int width, int height,
-                               boolean pin, float pinX, float pinZ) {
+                               float[] here, float[] destination, List<float[]> route, BufferedImage badgeGlyph) {
         Random style = new Random(styleSeed);
         float hue = style.nextFloat();
         float[] land = WorldPalette.hsv(hue, 0.08f + style.nextFloat() * 0.22f, 0.86f + style.nextFloat() * 0.1f);
@@ -127,28 +129,159 @@ public final class SignMap {
             });
         }
 
-        // You are here
-        if (pin) {
-            float px = (pinX - left) * scale, py = (pinZ - top) * scale;
-            float size = Math.max(5f, width * 0.07f);
-            Path2D.Float drop = new Path2D.Float();
-            drop.moveTo(px, py);
-            drop.curveTo(px - size * 0.35f, py - size * 0.8f, px - size * 0.55f, py - size * 1.1f, px - size * 0.55f, py - size * 1.45f);
-            drop.curveTo(px - size * 0.55f, py - size * 2.05f, px + size * 0.55f, py - size * 2.05f, px + size * 0.55f, py - size * 1.45f);
-            drop.curveTo(px + size * 0.55f, py - size * 1.1f, px + size * 0.35f, py - size * 0.8f, px, py);
-            g.setColor(new Color(0, 0, 0, 70));
-            g.fill(new Ellipse2D.Float(px - size * 0.3f, py - size * 0.12f, size * 0.6f, size * 0.24f));
-            g.setColor(new Color(214, 38, 32));
-            g.fill(drop);
-            g.setColor(new Color(110, 14, 10));
-            g.setStroke(new BasicStroke(Math.max(0.8f, size * 0.06f)));
-            g.draw(drop);
-            g.setColor(Color.WHITE);
-            float dot = size * 0.42f;
-            g.fill(new Ellipse2D.Float(px - dot * 0.5f, py - size * 1.45f - dot * 0.5f, dot, dot));
+        // This nation's way of marking things on a map: nothing like a pin
+        Random marks = new Random(styleSeed * 31L + 7L);
+        int hereShape = marks.nextInt(6);
+        Color hereColour = colour(WorldPalette.hsv(marks.nextFloat(), 0.75f, 0.85f));
+        Color badgeColour = colour(WorldPalette.hsv(marks.nextFloat(), 0.7f, 0.55f + marks.nextFloat() * 0.3f));
+        Color routeColour = colour(WorldPalette.hsv(marks.nextFloat(), 0.8f, 0.8f));
+        int routeStyle = marks.nextInt(3);
+        int badgeShape = marks.nextInt(3);
+        float markSize = Math.max(5f, width * 0.05f);
+
+        if (route != null && route.size() > 1) {
+            Path2D.Float way = new Path2D.Float();
+            way.moveTo((route.get(0)[0] - left) * scale, (route.get(0)[1] - top) * scale);
+            for (int i = 1; i < route.size(); i++) way.lineTo((route.get(i)[0] - left) * scale, (route.get(i)[1] - top) * scale);
+            float w = Math.max(2f, width * 0.018f);
+            g.setColor(new Color(0, 0, 0, 90));
+            g.setStroke(new BasicStroke(w + 1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            if (routeStyle != 2) g.draw(way);
+            g.setColor(routeColour);
+            g.setStroke(switch (routeStyle) {
+                case 0 -> new BasicStroke(w, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+                case 1 -> new BasicStroke(w, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 4f, new float[] { w * 3f, w * 1.6f }, 0f);
+                default -> new BasicStroke(w * 1.3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 4f, new float[] { 0.1f, w * 2.2f }, 0f);
+            });
+            g.draw(way);
+        }
+        if (destination != null) {
+            badge(g, (destination[0] - left) * scale, (destination[1] - top) * scale, markSize * 1.7f, badgeColour, badgeGlyph, badgeShape);
+        }
+        if (here != null) {
+            mark(g, (here[0] - left) * scale, (here[1] - top) * scale, markSize, hereShape, hereColour);
         }
         g.dispose();
         return image.getRGB(0, 0, width, height, null, 0, width);
+    }
+
+    /** Where the sign stands, in one of six unearthly marks. */
+    private static void mark(Graphics2D g, float x, float y, float size, int shape, Color colour) {
+        Color dark = colour.darker().darker();
+        g.setStroke(new BasicStroke(Math.max(1f, size * 0.18f)));
+        switch (shape) {
+            case 0 -> {
+                // An eye: a ring round a dot, with three short rays beneath
+                g.setColor(colour);
+                g.draw(new Ellipse2D.Float(x - size * 0.6f, y - size * 0.6f, size * 1.2f, size * 1.2f));
+                g.fill(new Ellipse2D.Float(x - size * 0.25f, y - size * 0.25f, size * 0.5f, size * 0.5f));
+                for (int i = -1; i <= 1; i++) {
+                    g.draw(new java.awt.geom.Line2D.Float(x + i * size * 0.35f, y + size * 0.75f, x + i * size * 0.55f, y + size * 1.15f));
+                }
+            }
+            case 1 -> {
+                // Three lobes round the spot
+                g.setColor(colour);
+                for (int i = 0; i < 3; i++) {
+                    double a = i * Math.PI * 2 / 3 - Math.PI / 2;
+                    float cx = x + (float) Math.cos(a) * size * 0.5f, cy = y + (float) Math.sin(a) * size * 0.5f;
+                    g.fill(new Ellipse2D.Float(cx - size * 0.35f, cy - size * 0.35f, size * 0.7f, size * 0.7f));
+                }
+                g.setColor(dark);
+                g.fill(new Ellipse2D.Float(x - size * 0.18f, y - size * 0.18f, size * 0.36f, size * 0.36f));
+            }
+            case 2 -> {
+                // A hexagon with a dot
+                Path2D.Float hex = new Path2D.Float();
+                for (int i = 0; i < 6; i++) {
+                    double a = i * Math.PI / 3;
+                    float px = x + (float) Math.cos(a) * size * 0.7f, py = y + (float) Math.sin(a) * size * 0.7f;
+                    if (i == 0) hex.moveTo(px, py); else hex.lineTo(px, py);
+                }
+                hex.closePath();
+                g.setColor(colour);
+                g.draw(hex);
+                g.setColor(dark);
+                g.fill(new Ellipse2D.Float(x - size * 0.2f, y - size * 0.2f, size * 0.4f, size * 0.4f));
+            }
+            case 3 -> {
+                // Chevrons closing in on the spot from above
+                g.setColor(colour);
+                for (int i = 0; i < 3; i++) {
+                    float off = i * size * 0.45f;
+                    Path2D.Float v = new Path2D.Float();
+                    v.moveTo(x - size * 0.6f, y - size * 0.6f - off);
+                    v.lineTo(x, y - off);
+                    v.lineTo(x + size * 0.6f, y - size * 0.6f - off);
+                    g.draw(v);
+                }
+            }
+            case 4 -> {
+                // A spiked burst
+                Path2D.Float star = new Path2D.Float();
+                for (int i = 0; i < 16; i++) {
+                    double a = i * Math.PI / 8;
+                    float r = (i % 2 == 0 ? 0.85f : 0.3f) * size;
+                    float px = x + (float) Math.cos(a) * r, py = y + (float) Math.sin(a) * r;
+                    if (i == 0) star.moveTo(px, py); else star.lineTo(px, py);
+                }
+                star.closePath();
+                g.setColor(colour);
+                g.fill(star);
+                g.setColor(dark);
+                g.setStroke(new BasicStroke(1f));
+                g.draw(star);
+            }
+            default -> {
+                // Two arcs facing each other round a dot
+                g.setColor(colour);
+                g.draw(new java.awt.geom.Arc2D.Float(x - size * 0.7f, y - size * 0.7f, size * 1.4f, size * 1.4f, 30, 120, java.awt.geom.Arc2D.OPEN));
+                g.draw(new java.awt.geom.Arc2D.Float(x - size * 0.7f, y - size * 0.7f, size * 1.4f, size * 1.4f, 210, 120, java.awt.geom.Arc2D.OPEN));
+                g.fill(new Ellipse2D.Float(x - size * 0.22f, y - size * 0.22f, size * 0.44f, size * 0.44f));
+            }
+        }
+    }
+
+    /** The advertised business: a badge in some shape holding a letter of its name. */
+    private static void badge(Graphics2D g, float x, float y, float size, Color colour, BufferedImage glyph, int shape) {
+        java.awt.Shape outline;
+        if (shape == 0) {
+            outline = new java.awt.geom.RoundRectangle2D.Float(x - size * 0.5f, y - size * 0.5f, size, size, size * 0.35f, size * 0.35f);
+        } else if (shape == 1) {
+            Path2D.Float diamond = new Path2D.Float();
+            diamond.moveTo(x, y - size * 0.65f);
+            diamond.lineTo(x + size * 0.65f, y);
+            diamond.lineTo(x, y + size * 0.65f);
+            diamond.lineTo(x - size * 0.65f, y);
+            diamond.closePath();
+            outline = diamond;
+        } else {
+            outline = new Ellipse2D.Float(x - size * 0.55f, y - size * 0.55f, size * 1.1f, size * 1.1f);
+        }
+        g.setColor(new Color(0, 0, 0, 80));
+        g.translate(1.5, 1.5);
+        g.fill(outline);
+        g.translate(-1.5, -1.5);
+        g.setColor(colour);
+        g.fill(outline);
+        g.setColor(Color.WHITE);
+        g.setStroke(new BasicStroke(Math.max(1f, size * 0.07f)));
+        g.draw(outline);
+        if (glyph != null) {
+            // The glyph's ink in white
+            int gs = Math.max(4, Math.round(size * 0.62f));
+            BufferedImage ink = new BufferedImage(glyph.getWidth(), glyph.getHeight(), BufferedImage.TYPE_INT_ARGB);
+            for (int j = 0; j < glyph.getHeight(); j++) {
+                for (int i = 0; i < glyph.getWidth(); i++) {
+                    int argb = glyph.getRGB(i, j);
+                    float bright = (((argb >> 16) & 255) * 0.299f + ((argb >> 8) & 255) * 0.587f + (argb & 255) * 0.114f) / 255f;
+                    float darkness = (argb >>> 24) < 128 ? 0f : 1f - bright;
+                    int a = Math.max(0, Math.min(255, Math.round((darkness - 0.35f) / 0.3f * 255f)));
+                    ink.setRGB(i, j, (a << 24) | 0xFFFFFF);
+                }
+            }
+            g.drawImage(ink, Math.round(x - gs * 0.5f), Math.round(y - gs * 0.5f), gs, gs, null);
+        }
     }
 
     private static boolean near(List<Vector3> points, float left, float top, float right, float bottom, float margin) {

@@ -36,6 +36,12 @@ public class OrganismMesh {
     public static final int PART_METAL = 13;
     // Matte black: an unlit opening
     public static final int PART_DARK = 14;
+    // Goods: produce and packets, coloured from a nation's packaging texture (u, v already point into it)
+    public static final int PART_PRODUCT = 15;
+    // Hair, in each person's own hair colour
+    public static final int PART_HAIR = 16;
+    // The top a person wears over their torso, which may carry their nation's flag on the chest
+    public static final int PART_TOP = 17;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];
@@ -143,7 +149,7 @@ public class OrganismMesh {
          * fixed. Normals are taken from the finished surface, so any profile shades smoothly.
          */
         public void lathe(int around, int along, Profile profile) {
-            Folds rumple = part == PART_BODY || part == PART_LEG ? folds : null;
+            Folds rumple = part == PART_BODY || part == PART_LEG || part == PART_PRODUCT || part == PART_HAIR ? folds : null;
             if (rumple != null) {
                 // Enough detail for the folds to show
                 around *= 2;
@@ -253,6 +259,20 @@ public class OrganismMesh {
             indices[indexCount++] = a;
             indices[indexCount++] = b;
             indices[indexCount++] = c;
+        }
+
+        public int vertexCount() {
+            return vertexFloats / STRIDE;
+        }
+
+        /** The texture coordinates of a vertex already added. */
+        public float[] uv(int vertex) {
+            return new float[] { vertices[vertex * STRIDE + 6], vertices[vertex * STRIDE + 7] };
+        }
+
+        public void setUV(int vertex, float u, float v) {
+            vertices[vertex * STRIDE + 6] = u;
+            vertices[vertex * STRIDE + 7] = v;
         }
 
         /** The vertices so far, STRIDE floats each, for drawing on the CPU. */

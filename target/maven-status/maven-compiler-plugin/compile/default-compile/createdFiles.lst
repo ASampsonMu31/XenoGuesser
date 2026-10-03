@@ -23,7 +23,9 @@ XenoGuesser$4.class
 Inhabitants$Culture.class
 Model.class
 LoadingProgress$Stage.class
+Products.class
 RoadPath$RoadClass.class
+RoadRoutes.class
 BuildingStyle$RoofFinish.class
 SoftwareRenderer$SurfaceShader.class
 XenoGuesser$7.class
@@ -39,6 +41,7 @@ Frustum.class
 TileableNoise.class
 RoadPath$DeadEnd.class
 SettingsMenu.class
+Products$Box.class
 OrganismSpecies.class
 ArchitectureTextures$1.class
 OrganismSpecies$Wing.class
@@ -61,6 +64,7 @@ Material.class
 Inhabitants$Phase.class
 LoadingScreen.class
 XenoGuesser$2.class
+Products$Packet.class
 FenceStyle.class
 GuardRailStyle$Banding.class
 InfrastructureManager$RoadSegment.class
@@ -91,6 +95,7 @@ Collision$StaticSource.class
 TwoTriangles.class
 LoadingScreen$1.class
 OrganismSpecies$Tentacle.class
+PackagingArt.class
 Flora.class
 XenoGuesser$8$1.class
 GuardRailStyle$Profile.class
@@ -124,10 +129,12 @@ Collision$Body.class
 Mesh.class
 com\xenoguesser\math\Matrix4.class
 LoadingArt$Light.class
+Products$Produce.class
 Inhabitants.class
 HudStyle.class
 com\xenoguesser\math\Vector4.class
 BuildingStyle$WallFinish.class
+InfrastructureManager$Shop.class
 RegionalFactor.class
 BuildingMeshes$1.class
 MapPanel.class
@@ -151,10 +158,12 @@ LandingPod.class
 Inhabitants$Person.class
 WorldPalette.class
 BuildingStyle$FormVariant.class
+NationScripts.class
 TextureLibrary.class
 GlyphGenerator.class
 Renderer.class
 OrganismManager$UrbannessLookup.class
+Products$Shape.class
 Collision.class
 OrganismManager$Creature.class
 MapPanel$MapNote.class

@@ -801,7 +801,7 @@ private static class SpeciesConfig {
                     if (obj.type != InfrastructureObject.Type.SIGN || signsShot.contains(obj)) continue;
                     float dx = obj.position.x - at.x, dz = obj.position.z - at.z;
                     float score = dx * dx + dz * dz;
-                    if (obj.pictureKind == InfrastructureObject.PICTURE_NONE) score += 1e9f;
+                    if (obj.pictureCount == 0 && !obj.wallMounted) score += 1e9f;
                     if (score < bestScore) { bestScore = score; best = obj; }
                 }
             }
@@ -813,12 +813,14 @@ private static class SpeciesConfig {
             float side = Float.parseFloat(System.getProperty("xenoguesser.signside", "1"));
             nx = nx / len * side;
             nz = nz / len * side;
-            float ex = best.position.x + nx * 40f, ez = best.position.z + nz * 40f;
-            signShotEye = new Vector3(ex, best.position.y + 32f, ez);
-            signShotTarget = new Vector3(best.position.x, best.position.y + 32f, best.position.z);
+            float back = best.wallMounted ? Math.min(30f, Math.max(best.boardWidth * 0.75f, best.boardHeight * 1.6f) + 6f) : 40f;
+            float lift = best.wallMounted ? 0f : 32f;
+            float ex = best.position.x + nx * back, ez = best.position.z + nz * back;
+            signShotEye = new Vector3(ex, best.position.y + lift, ez);
+            signShotTarget = new Vector3(best.position.x, best.position.y + lift, best.position.z);
             camera.setPosition(signShotEye);
             camera.setTarget(signShotTarget);
-            System.out.println("[SIGNSHOT] sign " + signsShot.size() + ": picture " + best.pictureKind + ", title " + best.titleLength
+            System.out.println("[SIGNSHOT] sign " + signsShot.size() + ": pictures " + best.pictureCount + (best.wallMounted ? (best.banner ? " banner" : " poster") : "") + ", title " + best.titleLength
                     + ", direction " + nationDirections.getOrDefault(best.nationId, 0) + ", nation " + best.nationId
                     + ", patriotism " + infraManager.patriotismOf(best.nationId));
         } else if (frame % 40 == 30) {
@@ -1199,14 +1201,10 @@ private static class SpeciesConfig {
         }
         
         for (int n = 1; n <= totalNationsCount; n++) {
-            // Assign random writing direction (0=LR, 1=RL, 2=UD, 3=DU)
-            int direction = signConfigRand.nextInt(4);
-            // Developer aid: -Dxenoguesser.signdirection=0..3 gives every nation one writing direction
-            if (System.getProperty("xenoguesser.signdirection") != null) direction = Integer.getInteger("xenoguesser.signdirection", direction);
+            // Writing direction (0=LR, 1=RL, 2=UD, 3=DU) and alphabet, shared with the shops and packets
+            int direction = infraManager.scripts().direction(n);
             nationDirections.put(n, direction);
-            
-            // Assign random alphabet safely
-            int alphabetId = 1 + signConfigRand.nextInt(Math.max(1, totalAvailableAlphabets));
+            int alphabetId = infraManager.scripts().alphabet(n);
             // Load and cache the atlas if not already loaded
             if (!nationAtlases.containsKey(n)) {
                 Texture atlas = createAlphabetAtlas(gl, alphabetId);
@@ -1408,7 +1406,33 @@ private static class SpeciesConfig {
         gl.glBindVertexArray(0);
     }
 
-        private void deletePeoplePictures() {
+        /** Developer aid: each nation's sign pictures side by side, saved as people_N.png. */
+    private void dumpPeoplePictures() {
+        int w = Inhabitants.PICTURE_WIDTH, h = Inhabitants.PICTURE_HEIGHT;
+        for (int n = 1; n < peoplePictures.length && n <= 4; n++) {
+            int[] ids = peoplePictures[n];
+            BufferedImage sheet = new BufferedImage(w * ids.length, h, BufferedImage.TYPE_INT_RGB);
+            java.nio.ByteBuffer pixels = java.nio.ByteBuffer.allocateDirect(w * h * 4);
+            for (int k = 0; k < ids.length; k++) {
+                gl.glActiveTexture(GL3.GL_TEXTURE0);
+                gl.glBindTexture(GL3.GL_TEXTURE_2D, ids[k]);
+                pixels.clear();
+                gl.glGetTexImage(GL3.GL_TEXTURE_2D, 0, GL3.GL_RGBA, GL3.GL_UNSIGNED_BYTE, pixels);
+                for (int y = 0; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        int i = ((h - 1 - y) * w + x) * 4;
+                        sheet.setRGB(k * w + x, y, ((pixels.get(i) & 255) << 16) | ((pixels.get(i + 1) & 255) << 8) | (pixels.get(i + 2) & 255));
+                    }
+                }
+            }
+            try {
+                ImageIO.write(sheet, "png", new File(WorldArtGenerator.OUTPUT_DIR, "people_" + n + ".png"));
+            } catch (IOException ignored) {
+            }
+        }
+    }
+
+    private void deletePeoplePictures() {
         if (peoplePictures == null) return;
         for (int[] nation : peoplePictures) {
             if (nation != null) gl.glDeleteTextures(nation.length, nation, 0);
@@ -1421,7 +1445,10 @@ private static class SpeciesConfig {
         inhabitants.initialise(gl);
         // Pictures of the locals, for signs
         deletePeoplePictures();
-        peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, 3);
+        inhabitants.setFlags(n -> textures.get(InfrastructureManager.nationTextureName("flag", n)));
+        peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, infraManager.products(),
+                n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
+        if (System.getProperty("xenoguesser.dumpart") != null) dumpPeoplePictures();
         playerBody.initialise(gl);
         landingPod.initialise(gl);
         Vector3 bedrock = worldRockColour();
@@ -1500,6 +1527,18 @@ private static class SpeciesConfig {
                         if ("street".equals(System.getProperty("xenoguesser.view"))) {
             // Developer aid: on a town pavement among the inhabitants
             float[] view = inhabitants.streetViewpoint(dynamicRand);
+            if (view != null) {
+                spawnX = view[0];
+                spawnZ = view[1];
+                lookX = view[2];
+                lookZ = view[3];
+                foundDryLand = true;
+            }
+        }
+
+        if ("shop".equals(System.getProperty("xenoguesser.view"))) {
+            // Developer aid: across the street from a shop, looking at its front
+            float[] view = infraManager.shopViewpoint(dynamicRand);
             if (view != null) {
                 spawnX = view[0];
                 spawnZ = view[1];
@@ -2510,7 +2549,7 @@ private static class SpeciesConfig {
 
                                 if (obj.type == InfrastructureObject.Type.SIGN) {
                     if (distSq > SIGN_DRAW_DISTANCE * SIGN_DRAW_DISTANCE
-                            || !frustum.intersectsSphere(obj.position.x, obj.position.y + 30.0f, obj.position.z, 45.0f)) {
+                            || !frustum.intersectsSphere(obj.position.x, obj.position.y + obj.drawnCentreY(), obj.position.z, obj.drawnRadius())) {
                         continue;
                     }
                     signboardShader.use(gl);

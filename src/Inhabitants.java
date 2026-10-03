@@ -58,6 +58,16 @@ public class Inhabitants {
         float scale, bulk;
         int mesh;
         float[] top, accent, bottom, skin;
+        // What makes each one look like themselves: their clothes' pattern and colours (and
+        // perhaps the flag on their chest), the shape of their face, ears and hair, their eyes
+        float[] belly, eyes, hair;
+        int pattern;
+        float patternScale;
+        boolean flag;
+        int face, earVariant, hairStyle;
+        float headX = 1f, headY = 1f, headZ = 1f;
+        // Where their hands reach to, in body space, when holding something up for a picture
+        float[][] handTargets;
         Random rand;
         // Where this trip began, so a blocked walker can turn back; finding a way round
         // things on the street; progress over the last few seconds to tell when stuck
@@ -94,6 +104,15 @@ public class Inhabitants {
     private final float eyeSize;
     private final float[] skinColour, eyeColour;
     private final boolean crest;
+    private final float hairiness, hairHue, hairHueSpread;
+    private final int altEars;
+    private static final int FACES = 4, EAR_VARIANTS = 4, HAIR_STYLES = 6;
+    private final OrganismMesh[] faceMeshes = new OrganismMesh[FACES];
+    private final OrganismMesh[] earMeshes = new OrganismMesh[EAR_VARIANTS];
+    private final OrganismMesh[] hairMeshes = new OrganismMesh[HAIR_STYLES];
+    // The bone a held product hangs from in pictures
+    private static final int PRODUCT_BONE = OrganismSpecies.MAX_BONES - 1;
+    private java.util.function.IntFunction<Texture> flags = n -> null;
     private final int hatStyle;        // 0 brimmed, 1 tall cone, 2 cap
     private final int boneCount;
     private final int legBones, tailBones;
@@ -145,6 +164,11 @@ public class Inhabitants {
         eyeColour = rand.nextFloat() < 0.5f ? new float[] { 0.05f, 0.05f, 0.06f } : WorldPalette.hsv(rand.nextFloat(), 0.7f, 0.8f);
         crest = rand.nextFloat() < 0.25f;
         hatStyle = rand.nextInt(3);
+        // Hair: how many of them have it, and the shades it comes in
+        hairiness = rand.nextFloat() < 0.25f ? 0.1f : 0.5f + rand.nextFloat() * 0.5f;
+        hairHue = rand.nextFloat();
+        hairHueSpread = 0.05f + rand.nextFloat() * 0.35f;
+        altEars = (ears + 1 + rand.nextInt(4)) % 5;
 
         float planRoll = rand.nextFloat();
         plan = planRoll < 0.45f ? BIPED : planRoll < 0.75f ? MANY_LEGGED : BLOB;
@@ -193,11 +217,21 @@ public class Inhabitants {
         for (int m = 0; m < meshes.length; m++) {
             meshes[m] = buildMesh((m & 4) != 0, (m & 2) != 0, (m & 1) != 0).build(gl);
         }
+        for (int v = 0; v < FACES; v++) faceMeshes[v] = buildFace(v).build(gl);
+        for (int v = 0; v < EAR_VARIANTS; v++) earMeshes[v] = buildEars(v).build(gl);
+        for (int v = 1; v < HAIR_STYLES; v++) hairMeshes[v] = buildHair(v).build(gl);
+    }
+
+    /** Where each nation's flag texture comes from, for the flags some people wear. */
+    public void setFlags(java.util.function.IntFunction<Texture> flags) {
+        this.flags = flags;
     }
 
     public void dispose(GL3 gl) {
-        for (OrganismMesh mesh : meshes) {
-            if (mesh != null) mesh.dispose(gl);
+        for (OrganismMesh[] set : new OrganismMesh[][] { meshes, faceMeshes, earMeshes, hairMeshes }) {
+            for (OrganismMesh mesh : set) {
+                if (mesh != null) mesh.dispose(gl);
+            }
         }
     }
 
@@ -276,49 +310,13 @@ public class Inhabitants {
 
         // Torso in its top, neck and an optional crest of skin down the back
         b.bone(TORSO).resetTransform();
-        OrganismParts.shell(b, OrganismMesh.PART_BODY, torsoLength, w, w * 0.62f, 0.55f, 0, 0f, 0.9f);
+        OrganismParts.shell(b, OrganismMesh.PART_TOP, torsoLength, w, w * 0.62f, 0.55f, 0, 0f, 0.9f);
         b.transform(Affine.translation(0f, 0f, torsoLength * 0.4f));
         OrganismParts.limb(b, OrganismMesh.PART_SKIN, neckLength + headSize * 0.4f, w * 0.17f, w * 0.15f);
 
         // Head: faces +Z
         b.bone(HEAD).resetTransform();
         OrganismParts.shell(b, OrganismMesh.PART_SKIN, headSize * 1.05f, headSize * 0.85f, headSize, 0.6f, 0, 0f, 0.9f);
-        if (snoutLength > 0f) {
-            b.transform(Affine.translation(0f, -headSize * 0.15f, headSize * 0.35f));
-            OrganismParts.shell(b, OrganismMesh.PART_SKIN, snoutLength * 2f, headSize * 0.45f, headSize * 0.4f, 0.8f, 0, 0f, 0.8f);
-        }
-        float front = headSize * 0.42f + (snoutLength > 0f ? snoutLength * 0.25f : 0f);
-        for (int e = 0; e < eyes; e++) {
-            float ex = eyes == 1 ? 0f : ((e & 1) == 0 ? -1 : 1) * headSize * 0.22f;
-            float ey = headSize * (0.12f + 0.14f * (e / 2));
-            b.transform(Affine.translation(ex, ey, front * 0.85f));
-            OrganismParts.eye(b, eyeSize);
-        }
-        for (int side = -1; side <= 1; side += 2) {
-            switch (ears) {
-                case 1 -> {
-                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.35f, headSize * 0.35f, -headSize * 0.05f),
-                            Affine.multiply(Affine.rotationY(side * 0.5f), Affine.rotationX(-1.2f))));
-                    OrganismParts.horn(b, headSize * 0.6f, headSize * 0.14f);
-                }
-                case 2 -> {
-                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.4f, headSize * 0.2f, -headSize * 0.1f),
-                            Affine.multiply(Affine.rotationY(side * 1.2f), Affine.rotationX(0.6f))));
-                    OrganismParts.shell(b, OrganismMesh.PART_SKIN, headSize * 1.1f, headSize * 0.35f, headSize * 0.08f, 0.8f, 0, 0f, 1f);
-                }
-                case 3 -> {
-                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.25f, headSize * 0.4f, headSize * 0.1f),
-                            Affine.multiply(Affine.rotationY(side * 0.4f), Affine.rotationX(-0.6f))));
-                    OrganismParts.horn(b, headSize * 0.9f, headSize * 0.1f);
-                }
-                case 4 -> {
-                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.15f, headSize * 0.45f, headSize * 0.2f),
-                            Affine.multiply(Affine.rotationY(side * 0.35f), Affine.rotationX(-1.0f))));
-                    OrganismParts.antenna(b, OrganismParts.AntennaType.CLUBBED, headSize * 1.2f, headSize * 0.04f);
-                }
-                default -> { }
-            }
-        }
         if (crest) {
             for (int c = 0; c < 4; c++) {
                 b.transform(Affine.multiply(Affine.translation(0f, headSize * 0.45f, headSize * (0.2f - 0.15f * c)), Affine.rotationX(-1.4f + c * 0.2f)));
@@ -384,6 +382,137 @@ public class Inhabitants {
         return b;
     }
 
+    /** A face: snout and eyes, in one of a few shapes and sizes. */
+    private OrganismMesh.Builder buildFace(int variant) {
+        OrganismMesh.Builder b = new OrganismMesh.Builder();
+        float snoutScale = new float[] { 1f, 0.65f, 1.4f, 0.85f }[variant];
+        float eyeScale = new float[] { 1f, 1.22f, 0.85f, 1.1f }[variant];
+        float spacing = new float[] { 1f, 0.88f, 1.14f, 1.04f }[variant];
+        float snout = snoutLength > 0f ? snoutLength * snoutScale : variant == 2 ? headSize * 0.18f : 0f;
+        b.bone(HEAD).resetTransform();
+        if (snout > 0f) {
+            b.transform(Affine.translation(0f, -headSize * 0.15f, headSize * 0.35f));
+            OrganismParts.shell(b, OrganismMesh.PART_SKIN, snout * 2f, headSize * (0.38f + 0.1f * variant), headSize * 0.4f, 0.8f, 0, 0f, 0.8f);
+        }
+        if (variant == 3) {
+            // A heavy brow
+            b.transform(Affine.multiply(Affine.translation(0f, headSize * 0.25f, headSize * 0.36f), Affine.rotationY((float) Math.PI / 2)));
+            OrganismParts.shell(b, OrganismMesh.PART_SKIN, headSize * 0.75f, headSize * 0.16f, headSize * 0.12f, 0.9f, 0, 0f, 1f);
+        }
+        float front = headSize * 0.42f + (snout > 0f ? snout * 0.25f : 0f);
+        for (int e = 0; e < eyes; e++) {
+            float ex = eyes == 1 ? 0f : ((e & 1) == 0 ? -1 : 1) * headSize * 0.22f * spacing;
+            float ey = headSize * (0.12f + 0.14f * (e / 2));
+            b.transform(Affine.translation(ex, ey, front * 0.85f));
+            OrganismParts.eye(b, eyeSize * eyeScale);
+        }
+        return b;
+    }
+
+    /** Ears of the species' kind, bigger or smaller, set at another angle, or now and then of another kind. */
+    private OrganismMesh.Builder buildEars(int variant) {
+        OrganismMesh.Builder b = new OrganismMesh.Builder();
+        b.bone(HEAD).resetTransform();
+        int kind = variant == 3 ? altEars : ears;
+        float size = headSize * new float[] { 1f, 0.75f, 1.3f, 0.9f }[variant];
+        float tilt = new float[] { 0f, 0.25f, -0.2f, 0f }[variant];
+        for (int side = -1; side <= 1; side += 2) {
+            switch (kind) {
+                case 1 -> {
+                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.35f, headSize * 0.35f, -headSize * 0.05f),
+                            Affine.multiply(Affine.rotationY(side * (0.5f + tilt)), Affine.rotationX(-1.2f + tilt))));
+                    OrganismParts.horn(b, size * 0.6f, size * 0.14f);
+                }
+                case 2 -> {
+                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.4f, headSize * 0.2f, -headSize * 0.1f),
+                            Affine.multiply(Affine.rotationY(side * (1.2f + tilt)), Affine.rotationX(0.6f + tilt))));
+                    OrganismParts.shell(b, OrganismMesh.PART_SKIN, size * 1.1f, size * 0.35f, size * 0.08f, 0.8f, 0, 0f, 1f);
+                }
+                case 3 -> {
+                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.25f, headSize * 0.4f, headSize * 0.1f),
+                            Affine.multiply(Affine.rotationY(side * (0.4f + tilt)), Affine.rotationX(-0.6f))));
+                    OrganismParts.horn(b, size * 0.9f, size * 0.1f);
+                }
+                case 4 -> {
+                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.15f, headSize * 0.45f, headSize * 0.2f),
+                            Affine.multiply(Affine.rotationY(side * (0.35f + tilt)), Affine.rotationX(-1.0f))));
+                    OrganismParts.antenna(b, OrganismParts.AntennaType.CLUBBED, size * 1.2f, size * 0.04f);
+                }
+                default -> {
+                    // No ears to speak of: just small round ones
+                    b.transform(Affine.multiply(Affine.translation(side * headSize * 0.42f, headSize * 0.05f, -headSize * 0.02f),
+                            Affine.rotationY(side * 1.4f)));
+                    OrganismParts.shell(b, OrganismMesh.PART_SKIN, size * 0.25f, size * 0.22f, size * 0.07f, 0.6f, 0, 0f, 1f);
+                }
+            }
+        }
+        return b;
+    }
+
+    /** Hair: a topknot, a mane, long strands, a crest of spikes or a bushy cap. */
+    private OrganismMesh.Builder buildHair(int style) {
+        OrganismMesh.Builder b = new OrganismMesh.Builder();
+        b.bone(HEAD).resetTransform();
+        b.part(OrganismMesh.PART_HAIR);
+        float h = headSize;
+        b.folds((along, angle) -> 1f + 0.06f * (float) Math.sin(angle * 9f + along * 3f));
+        switch (style) {
+            case 1 -> {
+                b.transform(Affine.translation(0f, h * 0.55f, -h * 0.15f));
+                b.lathe(12, 8, (t, out) -> {
+                    float e = (float) Math.sin(Math.PI * t);
+                    out[0] = 0f; out[1] = 0f; out[2] = (t - 0.5f) * h * 0.5f;
+                    out[3] = Math.max(0.01f, h * 0.24f * e); out[4] = out[3];
+                });
+            }
+            case 2 -> {
+                // A mane from the crown down the back of the neck
+                b.transform(Affine.multiply(Affine.translation(0f, h * 0.42f, h * 0.05f), Affine.rotationX(2.4f)));
+                b.lathe(12, 10, (t, out) -> {
+                    float e = (float) Math.pow(Math.sin(Math.PI * Math.min(1f, t * 1.1f)), 0.6);
+                    out[0] = 0f; out[1] = -h * 0.15f * t; out[2] = t * h * 1.3f;
+                    out[3] = Math.max(0.01f, h * 0.22f * e); out[4] = Math.max(0.01f, h * 0.12f * e);
+                });
+            }
+            case 3 -> {
+                // Long strands falling round the back and sides of the head
+                for (int i = 0; i < 7; i++) {
+                    double a = Math.PI * (0.15 + 0.7 * i / 6.0);
+                    float x = (float) Math.cos(a) * h * 0.4f, z = -(float) Math.sin(a) * h * 0.4f;
+                    b.transform(Affine.multiply(Affine.translation(x, h * 0.35f, z),
+                            Affine.frame(new float[] { 0f, 0f, 0f }, new float[] { x * 0.4f, -1f, z * 0.4f }, new float[] { 0f, 0f, 1f }, 1f, 1f, 1f)));
+                    b.lathe(6, 6, (t, out) -> {
+                        out[0] = 0f; out[1] = 0f; out[2] = t * h * 1.4f;
+                        out[3] = Math.max(0.01f, h * 0.1f * (1f - 0.6f * t)); out[4] = out[3];
+                    });
+                }
+            }
+            case 4 -> {
+                // A crest of stiff spikes over the crown
+                for (int i = 0; i < 6; i++) {
+                    float z = h * (0.3f - 0.12f * i);
+                    b.transform(Affine.frame(new float[] { 0f, h * 0.4f, z }, new float[] { 0f, 1f, -0.25f - 0.12f * i },
+                            new float[] { 0f, 0f, 1f }, 1f, 1f, 1f));
+                    b.lathe(6, 4, (t, out) -> {
+                        out[0] = 0f; out[1] = 0f; out[2] = t * h * 0.55f;
+                        out[3] = Math.max(0.005f, h * 0.09f * (1f - t)); out[4] = out[3];
+                    });
+                }
+            }
+            default -> {
+                // A bushy cap over the top of the head
+                b.transform(Affine.multiply(Affine.translation(0f, h * 0.18f, -h * 0.04f), Affine.rotationX((float) -Math.PI / 2)));
+                b.lathe(16, 8, (t, out) -> {
+                    float e = (float) Math.sqrt(Math.max(0.0, Math.sin(Math.PI * (0.5f + 0.5f * t))));
+                    out[0] = 0f; out[1] = 0f; out[2] = t * h * 0.62f;
+                    out[3] = Math.max(0.01f, h * 0.6f * e); out[4] = Math.max(0.01f, h * 0.66f * e);
+                });
+            }
+        }
+        b.folds(null);
+        return b;
+    }
+
     /** Bone matrices for one person, standing or walking, at their current spot. */
     private void pose(Person p, float time) {
         float ground = TerrainMesh.getLayeredHeight(p.x, p.z, terrainNoise);
@@ -418,7 +547,8 @@ public class Inhabitants {
         float shoulderY = torsoCentre[1] + torsoLength * 0.38f;
         float[] head = { 0f, torsoCentre[1] + torsoLength * 0.5f + neckLength + headSize * 0.5f,
                 torsoCentre[2] + lean * torsoLength * 0.5f + headSize * 0.1f };
-        place(body, HEAD, Affine.multiply(Affine.translation(head[0], head[1], head[2]), Affine.rotationY(p.lookYaw)));
+        place(body, HEAD, Affine.multiply(Affine.translation(head[0], head[1], head[2]),
+                Affine.multiply(Affine.rotationY(p.lookYaw), Affine.scale(p.headX, p.headY, p.headZ))));
 
         float upper = armLength * 0.48f, fore = armLength * 0.42f;
         for (int a = 0; a < armPairs * 2; a++) {
@@ -428,6 +558,13 @@ public class Inhabitants {
             float[] shoulder = { side * shoulderWidth * 0.5f * p.bulk, shoulderY - pair * torsoLength * 0.25f, torsoCentre[2] };
             float[] hand = { shoulder[0] + side * shoulderWidth * 0.08f, shoulder[1] - armLength * 0.86f + Math.abs(swing) * armLength * 0.08f,
                     shoulder[2] + swing * armLength * 0.35f + armLength * 0.05f };
+            if (p.handTargets != null && pair == 0 && p.handTargets[side < 0 ? 0 : 1] != null) {
+                // Reaching to hold something up, as far as the arm goes
+                float[] want = p.handTargets[side < 0 ? 0 : 1];
+                float[] reach = Affine.subtract(want, shoulder);
+                float length = Affine.length(reach), most = (upper + fore) * 0.97f;
+                hand = length > most ? Affine.add(shoulder, reach, most / length) : want;
+            }
             float[] elbow = Affine.middleJoint(shoulder, hand, upper, fore, new float[] { side * 0.3f, 0f, -1f });
             int boneBase = FIRST_ARM + a * 3;
             limb(body, shoulder, elbow, upper, boneBase);
@@ -570,7 +707,62 @@ public class Inhabitants {
         p.accent = culture.tops[rand.nextInt(culture.tops.length)];
         p.bottom = culture.bottoms[rand.nextInt(culture.bottoms.length)];
         float[] hsv = WorldPalette.toHsv(skinColour);
-        p.skin = WorldPalette.hsv(hsv[0] + (rand.nextFloat() - 0.5f) * 0.04f, hsv[1], hsv[2] * (0.85f + rand.nextFloat() * 0.3f));
+        p.skin = WorldPalette.hsv(hsv[0] + (rand.nextFloat() - 0.5f) * 0.05f, hsv[1] * (0.85f + rand.nextFloat() * 0.3f),
+                hsv[2] * (0.82f + rand.nextFloat() * 0.36f));
+        // Their own clothes: a pattern their nation favours or one of their own, in their own shades
+        p.pattern = rand.nextFloat() < 0.5f ? culture.pattern : rand.nextInt(8);
+        p.patternScale = culture.patternScale * (0.6f + rand.nextFloat() * 0.9f);
+        p.top = jitter(p.top, rand, 0.06f);
+        p.accent = rand.nextFloat() < 0.3f ? WorldPalette.hsv(rand.nextFloat(), 0.5f + rand.nextFloat() * 0.4f, 0.4f + rand.nextFloat() * 0.5f)
+                : jitter(p.accent, rand, 0.08f);
+        p.belly = rand.nextFloat() < 0.5f ? new float[] { p.top[0] * 0.9f, p.top[1] * 0.9f, p.top[2] * 0.9f } : jitter(p.accent, rand, 0.05f);
+        p.bottom = jitter(p.bottom, rand, 0.05f);
+        // The flag on their chest, more often the prouder their nation
+        p.flag = rand.nextFloat() < infrastructure.patriotismOf(nationId) * 0.22f;
+        // Their face, ears and hair
+        p.face = rand.nextInt(FACES);
+        p.earVariant = rand.nextFloat() < 0.15f ? 3 : rand.nextInt(3);
+        boolean hatted = (p.mesh & 2) != 0;
+        p.hairStyle = rand.nextFloat() < hairiness ? 1 + rand.nextInt(HAIR_STYLES - 1) : 0;
+        if (hatted && (p.hairStyle == 1 || p.hairStyle == 4 || p.hairStyle == 5)) p.hairStyle = rand.nextBoolean() ? 2 : 3;
+        p.hair = WorldPalette.hsv(hairHue + (rand.nextFloat() - 0.5f) * hairHueSpread, 0.25f + rand.nextFloat() * 0.6f,
+                0.12f + rand.nextFloat() * 0.75f);
+        float[] eyeHsv = WorldPalette.toHsv(eyeColour);
+        p.eyes = eyeHsv[2] < 0.15f ? eyeColour
+                : WorldPalette.hsv(eyeHsv[0] + (rand.nextFloat() - 0.5f) * 0.15f, eyeHsv[1], eyeHsv[2] * (0.75f + rand.nextFloat() * 0.35f));
+        p.headX = 0.9f + rand.nextFloat() * 0.2f;
+        p.headY = 0.9f + rand.nextFloat() * 0.2f;
+        p.headZ = 0.92f + rand.nextFloat() * 0.16f;
+    }
+
+    private static float[] jitter(float[] colour, Random rand, float amount) {
+        float[] hsv = WorldPalette.toHsv(colour);
+        return WorldPalette.hsv(hsv[0] + (rand.nextFloat() - 0.5f) * amount, hsv[1] * (0.85f + rand.nextFloat() * 0.3f),
+                hsv[2] * (0.85f + rand.nextFloat() * 0.3f));
+    }
+
+    /** Sets one person's colours and draws them, with their face, ears and hair. */
+    private void drawPerson(GL3 gl, Person p, int nationId) {
+        shader.setVec3(gl, "baseColour", vec(p.top));
+        shader.setVec3(gl, "bellyColour", vec(p.belly));
+        shader.setVec3(gl, "accentColour", vec(p.accent));
+        shader.setVec3(gl, "limbColour", vec(p.skin));
+        shader.setVec3(gl, "trimColour", vec(p.bottom));
+        shader.setVec3(gl, "eyeColour", vec(p.eyes));
+        shader.setVec3(gl, "hairColour", vec(p.hair));
+        shader.setInt(gl, "patternType", p.pattern);
+        shader.setFloat(gl, "patternScale", p.patternScale);
+        Texture flag = p.flag ? flags.apply(nationId) : null;
+        if (flag != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE6);
+            flag.bind(gl);
+            shader.setInt(gl, "flagTexture", 6);
+        }
+        shader.setInt(gl, "flagOnTop", flag != null ? 1 : 0);
+        meshes[p.mesh].render(gl);
+        faceMeshes[p.face].render(gl);
+        earMeshes[p.earVariant].render(gl);
+        if (p.hairStyle > 0) hairMeshes[p.hairStyle].render(gl);
     }
 
     // ==========================================
@@ -578,14 +770,31 @@ public class Inhabitants {
     // ==========================================
 
     public static final int PICTURE_WIDTH = 192, PICTURE_HEIGHT = 256;
+    // Each nation's pictures, in this order: head-and-shoulders portraits, full-length figures,
+    // adverts (someone showing off something sold in the shops) and pictures of the goods alone
+    public static final int PORTRAITS = 3, FIGURES = 3, ADVERTS = 4, GOODS = 4;
+    public static final int PICTURES = PORTRAITS + FIGURES + ADVERTS + GOODS;
+
+    /** Which of a nation's pictures a sign of the given kind shows, for a sign's own variant number. */
+    public static int pictureIndex(int kind, int variant) {
+        return switch (kind) {
+            case InfrastructureObject.PICTURE_PORTRAIT -> Math.floorMod(variant, PORTRAITS);
+            case InfrastructureObject.PICTURE_FIGURE -> PORTRAITS + Math.floorMod(variant, FIGURES);
+            case InfrastructureObject.PICTURE_ADVERT -> PORTRAITS + FIGURES + Math.floorMod(variant, ADVERTS);
+            case InfrastructureObject.PICTURE_PRODUCT -> PORTRAITS + FIGURES + ADVERTS + Math.floorMod(variant, GOODS);
+            default -> -1;
+        };
+    }
 
     /**
-     * Pictures of this world's people for signs: for each nation, perKind head-and-shoulders
-     * portraits followed by perKind full-length figures, each a different person in their
-     * nation's dress against a plain backdrop. Returns GL texture ids indexed [nation][picture];
-     * their rows run bottom-up. Must run on the GL thread after initialise.
+     * Pictures for signs, for each nation (see pictureIndex for the order): its people head
+     * and shoulders and full length, adverts of someone holding up something from the shops
+     * (in front of them, overhead, on an open hand, or floating between their hands), and its
+     * goods on their own. Each is a different person in their nation's dress against a plain
+     * backdrop. Returns GL texture ids indexed [nation][picture], rows running bottom-up. Must
+     * run on the GL thread after initialise; packaging gives each nation's goods texture.
      */
-    public int[][] renderPictures(GL3 gl, int nationCount, int perKind) {
+    public int[][] renderPictures(GL3 gl, int nationCount, Products products, java.util.function.IntFunction<Texture> packaging) {
         int[][] pictures = new int[nationCount + 1][];
         if (shader == null) return pictures;
         int[] viewport = new int[4];
@@ -604,10 +813,28 @@ public class Inhabitants {
         gl.glEnable(GL.GL_DEPTH_TEST);
 
         for (int n = 1; n <= nationCount; n++) {
-            pictures[n] = new int[perKind * 2];
-            for (int k = 0; k < perKind * 2; k++) {
+            pictures[n] = new int[PICTURES];
+            // This nation's goods, ready to be held up or set out
+            List<OrganismMesh> goods = new ArrayList<>();
+            List<float[]> goodsSize = new ArrayList<>();   // {width, height, depth} at unit scale
+            for (Products.Packet k : products.packets(n)) {
+                OrganismMesh.Builder b = new OrganismMesh.Builder().bone(PRODUCT_BONE);
+                Products.buildPacket(b, k, 1f, Affine.identity());
+                goods.add(b.build(gl));
+                goodsSize.add(new float[] { k.width, k.height, k.depth });
+            }
+            for (Products.Produce c : products.produce(n)) {
+                OrganismMesh.Builder b = new OrganismMesh.Builder().bone(PRODUCT_BONE);
+                Products.buildProduce(b, c, 1f, Affine.identity());
+                goods.add(b.build(gl));
+                float tall = c.shape == Products.Shape.DISC ? c.size * 0.45f : c.size;
+                goodsSize.add(new float[] { c.size * Math.max(0.5f, c.width), tall, c.size * Math.max(0.5f, c.width) });
+            }
+            Texture print = packaging.apply(n);
+            for (int k = 0; k < PICTURES; k++) {
                 Random rand = new Random(seed * 977L + n * 31L + k * 7919L);
                 int[] texture = new int[1];
+                gl.glActiveTexture(GL3.GL_TEXTURE0);
                 gl.glGenTextures(1, texture, 0);
                 gl.glBindTexture(GL.GL_TEXTURE_2D, texture[0]);
                 gl.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, PICTURE_WIDTH, PICTURE_HEIGHT, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, null);
@@ -615,19 +842,37 @@ public class Inhabitants {
                 gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE);
                 gl.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, texture[0], 0);
                 gl.glDrawBuffer(GL.GL_COLOR_ATTACHMENT0);
-                // A pale backdrop, tinted towards their clothes or a soft sky
+                // A pale backdrop, tinted towards their clothes or a soft sky; adverts are brighter
                 Culture culture = cultures.getOrDefault(n, cultures.values().iterator().next());
+                boolean advert = k >= PORTRAITS + FIGURES;
                 float[] tint = rand.nextBoolean() ? WorldPalette.toHsv(culture.tops[0]) : new float[] { 0.55f + rand.nextFloat() * 0.1f, 0f, 0f };
-                float[] backdrop = WorldPalette.hsv(tint[0] + 0.5f * (rand.nextFloat() < 0.5f ? 1f : 0f), 0.12f + rand.nextFloat() * 0.2f,
+                float[] backdrop = advert
+                        ? WorldPalette.hsv(rand.nextFloat(), 0.35f + rand.nextFloat() * 0.35f, 0.8f + rand.nextFloat() * 0.18f)
+                        : WorldPalette.hsv(tint[0] + 0.5f * (rand.nextFloat() < 0.5f ? 1f : 0f), 0.12f + rand.nextFloat() * 0.2f,
                         0.78f + rand.nextFloat() * 0.17f);
                 gl.glClearColor(backdrop[0], backdrop[1], backdrop[2], 1f);
                 gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
-                drawPicture(gl, n, k >= perKind, rand);
+                if (print != null) {
+                    gl.glActiveTexture(GL3.GL_TEXTURE5);
+                    print.bind(gl);
+                }
+                if (k < PORTRAITS + FIGURES) {
+                    drawPicture(gl, n, k >= PORTRAITS, -1, null, null, rand);
+                } else if (k < PORTRAITS + FIGURES + ADVERTS) {
+                    int item = rand.nextInt(goods.size());
+                    drawPicture(gl, n, true, (k - PORTRAITS - FIGURES) % 4, goods.get(item), goodsSize.get(item), rand);
+                } else {
+                    drawGoods(gl, goods, goodsSize, rand);
+                }
+                // Back on the picture's own unit, since drawing bound other textures elsewhere
+                gl.glActiveTexture(GL3.GL_TEXTURE0);
+                gl.glBindTexture(GL.GL_TEXTURE_2D, texture[0]);
                 gl.glGenerateMipmap(GL.GL_TEXTURE_2D);
                 gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR);
                 gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR);
                 pictures[n][k] = texture[0];
             }
+            for (OrganismMesh mesh : goods) mesh.dispose(gl);
         }
 
         gl.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0);
@@ -640,19 +885,102 @@ public class Inhabitants {
         return pictures;
     }
 
-    /** One person standing still, framed head and shoulders or full length, lit from the front. */
-    private void drawPicture(GL3 gl, int nationId, boolean fullLength, Random rand) {
+    /** Lights the shared shader for a picture, with a camera framing a box round the centre. */
+    private void pictureCamera(GL3 gl, float centreX, float centreY, float centreZ, float halfHeight, float lift) {
+        float aspect = PICTURE_WIDTH / (float) PICTURE_HEIGHT;
+        float fov = 24f;
+        float distance = halfHeight / (float) Math.tan(Math.toRadians(fov * 0.5));
+        Vector3 target = new Vector3(centreX, centreY, centreZ);
+        Vector3 eye = new Vector3(centreX, centreY + halfHeight * lift, centreZ + distance);
+        Matrix4 viewProjection = Matrix4.multiply(Matrix4Transform.perspective(fov, aspect, distance * 0.3f, distance * 3f),
+                Matrix4Transform.lookAt(eye, target, new Vector3(0f, 1f, 0f)));
+        shader.use(gl);
+        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, new Matrix4(1).toFloatArrayForGLSL(), 0);
+        shader.setVec3(gl, "viewPos", eye);
+        shader.setVec3(gl, "sunPos", new Vector3(centreX - distance * 0.8f, centreY + distance * 1.1f, centreZ + distance * 1.4f));
+        shader.setVec3(gl, "sunColour", new Vector3(1.0f, 0.97f, 0.92f));
+        shader.setVec3(gl, "ambientLight", new Vector3(0.36f, 0.36f, 0.4f));
+        shader.setFloat(gl, "waterLevel", -1e9f);
+        shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
+        shader.setFloat(gl, "gloss", 0.2f);
+        shader.setInt(gl, "productTexture", 5);
+    }
+
+    /**
+     * One person standing still, framed head and shoulders or full length, lit from the
+     * front; for an advert (hold 0 to 3) holding up a product in one of four ways.
+     */
+    private void drawPicture(GL3 gl, int nationId, boolean fullLength, int hold, OrganismMesh product, float[] productSize, Random rand) {
         Person p = new Person();
         dress(p, nationId, rand);
         p.x = 0f;
         p.z = 0f;
         // Turned a little for a portrait, more for a full figure so a long body shows its length
-        float turn = fullLength ? 0.3f + rand.nextFloat() * 0.3f : rand.nextFloat() * 0.35f;
+        float turn = hold >= 0 ? rand.nextFloat() * 0.25f : fullLength ? 0.3f + rand.nextFloat() * 0.3f : rand.nextFloat() * 0.35f;
         p.heading = rand.nextBoolean() ? turn : -turn;
         p.lookYaw = 0f;
+
+        // Where the product goes, in body space before the person's turn and size, and how big
+        float[] productAt = null;
+        float productScale = 1f;
+        if (hold >= 0) {
+            pose(p, 0f);
+            float headY = bones[HEAD * 16 + 13] - TerrainMesh.getLayeredHeight(0f, 0f, terrainNoise);
+            float shoulderY = headY - headSize * 0.5f - neckLength - torsoLength * 0.1f;
+            float frontZ = plan == MANY_LEGGED ? barrelLength * 0.32f : 0f;
+            float biggest = Math.max(productSize[0], Math.max(productSize[1], productSize[2]));
+            // Shown off bigger than life, as adverts do
+            productScale = headSize * (1.2f + rand.nextFloat() * 0.5f) / biggest;
+            float ph = productSize[1] * productScale;
+            float reach = armLength * 0.55f;
+            p.handTargets = new float[2][];
+            switch (hold) {
+                case 0 -> {
+                    // Held out in front, in both hands
+                    productAt = new float[] { 0f, shoulderY - torsoLength * 0.25f - ph * 0.5f, frontZ + reach };
+                    float half = productSize[0] * productScale * 0.55f;
+                    p.handTargets[0] = new float[] { -half, productAt[1] + ph * 0.4f, productAt[2] };
+                    p.handTargets[1] = new float[] { half, productAt[1] + ph * 0.4f, productAt[2] };
+                }
+                case 1 -> {
+                    // Raised overhead in both hands
+                    productAt = new float[] { 0f, headY + headSize * 0.9f, frontZ + armLength * 0.15f };
+                    float half = productSize[0] * productScale * 0.55f;
+                    p.handTargets[0] = new float[] { -half, productAt[1] + ph * 0.3f, productAt[2] };
+                    p.handTargets[1] = new float[] { half, productAt[1] + ph * 0.3f, productAt[2] };
+                }
+                case 2 -> {
+                    // On an open hand held up at one side
+                    float side = rand.nextBoolean() ? 1f : -1f;
+                    float[] hand = { side * shoulderWidth * 0.75f, shoulderY + armLength * 0.35f, frontZ + armLength * 0.3f };
+                    p.handTargets[side < 0 ? 0 : 1] = hand;
+                    productAt = new float[] { hand[0], hand[1] + armLength * 0.08f, hand[2] };
+                }
+                default -> {
+                    // Floating in the air between their hands, as if by magic
+                    // ... off to one side of the face, the hands reaching up towards it
+                    float side = rand.nextBoolean() ? 1f : -1f;
+                    productAt = new float[] { side * (shoulderWidth * 0.9f + productSize[0] * productScale * 0.5f),
+                            headY - headSize * 0.1f, frontZ + reach * 0.8f };
+                    p.handTargets[0] = new float[] { productAt[0] - shoulderWidth * 0.6f, productAt[1] - ph * 0.3f, productAt[2] };
+                    p.handTargets[1] = new float[] { productAt[0] + shoulderWidth * 0.6f, productAt[1] - ph * 0.3f, productAt[2] };
+                }
+            }
+        }
         pose(p, rand.nextFloat() * 10f);
 
         float ground = TerrainMesh.getLayeredHeight(0f, 0f, terrainNoise);
+        float[] productWorld = null;
+        if (productAt != null) {
+            // The product follows the body's turn and size
+            float[] body = Affine.multiply(Affine.translation(0f, ground, 0f), Affine.multiply(Affine.rotationY(p.heading), Affine.scale(p.scale, p.scale, p.scale)));
+            productWorld = Affine.transformPoint(body, productAt[0], productAt[1], productAt[2]);
+            float[] m = Affine.multiply(Affine.translation(productWorld[0], productWorld[1], productWorld[2]),
+                    Affine.multiply(Affine.rotationY(p.heading + (hold == 3 ? 0.4f : 0f)),
+                            Affine.scale(productScale * p.scale, productScale * p.scale, productScale * p.scale)));
+            System.arraycopy(m, 0, bones, PRODUCT_BONE * 16, 16);
+        }
         float headX = bones[HEAD * 16 + 12], headY = bones[HEAD * 16 + 13];
         float aspect = PICTURE_WIDTH / (float) PICTURE_HEIGHT;
         float centreX, centreY, halfHeight;
@@ -665,6 +993,11 @@ public class Inhabitants {
                 maxY = Math.max(maxY, bones[b * 16 + 13]);
             }
             maxY = Math.max(maxY, headY) + headExtent * 1.1f;
+            if (productWorld != null) {
+                maxY = Math.max(maxY, productWorld[1] + headExtent * 1.8f);
+                minX = Math.min(minX, productWorld[0] - headExtent);
+                maxX = Math.max(maxX, productWorld[0] + headExtent);
+            }
             minX -= headExtent;
             maxX += headExtent;
             centreX = (minX + maxX) * 0.5f;
@@ -675,34 +1008,45 @@ public class Inhabitants {
             centreY = headY - headExtent * 0.45f;
             halfHeight = headExtent * 1.45f + neckLength * p.scale * 0.4f;
         }
-        float fov = 24f;
-        float distance = halfHeight / (float) Math.tan(Math.toRadians(fov * 0.5));
-        Vector3 target = new Vector3(centreX, centreY, 0f);
-        Vector3 eye = new Vector3(centreX, centreY + halfHeight * 0.08f, distance);
-        Matrix4 viewProjection = Matrix4.multiply(Matrix4Transform.perspective(fov, aspect, distance * 0.3f, distance * 3f),
-                Matrix4Transform.lookAt(eye, target, new Vector3(0f, 1f, 0f)));
+        pictureCamera(gl, centreX, centreY, 0f, halfHeight, 0.08f);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), OrganismSpecies.MAX_BONES, false, bones, 0);
+        drawPerson(gl, p, nationId);
+        if (product != null) product.render(gl);
+    }
 
-        shader.use(gl);
-        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, new Matrix4(1).toFloatArrayForGLSL(), 0);
-        shader.setVec3(gl, "viewPos", eye);
-        shader.setVec3(gl, "sunPos", new Vector3(centreX - distance * 0.8f, centreY + distance * 1.1f, distance * 1.4f));
-        shader.setVec3(gl, "sunColour", new Vector3(1.0f, 0.97f, 0.92f));
-        shader.setVec3(gl, "ambientLight", new Vector3(0.36f, 0.36f, 0.4f));
-        shader.setFloat(gl, "waterLevel", -1e9f);
-        shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
-        shader.setVec3(gl, "eyeColour", vec(eyeColour));
-        shader.setFloat(gl, "gloss", 0.2f);
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), boneCount, false, bones, 0);
-        shader.setVec3(gl, "baseColour", vec(p.top));
-        shader.setVec3(gl, "bellyColour", new Vector3(p.top[0] * 0.9f, p.top[1] * 0.9f, p.top[2] * 0.9f));
-        shader.setVec3(gl, "accentColour", vec(p.accent));
-        shader.setVec3(gl, "limbColour", vec(p.skin));
-        shader.setVec3(gl, "trimColour", vec(p.bottom));
-        Culture culture = cultures.getOrDefault(nationId, cultures.values().iterator().next());
-        shader.setInt(gl, "patternType", culture.pattern);
-        shader.setFloat(gl, "patternScale", culture.patternScale);
-        meshes[p.mesh].render(gl);
+    /** A still life of a nation's goods: a packet or two with produce heaped in front. */
+    private void drawGoods(GL3 gl, List<OrganismMesh> goods, List<float[]> sizes, Random rand) {
+        int packets = Products.PACKETS;
+        List<float[]> placed = new ArrayList<>();   // {mesh, x, z, scale, yaw}
+        int back = rand.nextInt(packets);
+        placed.add(new float[] { back, 0f, -1.2f, 1f, (rand.nextFloat() - 0.5f) * 0.5f });
+        if (rand.nextBoolean()) {
+            int second = rand.nextInt(packets);
+            placed.add(new float[] { second, sizes.get(back)[0] * 0.75f, -0.4f, 0.85f, (rand.nextFloat() - 0.5f) * 0.7f });
+        }
+        int crop = packets + rand.nextInt(goods.size() - packets);
+        float cropScale = Math.min(1.2f, sizes.get(back)[1] * 0.45f / sizes.get(crop)[1]);
+        for (int i = 0; i < 3; i++) {
+            placed.add(new float[] { crop, -sizes.get(back)[0] * 0.4f + i * sizes.get(crop)[0] * cropScale * 0.8f, 0.9f + (i % 2) * 0.4f,
+                    cropScale, rand.nextFloat() * 6.28f });
+        }
+        float tallest = 0f, left = Float.MAX_VALUE, right = -Float.MAX_VALUE;
+        for (float[] item : placed) {
+            float[] size = sizes.get((int) item[0]);
+            tallest = Math.max(tallest, size[1] * item[3]);
+            left = Math.min(left, item[1] - size[0] * item[3] * 0.6f);
+            right = Math.max(right, item[1] + size[0] * item[3] * 0.6f);
+        }
+        float halfHeight = Math.max(tallest * 0.62f, (right - left) * 0.62f / (PICTURE_WIDTH / (float) PICTURE_HEIGHT));
+        pictureCamera(gl, (left + right) * 0.5f, tallest * 0.45f, 0f, halfHeight, 0.35f);
+        int bonesLocation = gl.glGetUniformLocation(shader.getID(), "bones");
+        for (float[] item : placed) {
+            float[] m = Affine.multiply(Affine.translation(item[1], 0f, item[2]),
+                    Affine.multiply(Affine.rotationY(item[4]), Affine.scale(item[3], item[3], item[3])));
+            System.arraycopy(m, 0, bones, PRODUCT_BONE * 16, 16);
+            gl.glUniformMatrix4fv(bonesLocation, OrganismSpecies.MAX_BONES, false, bones, 0);
+            goods.get((int) item[0]).render(gl);
+        }
     }
 
     /**
@@ -875,7 +1219,6 @@ public class Inhabitants {
         shader.setVec3(gl, "ambientLight", ambient);
         shader.setFloat(gl, "waterLevel", -1e9f);
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
-        shader.setVec3(gl, "eyeColour", vec(eyeColour));
         shader.setFloat(gl, "gloss", 0.2f);
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
@@ -893,15 +1236,7 @@ public class Inhabitants {
                 if (!frustum.intersectsSphere(p.x, ground + height * 0.5f, p.z, height)) continue;
                 pose(p, time);
                 gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
-                shader.setVec3(gl, "baseColour", vec(p.top));
-                shader.setVec3(gl, "bellyColour", new Vector3(p.top[0] * 0.9f, p.top[1] * 0.9f, p.top[2] * 0.9f));
-                shader.setVec3(gl, "accentColour", vec(p.accent));
-                shader.setVec3(gl, "limbColour", vec(p.skin));
-                shader.setVec3(gl, "trimColour", vec(p.bottom));
-                Culture culture = cultures.getOrDefault(p.home.nationId, cultures.values().iterator().next());
-                shader.setInt(gl, "patternType", culture.pattern);
-                shader.setFloat(gl, "patternScale", culture.patternScale);
-                meshes[p.mesh].render(gl);
+                drawPerson(gl, p, p.home.nationId);
             }
         }
         gl.glEnable(GL.GL_CULL_FACE);
