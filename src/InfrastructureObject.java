@@ -27,6 +27,24 @@ public class InfrastructureObject {
     public int[] textString;
     public int stringLength;
 
+    // --- A SIGN'S PICTURE AND TITLE ---
+    public static final int PICTURE_NONE = 0, PICTURE_FLAG = 1, PICTURE_MAP = 2, PICTURE_PORTRAIT = 3, PICTURE_FIGURE = 4;
+    public static final int TITLE_CAPACITY = 16;
+    public int pictureKind = PICTURE_NONE;
+    // Where the picture sits: {x0, y0, x1, y1} as fractions of the text area, y downwards
+    public float[] pictureRect = { 0f, 0f, 0f, 0f };
+    public int pictureVariant;
+    // A map is drawn off the GL thread; its pixels arrive here, then become a texture
+    public volatile int[] mapPixels;
+    public int mapWidth = 1, mapHeight = 1;
+    private int mapTexture;
+    public final int[] titleString = new int[TITLE_CAPACITY];
+    public int titleLength;
+    // The title's lettering: {ink threshold (weight), slant, width, outline}, colour and drop shadow
+    public float[] titleFont = { 0.5f, 0f, 1f, 0f };
+    public float[] titleColour = { 0.05f, 0.05f, 0.05f };
+    public boolean titleShadow;
+
     /** One mesh of a batch, drawn with a single material. */
     public static final class BatchPart {
         final float[] vertices;
@@ -35,15 +53,23 @@ public class InfrastructureObject {
         final boolean doubleSided;
                 final boolean paint;
         final boolean textured;
+        // See-through (window glass): left out of the solid pass and drawn afterwards
+        final boolean transparent;
         Model model;
 
         public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured) {
+            this(vertices, indices, material, doubleSided, paint, textured, false);
+        }
+
+        public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured,
+                         boolean transparent) {
             this.vertices = vertices;
             this.indices = indices;
             this.material = material;
             this.doubleSided = doubleSided;
             this.paint = paint;
             this.textured = textured;
+            this.transparent = transparent;
         }
     }
 
@@ -114,7 +140,44 @@ public class InfrastructureObject {
         }
     }
 
+    /** Draws the see-through parts (window glass) with whatever shader is in use. */
+    public void renderTransparent(GL3 gl) {
+        for (BatchPart part : batchParts) {
+            if (part.transparent && part.model != null && part.model.getMesh() != null) part.model.getMesh().render(gl);
+        }
+    }
+
+    /** Turns a finished map into a texture the first time it is wanted; false while it is still being drawn. */
+    private boolean uploadMap(GL3 gl) {
+        if (mapTexture != 0) return true;
+        int[] pixels = mapPixels;
+        if (pixels == null) return false;
+        int[] id = new int[1];
+        gl.glGenTextures(1, id, 0);
+        gl.glBindTexture(GL3.GL_TEXTURE_2D, id[0]);
+        gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 4);
+        gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RGBA8, mapWidth, mapHeight, 0, GL3.GL_BGRA,
+                GL3.GL_UNSIGNED_INT_8_8_8_8_REV, java.nio.IntBuffer.wrap(pixels));
+        gl.glGenerateMipmap(GL3.GL_TEXTURE_2D);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR_MIPMAP_LINEAR);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_CLAMP_TO_EDGE);
+        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE);
+        mapTexture = id[0];
+        mapPixels = null;
+        return true;
+    }
+
+    public boolean hasTransparentParts() {
+        for (BatchPart part : batchParts) if (part.transparent) return true;
+        return false;
+    }
+
     public void dispose(GL3 gl) {
+        if (mapTexture != 0) {
+            gl.glDeleteTextures(1, new int[] { mapTexture }, 0);
+            mapTexture = 0;
+        }
         for (BatchPart part : batchParts) {
             if (part.model != null && part.model.getMesh() != null) {
                 part.model.getMesh().dispose(gl);
@@ -127,9 +190,24 @@ public class InfrastructureObject {
                     Map<Integer, Model> signModelsByNation,
                     Map<Integer, Model> postModelsByNation,
                     Texture alphabetAtlas, int atlasSize, int writingDirection) {
+        render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, alphabetAtlas, atlasSize, writingDirection, null);
+    }
+
+    public void render(GL3 gl, Vector3 ambientLight, float nightProportion,
+                    Map<Integer, Model> signModelsByNation,
+                    Map<Integer, Model> postModelsByNation,
+                    Texture alphabetAtlas, int atlasSize, int writingDirection, Texture flag) {
+        render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, alphabetAtlas, atlasSize, writingDirection, flag, null);
+    }
+
+    /** As render, with the nation's flag and its people's pictures (GL texture ids, rows bottom-up) for the sign's picture. */
+    public void render(GL3 gl, Vector3 ambientLight, float nightProportion,
+                    Map<Integer, Model> signModelsByNation,
+                    Map<Integer, Model> postModelsByNation,
+                    Texture alphabetAtlas, int atlasSize, int writingDirection, Texture flag, int[] people) {
         if (this.type == Type.BATCH) {
             for (BatchPart part : batchParts) {
-                if (part.model == null) {
+                if (part.model == null || part.transparent) {
                     continue;
                 }
                 if (part.doubleSided) {
@@ -178,6 +256,44 @@ public class InfrastructureObject {
                     signShader.setInt(gl, "alphabetAtlas", 3);
                 }
 
+                // The picture, which the text flows around on the front
+                int shownKind = PICTURE_NONE;
+                boolean ready = true;
+                float aspect = 1f;
+                boolean flip = false;
+                gl.glActiveTexture(GL3.GL_TEXTURE4);
+                if (pictureKind == PICTURE_FLAG && flag != null) {
+                    flag.bind(gl);
+                    shownKind = 1;
+                    aspect = FlagDesigner.WIDTH / (float) FlagDesigner.HEIGHT;
+                } else if (pictureKind == PICTURE_MAP) {
+                    shownKind = 2;
+                    aspect = mapWidth / (float) mapHeight;
+                    ready = uploadMap(gl);
+                    if (ready) gl.glBindTexture(GL3.GL_TEXTURE_2D, mapTexture);
+                } else if ((pictureKind == PICTURE_PORTRAIT || pictureKind == PICTURE_FIGURE) && people != null && people.length >= 2) {
+                    int half = people.length / 2;
+                    int index = (pictureKind == PICTURE_FIGURE ? half : 0) + Math.floorMod(pictureVariant, half);
+                    gl.glBindTexture(GL3.GL_TEXTURE_2D, people[index]);
+                    shownKind = 3;
+                    aspect = Inhabitants.PICTURE_WIDTH / (float) Inhabitants.PICTURE_HEIGHT;
+                    flip = true;
+                }
+                signShader.setInt(gl, "pictureTexture", 4);
+                signShader.setInt(gl, "pictureKind", shownKind);
+                signShader.setInt(gl, "pictureReady", ready ? 1 : 0);
+                signShader.setInt(gl, "pictureFlip", flip ? 1 : 0);
+                signShader.setFloat(gl, "pictureAspect", aspect);
+                signShader.setFloat(gl, "pictureRect", pictureRect[0], pictureRect[1], pictureRect[2], pictureRect[3]);
+
+                // The title, in its own lettering
+                int titleLoc = gl.glGetUniformLocation(signShader.getID(), "titleString");
+                if (titleLoc != -1) gl.glUniform1iv(titleLoc, TITLE_CAPACITY, titleString, 0);
+                signShader.setInt(gl, "titleLength", titleLength);
+                signShader.setFloat(gl, "titleFont", titleFont[0], titleFont[1], titleFont[2], titleFont[3]);
+                signShader.setFloat(gl, "titleColour", titleColour[0], titleColour[1], titleColour[2]);
+                signShader.setInt(gl, "titleShadow", titleShadow ? 1 : 0);
+
                 // --- 1. FRONT SIDE (Draws full text) ---
                 signShader.setInt(gl, "stringLength", this.stringLength);
                 billboardModel.setModelMatrix(this.frontBoardMatrix);
@@ -185,6 +301,8 @@ public class InfrastructureObject {
 
                 // --- 2. BACK SIDE (Forces string length to 0 = Blank surface) ---
                 signShader.setInt(gl, "stringLength", 0);
+                signShader.setInt(gl, "pictureKind", 0);
+                signShader.setInt(gl, "titleLength", 0);
                 billboardModel.setModelMatrix(this.backBoardMatrix);
                 billboardModel.render(gl, ambientLight, nightProportion);
             }

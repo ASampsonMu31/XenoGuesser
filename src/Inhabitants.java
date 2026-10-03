@@ -8,6 +8,7 @@ import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL3;
 import com.jogamp.opengl.util.texture.Texture;
 import com.xenoguesser.math.Matrix4;
+import com.xenoguesser.math.Matrix4Transform;
 import com.xenoguesser.math.Vector3;
 
 /**
@@ -78,7 +79,8 @@ public class Inhabitants {
     }
 
     private float bodyRadius(Person p) {
-        return 0.11f * height * p.scale * p.bulk;
+        float across = plan == MANY_LEGGED ? 0.16f : plan == BLOB ? blobRadius / height + 0.02f : 0.11f;
+        return across * height * p.scale * p.bulk;
     }
 
     // --- The generated body plan ---
@@ -95,6 +97,13 @@ public class Inhabitants {
     private final int hatStyle;        // 0 brimmed, 1 tall cone, 2 cap
     private final int boneCount;
     private final int legBones, tailBones;
+    // The body plan below the waist: two legs, a horse-like body on four or six legs, or a
+    // legless blob that glides along. Whatever the plan, they dress in their nation's clothes.
+    private static final int BIPED = 0, MANY_LEGGED = 1, BLOB = 2;
+    private final int plan;
+    private final int legPairs;
+    private final float barrelLength;   // the many-legged body's length
+    private final float blobRadius;
 
     private final long seed;
     private final InfrastructureManager infrastructure;
@@ -137,8 +146,14 @@ public class Inhabitants {
         crest = rand.nextFloat() < 0.25f;
         hatStyle = rand.nextInt(3);
 
+        float planRoll = rand.nextFloat();
+        plan = planRoll < 0.45f ? BIPED : planRoll < 0.75f ? MANY_LEGGED : BLOB;
+        legPairs = plan == BIPED ? 1 : plan == MANY_LEGGED ? (rand.nextFloat() < 0.6f ? 2 : 3) : 0;
+        barrelLength = height * (0.38f + rand.nextFloat() * 0.14f);
+        blobRadius = shoulderWidth * (0.7f + rand.nextFloat() * 0.25f);
+
         legBones = FIRST_ARM + armPairs * 6;
-        tailBones = legBones + 6;
+        tailBones = legBones + legPairs * 6;
         boneCount = tailBones + (hasTail ? 2 : 0);
 
         for (int n = 1; n <= nationCount; n++) {
@@ -165,8 +180,11 @@ public class Inhabitants {
     }
 
     public String describe() {
-        return String.format("%.0f tall, %d arm%s, %s legs%s, %d eye%s%s", height, armPairs * 2, "s",
-                digitigrade ? "backward-kneed" : "straight", hasTail ? ", tail" : "", eyes, eyes == 1 ? "" : "s",
+        String lower = plan == BLOB ? "a gliding blob below the waist"
+                : String.format("%d %s legs%s", legPairs * 2, digitigrade ? "backward-kneed" : "straight",
+                        plan == MANY_LEGGED ? " under a long body" : "");
+        return String.format("%.0f tall, %d arm%s, %s%s, %d eye%s%s", height, armPairs * 2, "s",
+                lower, hasTail ? ", tail" : "", eyes, eyes == 1 ? "" : "s",
                 new String[] { "", ", pointed ears", ", long ears", ", horns", ", antennae" }[ears]);
     }
 
@@ -192,16 +210,55 @@ public class Inhabitants {
     //          BODY
     // ==========================================
 
-    private float thighLength() { return legLength * 0.49f; }
-    private float shinLength() { return legLength * 0.49f; }
-    private float hipHeight() { return legLength * 0.95f; }
+    // A many-legged body stands on shorter legs, its upright torso rising from the front
+    private float plannedLegLength() { return plan == MANY_LEGGED ? legLength * 0.78f : legLength; }
+    private float thighLength() { return plannedLegLength() * 0.49f; }
+    private float shinLength() { return plannedLegLength() * 0.49f; }
+    private float hipHeight() { return plannedLegLength() * 0.95f; }
+    private float blobHeight() { return legLength * 0.85f; }
 
     private OrganismMesh.Builder buildMesh(boolean robe, boolean hat, boolean longSleeves) {
         OrganismMesh.Builder b = new OrganismMesh.Builder();
         float w = shoulderWidth;
 
-        // Pelvis: hips in trousers, or a robe falling to the shins
         b.bone(PELVIS).resetTransform();
+        if (plan == MANY_LEGGED) {
+            // A long body along +Z under a cloth draped over its back, with a fringe hanging down
+            OrganismParts.shell(b, OrganismMesh.PART_SKIN, barrelLength, w * 0.95f, w * 0.8f, 0.55f, 0, 0f, 0.9f);
+            b.transform(Affine.translation(0f, w * 0.12f, 0f));
+            OrganismParts.shell(b, OrganismMesh.PART_BODY, barrelLength * 0.78f, w * 1.04f, w * 0.78f, 0.35f, 0, 0f, 1f);
+            if (robe) {
+                b.transform(Affine.translation(0f, -w * 0.05f, 0f));
+                OrganismParts.shell(b, OrganismMesh.PART_TRIM, barrelLength * 0.7f, w * 1.1f, w * 0.95f, 0.25f, 0, 0f, 1f);
+            }
+            b.resetTransform();
+        } else if (plan == BLOB) {
+            // A soft dome that carries the torso, and a skirt or a belt of cloth round it
+            float br = blobRadius, bh = blobHeight();
+            b.part(OrganismMesh.PART_SKIN);
+            b.lathe(20, 10, (t, out) -> {
+                out[0] = 0f;
+                out[1] = 0f;
+                out[2] = bh * t;
+                float r = br * (float) Math.sqrt(Math.max(0.0, 1.0 - Math.pow(t, 2.2))) * (0.75f + 0.35f * (float) Math.sin(Math.PI * Math.min(1f, t * 1.4f)));
+                out[3] = Math.max(0.02f, r);
+                out[4] = Math.max(0.02f, r * 0.92f);
+            });
+            b.part(OrganismMesh.PART_BODY);
+            // A gown over the whole blob from the waist down, or just a sash round its middle;
+            // either way the cloth follows the blob's curve a little way out from it
+            float from = robe ? 0.97f : 0.68f, to = robe ? 0.03f : 0.54f;
+            b.lathe(20, robe ? 10 : 3, (t, out) -> {
+                float f = from + (to - from) * t;
+                out[0] = 0f;
+                out[1] = 0f;
+                out[2] = bh * f;
+                float r = br * (float) Math.sqrt(Math.max(0.0, 1.0 - Math.pow(f, 2.2))) * (0.75f + 0.35f * (float) Math.sin(Math.PI * Math.min(1f, f * 1.4f)));
+                out[3] = Math.max(br * 0.25f, r) * (robe ? 1.04f + 0.1f * t : 1.05f) + 0.15f;
+                out[4] = out[3] * 0.94f;
+            });
+        } else {
+        // Pelvis: hips in trousers, or a robe falling to the shins
         OrganismParts.shell(b, OrganismMesh.PART_TRIM, height * 0.11f, w * 0.85f, w * 0.6f, 0.6f, 0, 0f, 1f);
         if (robe) {
             float drop = legLength * 0.8f;
@@ -214,6 +271,7 @@ public class Inhabitants {
                 out[3] = w * (0.45f + 0.35f * t);
                 out[4] = w * (0.32f + 0.3f * t);
             });
+        }
         }
 
         // Torso in its top, neck and an optional crest of skin down the back
@@ -307,7 +365,8 @@ public class Inhabitants {
         }
 
         // Legs: trousers and bare feet
-        for (int side = 0; side < 2; side++) {
+        float legLength = plannedLegLength();
+        for (int side = 0; side < legPairs * 2; side++) {
             int boneBase = legBones + side * 3;
             b.bone(boneBase).resetTransform();
             OrganismParts.limb(b, OrganismMesh.PART_TRIM, thighLength(), w * 0.2f, w * 0.15f);
@@ -337,12 +396,28 @@ public class Inhabitants {
         float lean = 0.08f * walk;
         float[] forward = { 0f, 0f, 1f };
 
-        float[] pelvis = { 0f, hip, 0f };
-        place(body, PELVIS, Affine.frame(pelvis, new float[] { 0f, 1f, 0f }, forward, p.bulk, p.bulk, 1f));
-        float[] torsoCentre = { 0f, hip + height * 0.04f + torsoLength * 0.5f, lean * torsoLength * 0.5f };
+        float[] torsoCentre;
+        if (plan == MANY_LEGGED) {
+            // The long body level on its legs, the torso rising from its front end
+            float[] barrel = { 0f, hip, -barrelLength * 0.12f };
+            place(body, PELVIS, Affine.frame(barrel, forward, new float[] { 0f, 1f, 0f }, p.bulk, p.bulk, 1f));
+            torsoCentre = new float[] { 0f, hip + shoulderWidth * 0.3f + torsoLength * 0.5f, barrelLength * 0.32f + lean * torsoLength * 0.5f };
+        } else if (plan == BLOB) {
+            // Gliding: a gentle squash and stretch as it goes
+            float squash = 0.06f * (float) Math.sin(cycle * 2f) * walk;
+            place(body, PELVIS, Affine.frame(new float[] { 0f, 0f, 0f }, new float[] { 0f, 1f, 0f }, forward,
+                    p.bulk * (1f + squash), p.bulk * (1f + squash), 1f - squash));
+            hip = blobHeight() * (1f - squash);
+            torsoCentre = new float[] { 0f, hip * 0.88f + torsoLength * 0.5f, lean * torsoLength * 0.5f };
+        } else {
+            float[] pelvis = { 0f, hip, 0f };
+            place(body, PELVIS, Affine.frame(pelvis, new float[] { 0f, 1f, 0f }, forward, p.bulk, p.bulk, 1f));
+            torsoCentre = new float[] { 0f, hip + height * 0.04f + torsoLength * 0.5f, lean * torsoLength * 0.5f };
+        }
         place(body, TORSO, Affine.frame(torsoCentre, new float[] { 0f, 1f, lean }, forward, p.bulk, p.bulk, 1f));
         float shoulderY = torsoCentre[1] + torsoLength * 0.38f;
-        float[] head = { 0f, torsoCentre[1] + torsoLength * 0.5f + neckLength + headSize * 0.5f, lean * torsoLength + headSize * 0.1f };
+        float[] head = { 0f, torsoCentre[1] + torsoLength * 0.5f + neckLength + headSize * 0.5f,
+                torsoCentre[2] + lean * torsoLength * 0.5f + headSize * 0.1f };
         place(body, HEAD, Affine.multiply(Affine.translation(head[0], head[1], head[2]), Affine.rotationY(p.lookYaw)));
 
         float upper = armLength * 0.48f, fore = armLength * 0.42f;
@@ -360,23 +435,32 @@ public class Inhabitants {
             place(body, boneBase + 2, Affine.frame(hand, Affine.subtract(hand, elbow), forward, 1f, 1f, 1f));
         }
 
+        float legLength = plannedLegLength();
         float stride = legLength * 0.55f;
-        for (int side = 0; side < 2; side++) {
+        for (int leg = 0; leg < legPairs * 2; leg++) {
+            int side = leg & 1, pair = leg / 2;
             float sign = side == 0 ? -1f : 1f;
-            float phase = cycle + side * (float) Math.PI;
-            float[] hipJoint = { sign * shoulderWidth * 0.22f * p.bulk, hip, 0f };
+            // Pairs alternate, so diagonal legs step together
+            float phase = cycle + side * (float) Math.PI + pair * (float) Math.PI;
+            float along = plan == MANY_LEGGED
+                    ? barrelLength * (0.3f - 0.6f * pair / Math.max(1, legPairs - 1)) - barrelLength * 0.12f : 0f;
+            float spread = plan == MANY_LEGGED ? 0.36f : 0.22f;
+            float[] hipJoint = { sign * shoulderWidth * spread * p.bulk, hip, along };
             float lift = Math.max(0f, (float) Math.cos(phase)) * legLength * 0.12f * walk;
-            float[] foot = { hipJoint[0], legLength * 0.05f + lift, (float) Math.sin(phase) * stride * 0.5f * walk };
+            float[] foot = { hipJoint[0] * (plan == MANY_LEGGED ? 1.1f : 1f), legLength * 0.05f + lift,
+                    along + (float) Math.sin(phase) * stride * 0.5f * walk };
             float[] knee = Affine.middleJoint(hipJoint, foot, thighLength(), shinLength(),
                     new float[] { 0f, 0f, digitigrade ? -1f : 1f });
-            int boneBase = legBones + side * 3;
+            int boneBase = legBones + leg * 3;
             limb(body, hipJoint, knee, thighLength(), boneBase);
             limb(body, knee, foot, shinLength(), boneBase + 1);
             place(body, boneBase + 2, Affine.frame(foot, forward, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
         }
         if (hasTail) {
             float sway = (float) Math.sin(time * 1.3f + p.x * 0.1f) * 0.4f;
-            float[] base = { 0f, hip - height * 0.02f, -shoulderWidth * 0.3f };
+            float[] base = plan == MANY_LEGGED ? new float[] { 0f, hip + shoulderWidth * 0.1f, -barrelLength * 0.6f }
+                    : plan == BLOB ? new float[] { 0f, hip * 0.35f, -blobRadius * 0.8f }
+                    : new float[] { 0f, hip - height * 0.02f, -shoulderWidth * 0.3f };
             float[] dir = { sway, -0.45f, -1f };
             float[] middle = Affine.add(base, Affine.normalise(dir), tailLength * 0.5f);
             float[] dir2 = { sway * 1.8f, -0.1f, -1f };
@@ -453,19 +537,8 @@ public class Inhabitants {
         Person p = new Person();
         p.home = home;
         p.rand = rand;
-        p.scale = 0.9f + rand.nextFloat() * 0.2f;
-        p.bulk = 0.85f + rand.nextFloat() * 0.35f;
         p.speed = 14f + rand.nextFloat() * 8f;
-        Culture culture = cultures.getOrDefault(home.nationId, cultures.values().iterator().next());
-        boolean robe = rand.nextFloat() < culture.robeChance;
-        boolean hat = rand.nextFloat() < culture.hatChance;
-        boolean sleeves = rand.nextFloat() < culture.longSleeveChance;
-        p.mesh = (robe ? 4 : 0) | (hat ? 2 : 0) | (sleeves ? 1 : 0);
-        p.top = culture.tops[rand.nextInt(culture.tops.length)];
-        p.accent = culture.tops[rand.nextInt(culture.tops.length)];
-        p.bottom = culture.bottoms[rand.nextInt(culture.bottoms.length)];
-        float[] hsv = WorldPalette.toHsv(skinColour);
-        p.skin = WorldPalette.hsv(hsv[0] + (rand.nextFloat() - 0.5f) * 0.04f, hsv[1], hsv[2] * (0.85f + rand.nextFloat() * 0.3f));
+        dress(p, home.nationId, rand);
         p.x = home.insideX;
         p.z = home.insideZ;
         if (rand.nextFloat() < 0.35f) {
@@ -482,6 +555,154 @@ public class Inhabitants {
             p.next = start;
         }
         return p;
+    }
+
+    /** Build and clothes: their nation's dress, their own size and shade of skin. */
+    private void dress(Person p, int nationId, Random rand) {
+        p.scale = 0.9f + rand.nextFloat() * 0.2f;
+        p.bulk = 0.85f + rand.nextFloat() * 0.35f;
+        Culture culture = cultures.getOrDefault(nationId, cultures.values().iterator().next());
+        boolean robe = rand.nextFloat() < culture.robeChance;
+        boolean hat = rand.nextFloat() < culture.hatChance;
+        boolean sleeves = rand.nextFloat() < culture.longSleeveChance;
+        p.mesh = (robe ? 4 : 0) | (hat ? 2 : 0) | (sleeves ? 1 : 0);
+        p.top = culture.tops[rand.nextInt(culture.tops.length)];
+        p.accent = culture.tops[rand.nextInt(culture.tops.length)];
+        p.bottom = culture.bottoms[rand.nextInt(culture.bottoms.length)];
+        float[] hsv = WorldPalette.toHsv(skinColour);
+        p.skin = WorldPalette.hsv(hsv[0] + (rand.nextFloat() - 0.5f) * 0.04f, hsv[1], hsv[2] * (0.85f + rand.nextFloat() * 0.3f));
+    }
+
+    // ==========================================
+    //          PICTURES
+    // ==========================================
+
+    public static final int PICTURE_WIDTH = 192, PICTURE_HEIGHT = 256;
+
+    /**
+     * Pictures of this world's people for signs: for each nation, perKind head-and-shoulders
+     * portraits followed by perKind full-length figures, each a different person in their
+     * nation's dress against a plain backdrop. Returns GL texture ids indexed [nation][picture];
+     * their rows run bottom-up. Must run on the GL thread after initialise.
+     */
+    public int[][] renderPictures(GL3 gl, int nationCount, int perKind) {
+        int[][] pictures = new int[nationCount + 1][];
+        if (shader == null) return pictures;
+        int[] viewport = new int[4];
+        gl.glGetIntegerv(GL.GL_VIEWPORT, viewport, 0);
+        float[] clear = new float[4];
+        gl.glGetFloatv(GL.GL_COLOR_CLEAR_VALUE, clear, 0);
+        int[] fbo = new int[1], depth = new int[1];
+        gl.glGenFramebuffers(1, fbo, 0);
+        gl.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo[0]);
+        gl.glGenRenderbuffers(1, depth, 0);
+        gl.glBindRenderbuffer(GL.GL_RENDERBUFFER, depth[0]);
+        gl.glRenderbufferStorage(GL.GL_RENDERBUFFER, GL.GL_DEPTH_COMPONENT24, PICTURE_WIDTH, PICTURE_HEIGHT);
+        gl.glFramebufferRenderbuffer(GL.GL_FRAMEBUFFER, GL.GL_DEPTH_ATTACHMENT, GL.GL_RENDERBUFFER, depth[0]);
+        gl.glViewport(0, 0, PICTURE_WIDTH, PICTURE_HEIGHT);
+        gl.glDisable(GL.GL_CULL_FACE);
+        gl.glEnable(GL.GL_DEPTH_TEST);
+
+        for (int n = 1; n <= nationCount; n++) {
+            pictures[n] = new int[perKind * 2];
+            for (int k = 0; k < perKind * 2; k++) {
+                Random rand = new Random(seed * 977L + n * 31L + k * 7919L);
+                int[] texture = new int[1];
+                gl.glGenTextures(1, texture, 0);
+                gl.glBindTexture(GL.GL_TEXTURE_2D, texture[0]);
+                gl.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, PICTURE_WIDTH, PICTURE_HEIGHT, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, null);
+                gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE);
+                gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE);
+                gl.glFramebufferTexture2D(GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, texture[0], 0);
+                gl.glDrawBuffer(GL.GL_COLOR_ATTACHMENT0);
+                // A pale backdrop, tinted towards their clothes or a soft sky
+                Culture culture = cultures.getOrDefault(n, cultures.values().iterator().next());
+                float[] tint = rand.nextBoolean() ? WorldPalette.toHsv(culture.tops[0]) : new float[] { 0.55f + rand.nextFloat() * 0.1f, 0f, 0f };
+                float[] backdrop = WorldPalette.hsv(tint[0] + 0.5f * (rand.nextFloat() < 0.5f ? 1f : 0f), 0.12f + rand.nextFloat() * 0.2f,
+                        0.78f + rand.nextFloat() * 0.17f);
+                gl.glClearColor(backdrop[0], backdrop[1], backdrop[2], 1f);
+                gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
+                drawPicture(gl, n, k >= perKind, rand);
+                gl.glGenerateMipmap(GL.GL_TEXTURE_2D);
+                gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR_MIPMAP_LINEAR);
+                gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR);
+                pictures[n][k] = texture[0];
+            }
+        }
+
+        gl.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0);
+        gl.glDeleteRenderbuffers(1, depth, 0);
+        gl.glDeleteFramebuffers(1, fbo, 0);
+        gl.glDrawBuffer(GL.GL_BACK);
+        gl.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
+        gl.glEnable(GL.GL_CULL_FACE);
+        return pictures;
+    }
+
+    /** One person standing still, framed head and shoulders or full length, lit from the front. */
+    private void drawPicture(GL3 gl, int nationId, boolean fullLength, Random rand) {
+        Person p = new Person();
+        dress(p, nationId, rand);
+        p.x = 0f;
+        p.z = 0f;
+        // Turned a little for a portrait, more for a full figure so a long body shows its length
+        float turn = fullLength ? 0.3f + rand.nextFloat() * 0.3f : rand.nextFloat() * 0.35f;
+        p.heading = rand.nextBoolean() ? turn : -turn;
+        p.lookYaw = 0f;
+        pose(p, rand.nextFloat() * 10f);
+
+        float ground = TerrainMesh.getLayeredHeight(0f, 0f, terrainNoise);
+        float headX = bones[HEAD * 16 + 12], headY = bones[HEAD * 16 + 13];
+        float aspect = PICTURE_WIDTH / (float) PICTURE_HEIGHT;
+        float centreX, centreY, halfHeight;
+        float headExtent = headSize * p.scale;
+        if (fullLength) {
+            float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = ground;
+            for (int b = 0; b < boneCount; b++) {
+                minX = Math.min(minX, bones[b * 16 + 12]);
+                maxX = Math.max(maxX, bones[b * 16 + 12]);
+                maxY = Math.max(maxY, bones[b * 16 + 13]);
+            }
+            maxY = Math.max(maxY, headY) + headExtent * 1.1f;
+            minX -= headExtent;
+            maxX += headExtent;
+            centreX = (minX + maxX) * 0.5f;
+            centreY = (ground + maxY) * 0.5f;
+            halfHeight = Math.max((maxY - ground) * 0.5f, (maxX - minX) * 0.5f / aspect) * 1.12f;
+        } else {
+            centreX = headX;
+            centreY = headY - headExtent * 0.45f;
+            halfHeight = headExtent * 1.45f + neckLength * p.scale * 0.4f;
+        }
+        float fov = 24f;
+        float distance = halfHeight / (float) Math.tan(Math.toRadians(fov * 0.5));
+        Vector3 target = new Vector3(centreX, centreY, 0f);
+        Vector3 eye = new Vector3(centreX, centreY + halfHeight * 0.08f, distance);
+        Matrix4 viewProjection = Matrix4.multiply(Matrix4Transform.perspective(fov, aspect, distance * 0.3f, distance * 3f),
+                Matrix4Transform.lookAt(eye, target, new Vector3(0f, 1f, 0f)));
+
+        shader.use(gl);
+        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, new Matrix4(1).toFloatArrayForGLSL(), 0);
+        shader.setVec3(gl, "viewPos", eye);
+        shader.setVec3(gl, "sunPos", new Vector3(centreX - distance * 0.8f, centreY + distance * 1.1f, distance * 1.4f));
+        shader.setVec3(gl, "sunColour", new Vector3(1.0f, 0.97f, 0.92f));
+        shader.setVec3(gl, "ambientLight", new Vector3(0.36f, 0.36f, 0.4f));
+        shader.setFloat(gl, "waterLevel", -1e9f);
+        shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
+        shader.setVec3(gl, "eyeColour", vec(eyeColour));
+        shader.setFloat(gl, "gloss", 0.2f);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), boneCount, false, bones, 0);
+        shader.setVec3(gl, "baseColour", vec(p.top));
+        shader.setVec3(gl, "bellyColour", new Vector3(p.top[0] * 0.9f, p.top[1] * 0.9f, p.top[2] * 0.9f));
+        shader.setVec3(gl, "accentColour", vec(p.accent));
+        shader.setVec3(gl, "limbColour", vec(p.skin));
+        shader.setVec3(gl, "trimColour", vec(p.bottom));
+        Culture culture = cultures.getOrDefault(nationId, cultures.values().iterator().next());
+        shader.setInt(gl, "patternType", culture.pattern);
+        shader.setFloat(gl, "patternScale", culture.patternScale);
+        meshes[p.mesh].render(gl);
     }
 
     /**

@@ -132,10 +132,11 @@ private static class SpeciesConfig {
     private final PlayerBody playerBody = new PlayerBody();
     // The pod the player landed in, standing where each round starts
     private final LandingPod landingPod = new LandingPod();
+    private RockField rockField;
     // Everything solid: buildings, fences, rails, signs, trees, the pod, creatures and people
     private final Collision collision = new Collision();
     private static final Object PLAYER = "player";
-    private static final float PLAYER_RADIUS = 3.0f;
+    private static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
     // Developer aid: -Dxenoguesser.menushot photographs the pod for the main menu's background
     private static final boolean MENU_SHOT = System.getProperty("xenoguesser.menushot") != null;
     private boolean hideFirstPerson;
@@ -145,7 +146,10 @@ private static class SpeciesConfig {
     private static final float SWIM_EYE_HEIGHT = 2.4f;
     // The scene's near plane: far enough out for depth precision on land, close in when the
     // eyes are just above the water so the surface around the swimmer isn't cut away
-    private static final float NEAR_PLANE = 10.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
+    // The near plane sits close enough that the player's solid circle always keeps it off
+    // walls: its far corners are at most ~1.45x the near distance from the eye (45 degree
+    // view, up to 21:9 screens), inside PLAYER_RADIUS, so nothing can be cut away in front
+    private static final float NEAR_PLANE = 2.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
     private float currentNearPlane = NEAR_PLANE;
     private int waveMapTexture;
 
@@ -157,6 +161,7 @@ private static class SpeciesConfig {
     private Matrix4 globalModelMatrix;
 
     private Shader solidShader;
+    private Shader glassShader;
     private Shader signboardShader;
 
     private Shader depthPrePassShader;
@@ -272,6 +277,8 @@ private static class SpeciesConfig {
     private static final float URBAN_FLORA_REDUCTION = 0.75f;
     private static final float SIGN_DRAW_DISTANCE = 1600.0f;
     private Map<Integer, Model> signModelsByNation;
+    // Per nation: GL texture ids of portraits then full-length pictures of its people
+    private int[][] peoplePictures;
     private Model postModel;
     private Map<Integer, Model> postModelsByNation;
 
@@ -571,6 +578,7 @@ private static class SpeciesConfig {
         collision.addSource(infraManager::obstaclesNear);
         collision.addSource(landingPod::obstaclesNear);
         collision.addSource(this::treesNear);
+        collision.addSource((x, z, reach, sink) -> { if (rockField != null) rockField.obstaclesNear(x, z, reach, sink); });
         organismManager.setCollision(collision);
         inhabitants.setCollision(collision);
         this.organismManager.setUrbanness((x, z) -> infraManager.getUrbanness(x, z));
@@ -748,6 +756,7 @@ private static class SpeciesConfig {
         }
 
         if (MENU_SHOT && loading.isFinished()) menuShot(gl);
+        if (SIGN_SHOT && loading.isFinished()) signShot(gl);
         render();
         if (!hideFirstPerson) drawHud(drawable);
 
@@ -767,6 +776,56 @@ private static class SpeciesConfig {
      * view moves out to look back at the landing pod, and a frame without the HUD or the
      * player's body is saved as the menu art.
      */
+    private static final boolean SIGN_SHOT = System.getProperty("xenoguesser.signshot") != null;
+    private final java.util.Set<InfrastructureObject> signsShot = new java.util.HashSet<>();
+    private Vector3 signShotEye, signShotTarget;
+
+    /**
+     * Developer aid: from a little after the round starts, stands in front of one nearby sign
+     * after another (those with pictures or titles first) and saves a frame of each.
+     */
+    private void signShot(GL3 gl) {
+        int frame = framesRenderedSinceReady - 40;
+        if (frame < 0 || frame > 40 * 8) return;
+        if (signShotEye != null) {
+            camera.setPosition(signShotEye);
+            camera.setTarget(signShotTarget);
+        }
+        if (frame % 40 == 0) {
+            hideFirstPerson = true;
+            InfrastructureObject best = null;
+            float bestScore = Float.MAX_VALUE;
+            Vector3 at = camera.getPosition();
+            for (List<InfrastructureObject> objects : infraCache.values()) {
+                for (InfrastructureObject obj : objects) {
+                    if (obj.type != InfrastructureObject.Type.SIGN || signsShot.contains(obj)) continue;
+                    float dx = obj.position.x - at.x, dz = obj.position.z - at.z;
+                    float score = dx * dx + dz * dz;
+                    if (obj.pictureKind == InfrastructureObject.PICTURE_NONE) score += 1e9f;
+                    if (score < bestScore) { bestScore = score; best = obj; }
+                }
+            }
+            if (best == null) return;
+            signsShot.add(best);
+            float[] m = best.frontBoardMatrix.toFloatArrayForGLSL();
+            float nx = m[4], nz = m[6];
+            float len = (float) Math.sqrt(nx * nx + nz * nz);
+            float side = Float.parseFloat(System.getProperty("xenoguesser.signside", "1"));
+            nx = nx / len * side;
+            nz = nz / len * side;
+            float ex = best.position.x + nx * 40f, ez = best.position.z + nz * 40f;
+            signShotEye = new Vector3(ex, best.position.y + 32f, ez);
+            signShotTarget = new Vector3(best.position.x, best.position.y + 32f, best.position.z);
+            camera.setPosition(signShotEye);
+            camera.setTarget(signShotTarget);
+            System.out.println("[SIGNSHOT] sign " + signsShot.size() + ": picture " + best.pictureKind + ", title " + best.titleLength
+                    + ", direction " + nationDirections.getOrDefault(best.nationId, 0) + ", nation " + best.nationId
+                    + ", patriotism " + infraManager.patriotismOf(best.nationId));
+        } else if (frame % 40 == 30) {
+            saveFrame(gl, "sign_" + signsShot.size() + ".png");
+        }
+    }
+
     private void menuShot(GL3 gl) {
         if (framesRenderedSinceReady == 60) {
             hideFirstPerson = true;
@@ -921,8 +980,10 @@ private static class SpeciesConfig {
         GL3 gl = drawable.getGL().getGL3();
                 if (organismManager != null) organismManager.dispose(gl);
         if (inhabitants != null) inhabitants.dispose(gl);
+        deletePeoplePictures();
         playerBody.dispose(gl);
         landingPod.dispose(gl);
+        if (rockField != null) rockField.clear(gl);
         hud.dispose(gl);
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
@@ -1062,6 +1123,7 @@ private static class SpeciesConfig {
         terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
+        glassShader = new Shader(gl, "assets/shaders/vs_glass.txt", "assets/shaders/fs_glass.txt");
 
         terrainMaterial = new Material(
             new Vector3(1.0f, 1.0f, 1.0f), 
@@ -1139,6 +1201,8 @@ private static class SpeciesConfig {
         for (int n = 1; n <= totalNationsCount; n++) {
             // Assign random writing direction (0=LR, 1=RL, 2=UD, 3=DU)
             int direction = signConfigRand.nextInt(4);
+            // Developer aid: -Dxenoguesser.signdirection=0..3 gives every nation one writing direction
+            if (System.getProperty("xenoguesser.signdirection") != null) direction = Integer.getInteger("xenoguesser.signdirection", direction);
             nationDirections.put(n, direction);
             
             // Assign random alphabet safely
@@ -1344,11 +1408,27 @@ private static class SpeciesConfig {
         gl.glBindVertexArray(0);
     }
 
-        private void finishInitialise() {
+        private void deletePeoplePictures() {
+        if (peoplePictures == null) return;
+        for (int[] nation : peoplePictures) {
+            if (nation != null) gl.glDeleteTextures(nation.length, nation, 0);
+        }
+        peoplePictures = null;
+    }
+
+    private void finishInitialise() {
                 organismManager.initialise(gl);
         inhabitants.initialise(gl);
+        // Pictures of the locals, for signs
+        deletePeoplePictures();
+        peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, 3);
         playerBody.initialise(gl);
         landingPod.initialise(gl);
+        Vector3 bedrock = worldRockColour();
+        rockField = new RockField(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, new float[] { bedrock.x, bedrock.y, bedrock.z });
+        rockField.setKeepout((x, z, r) -> landingPod.covers(x, z, r)
+                || infraManager.isRoadLocation(x, z, r + 2f) || infraManager.isBuildingLocation(x, z, r + 4f));
+        rockField.initialise(gl);
         hud.initialise(gl);
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
@@ -1389,6 +1469,12 @@ private static class SpeciesConfig {
         float[] roadSpawn = "house".equals(System.getProperty("xenoguesser.view"))
                 ? infraManager.randomHouseViewpoint(dynamicRand) : infraManager.randomRoadPoint(dynamicRand);
         float lookX = 0.0f, lookZ = -1.0f;
+        if (System.getProperty("xenoguesser.view") == null) {
+            // A normal round: the pod has come down near a road, clear of houses and fences
+            float[] site = infraManager.landingSite(dynamicRand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
+                    (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise) > seaLevelHeight + 1.0f);
+            if (site != null) roadSpawn = site;
+        }
         if (roadSpawn != null) {
             spawnX = roadSpawn[0];
             spawnZ = roadSpawn[1];
@@ -1447,6 +1533,31 @@ private static class SpeciesConfig {
         }
 
         String devView = System.getProperty("xenoguesser.view");
+        if ("mountain".equals(devView)) {
+            // Developer aid: some way off from the highest ground found, looking at it
+            float bestX = 0f, bestZ = 0f, best = -Float.MAX_VALUE;
+            for (int attempt = 0; attempt < 6000; attempt++) {
+                float x = (dynamicRand.nextFloat() - 0.5f) * TOTAL_REGION_WIDTH * 0.9f;
+                float z = (dynamicRand.nextFloat() - 0.5f) * TOTAL_REGION_WIDTH * 0.9f;
+                float h = TerrainMesh.getLayeredHeight(x, z, worldNoise);
+                if (h > best) { best = h; bestX = x; bestZ = z; }
+            }
+            // From the lowest dry spot on a ring round it, for a clear view up
+            float lowest = Float.MAX_VALUE;
+            for (int attempt = 0; attempt < 96; attempt++) {
+                double a = attempt * Math.PI * 2 / 96;
+                float x = bestX + (float) Math.cos(a) * 1250f, z = bestZ + (float) Math.sin(a) * 1250f;
+                float h = TerrainMesh.getLayeredHeight(x, z, worldNoise);
+                if (h > seaLevelHeight + 2f && h < lowest) {
+                    lowest = h;
+                    spawnX = x;
+                    spawnZ = z;
+                    lookX = -(float) Math.cos(a);
+                    lookZ = -(float) Math.sin(a);
+                    foundDryLand = true;
+                }
+            }
+        }
         if ("shore".equals(devView) || "swim".equals(devView)) {
             // Developer aid: stand on a coast facing the open sea, to watch the waves
             for (int attempt = 0; attempt < 200000; attempt++) {
@@ -1496,6 +1607,8 @@ private static class SpeciesConfig {
         }
 
         landingPod.place(spawnX, spawnZ, lookX, lookZ, (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise));
+        // Nothing else stands where it came down
+        infraManager.setKeepClear(landingPod.x(), landingPod.z(), Math.max(40f, LandingPod.REACH) + 6f);
         moveToLocation(spawnX, spawnZ, lookX, lookZ);
         // Developer aid: -Dxenoguesser.pitch=-60 starts the round looking down by that many degrees
         String pitch = System.getProperty("xenoguesser.pitch");
@@ -1533,11 +1646,47 @@ private static class SpeciesConfig {
         int steps = Math.max(1, (int) Math.ceil(Math.hypot(mx, mz) / 1.5f));
         float px = from.x, pz = from.z;
         for (int i = 0; i < steps; i++) {
-            float[] next = collision.resolveFirm(px, pz, px + mx / steps, pz + mz / steps, PLAYER_RADIUS, PLAYER);
+            float sx = mx / steps, sz = mz / steps;
+            // Too steep to climb straight up: try sliding along the slope instead
+            if (tooSteep(px, pz, sx, sz)) {
+                if (!tooSteep(px, pz, sx, 0f)) sz = 0f;
+                else if (!tooSteep(px, pz, 0f, sz)) sx = 0f;
+                else break;
+            }
+            float[] next = collision.resolveFirm(px, pz, px + sx, pz + sz, PLAYER_RADIUS, PLAYER, jumpHeight);
             px = next[0];
             pz = next[1];
         }
         if (px != to.x || pz != to.z) camera.setGroundPosition(px, pz);
+    }
+
+    // Steeper than this (rise over run) can't be walked up
+    private static final float MAX_CLIMB = 0.7f;   // about 35 degrees
+
+    // Jumping: Space throws the player up, and gravity brings them down again. While in the
+    // air, anything lower than their feet passes beneath them (rocks, low fences, rails).
+    private static final float JUMP_SPEED = 42f, GRAVITY = 90f;
+    private volatile boolean jumpWanted;
+    private boolean airborne;
+    private float jumpHeight, jumpVelocity;
+
+    /** Space: jump, if standing on something (not mid-air or swimming). */
+    public void jump() {
+        jumpWanted = true;
+    }
+
+    /**
+     * Whether stepping by (sx, sz) from (x, z) would climb ground steeper than MAX_CLIMB.
+     * The slope is taken over a few units ahead and behind, so the ground's fine roughness
+     * doesn't trip the player up; going downhill or across is always allowed.
+     */
+    private boolean tooSteep(float x, float z, float sx, float sz) {
+        float len = (float) Math.hypot(sx, sz);
+        if (len < 1e-4f || landingPod.floorAt(x, z) > Float.NEGATIVE_INFINITY) return false;
+        float dx = sx / len, dz = sz / len, span = 3f;
+        float ahead = TerrainMesh.getLayeredHeight(x + dx * span, z + dz * span, worldNoise);
+        float behind = TerrainMesh.getLayeredHeight(x - dx * span, z - dz * span, worldNoise);
+        return (ahead - behind) / (2f * span) > MAX_CLIMB;
     }
 
     /** Tree trunks near a point, from the trees placed so far. */
@@ -1554,6 +1703,89 @@ private static class SpeciesConfig {
                 }
             }
         }
+    }
+
+    private void drawWindowGlass(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 eye, Vector3 sunPos, float[] sunColour,
+                                 Matrix4 skyRotation, Texture sky, float reach) {
+        glassShader.use(gl);
+        glassShader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(glassShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        glassShader.setVec3(gl, "viewPos", eye);
+        glassShader.setVec3(gl, "sunPos", sunPos);
+        glassShader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
+        glassShader.setVec3(gl, "ambientLight", ambientLight);
+        glassShader.setVec3(gl, "glassTint", new Vector3(0.55f, 0.65f, 0.7f));
+        if (sky != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            sky.bind(gl);
+            glassShader.setInt(gl, "skyTexture", 2);
+        }
+        gl.glEnable(GL.GL_BLEND);
+        gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glDepthMask(false);
+        gl.glDisable(GL.GL_CULL_FACE);
+        for (List<InfrastructureObject> objects : infraCache.values()) {
+            for (InfrastructureObject obj : objects) {
+                if (obj.type != InfrastructureObject.Type.BATCH || !obj.hasTransparentParts()) continue;
+                float dx = obj.position.x - eye.x, dz = obj.position.z - eye.z;
+                float far = reach + obj.boundingRadius;
+                if (dx * dx + dz * dz > far * far
+                        || !frustum.intersectsSphere(obj.position.x, obj.position.y, obj.position.z, obj.boundingRadius)) continue;
+                obj.renderTransparent(gl);
+            }
+        }
+        gl.glEnable(GL.GL_CULL_FACE);
+        gl.glDepthMask(true);
+        gl.glDisable(GL.GL_BLEND);
+    }
+
+    private static final int SLOPE_GRID = 10;
+
+    /** How steep the ground is at a point: rise over run. */
+    private float slopeAt(float x, float z) {
+        float d = 3f;
+        float gx = TerrainMesh.getLayeredHeight(x + d, z, worldNoise) - TerrainMesh.getLayeredHeight(x - d, z, worldNoise);
+        float gz = TerrainMesh.getLayeredHeight(x, z + d, worldNoise) - TerrainMesh.getLayeredHeight(x, z - d, worldNoise);
+        return (float) Math.hypot(gx, gz) / (2f * d);
+    }
+
+    /** The steepness across a chunk on a coarse grid, cheap enough to consult for every blade of grass. */
+    private float[] slopeGrid(int cx, int cz) {
+        float[] heights = new float[(SLOPE_GRID + 1) * (SLOPE_GRID + 1)];
+        float step = PHYSICAL_CHUNK_SIZE / SLOPE_GRID;
+        for (int j = 0; j <= SLOPE_GRID; j++) {
+            for (int i = 0; i <= SLOPE_GRID; i++) {
+                heights[j * (SLOPE_GRID + 1) + i] = TerrainMesh.getLayeredHeight(cx * PHYSICAL_CHUNK_SIZE + i * step, cz * PHYSICAL_CHUNK_SIZE + j * step, worldNoise);
+            }
+        }
+        float[] slopes = new float[SLOPE_GRID * SLOPE_GRID];
+        for (int j = 0; j < SLOPE_GRID; j++) {
+            for (int i = 0; i < SLOPE_GRID; i++) {
+                int k = j * (SLOPE_GRID + 1) + i;
+                float gx = (heights[k + 1] + heights[k + SLOPE_GRID + 2] - heights[k] - heights[k + SLOPE_GRID + 1]) * 0.5f / step;
+                float gz = (heights[k + SLOPE_GRID + 1] + heights[k + SLOPE_GRID + 2] - heights[k] - heights[k + 1]) * 0.5f / step;
+                slopes[j * SLOPE_GRID + i] = (float) Math.hypot(gx, gz);
+            }
+        }
+        return slopes;
+    }
+
+    /** The steepness from a slope grid at a position given as fractions across the chunk. */
+    private static float slopeIn(float[] slopes, float fx, float fz) {
+        int i = Math.min(SLOPE_GRID - 1, (int) (fx * SLOPE_GRID)), j = Math.min(SLOPE_GRID - 1, (int) (fz * SLOPE_GRID));
+        return slopes[j * SLOPE_GRID + i];
+    }
+
+    private Vector3 rockColour;
+
+    /** This world's bedrock: a muted stone colour, different each world. */
+    private Vector3 worldRockColour() {
+        if (rockColour == null) {
+            java.util.Random rand = new java.util.Random(worldSeed * 61L + 7L);
+            float[] c = WorldPalette.hsv(rand.nextFloat(), 0.08f + 0.2f * rand.nextFloat(), 0.42f + 0.2f * rand.nextFloat());
+            rockColour = new Vector3(c[0], c[1], c[2]);
+        }
+        return rockColour;
     }
 
     /** What the player stands on: the land, or the pod's stairs where they are higher. */
@@ -1573,6 +1805,7 @@ private static class SpeciesConfig {
         lastChunkZ = Integer.MAX_VALUE;
                 totalGrassInstances = 0;
                 organismManager.clear();
+        if (rockField != null) rockField.clear(gl);
         inhabitants.clear();
 
         spawnPlayerAtRandomLocation();
@@ -1710,6 +1943,8 @@ private static class SpeciesConfig {
                             float cyWorld = TerrainMesh.getLayeredHeight(cxWorld, czWorld, worldNoise);
 
                             if (cyWorld > seaLevelHeight + 0.1f
+                                    && slopeAt(cxWorld, czWorld) < 0.9f
+                                    && !landingPod.covers(cxWorld, czWorld, 8f)
                                     && !infraManager.isRoadLocation(cxWorld, czWorld, 11.0f)
                                     && !infraManager.isBuildingLocation(cxWorld, czWorld, 6.0f)) {
                                 int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
@@ -1763,6 +1998,7 @@ private static class SpeciesConfig {
 
                         float chunkMinX = cx * PHYSICAL_CHUNK_SIZE;
                         float chunkMinZ = cz * PHYSICAL_CHUNK_SIZE;
+                        float[] slopes = slopeGrid(cx, cz);
 
                         for (int i = 0; i < dynamicGrassAttempts; i++) {
                             long bladeSeed = worldSeed 
@@ -1784,7 +2020,12 @@ private static class SpeciesConfig {
                             float worldZ = chunkMinZ + (rand2 * PHYSICAL_CHUNK_SIZE);
                             float worldY = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
                             
-                            if (worldY > seaLevelHeight + 0.1f
+                            // Grass thins out on steep ground and gives way to bare rock
+                            float slope = slopeIn(slopes, rand1, rand2);
+                            float keep = 1f - Math.max(0f, Math.min(1f, (slope - 0.6f) / 0.6f));
+                            boolean onSlope = ((rand1 * 7.31f + rand2 * 3.17f) % 1f) >= keep;
+                            if (worldY > seaLevelHeight + 0.1f && !onSlope
+                                    && !landingPod.covers(worldX, worldZ, -2f)
                                     && !infraManager.isRoadLocation(worldX, worldZ, 11.0f)) {
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
                                 float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
@@ -2008,8 +2249,27 @@ private static class SpeciesConfig {
         float dynamicSmoothingFactor = (swimming ? 10.0f : 6.0f) * (float)deltaTime;
         if (dynamicSmoothingFactor > 1.0f) dynamicSmoothingFactor = 1.0f;
 
-        float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
-        camera.setHeight(smoothedHeight);
+        if (jumpWanted) {
+            jumpWanted = false;
+            if (!airborne && !swimming) {
+                airborne = true;
+                jumpVelocity = JUMP_SPEED;
+            }
+        }
+        if (airborne) {
+            // A ballistic arc above whatever ground is underfoot
+            jumpVelocity -= GRAVITY * (float) deltaTime;
+            jumpHeight += jumpVelocity * (float) deltaTime;
+            if (jumpHeight <= 0f || swimming) {
+                jumpHeight = 0f;
+                jumpVelocity = 0f;
+                airborne = false;
+            }
+            camera.setHeight(targetCameraHeight + jumpHeight);
+        } else {
+            float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
+            camera.setHeight(smoothedHeight);
+        }
 
         lights[0].setPosition(getSunPosition());
         Vector3 sunPos = lights[0].getPosition();
@@ -2158,6 +2418,7 @@ private static class SpeciesConfig {
         terrainShader.setInt(gl, "soilRegionMap", 6);
         terrainShader.setFloat(gl, "regionWidth", TOTAL_REGION_WIDTH);
         terrainShader.setFloat(gl, "useSoilRegions", 1.0f);
+        terrainShader.setVec3(gl, "rockColour", worldRockColour());
         for (Model plane : visibleChunks) {
             plane.render(gl, ambientLight, nightProportion);
         }
@@ -2273,7 +2534,9 @@ private static class SpeciesConfig {
                 int writingDir = nationDirections.getOrDefault(obj.nationId, 0);
                 
                 // Pass the new variables to the object
-                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir);
+                obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, atlas, atlasSize, writingDir,
+                        textures.get(InfrastructureManager.nationTextureName("flag", obj.nationId)),
+                        peoplePictures != null && obj.nationId > 0 && obj.nationId < peoplePictures.length ? peoplePictures[obj.nationId] : null);
             }
         }
         
@@ -2401,10 +2664,23 @@ private static class SpeciesConfig {
                 gl.glEnable(GL.GL_CULL_FACE);
         gl.glDisable(GL.GL_BLEND);
 
+        // --- ROCKS ---
+        rockField.update(gl, currentPos.x, currentPos.z, false);
+        gl.glDisable(GL.GL_CULL_FACE);
+        rockField.render(gl, viewProjection, frustum, camera.getPosition(), sunPos,
+                new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
+                ambientLight, skyRotation, textures.get(skyTextureKey));
+        gl.glEnable(GL.GL_CULL_FACE);
+
         // --- THE LANDING POD ---
         landingPod.render(gl, viewProjection, camera.getPosition(), sunPos,
                 new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
                 ambientLight, skyRotation, textures.get(skyTextureKey));
+
+        // --- WINDOW GLASS: see-through, so drawn after everything solid, without hiding what's behind ---
+        drawWindowGlass(gl, viewProjection, frustum, currentPos, sunPos,
+                new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
+                skyRotation, textures.get(skyTextureKey), maxFloraRenderDistance);
 
         if (hideFirstPerson) return;
 
@@ -2735,6 +3011,11 @@ private static class SpeciesConfig {
      * * @param nationId The ID of the nation (1-indexed)
      * @return The number of glyphs in the nation's atlas, or a fallback default (e.g. 10) if not found.
      */
+    /** A nation's writing direction: 0 left to right, 1 right to left, 2 top to bottom, 3 bottom to top. */
+    public int getNationDirection(int nationId) {
+        return nationDirections != null ? nationDirections.getOrDefault(nationId, 0) : 0;
+    }
+
     public int getNationAtlasSize(int nationId) {
         if (nationAtlasSizes != null && nationAtlasSizes.containsKey(nationId)) {
             int count = nationAtlasSizes.get(nationId);

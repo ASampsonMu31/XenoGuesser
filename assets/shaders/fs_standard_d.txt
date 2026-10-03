@@ -35,8 +35,20 @@ uniform mat4 skyRotation;
 uniform sampler2D soilRegionMap;
 uniform float regionWidth;
 uniform float useSoilRegions;
+// Bare rock showing through wherever the ground is steep (terrain only)
+uniform vec3 rockColour;
 
 const float PI = 3.14159265359;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
 
 void main() {
     vec2 scaledUV = aTexCoord * scale; 
@@ -48,6 +60,19 @@ void main() {
     if (useSoilRegions > 0.5) {
         vec2 regionUV = aPos.xz / regionWidth + 0.5;
         texColor *= texture(soilRegionMap, regionUV).rgb * 2.0;
+
+        // Steep slopes are bare rock, banded in strata and broken up by grain and cracks
+        float steep = 1.0 - normalize(aNormal).y;
+        float patchy = valueNoise(aPos.xz * 0.05);
+        float rockAmount = smoothstep(0.26, 0.48, steep + (patchy - 0.5) * 0.12);
+        if (rockAmount > 0.0) {
+            float strata = 0.82 + 0.18 * sin(aPos.y * 0.45 + valueNoise(aPos.xz * 0.015) * 7.0);
+            float grain = valueNoise(aPos.xz * 0.7 + aPos.y * 0.4) * 0.5 + valueNoise(aPos.xz * 2.3 - aPos.y) * 0.5;
+            float crack = smoothstep(0.08, 0.0, abs(valueNoise(aPos.xz * 0.12 + aPos.y * 0.08) - 0.5));
+            vec3 tint = rockColour * (0.9 + 0.2 * valueNoise(aPos.xz * 0.002));
+            vec3 rock = tint * strata * (0.75 + 0.45 * grain) * (1.0 - 0.45 * crack);
+            texColor = mix(texColor, rock, rockAmount);
+        }
     }
 
     // Multiplicative blending for ambient lighting

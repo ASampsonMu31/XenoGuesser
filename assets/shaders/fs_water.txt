@@ -30,7 +30,7 @@ uniform mat4 skyRotation;
 uniform vec3 u_ShallowTint;
 uniform vec3 u_DeepOceanColour;
 
-const float SHALLOW_OPACITY_FLOOR = 0.09;  
+const float SHALLOW_OPACITY_FLOOR = 0.28;  
 const float EDGE_FADE_DISTANCE    = 0.5;   
 const float DEPTH_FALLOFF_SPEED   = 0.20;  
 const float RIPPLE_SPEED          = 0.11;

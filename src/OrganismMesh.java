@@ -34,6 +34,8 @@ public class OrganismMesh {
     public static final int PART_NEEDLE_SOUTH = 12;
     // Plain light metal: fittings, stairs and rails
     public static final int PART_METAL = 13;
+    // Matte black: an unlit opening
+    public static final int PART_DARK = 14;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];

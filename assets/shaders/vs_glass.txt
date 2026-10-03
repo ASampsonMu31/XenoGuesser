@@ -1,0 +1,18 @@
+#version 330 core
+
+// Window glass, already in world space
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 texCoord;
+
+out vec3 aPos;
+out vec3 aNormal;
+
+uniform mat4 viewProjection;
+
+void main() {
+    aPos = position;
+    aNormal = normal;
+    gl_Position = viewProjection * vec4(position, 1.0);
+}

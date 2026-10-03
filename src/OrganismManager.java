@@ -341,7 +341,10 @@ public class OrganismManager {
                     c.steerTimer -= dt;
                     if (c.steerTimer <= 0f) {
                         c.steerTimer = 0.25f + c.rand.nextFloat() * 0.1f;
-                        c.steerHeading = collision.steer(c.x, c.z, r, desired, Math.max(6f, r * 2.5f), c);
+                        // Looking ahead from its nose, so a long body doesn't lead its head into things
+                        float nose = noseReach(c);
+                        c.steerHeading = collision.steer(c.x + (float) Math.sin(c.heading) * nose, c.z + (float) Math.cos(c.heading) * nose,
+                                endRadius(c), desired, Math.max(6f, r * 2.5f), c);
                         if (Float.isNaN(c.steerHeading)) {
                             // Hemmed in on every side: stop, then try somewhere else
                             c.pause = 0.5f + c.rand.nextFloat();
@@ -360,7 +363,7 @@ public class OrganismManager {
                 float nz = c.z + (float) Math.cos(c.heading) * speed * pace * dt;
                 if (TerrainMesh.getLayeredHeight(nx, nz, terrainNoise) > seaLevel + 0.5f) {
                     if (collision != null) {
-                        float[] free = collision.resolve(nx, nz, bodyRadius(c), c);
+                        float[] free = resolveBody(c, nx, nz);
                         nx = free[0];
                         nz = free[1];
                     }
@@ -389,7 +392,45 @@ public class OrganismManager {
         float targetWalking = resting ? 0f : 1f;
         c.walking += (targetWalking - c.walking) * Math.min(1f, dt * 3f);
         c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond * c.walking) % 1f;
-        if (collision != null) collision.addBody(c, c.x, c.z, bodyRadius(c));
+        if (collision != null && c.species.locomotion != OrganismSpecies.Locomotion.FLYER) {
+            // The whole length is solid to others: middle, nose and tail
+            float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
+            collision.addBody(c, c.x, c.z, bodyRadius(c));
+            collision.addBody(c, c.x + sin * noseReach(c), c.z + cos * noseReach(c), endRadius(c));
+            collision.addBody(c, c.x - sin * tailReach(c), c.z - cos * tailReach(c), endRadius(c));
+        }
+    }
+
+    // A creature on the ground is a chain of three circles: its middle, its nose and its tail,
+    // so a long one (a snake, say) can't push its head through a fence its middle stops at
+    private static float noseReach(Creature c) {
+        return c.species.halfLength() * c.sizeScale * 0.9f;
+    }
+
+    private static float tailReach(Creature c) {
+        return c.species.tailLength() * c.sizeScale * 0.8f;
+    }
+
+    private static float endRadius(Creature c) {
+        return Math.max(0.6f, Math.min(bodyRadius(c), c.species.halfLength() * c.sizeScale * 0.3f));
+    }
+
+    /** Moves the whole body, middle, nose and tail, out of anything it has walked into. */
+    private float[] resolveBody(Creature c, float x, float z) {
+        float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
+        float nose = noseReach(c), tail = tailReach(c), end = endRadius(c);
+        for (int pass = 0; pass < 2; pass++) {
+            float[] middle = collision.resolve(x, z, bodyRadius(c), c);
+            x = middle[0];
+            z = middle[1];
+            float[] head = collision.resolve(x + sin * nose, z + cos * nose, end, c);
+            x = head[0] - sin * nose;
+            z = head[1] - cos * nose;
+            float[] back = collision.resolve(x - sin * tail, z - cos * tail, end, c);
+            x = back[0] + sin * tail;
+            z = back[1] + cos * tail;
+        }
+        return new float[] { x, z };
     }
 
     public void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,

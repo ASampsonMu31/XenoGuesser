@@ -12,6 +12,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Vector
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Vector4.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Cylinder.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\FenceStyle.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\FlagDesigner.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Flora.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Frustum.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameHUD.java
@@ -52,10 +53,12 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Renderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadLineStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadNetworkBuilder.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadPath.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RockField.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RunFiles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SettingsMenu.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SettlementManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Shader.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SignMap.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SoftwareRenderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Sphere.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TerrainMesh.java

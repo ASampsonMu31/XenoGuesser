@@ -105,7 +105,7 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.java2d.noddraw", "true");
 
     // 3. The main menu first; the loading screen then covers everything until the round's first frame
-    mainMenu = new MainMenu(this::startSingleplayer, this::shutdownGame);
+    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
 
     this.addComponentListener(new ComponentAdapter() {
@@ -155,6 +155,31 @@ public class XenoGuesser extends JFrame {
     if (System.getProperty("xenoguesser.skipmenu") != null || System.getProperty("xenoguesser.menushot") != null) {
       startSingleplayer();
     }
+  }
+
+  /**
+   * Play Multiplayer: not available yet. The cockpit plays the multiplayer message while
+   * trying to reach the partner pod, then says it's coming soon and returns to the menu.
+   */
+  private void startMultiplayer() {
+    if (loadingScreen != null) return;
+    LoadingScreen[] holder = new LoadingScreen[1];
+    LoadingScreen preview = new LoadingScreen(new LoadingProgress(), worldSeed, true, () -> backToMenu(holder[0]));
+    holder[0] = preview;
+    loadingScreen = preview;
+    preview.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+    layeredPane.add(preview, JLayeredPane.DRAG_LAYER);
+    layeredPane.remove(mainMenu);
+    layeredPane.repaint();
+  }
+
+  private void backToMenu(LoadingScreen preview) {
+    layeredPane.remove(preview);
+    loadingScreen = null;
+    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    mainMenu.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+    layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
+    layeredPane.repaint();
   }
 
   /** Play Singleplayer: the loading screen replaces the menu while a world is generated. */
@@ -294,7 +319,7 @@ public class XenoGuesser extends JFrame {
   }
 
   /**
-   * Keys work wherever the focus is (except while typing a note): WASD walk, M enlarges
+   * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, M enlarges
    * or shrinks the map, C uses the compass and Esc opens the settings. Mouse
    * movement anywhere in the window turns the view while the game has the mouse.
    */
@@ -321,6 +346,7 @@ public class XenoGuesser extends JFrame {
         if (firstPress) {
           switch (code) {
             case KeyEvent.VK_M: minimap.toggleSize(); break;
+            case KeyEvent.VK_SPACE: glEventListener.jump(); break;
             case KeyEvent.VK_C:
               if (!minimap.isFullScreenRevealMode()) glEventListener.useCompass();
               break;

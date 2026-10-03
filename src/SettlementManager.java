@@ -71,6 +71,10 @@ public class SettlementManager {
     private static final float HEAT_PENALTY = 0.55f;
     private static final float DESERT_PENALTY = 0.6f;
     private static final float HIGHLAND_PENALTY = 0.85f;
+    private static final float RUGGED_PENALTY = 0.95f;
+    // Where the terrain turns to ridged mountains (see TerrainMesh)
+    private static final float MOUNTAIN_START = 140.0f;
+    private static final float MOUNTAIN_FULL = 450.0f;
 
     private final float halfRegion;
     private final float physicalChunkSize;
@@ -175,11 +179,20 @@ public class SettlementManager {
         float desert = heat * (1.0f - moisture);
         float highland = smoothstep(HIGHLAND_START, HIGHLAND_FULL, height - seaLevelHeight);
 
+        // Rugged, mountainous ground: steep slopes nearby, or the heights where the terrain
+        // breaks into ridges, are hardly settled at all
+        float step = 200.0f;
+        float dx = TerrainMesh.getLayeredHeight(worldX + step, worldZ, terrainNoise) - TerrainMesh.getLayeredHeight(worldX - step, worldZ, terrainNoise);
+        float dz = TerrainMesh.getLayeredHeight(worldX, worldZ + step, terrainNoise) - TerrainMesh.getLayeredHeight(worldX, worldZ - step, terrainNoise);
+        float slope = (float) Math.hypot(dx, dz) / (2.0f * step);
+        float rugged = Math.max(smoothstep(0.1f, 0.4f, slope), smoothstep(MOUNTAIN_START, MOUNTAIN_FULL, height));
+
         float waterAppeal = 0.2f + 0.5f * coast + 0.3f * moisture;
         return waterAppeal
                 * (1.0f - HEAT_PENALTY * heat)
                 * (1.0f - DESERT_PENALTY * desert)
-                * (1.0f - HIGHLAND_PENALTY * highland);
+                * (1.0f - HIGHLAND_PENALTY * highland)
+                * (1.0f - RUGGED_PENALTY * rugged);
     }
 
     /**

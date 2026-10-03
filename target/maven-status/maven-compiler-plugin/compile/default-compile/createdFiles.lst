@@ -54,6 +54,7 @@ RegionalFactor$Sampler.class
 SoftwareRenderer.class
 TerrainMesh.class
 OrganismMesh$Profile.class
+RockField$Chunk.class
 InfrastructureManager$RoadPathVisitor.class
 BuildingStyle$Bond.class
 Material.class
@@ -74,6 +75,7 @@ OrganismMesh$Folds.class
 InsideSphere.class
 GameHUD.class
 Camera$Movement.class
+FlagDesigner$Layout.class
 OrganismSpecies$Morph.class
 XenoGuesser.class
 XenoGuesser_GLEventListener$FloraInstance.class
@@ -81,6 +83,7 @@ BuildingStyle.class
 WorldArtGenerator.class
 FenceStyle$SecurityType.class
 XenoGuesser_GLEventListener$1.class
+RockField$Keepout.class
 XenoGuesser$5.class
 InfrastructureManager$HouseWall.class
 Sphere.class
@@ -98,19 +101,23 @@ MapPanel$3.class
 XenoGuesser$8.class
 HudOverlay.class
 MyKeyboardInput.class
+FlagDesigner$Spec.class
 RoadNetworkBuilder.class
 Camera.class
 PlayerBody.class
 GuardRailStyle.class
 RegionalFactor$FactorEntry.class
+FlagDesigner.class
 Camera$CameraType.class
 Collision$1.class
 ProceduralTextures$LeafShape$Family.class
+RockField.class
 ProceduralTextures.class
 SettlementManager$Settlement.class
 MapPanel$1.class
 RoadLineStyle$Placement.class
 InfrastructureObject$Type.class
+SignMap.class
 FenceStyle$Type.class
 XenoGuesser_GLEventListener.class
 Collision$Body.class
@@ -139,6 +146,7 @@ RunFiles.class
 InfrastructureObject.class
 BirdsEyeMaps.class
 BuildingMeshes.class
+FlagDesigner$Emblem.class
 LandingPod.class
 Inhabitants$Person.class
 WorldPalette.class

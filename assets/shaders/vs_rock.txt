@@ -1,0 +1,20 @@
+#version 330 core
+
+// Rocks, already placed in the world, coloured per vertex
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec3 colour;
+
+out vec3 aPos;
+out vec3 aNormal;
+out vec3 aColour;
+
+uniform mat4 viewProjection;
+
+void main() {
+    aPos = position;
+    aNormal = normal;
+    aColour = colour;
+    gl_Position = viewProjection * vec4(position, 1.0);
+}

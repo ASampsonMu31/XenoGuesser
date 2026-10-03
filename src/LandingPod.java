@@ -79,10 +79,10 @@ public class LandingPod {
         float doorY = PLATFORM_HEIGHT + 8.5f;
         float[] doorOut = slopeNormal(0f, doorY);
         float[] doorAt = { 0f, doorY, radiusAtHeight(doorY) - 0.4f };
-        b.transform(Affine.frame(new float[] { doorAt[0], doorAt[1], doorAt[2] - 0.4f }, doorOut, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
-        OrganismParts.shell(b, OrganismMesh.PART_METAL, 1.4f, 13.5f, 19.5f, 0.15f, 0, 0f, 1f);
+        b.transform(Affine.frame(new float[] { doorAt[0], doorAt[1], doorAt[2] - 0.9f }, doorOut, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
+        OrganismParts.shell(b, OrganismMesh.PART_METAL, 1.0f, 13.5f, 19.5f, 0.15f, 0, 0f, 1f);
         b.transform(Affine.frame(doorAt, doorOut, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
-        OrganismParts.shell(b, OrganismMesh.PART_TRIM, 1.6f, 11f, 17f, 0.15f, 0, 0f, 1f);
+        OrganismParts.shell(b, OrganismMesh.PART_DARK, 2.6f, 11f, 17f, 0.15f, 0, 0f, 1f);
         // The platform outside it
         b.resetTransform().part(OrganismMesh.PART_METAL);
         b.box(0f, PLATFORM_HEIGHT - 0.5f, (PLATFORM_FRONT + 20.5f) * 0.5f, STAIR_WIDTH + 1f, 1f, PLATFORM_FRONT - 20.5f);
@@ -307,6 +307,16 @@ public class LandingPod {
         return footGround + top * stairScale;
     }
 
+    /** How far the pod, its feet and its stairs reach from its middle. */
+    public static final float REACH = PLATFORM_FRONT + STAIR_LENGTH + 2f;
+
+    /** Whether (px, pz) is within margin of the pod's ground plan. */
+    public boolean covers(float px, float pz, float margin) {
+        if (!placed) return false;
+        float r = Math.max(40f, REACH) + margin;
+        return (px - x) * (px - x) + (pz - z) * (pz - z) < r * r;
+    }
+
     public float x() { return x; }
     public float z() { return z; }
     public float ground() { return ground; }
@@ -334,7 +344,7 @@ public class LandingPod {
         shader.setVec3(gl, "accentColour", new Vector3(0.62f, 0.6f, 0.56f));
         shader.setVec3(gl, "limbColour", new Vector3(0.95f, 0.45f, 0.1f));
         shader.setVec3(gl, "eyeColour", new Vector3(0.05f, 0.06f, 0.08f));
-        shader.setVec3(gl, "trimColour", new Vector3(0.11f, 0.115f, 0.125f));
+        shader.setVec3(gl, "trimColour", new Vector3(0.2f, 0.21f, 0.23f));
         shader.setInt(gl, "patternType", 3);
         shader.setFloat(gl, "patternScale", 3.0f);
         shader.setFloat(gl, "gloss", 0.35f);

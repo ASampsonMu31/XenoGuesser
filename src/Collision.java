@@ -19,17 +19,27 @@ public class Collision {
         void obstaclesNear(float x, float z, float reach, Sink sink);
     }
 
-    /** Receives shapes. */
+    /** Receives shapes, each with how high it stands above the ground (infinite if not given). */
     public interface Sink {
-        void segment(float ax, float az, float bx, float bz, float halfWidth);
+        void segment(float ax, float az, float bx, float bz, float halfWidth, float top);
 
-        void circle(float x, float z, float radius);
+        void circle(float x, float z, float radius, float top);
+
+        default void segment(float ax, float az, float bx, float bz, float halfWidth) {
+            segment(ax, az, bx, bz, halfWidth, Float.POSITIVE_INFINITY);
+        }
+
+        default void circle(float x, float z, float radius) {
+            circle(x, z, radius, Float.POSITIVE_INFINITY);
+        }
     }
+
+    private static final int FIELDS = 7;
 
     private final List<StaticSource> sources = new ArrayList<>();
 
-    // Shapes gathered for the current query: {kind, ax, az, bx, bz, size}, kind 0 segment, 1 circle
-    private float[] shapes = new float[6 * 256];
+    // Shapes gathered for the current query: {kind, ax, az, bx, bz, size, top}, kind 0 segment, 1 circle
+    private float[] shapes = new float[FIELDS * 256];
     private int shapeCount;
     private float queryX, queryZ, queryReach;
 
@@ -46,19 +56,19 @@ public class Collision {
 
     private final Sink gather = new Sink() {
         @Override
-        public void segment(float ax, float az, float bx, float bz, float halfWidth) {
+        public void segment(float ax, float az, float bx, float bz, float halfWidth, float top) {
             // Only what could touch the query circle
             float minX = Math.min(ax, bx) - halfWidth, maxX = Math.max(ax, bx) + halfWidth;
             float minZ = Math.min(az, bz) - halfWidth, maxZ = Math.max(az, bz) + halfWidth;
             if (maxX < queryX - queryReach || minX > queryX + queryReach || maxZ < queryZ - queryReach || minZ > queryZ + queryReach) return;
-            add(0, ax, az, bx, bz, halfWidth);
+            add(0, ax, az, bx, bz, halfWidth, top);
         }
 
         @Override
-        public void circle(float x, float z, float radius) {
+        public void circle(float x, float z, float radius, float top) {
             float reach = queryReach + radius;
             if (Math.abs(x - queryX) > reach || Math.abs(z - queryZ) > reach) return;
-            add(1, x, z, 0f, 0f, radius);
+            add(1, x, z, 0f, 0f, radius, top);
         }
     };
 
@@ -107,9 +117,10 @@ public class Collision {
         for (StaticSource source : sources) source.obstaclesNear(x, z, reach, gather);
     }
 
-    private void add(float kind, float a, float b, float c, float d, float size) {
-        if ((shapeCount + 1) * 6 > shapes.length) shapes = java.util.Arrays.copyOf(shapes, shapes.length * 2);
-        int i = shapeCount * 6;
+    private void add(float kind, float a, float b, float c, float d, float size, float top) {
+        if ((shapeCount + 1) * FIELDS > shapes.length) shapes = java.util.Arrays.copyOf(shapes, shapes.length * 2);
+        int i = shapeCount * FIELDS;
+        shapes[i + 6] = top;
         shapes[i] = kind;
         shapes[i + 1] = a;
         shapes[i + 2] = b;
@@ -161,11 +172,20 @@ public class Collision {
      * through a creature but a creature brushing past doesn't drag them along.
      */
     public float[] resolveFirm(float fromX, float fromZ, float x, float z, float r, Object self) {
+        return resolveFirm(fromX, fromZ, x, z, r, self, 0f);
+    }
+
+    /**
+     * As resolveFirm, for someone whose feet are clearance above the ground (in the air):
+     * anything whose top is lower than that passes beneath them.
+     */
+    public float[] resolveFirm(float fromX, float fromZ, float x, float z, float r, Object self, float clearance) {
         gatherNear(x, z, r + 4f);
         float px = x, pz = z;
         for (int pass = 0; pass < 3; pass++) {
             boolean moved = false;
             for (int s = 0; s < shapeCount; s++) {
+                if (shapes[s * FIELDS + 6] < clearance) continue;
                 float[] push = penetration(s, px, pz, r);
                 if (push != null) {
                     px += push[0];
@@ -244,7 +264,7 @@ public class Collision {
 
     /** How far to move a circle at (x, z) to clear gathered shape s, or null if clear. */
     private float[] penetration(int s, float x, float z, float r) {
-        int i = s * 6;
+        int i = s * FIELDS;
         float qx, qz, size = shapes[i + 5];
         if (shapes[i] == 1f) {
             qx = shapes[i + 1];

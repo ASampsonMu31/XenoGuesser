@@ -12,8 +12,9 @@ import javax.sound.sampled.Clip;
  */
 public class TransmissionMessage {
 
-    public static final String AUDIO = "assets/audio/xenocorp_message.wav";
-    public static final String TIMINGS = "assets/audio/xenocorp_message.txt";
+    // Each message is a recording (.wav) and its transcript with word timings (.txt)
+    public static final String SINGLEPLAYER = "assets/audio/xenocorp_singleplayer";
+    public static final String MULTIPLAYER = "assets/audio/xenocorp_multiplayer";
 
     private final String transcript;
     private final long[] wordMillis;
@@ -41,7 +42,8 @@ public class TransmissionMessage {
     }
 
     /** Loads the message, or returns null if it or the sound device is unavailable. */
-    public static TransmissionMessage load() {
+    public static TransmissionMessage load(String name) {
+        String AUDIO = name + ".wav", TIMINGS = name + ".txt";
         try {
             List<String> lines = Files.readAllLines(new File(TIMINGS).toPath(), StandardCharsets.UTF_8);
             String transcript = lines.get(0);

@@ -29,6 +29,7 @@ public class MainMenu extends JComponent {
     private static final Color BACKDROP = new Color(20, 16, 30);
 
     private final Runnable onSingleplayer;
+    private final Runnable onMultiplayer;
     private final Runnable onQuit;
     private BufferedImage background, spacemanSheet;
     private Image scaledBackground;
@@ -45,8 +46,9 @@ public class MainMenu extends JComponent {
     private boolean dragging;
     private Rectangle spacemanBounds = new Rectangle();
 
-    public MainMenu(Runnable onSingleplayer, Runnable onQuit) {
+    public MainMenu(Runnable onSingleplayer, Runnable onMultiplayer, Runnable onQuit) {
         this.onSingleplayer = onSingleplayer;
+        this.onMultiplayer = onMultiplayer;
         this.onQuit = onQuit;
         setOpaque(true);
         loadArt();
@@ -57,6 +59,9 @@ public class MainMenu extends JComponent {
                 if (singleButton.contains(e.getPoint())) {
                     chosen = true;
                     onSingleplayer.run();
+                } else if (multiButton.contains(e.getPoint())) {
+                    chosen = true;
+                    onMultiplayer.run();
                 } else if (quitButton.contains(e.getPoint())) {
                     onQuit.run();
                 } else if (spacemanBounds.contains(e.getPoint())) {
@@ -83,6 +88,7 @@ public class MainMenu extends JComponent {
             @Override
             public void mouseMoved(MouseEvent e) {
                 Rectangle over = singleButton.contains(e.getPoint()) ? singleButton
+                        : multiButton.contains(e.getPoint()) ? multiButton
                         : quitButton.contains(e.getPoint()) ? quitButton : null;
                 if (over != hovered) {
                     hovered = over;
@@ -160,7 +166,7 @@ public class MainMenu extends JComponent {
         multiButton.setBounds(Math.round(left), Math.round(top + bh + gap), Math.round(bw), Math.round(bh));
         quitButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 2 + gap * 1.5f), Math.round(bw * 0.55f), Math.round(bh * 0.8f));
         paintButton(g, singleButton, "Play Singleplayer", null, true, true, unit);
-        paintButton(g, multiButton, "Play Multiplayer", "Coming soon", false, false, unit);
+        paintButton(g, multiButton, "Play Multiplayer", null, true, false, unit);
         paintButton(g, quitButton, "Quit", null, true, false, unit);
 
         HudStyle.label(g, "Drag to turn", w * 0.78f - HudStyle.labelWidth(g, "Drag to turn", 12 * unit) / 2f, h - 54 * unit, 12 * unit,
