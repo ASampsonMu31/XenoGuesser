@@ -130,6 +130,15 @@ private static class SpeciesConfig {
     private Inhabitants inhabitants;
     // The player's own spacesuited body, and whether they are swimming
     private final PlayerBody playerBody = new PlayerBody();
+    // The pod the player landed in, standing where each round starts
+    private final LandingPod landingPod = new LandingPod();
+    // Everything solid: buildings, fences, rails, signs, trees, the pod, creatures and people
+    private final Collision collision = new Collision();
+    private static final Object PLAYER = "player";
+    private static final float PLAYER_RADIUS = 3.0f;
+    // Developer aid: -Dxenoguesser.menushot photographs the pod for the main menu's background
+    private static final boolean MENU_SHOT = System.getProperty("xenoguesser.menushot") != null;
+    private boolean hideFirstPerson;
     private boolean swimming;
     private float waterSurfaceHere;
     // Eyes this far above the water when swimming; deeper than this and the player swims
@@ -559,6 +568,11 @@ private static class SpeciesConfig {
         this.soilVariantAFactor = this.regionalManager.createNoiseMap(1.4e-5f);
                 this.soilVariantBFactor = this.regionalManager.createNoiseMap(2.1e-5f);
         this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
+        collision.addSource(infraManager::obstaclesNear);
+        collision.addSource(landingPod::obstaclesNear);
+        collision.addSource(this::treesNear);
+        organismManager.setCollision(collision);
+        inhabitants.setCollision(collision);
         this.organismManager.setUrbanness((x, z) -> infraManager.getUrbanness(x, z));
         startBirdsEyeMapRendering();
     }
@@ -733,8 +747,9 @@ private static class SpeciesConfig {
             return;
         }
 
+        if (MENU_SHOT && loading.isFinished()) menuShot(gl);
         render();
-        drawHud(drawable);
+        if (!hideFirstPerson) drawHud(drawable);
 
         // Hand over from the loading screen only once a real frame of the round exists
         if (!loading.isFinished() && ++framesRenderedSinceReady >= 2) {
@@ -747,8 +762,39 @@ private static class SpeciesConfig {
         }
     }
 
+    /**
+     * Developer aid for the main menu's background: a minute after the round starts, the
+     * view moves out to look back at the landing pod, and a frame without the HUD or the
+     * player's body is saved as the menu art.
+     */
+    private void menuShot(GL3 gl) {
+        if (framesRenderedSinceReady == 60) {
+            hideFirstPerson = true;
+            float h = landingPod.heading();
+            // Off to one side of the stairs, a little above head height, looking at the pod
+            float side = h + (float) Math.toRadians(Float.parseFloat(System.getProperty("xenoguesser.menuangle", "38")));
+            float distance = Float.parseFloat(System.getProperty("xenoguesser.menudistance", "165"));
+            float ex = landingPod.x() + (float) Math.sin(side) * distance, ez = landingPod.z() + (float) Math.cos(side) * distance;
+            float eye = Math.max(TerrainMesh.getLayeredHeight(ex, ez, worldNoise), seaLevelHeight) + 26f;
+            camera.setPosition(new Vector3(ex, eye, ez));
+            // The pod sits just right of the middle: the menu takes the left, the spaceman the far right
+            float lookSide = side + (float) Math.PI + (float) Math.toRadians(Float.parseFloat(System.getProperty("xenoguesser.menuoffset", "1.5")));
+            camera.setTarget(new Vector3(ex + (float) Math.sin(lookSide) * 100f, landingPod.ground() + 24f, ez + (float) Math.cos(lookSide) * 100f));
+            menuShotHold = true;
+        } else if (framesRenderedSinceReady == 140) {
+            saveFrameTo(gl, new File(LoadingArt.MENU));
+            System.out.println("[MENU] Background saved to " + LoadingArt.MENU);
+        }
+    }
+
+    private boolean menuShotHold;
+
     /** Debug aid: writes the current frame next to this run's generated textures. */
     private void saveFrame(GL3 gl, String fileName) {
+        saveFrameTo(gl, new File(WorldArtGenerator.OUTPUT_DIR, fileName));
+    }
+
+    private void saveFrameTo(GL3 gl, File file) {
         int w = currentWidth, h = currentHeight;
         java.nio.ByteBuffer pixels = com.jogamp.common.nio.Buffers.newDirectByteBuffer(w * h * 4);
         gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
@@ -762,7 +808,7 @@ private static class SpeciesConfig {
                 }
             }
             try {
-                ImageIO.write(img, "png", new File(WorldArtGenerator.OUTPUT_DIR, fileName));
+                ImageIO.write(img, "png", file);
             } catch (IOException e) {
                 e.printStackTrace();
             }
@@ -876,6 +922,7 @@ private static class SpeciesConfig {
                 if (organismManager != null) organismManager.dispose(gl);
         if (inhabitants != null) inhabitants.dispose(gl);
         playerBody.dispose(gl);
+        landingPod.dispose(gl);
         hud.dispose(gl);
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
@@ -1301,6 +1348,7 @@ private static class SpeciesConfig {
                 organismManager.initialise(gl);
         inhabitants.initialise(gl);
         playerBody.initialise(gl);
+        landingPod.initialise(gl);
         hud.initialise(gl);
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
@@ -1447,10 +1495,16 @@ private static class SpeciesConfig {
             this.minimap.setPlayerSpawnLocation(spawnX, spawnZ);
         }
 
+        landingPod.place(spawnX, spawnZ, lookX, lookZ, (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise));
         moveToLocation(spawnX, spawnZ, lookX, lookZ);
         // Developer aid: -Dxenoguesser.pitch=-60 starts the round looking down by that many degrees
         String pitch = System.getProperty("xenoguesser.pitch");
-        if (pitch != null) camera.updateYawPitch(0f, Float.parseFloat(pitch) / camera.MOUSE_SPEED);
+        // and -Dxenoguesser.yaw=180 turned round by that many degrees
+        String yaw = System.getProperty("xenoguesser.yaw");
+        if (pitch != null || yaw != null) {
+            camera.updateYawPitch(yaw == null ? 0f : Float.parseFloat(yaw) / camera.MOUSE_SPEED,
+                    pitch == null ? 0f : Float.parseFloat(pitch) / camera.MOUSE_SPEED);
+        }
     }
 
     public void moveToLocation(float spawnX, float spawnZ) {
@@ -1458,7 +1512,7 @@ private static class SpeciesConfig {
     }
 
     private void moveToLocation(float spawnX, float spawnZ, float lookX, float lookZ) {
-        float terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(spawnX, spawnZ, worldNoise);
+        float terrainHeightAtSpawn = groundHeightAt(spawnX, spawnZ);
         camera.setPosition(new Vector3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ));
         camera.setTarget(new Vector3(spawnX + lookX * 10.0f, terrainHeightAtSpawn + playerEyeHeight, spawnZ + lookZ * 10.0f));
 
@@ -1467,6 +1521,44 @@ private static class SpeciesConfig {
         
         // During the initial load, distant grass is seeded over later loading frames instead
                 updateVisibleChunks(worldReady && !roundLoading);
+    }
+
+    /**
+     * Carries the player from where they were to where the keys took them, in short steps,
+     * stopping against anything solid and sliding along it rather than passing through.
+     */
+    private void moveSolidly(Vector3 from) {
+        Vector3 to = camera.getPosition();
+        float mx = to.x - from.x, mz = to.z - from.z;
+        int steps = Math.max(1, (int) Math.ceil(Math.hypot(mx, mz) / 1.5f));
+        float px = from.x, pz = from.z;
+        for (int i = 0; i < steps; i++) {
+            float[] next = collision.resolveFirm(px, pz, px + mx / steps, pz + mz / steps, PLAYER_RADIUS, PLAYER);
+            px = next[0];
+            pz = next[1];
+        }
+        if (px != to.x || pz != to.z) camera.setGroundPosition(px, pz);
+    }
+
+    /** Tree trunks near a point, from the trees placed so far. */
+    private void treesNear(float x, float z, float reach, Collision.Sink sink) {
+        int cx0 = (int) Math.floor((x - reach) / PHYSICAL_CHUNK_SIZE), cx1 = (int) Math.floor((x + reach) / PHYSICAL_CHUNK_SIZE);
+        int cz0 = (int) Math.floor((z - reach) / PHYSICAL_CHUNK_SIZE), cz1 = (int) Math.floor((z + reach) / PHYSICAL_CHUNK_SIZE);
+        for (int cz = cz0; cz <= cz1; cz++) {
+            for (int cx = cx0; cx <= cx1; cx++) {
+                List<FloraInstance> trees = floraCache == null ? null : floraCache.get(cx + "_" + cz);
+                if (trees == null) continue;
+                for (FloraInstance tree : trees) {
+                    float trunk = Math.max(0.5f, speciesConfigs[tree.speciesIndex].baseSWidth * 0.5f * tree.scale);
+                    sink.circle(tree.pos.x, tree.pos.z, trunk);
+                }
+            }
+        }
+    }
+
+    /** What the player stands on: the land, or the pod's stairs where they are higher. */
+    private float groundHeightAt(float x, float z) {
+        return Math.max(TerrainMesh.getLayeredHeight(x, z, worldNoise), landingPod.floorAt(x, z));
     }
 
     public void resetToNextRound(GL3 gl) {
@@ -1888,14 +1980,16 @@ private static class SpeciesConfig {
         if (moveW && moveS) { moveW = false; moveS = false; }
         if (moveA && moveD) { moveA = false; moveD = false; }
 
+        Vector3 beforeMove = camera.getPosition();
         if (minimap != null && minimap.isFullScreenRevealMode()) {
             camera.updatePosition(false, false, false, false, (float)deltaTime);
         } else {
             camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime);
         }
 
+        if (!menuShotHold) moveSolidly(beforeMove);
         Vector3 currentPos = camera.getPosition();
-        float rawGroundHeight = TerrainMesh.getLayeredHeight(currentPos.x, currentPos.z, worldNoise);
+        float rawGroundHeight = groundHeightAt(currentPos.x, currentPos.z);
                 float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
         // Too deep to stand: swim, eyes just above the waves and riding them
@@ -2192,6 +2286,9 @@ private static class SpeciesConfig {
                 ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
 
         inhabitants.update((float) deltaTime, currentPos.x, currentPos.z);
+        // The player is solid to everything else too; then this frame's bodies take over
+        collision.addBody(PLAYER, camera.getPosition().x, camera.getPosition().z, PLAYER_RADIUS, true);
+        collision.endFrame();
         inhabitants.render(gl, viewProjection, frustum, camera.getPosition(), sunPos,
                 new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
                 ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
@@ -2303,6 +2400,13 @@ private static class SpeciesConfig {
 
                 gl.glEnable(GL.GL_CULL_FACE);
         gl.glDisable(GL.GL_BLEND);
+
+        // --- THE LANDING POD ---
+        landingPod.render(gl, viewProjection, camera.getPosition(), sunPos,
+                new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
+                ambientLight, skyRotation, textures.get(skyTextureKey));
+
+        if (hideFirstPerson) return;
 
         // --- THE PLAYER'S OWN BODY, drawn last and nearest ---
         if (compassWanted) {

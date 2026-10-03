@@ -6,6 +6,7 @@ LoadingArt.class
 com\xenoguesser\math\Vector2.class
 HudStyle$IconPainter.class
 XenoGuesser_GLEventListener$SpeciesConfig.class
+MainMenu$1.class
 InfrastructureManager$NationBatch.class
 TransmissionMessage.class
 XenoGuesser$1.class
@@ -43,7 +44,9 @@ ArchitectureTextures$1.class
 OrganismSpecies$Wing.class
 OrganismMesh$Builder.class
 SettingsMenu$1.class
+MainMenu.class
 MaterialConstants.class
+Collision$Sink.class
 LoadingProgress.class
 OrganismMesh.class
 InfrastructureManager.class
@@ -81,6 +84,7 @@ XenoGuesser_GLEventListener$1.class
 XenoGuesser$5.class
 InfrastructureManager$HouseWall.class
 Sphere.class
+Collision$StaticSource.class
 TwoTriangles.class
 LoadingScreen$1.class
 OrganismSpecies$Tentacle.class
@@ -100,6 +104,7 @@ PlayerBody.class
 GuardRailStyle.class
 RegionalFactor$FactorEntry.class
 Camera$CameraType.class
+Collision$1.class
 ProceduralTextures$LeafShape$Family.class
 ProceduralTextures.class
 SettlementManager$Settlement.class
@@ -108,6 +113,7 @@ RoadLineStyle$Placement.class
 InfrastructureObject$Type.class
 FenceStyle$Type.class
 XenoGuesser_GLEventListener.class
+Collision$Body.class
 Mesh.class
 com\xenoguesser\math\Matrix4.class
 LoadingArt$Light.class
@@ -133,6 +139,7 @@ RunFiles.class
 InfrastructureObject.class
 BirdsEyeMaps.class
 BuildingMeshes.class
+LandingPod.class
 Inhabitants$Person.class
 WorldPalette.class
 BuildingStyle$FormVariant.class
@@ -140,6 +147,7 @@ TextureLibrary.class
 GlyphGenerator.class
 Renderer.class
 OrganismManager$UrbannessLookup.class
+Collision.class
 OrganismManager$Creature.class
 MapPanel$MapNote.class
 BuildingStyle$WallVariant.class

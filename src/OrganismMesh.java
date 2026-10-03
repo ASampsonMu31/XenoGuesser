@@ -32,6 +32,8 @@ public class OrganismMesh {
     public static final int PART_DIAL = 10;
     public static final int PART_NEEDLE_NORTH = 11;
     public static final int PART_NEEDLE_SOUTH = 12;
+    // Plain light metal: fittings, stairs and rails
+    public static final int PART_METAL = 13;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];
@@ -200,6 +202,29 @@ public class OrganismMesh {
                     addTriangle(a, b, c);
                     addTriangle(b, d, c);
                 }
+            }
+        }
+
+        /** A box with flat faces, centred on (cx, cy, cz) with the given full sizes, placed by the current transform. */
+        public void box(float cx, float cy, float cz, float sx, float sy, float sz) {
+            float[][] normals = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+            float[] half = { sx * 0.5f, sy * 0.5f, sz * 0.5f };
+            for (float[] n : normals) {
+                // Two axes across the face, chosen so the corners wind consistently
+                float[] a = n[0] != 0 ? new float[] { 0, 1, 0 } : new float[] { 1, 0, 0 };
+                float[] b = Affine.cross(n, a);
+                int first = vertexFloats / STRIDE;
+                float[] wn = Affine.normalise(Affine.transformDirection(transform, n[0], n[1], n[2]));
+                for (int corner = 0; corner < 4; corner++) {
+                    float ca = corner == 0 || corner == 3 ? -1f : 1f;
+                    float cb = corner < 2 ? -1f : 1f;
+                    float px = cx + (n[0] + a[0] * ca + b[0] * cb) * half[0];
+                    float py = cy + (n[1] + a[1] * ca + b[1] * cb) * half[1];
+                    float pz = cz + (n[2] + a[2] * ca + b[2] * cb) * half[2];
+                    addVertex(Affine.transformPoint(transform, px, py, pz), wn, (ca + 1f) * 0.5f, (cb + 1f) * 0.5f);
+                }
+                addTriangle(first, first + 1, first + 2);
+                addTriangle(first, first + 2, first + 3);
             }
         }
 

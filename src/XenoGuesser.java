@@ -45,6 +45,8 @@ public class XenoGuesser extends JFrame {
   private final long worldSeed;
   private final LoadingProgress loadingProgress = new LoadingProgress();
   private LoadingScreen loadingScreen;
+  private MainMenu mainMenu;
+  private KeyAdapter escapeQuitListener;
   private JLayeredPane layeredPane;
   private MapPanel minimap;
   private GameHUD gameHUD;
@@ -102,9 +104,9 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.awt.noerasebackground", "true"); 
     System.setProperty("sun.java2d.noddraw", "true");
 
-    // 3. The loading screen covers everything from launch until the round's first frame
-    loadingScreen = new LoadingScreen(loadingProgress, worldSeed);
-    layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
+    // 3. The main menu first; the loading screen then covers everything until the round's first frame
+    mainMenu = new MainMenu(this::startSingleplayer, this::shutdownGame);
+    layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
 
     this.addComponentListener(new ComponentAdapter() {
         @Override
@@ -147,8 +149,25 @@ public class XenoGuesser extends JFrame {
         }
     };
     this.addKeyListener(escapeQuitListener);
+    this.escapeQuitListener = escapeQuitListener;
 
-    // 4. Everything that doesn't need the GL context is generated off the UI thread
+    // Developer aid: -Dxenoguesser.skipmenu (or taking the menu's picture) goes straight to loading
+    if (System.getProperty("xenoguesser.skipmenu") != null || System.getProperty("xenoguesser.menushot") != null) {
+      startSingleplayer();
+    }
+  }
+
+  /** Play Singleplayer: the loading screen replaces the menu while a world is generated. */
+  private void startSingleplayer() {
+    if (loadingScreen != null) return;
+    loadingScreen = new LoadingScreen(loadingProgress, worldSeed);
+    loadingScreen.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
+    layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
+    layeredPane.remove(mainMenu);
+    layeredPane.repaint();
+    requestFocus();
+
+    // Everything that doesn't need the GL context is generated off the UI thread
     Thread worldGeneration = new Thread(() -> generateWorld(escapeQuitListener), "world-generation");
     worldGeneration.setDaemon(true);
     worldGeneration.setPriority(Thread.NORM_PRIORITY - 2);
@@ -433,7 +452,8 @@ public class XenoGuesser extends JFrame {
   private void layoutComponents() {
     int paneWidth = layeredPane.getWidth();
     int paneHeight = layeredPane.getHeight();
-    loadingScreen.setBounds(0, 0, paneWidth, paneHeight);
+    if (mainMenu != null) mainMenu.setBounds(0, 0, paneWidth, paneHeight);
+    if (loadingScreen != null) loadingScreen.setBounds(0, 0, paneWidth, paneHeight);
     if (canvas == null) return;
 
     canvas.setBounds(0, 0, paneWidth - 2, paneHeight - 2);

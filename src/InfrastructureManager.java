@@ -97,6 +97,11 @@ public class InfrastructureManager {
     private final List<RoadSegment> landSegments = new ArrayList<>();
     private final Map<Long, List<RoadSegment>> roadSegmentsByChunk = new HashMap<>();
     private final List<House> houses = new ArrayList<>();
+    // Solid shapes recorded as each chunk is built, for collision: {kind, ax, az, bx, bz, size}
+    // per shape, kind 0 a wall/fence/rail segment of half-width size, 1 a post of radius size.
+    // The world never changes, so a chunk's shapes stay valid after its meshes are dropped.
+    private final Map<Long, float[]> obstaclesByChunk = new java.util.concurrent.ConcurrentHashMap<>();
+    private List<float[]> recording;
     private final Map<Long, List<House>> housesByChunk = new HashMap<>();
     private float maxHouseReach;
     private float maxPlotReach;
@@ -387,6 +392,57 @@ public class InfrastructureManager {
             this.urbanness = urbanness;
             this.id = id;
         }
+    }
+
+    /**
+     * A way on foot along a road from near (ax, az) to near (bx, bz): points just inside the
+     * road's edge on A's side, following the road's bends, so walkers keep to the street
+     * rather than cutting across gardens. Empty if the road isn't known.
+     */
+    public List<float[]> streetWalk(int path, float ax, float az, float bx, float bz) {
+        List<float[]> points = new ArrayList<>();
+        List<RoadSegment> all = segmentsByPath.get(path);
+        if (all == null) return points;
+        List<RoadSegment> segs = new ArrayList<>();
+        for (RoadSegment segment : all) if (!segment.culDeSac) segs.add(segment);
+        if (segs.isEmpty()) return points;
+        int ia = nearestSegment(segs, ax, az), ib = nearestSegment(segs, bx, bz);
+        RoadSegment first = segs.get(ia);
+        float[] onA = nearestOnSegment(ax, az, first);
+        float dirX = first.end.x - first.start.x, dirZ = first.end.z - first.start.z;
+        float side = dirX * (az - onA[1]) - dirZ * (ax - onA[0]) >= 0f ? 1f : -1f;
+        points.add(walkPoint(first, ax, az, side));
+        if (ia < ib) {
+            for (int k = ia; k < ib; k++) points.add(walkPoint(segs.get(k), segs.get(k).end.x, segs.get(k).end.z, side));
+        } else {
+            for (int k = ia; k > ib; k--) points.add(walkPoint(segs.get(k), segs.get(k).start.x, segs.get(k).start.z, side));
+        }
+        points.add(walkPoint(segs.get(ib), bx, bz, side));
+        return points;
+    }
+
+    private static int nearestSegment(List<RoadSegment> segs, float x, float z) {
+        int best = 0;
+        float bestDistance = Float.MAX_VALUE;
+        for (int i = 0; i < segs.size(); i++) {
+            float[] p = nearestOnSegment(x, z, segs.get(i));
+            float d = (p[0] - x) * (p[0] - x) + (p[1] - z) * (p[1] - z);
+            if (d < bestDistance) {
+                bestDistance = d;
+                best = i;
+            }
+        }
+        return best;
+    }
+
+    /** The point on a segment nearest (x, z), moved out to just inside the road edge on one side. */
+    private static float[] walkPoint(RoadSegment segment, float x, float z, float side) {
+        float[] on = nearestOnSegment(x, z, segment);
+        float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
+        float length = (float) Math.sqrt(dx * dx + dz * dz);
+        if (length < 1e-4f) return on;
+        float offset = Math.max(1.5f, segment.width * 0.5f - 2.5f) * side;
+        return new float[] { on[0] - dz / length * offset, on[1] + dx / length * offset };
     }
 
     /** Every house's doorway with its centre inside the rectangle. */
@@ -1117,6 +1173,7 @@ public class InfrastructureManager {
         List<float[]> signPositions = new ArrayList<>();
         Map<Integer, NationBatch> batches = new HashMap<>();
         long key = chunkKey(cx, cz);
+        recording = new ArrayList<>();
 
         List<House> chunkHouses = housesByChunk.get(key);
         if (chunkHouses != null) {
@@ -1130,6 +1187,7 @@ public class InfrastructureManager {
                     InfrastructureObject sign = createHouseSign(house, signRand);
                     if (sign != null) {
                         objects.add(sign);
+                        recordSignPosts(sign);
                         signPositions.add(new float[] { sign.position.x, sign.position.z });
                     }
                 }
@@ -1148,6 +1206,7 @@ public class InfrastructureManager {
                 InfrastructureObject sign = tryCreateRoadsideSign(segment, signRand, signPositions);
                 if (sign != null) {
                     objects.add(sign);
+                    recordSignPosts(sign);
                     signPositions.add(new float[] { sign.position.x, sign.position.z });
                 }
             }
@@ -1159,7 +1218,44 @@ public class InfrastructureManager {
                 objects.add(object);
             }
         }
+        float[] packed = new float[recording.size() * 6];
+        for (int i = 0; i < recording.size(); i++) System.arraycopy(recording.get(i), 0, packed, i * 6, 6);
+        obstaclesByChunk.put(key, packed);
+        recording = null;
         return objects;
+    }
+
+    private void recordSegment(float ax, float az, float bx, float bz, float halfWidth) {
+        if (recording != null) recording.add(new float[] { 0f, ax, az, bx, bz, halfWidth });
+    }
+
+    /** A sign stands on two posts either side of its board, which is up out of the way. */
+    private void recordSignPosts(InfrastructureObject sign) {
+        for (com.xenoguesser.math.Matrix4 post : new com.xenoguesser.math.Matrix4[] { sign.leftPostMatrix, sign.rightPostMatrix }) {
+            if (post == null) continue;
+            float[] m = post.toFloatArrayForGLSL();
+            recordCircle(m[12], m[14], 0.9f);
+        }
+    }
+
+    private void recordCircle(float x, float z, float radius) {
+        if (recording != null) recording.add(new float[] { 1f, x, z, 0f, 0f, radius });
+    }
+
+    /** Walls, fences, guard rails and sign posts near a point, from the chunks built so far. */
+    public void obstaclesNear(float x, float z, float reach, Collision.Sink sink) {
+        // A chunk's shapes can reach past its edge (fences round a plot, a rail along a road)
+        float margin = reach + 120f;
+        for (int cz = chunkIndex(z - margin); cz <= chunkIndex(z + margin); cz++) {
+            for (int cx = chunkIndex(x - margin); cx <= chunkIndex(x + margin); cx++) {
+                float[] shapes = obstaclesByChunk.get(chunkKey(cx, cz));
+                if (shapes == null) continue;
+                for (int i = 0; i < shapes.length; i += 6) {
+                    if (shapes[i] == 0f) sink.segment(shapes[i + 1], shapes[i + 2], shapes[i + 3], shapes[i + 4], shapes[i + 5]);
+                    else sink.circle(shapes[i + 1], shapes[i + 2], shapes[i + 5]);
+                }
+            }
+        }
     }
 
         /**
@@ -1542,6 +1638,7 @@ public class InfrastructureManager {
             }
             float[] start = railBase(base, t0);
             float[] end = railBase(base, t1);
+            recordSegment(start[0], start[2], end[0], end[2], 0.5f);
             // Profile "out" points back towards the traffic
             float[] towardRoad0 = towardRoad(segment, t0, side);
             float[] towardRoad1 = towardRoad(segment, t1, side);
@@ -1729,6 +1826,11 @@ public class InfrastructureManager {
         cx /= n; cz /= n;
 
         HouseWall[] walls = new HouseWall[n];
+        for (int i = 0; i < n; i++) {
+            float[] wa = localToWorld(house.x, house.z, house.rotationY, footprint[i][0], footprint[i][1]);
+            float[] wb = localToWorld(house.x, house.z, house.rotationY, footprint[(i + 1) % n][0], footprint[(i + 1) % n][1]);
+            recordSegment(wa[0], wa[1], wb[0], wb[1], 0.6f);
+        }
         for (int i = 0; i < n; i++) {
             float[] a = footprint[i], b = footprint[(i + 1) % n];
             HouseWall wall = new HouseWall();
@@ -2271,6 +2373,7 @@ public class InfrastructureManager {
             float[] a = localToWorld(house.x, house.z, house.rotationY, localPoints.get(i)[0], localPoints.get(i)[1]);
             float[] b = localToWorld(house.x, house.z, house.rotationY, localPoints.get(i + 1)[0], localPoints.get(i + 1)[1]);
             fenceRun(batch, builder, style, house.secure, a[0], a[1], b[0], b[1]);
+            recordSegment(a[0], a[1], b[0], b[1], house.secure ? 0.8f : 0.4f);
         }
     }
 

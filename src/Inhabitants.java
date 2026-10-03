@@ -58,6 +58,27 @@ public class Inhabitants {
         int mesh;
         float[] top, accent, bottom, skin;
         Random rand;
+        // Where this trip began, so a blocked walker can turn back; finding a way round
+        // things on the street; progress over the last few seconds to tell when stuck
+        InfrastructureManager.Doorway origin;
+        float steerHeading = Float.NaN, steerTimer;
+        float progressTimer, progressX, progressZ, progressExpected;
+    }
+
+    // Route points are {x, z, kind}: at a house (inside or its door) or out on the street.
+    // Only walking from one street point to another meets obstacles; the way between a
+    // door and the pavement is the garden path through the gate.
+    private static final float AT_HOUSE = 0f, ON_STREET = 1f;
+    private static final float STUCK_SECONDS = 2.0f;
+    private Collision collision;
+
+    /** Shares the world's solid things, so people walk round them and not through. */
+    public void setCollision(Collision collision) {
+        this.collision = collision;
+    }
+
+    private float bodyRadius(Person p) {
+        return 0.11f * height * p.scale * p.bulk;
     }
 
     // --- The generated body plan ---
@@ -469,10 +490,11 @@ public class Inhabitants {
      */
     private void setOff(Person p) {
         InfrastructureManager.Doorway home = p.home;
+        p.origin = home;
         p.route.clear();
-        p.route.add(new float[] { home.insideX, home.insideZ });
-        p.route.add(new float[] { home.doorX, home.doorZ });
-        p.route.add(new float[] { home.kerbX, home.kerbZ });
+        p.route.add(new float[] { home.insideX, home.insideZ, AT_HOUSE });
+        p.route.add(new float[] { home.doorX, home.doorZ, AT_HOUSE });
+        p.route.add(new float[] { home.kerbX, home.kerbZ, ON_STREET });
         InfrastructureManager.Doorway visit = null;
         if (p.rand.nextFloat() < 0.55f) {
             List<InfrastructureManager.Doorway> near = infrastructure.doorwaysNear(home.kerbX, home.kerbZ, 160f);
@@ -480,16 +502,20 @@ public class Inhabitants {
             if (!near.isEmpty()) visit = near.get(p.rand.nextInt(near.size()));
         }
         if (visit != null) {
-            p.route.add(new float[] { visit.kerbX, visit.kerbZ });
-            p.route.add(new float[] { visit.doorX, visit.doorZ });
-            p.route.add(new float[] { visit.insideX, visit.insideZ });
+            addStreetWalk(p, home.path, home.kerbX, home.kerbZ, visit.kerbX, visit.kerbZ);
+            p.route.add(new float[] { visit.kerbX, visit.kerbZ, ON_STREET });
+            p.route.add(new float[] { visit.doorX, visit.doorZ, AT_HOUSE });
+            p.route.add(new float[] { visit.insideX, visit.insideZ, AT_HOUSE });
             p.home = visit;
         } else {
             float along = (p.rand.nextBoolean() ? 1f : -1f) * (30f + p.rand.nextFloat() * 90f);
-            p.route.add(new float[] { home.kerbX + home.roadDirX * along, home.kerbZ + home.roadDirZ * along });
-            p.route.add(new float[] { home.kerbX, home.kerbZ });
-            p.route.add(new float[] { home.doorX, home.doorZ });
-            p.route.add(new float[] { home.insideX, home.insideZ });
+            float strollX = home.kerbX + home.roadDirX * along, strollZ = home.kerbZ + home.roadDirZ * along;
+            addStreetWalk(p, home.path, home.kerbX, home.kerbZ, strollX, strollZ);
+            float[] turnAt = p.route.get(p.route.size() - 1);
+            addStreetWalk(p, home.path, turnAt[0], turnAt[1], home.kerbX, home.kerbZ);
+            p.route.add(new float[] { home.kerbX, home.kerbZ, ON_STREET });
+            p.route.add(new float[] { home.doorX, home.doorZ, AT_HOUSE });
+            p.route.add(new float[] { home.insideX, home.insideZ, AT_HOUSE });
         }
         p.next = 1;
         p.phase = Phase.WALKING;
@@ -505,9 +531,15 @@ public class Inhabitants {
         float dx = target[0] - p.x, dz = target[1] - p.z;
         float distance = (float) Math.sqrt(dx * dx + dz * dz);
         float move = p.speed * p.scale * dt;
-        if (distance <= move) {
-            p.x = target[0];
-            p.z = target[1];
+        boolean street = collision != null && p.route.get(p.next - 1)[2] == ON_STREET && target[2] == ON_STREET;
+        if (street && distance > Math.max(move, bodyRadius(p) + 1f)) {
+            walkStreet(p, dx, dz, distance, move, dt);
+        } else if (distance <= move || (street && distance <= bodyRadius(p) + 1f)) {
+            // Close enough; out on the street they stay where they are rather than jump onto the spot
+            if (!street) {
+                p.x = target[0];
+                p.z = target[1];
+            }
             p.next++;
             if (p.next >= p.route.size()) {
                 p.phase = Phase.INSIDE;
@@ -521,10 +553,71 @@ public class Inhabitants {
             float turn = (float) Math.atan2(Math.sin(desired - p.heading), Math.cos(desired - p.heading));
             p.heading += Math.max(-4f * dt, Math.min(4f * dt, turn));
         }
+        if (collision != null && p.phase == Phase.WALKING) collision.addBody(p, p.x, p.z, bodyRadius(p));
         p.walking += (1f - p.walking) * Math.min(1f, dt * 5f);
         float stride = legLength * 0.55f * p.scale;
         p.walkPhase = (p.walkPhase + move / stride * (float) Math.PI) % (float) (Math.PI * 2);
         p.lookYaw = 0.35f * (float) Math.sin(p.walkPhase * 0.13f + p.x * 0.01f);
+    }
+
+    /**
+     * One step along the street, bearing round whatever is in the way (walls, fences, posts,
+     * trees, creatures, other people, the player). Someone who has made almost no headway for
+     * a couple of seconds gives up and turns back the way they came.
+     */
+    private void walkStreet(Person p, float dx, float dz, float distance, float move, float dt) {
+        float r = bodyRadius(p);
+        float desired = (float) Math.atan2(dx, dz);
+        p.steerTimer -= dt;
+        if (p.steerTimer <= 0f) {
+            p.steerTimer = 0.2f + p.rand.nextFloat() * 0.1f;
+            p.steerHeading = collision.steer(p.x, p.z, r, desired, Math.max(5f, r * 2.5f), p);
+        }
+        float heading = Float.isNaN(p.steerHeading) ? desired : p.steerHeading;
+        float turn = (float) Math.atan2(Math.sin(heading - p.heading), Math.cos(heading - p.heading));
+        p.heading += Math.max(-4f * dt, Math.min(4f * dt, turn));
+        // Hemmed in: wait where they are rather than push through
+        float step = Float.isNaN(p.steerHeading) ? 0f : move * (1f - 0.5f * Math.min(1f, Math.abs(turn)));
+        float[] free = collision.resolve(p.x + (float) Math.sin(p.heading) * step, p.z + (float) Math.cos(p.heading) * step, r, p);
+        p.x = free[0];
+        p.z = free[1];
+        p.progressExpected += move;
+        p.progressTimer += dt;
+        if (p.progressTimer > STUCK_SECONDS) {
+            float moved = (float) Math.hypot(p.x - p.progressX, p.z - p.progressZ);
+            if (p.progressExpected > 4f && moved < p.progressExpected * 0.3f) {
+                // Nearly there (the spot is up against a fence or a post): near enough. Further
+                // off, the way is blocked, so they turn back
+                if (distance < 15f) p.next++;
+                else turnBack(p);
+            }
+            p.progressTimer = 0f;
+            p.progressExpected = 0f;
+            p.progressX = p.x;
+            p.progressZ = p.z;
+        }
+    }
+
+    /** Adds the way along the road between two points to someone's route. */
+    private void addStreetWalk(Person p, int path, float ax, float az, float bx, float bz) {
+        for (float[] point : infrastructure.streetWalk(path, ax, az, bx, bz)) {
+            p.route.add(new float[] { point[0], point[1], ON_STREET });
+        }
+    }
+
+    /** Heads back to where this trip started (or, if already heading there, on to where it was going). */
+    private void turnBack(Person p) {
+        InfrastructureManager.Doorway back = p.origin != null ? p.origin : p.home;
+        p.origin = p.home;
+        p.home = back;
+        p.route.clear();
+        p.route.add(new float[] { p.x, p.z, ON_STREET });
+        addStreetWalk(p, back.path, p.x, p.z, back.kerbX, back.kerbZ);
+        p.route.add(new float[] { back.kerbX, back.kerbZ, ON_STREET });
+        p.route.add(new float[] { back.doorX, back.doorZ, AT_HOUSE });
+        p.route.add(new float[] { back.insideX, back.insideZ, AT_HOUSE });
+        p.next = 1;
+        p.steerTimer = 0f;
     }
 
     /** Developer aid: a spot on a pavement in the busiest neighbourhood found, as {x, z, lookX, lookZ}. */
