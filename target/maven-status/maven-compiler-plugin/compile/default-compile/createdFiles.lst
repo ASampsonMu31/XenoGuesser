@@ -41,6 +41,7 @@ Frustum.class
 TileableNoise.class
 RoadPath$DeadEnd.class
 SettingsMenu.class
+Planet.class
 Products$Box.class
 OrganismSpecies.class
 ArchitectureTextures$1.class

@@ -185,6 +185,9 @@ private static class SpeciesConfig {
     // --- Seasonal Simulation Fields ---
     private float planetAxialTiltDegrees;
     private float currentSeasonalTiltDegrees;
+    // The sun: its declination (radians north of the equator it stands overhead) and the
+    // longitude where it is noon
+    private double sunDeclination, noonLongitude;
 
     private int[] depthFBO = new int[1];
     private int[] depthTexture = new int[1];
@@ -687,6 +690,11 @@ private static class SpeciesConfig {
             loading.report(grassCache.size() / (float) grassChunksTotal);
             return false;
         }
+        // Every rock round the landing site, near and far, is in place before the round starts
+        if (rockField != null) {
+            Vector3 at = camera.getPosition();
+            rockField.update(gl, at.x, at.z, true);
+        }
         loading.begin(LoadingProgress.Stage.FIRST_FRAME);
         startTime = getSeconds();
         lastElapsedTime = 0;
@@ -1045,41 +1053,37 @@ private static class SpeciesConfig {
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
     }
 
+    /**
+     * The sun, as the planet's physics puts it: its declination (how far north or south of
+     * the equator it is overhead, from the axial tilt and the season) and the longitude where
+     * it's noon (the time of day) give its direction from wherever the player is on the
+     * sphere. It sits a fixed distance away in that direction.
+     */
     private Vector3 getSunPosition() {
-        float sunDistance = 2350.0f; 
-        
-        float progress = timeOfDay - (float)Math.floor(timeOfDay);
-        
-        float minAngleRad = (float)Math.toRadians(10.0);
-        float maxAngleRad = (float)Math.toRadians(170.0);
-        float currentAngleRad = minAngleRad + progress * (maxAngleRad - minAngleRad);
-        
-        Vector3 cameraPosition = camera.getPosition();
-        
-        float localX = sunDistance * (float)Math.cos(currentAngleRad);
-        float localY = sunDistance * (float)Math.sin(currentAngleRad); 
-        float localZ = 0.0f;
-        
-        float maxMapEdgeZ = TOTAL_REGION_WIDTH / 2.0f;
-        
-        float latitudeFactor = cameraPosition.z / maxMapEdgeZ;
-        if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
-        if (latitudeFactor < -1.0f) latitudeFactor = -1.0f;
-        
-        float maxTiltRadians = (float)Math.toRadians(35.0);
-        float latitudeAngle = -latitudeFactor * maxTiltRadians; 
-        
-        float seasonalTiltRadians = (float)Math.toRadians(currentSeasonalTiltDegrees);
-        float tiltAngle = latitudeAngle + seasonalTiltRadians;
-        
-        float cosTilt = (float)Math.cos(tiltAngle);
-        float sinTilt = (float)Math.sin(tiltAngle);
-        
-        float worldX = cameraPosition.x + localX;
-        float worldY = cameraPosition.y + (localY * cosTilt - localZ * sinTilt);
-        float worldZ = cameraPosition.z + (localY * sinTilt + localZ * cosTilt);
-        
-        return new Vector3(worldX, worldY, worldZ);
+        float sunDistance = 2350.0f;
+        Vector3 at = camera.getPosition();
+        float[] d = Planet.sunDirection(at.x, at.z, sunDeclination, noonLongitude);
+        return new Vector3(at.x + d[0] * sunDistance, at.y + d[1] * sunDistance, at.z + d[2] * sunDistance);
+    }
+
+    /**
+     * Turns the sky dome so the sun on its texture (at the dome's local -Y) lies towards the
+     * sun, the rest of the sky wheeling about the celestial pole as on any spinning planet.
+     */
+    private Matrix4 skyRotation(Vector3 at) {
+        float[] sun = Planet.sunDirection(at.x, at.z, sunDeclination, noonLongitude);
+        float[] pole = Planet.celestialPole(at.z);
+        float[] across = Affine.cross(pole, sun);
+        if (Affine.length(across) < 1e-4f) across = Affine.cross(new float[] { 1f, 0f, 0f }, sun);
+        across = Affine.normalise(across);
+        float[] down = { -sun[0], -sun[1], -sun[2] };
+        float[] third = Affine.cross(across, down);
+        float[] m = new float[16];
+        m[0] = across[0]; m[1] = across[1]; m[2] = across[2];
+        m[4] = down[0]; m[5] = down[1]; m[6] = down[2];
+        m[8] = third[0]; m[9] = third[1]; m[10] = third[2];
+        m[15] = 1f;
+        return Matrix4.fromColumns(m);
     }
 
     private void initialiseCore() {
@@ -1136,6 +1140,10 @@ private static class SpeciesConfig {
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
                 enableAnisotropicFiltering(textures.get("dirt_diffuse"));
         textures.add(gl, "soil_regions", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS));
+        // East and west edges of the map are the same place on the planet
+        if (textures.get("soil_regions") != null) {
+            textures.get("soil_regions").setTexParameteri(gl, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
+        }
 
         // Each nation's wall, roof and fence textures repeat across surfaces
         for (String name : infraManager.textureJobs().keySet()) {
@@ -1499,7 +1507,9 @@ private static class SpeciesConfig {
         if (System.getProperty("xenoguesser.view") == null) {
             // A normal round: the pod has come down near a road, clear of houses and fences
             float[] site = infraManager.landingSite(dynamicRand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
-                    (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise) > seaLevelHeight + 1.0f);
+                    (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise) > seaLevelHeight + 1.0f
+                            // Rounds start away from the far north and south, where the map stretches most
+                            && Math.abs(Planet.latitude(pz)) < Math.toRadians(60.0));
             if (site != null) roadSpawn = site;
         }
         if (roadSpawn != null) {
@@ -1638,17 +1648,29 @@ private static class SpeciesConfig {
 
         this.timeOfDay = dynamicRand.nextFloat();
 
+        // The season: where the planet is in its orbit sets how far north or south the sun
+        // stands overhead
         float seasonalPhase = dynamicRand.nextFloat() * (float)(2.0 * Math.PI);
         this.currentSeasonalTiltDegrees = this.planetAxialTiltDegrees * (float)Math.sin(seasonalPhase);
+        this.sunDeclination = Math.asin(Math.sin(Math.toRadians(planetAxialTiltDegrees)) * Math.sin(seasonalPhase));
 
         if (this.minimap != null) {
             this.minimap.setPlayerSpawnLocation(spawnX, spawnZ);
         }
 
+        chooseTimeOfDay(spawnX, spawnZ, dynamicRand);
         landingPod.place(spawnX, spawnZ, lookX, lookZ, (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise));
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.x(), landingPod.z(), Math.max(40f, LandingPod.REACH) + 6f);
         moveToLocation(spawnX, spawnZ, lookX, lookZ);
+        // Developer aid: -Dxenoguesser.lookatsun starts the round looking straight at the sun
+        if (System.getProperty("xenoguesser.lookatsun") != null) {
+            Vector3 eye = camera.getPosition();
+            float[] d = Planet.sunDirection(eye.x, eye.z, sunDeclination, noonLongitude);
+            camera.setTarget(new Vector3(eye.x + d[0] * 10f, eye.y + d[1] * 10f, eye.z + d[2] * 10f));
+            System.out.printf("[PLANET] Sun %.0f degrees up, latitude %.1f, declination %.1f%n",
+                    Math.toDegrees(Math.asin(d[1])), Math.toDegrees(Planet.latitude(eye.z)), Math.toDegrees(sunDeclination));
+        }
         // Developer aid: -Dxenoguesser.pitch=-60 starts the round looking down by that many degrees
         String pitch = System.getProperty("xenoguesser.pitch");
         // and -Dxenoguesser.yaw=180 turned round by that many degrees
@@ -1657,6 +1679,27 @@ private static class SpeciesConfig {
             camera.updateYawPitch(yaw == null ? 0f : Float.parseFloat(yaw) / camera.MOUSE_SPEED,
                     pitch == null ? 0f : Float.parseFloat(pitch) / camera.MOUSE_SPEED);
         }
+    }
+
+    /**
+     * The time of day: the round starts in daylight where the pod lands, at a random local
+     * hour with the sun at least a little way up, which sets where on the planet it's noon.
+     * Walk far enough east or west and it's another time of day there.
+     */
+    private void chooseTimeOfDay(float x, float z, java.util.Random rand) {
+        double lat = Planet.latitude(z), lon = Planet.longitude(x);
+        double hour = 0.0;
+        for (int attempt = 0; attempt < 40; attempt++) {
+            double candidate = (rand.nextDouble() * 2 - 1) * Math.PI * 0.42;   // up to about five hours from noon
+            double elevation = Math.asin(Math.sin(lat) * Math.sin(sunDeclination)
+                    + Math.cos(lat) * Math.cos(sunDeclination) * Math.cos(candidate));
+            if (elevation > Math.toRadians(12.0)) {
+                hour = candidate;
+                break;
+            }
+        }
+        noonLongitude = lon - hour;
+        timeOfDay = (float) (0.5 + hour / (2 * Math.PI));
     }
 
     public void moveToLocation(float spawnX, float spawnZ) {
@@ -1697,6 +1740,30 @@ private static class SpeciesConfig {
             pz = next[1];
         }
         if (px != to.x || pz != to.z) camera.setGroundPosition(px, pz);
+    }
+
+    /**
+     * The world is a sphere (see Planet): after a step, the view turns very slightly so that
+     * walking straight follows a great circle; off the chart's east or west edge you come in
+     * from the other; over a pole, out on the far side heading the other way.
+     */
+    private void followThePlanet(Vector3 before) {
+        Vector3 now = camera.getPosition();
+        if (now.x == before.x && now.z == before.z) return;
+        double angle = Math.toRadians(camera.getYaw());
+        double turn = Planet.turnAlong(before.x, before.z, now.x, now.z, angle);
+        camera.turn((float) Math.toDegrees(turn));
+        angle += turn;
+        float x = now.x, z = now.z;
+        double[] across = Planet.acrossPole(x, z, angle);
+        if (across != null) {
+            x = (float) across[0];
+            z = (float) across[1];
+            camera.turn((float) Math.toDegrees(across[2] - angle));
+            System.out.printf("[PLANET] Over the pole to %.0f, %.0f%n", x, z);
+        }
+        float wrapped = (float) Planet.wrapX(x);
+        if (wrapped != x || across != null) camera.setGroundPosition(wrapped, z);
     }
 
     // Steeper than this (rise over run) can't be walked up
@@ -1848,6 +1915,10 @@ private static class SpeciesConfig {
         inhabitants.clear();
 
         spawnPlayerAtRandomLocation();
+        if (rockField != null) {
+            Vector3 at = camera.getPosition();
+            rockField.update(gl, at.x, at.z, true);
+        }
     }
 
     /**
@@ -1952,7 +2023,8 @@ private static class SpeciesConfig {
                     // Seed species independently based on their unique abundance calculations
                     for (int s = 0; s < NUM_SPECIES; s++) {
                         SpeciesConfig sc = speciesConfigs[s];
-                        long fSeed = worldSeed ^ ((long) cx * 492876847L) ^ ((long) cz * 314159265L) ^ ((long) s * 9012431L);
+                        // Seeded by the chunk's place on the planet, so it's the same on either side of the chart's join
+                        long fSeed = worldSeed ^ ((long) Planet.wrapChunk(cx, PHYSICAL_CHUNK_SIZE) * 492876847L) ^ ((long) cz * 314159265L) ^ ((long) s * 9012431L);
                         java.util.Random cRand = new java.util.Random(fSeed);
 
                         // FIX: Give the black-box manager 100x multiplier headroom to prevent sub-0.5 integer zero-outs
@@ -2041,7 +2113,7 @@ private static class SpeciesConfig {
 
                         for (int i = 0; i < dynamicGrassAttempts; i++) {
                             long bladeSeed = worldSeed 
-                                    ^ ((long) cx * 73731703L) 
+                                    ^ ((long) Planet.wrapChunk(cx, PHYSICAL_CHUNK_SIZE) * 73731703L) 
                                     ^ ((long) cz * 19349663L) 
                                     ^ ((long) i * 2147483647L);
 
@@ -2267,7 +2339,10 @@ private static class SpeciesConfig {
             camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime);
         }
 
-        if (!menuShotHold) moveSolidly(beforeMove);
+        if (!menuShotHold) {
+            moveSolidly(beforeMove);
+            followThePlanet(beforeMove);
+        }
         Vector3 currentPos = camera.getPosition();
         float rawGroundHeight = groundHeightAt(currentPos.x, currentPos.z);
                 float targetCameraHeight = rawGroundHeight + playerEyeHeight;
@@ -2340,13 +2415,10 @@ private static class SpeciesConfig {
         }
         lastKeyboardH = keyboard.h;
 
-        float sunAngle = (float)Math.atan2(sunPos.y - currentPos.y, sunPos.x - currentPos.x);
-        float degSunAngle = (float)Math.toDegrees(sunAngle);
-        float twilightZoneSize = 30f;
-        if (degSunAngle < 0f) { nightProportion = 1f; }
-        else if (degSunAngle > 180f - twilightZoneSize) { nightProportion = (degSunAngle - (180f - twilightZoneSize)) / twilightZoneSize; }
-        else if (degSunAngle < twilightZoneSize) { nightProportion = ((twilightZoneSize - degSunAngle) / twilightZoneSize); }
-        else { nightProportion = 0f; }
+        // Night falls as the sun sinks: full day above 18 degrees, full night once it's 6 below
+        float[] sunDir = Planet.sunDirection(currentPos.x, currentPos.z, sunDeclination, noonLongitude);
+        float sunElevation = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, sunDir[1]))));
+        nightProportion = Math.max(0f, Math.min(1f, (18f - sunElevation) / 24f));
 
         float dayR = 0.40f, dayG = 0.38f, dayB = 0.35f; 
         float nightR = 0.08f, nightG = 0.08f, nightB = 0.12f; 
@@ -2385,6 +2457,11 @@ private static class SpeciesConfig {
         Matrix4 projection = camera.getPerspectiveMatrix();
         Matrix4 viewProjection = Matrix4.multiply(projection, view);
         frustum.update(viewProjection);
+        // The ground curves away with the planet
+        float[] vp = viewProjection.toFloatArrayForGLSL();
+        Vector3 eye = camera.getPosition();
+        Shader.setPlanetCurve(gl, eye.x, eye.z, Planet.curvature(eye.z), new float[] { vp[4], vp[5], vp[6], vp[7] });
+        depthPrePassShader.use(gl);
 
         // Only chunks inside the view volume are drawn, in both the depth and colour passes
         visibleChunks.clear();
@@ -2420,8 +2497,7 @@ private static class SpeciesConfig {
         float latitudeAngleDeg = -latitudeFactor * 35.0f;
         float tiltAngleDeg = latitudeAngleDeg + currentSeasonalTiltDegrees;
 
-        Matrix4 skyRotation = Matrix4Transform.rotateAroundX(tiltAngleDeg);
-        skyRotation = Matrix4.multiply(skyRotation, Matrix4Transform.rotateAroundZ(sunAngleDeg + 90.0f));
+        Matrix4 skyRotation = skyRotation(camPosForSky);
 
         Matrix4 skyTransform = Matrix4Transform.translate(camera.getPosition());
         skyTransform = Matrix4.multiply(skyTransform, skyRotation);
@@ -2816,14 +2892,17 @@ private static class SpeciesConfig {
     public static float precalculateSeaLevel(long seed, float totalRegionWidth, PerlinNoise noise) {
         java.util.Random rand = new java.util.Random(seed);
         float waterProportion = 0.6f + rand.nextFloat() * 0.1f; 
+        // Over the part of the planet the chart shows
         float halfRegion = totalRegionWidth / 2.0f;
+        float halfHeight = Planet.clipHalfHeight();
         
         int totalSamples = 4000;
         java.util.ArrayList<Float> heightSamples = new java.util.ArrayList<>(totalSamples);
 
         for (int i = 0; i < totalSamples; i++) {
             float sampleX = (rand.nextFloat() * totalRegionWidth) - halfRegion;
-            float sampleZ = (rand.nextFloat() * totalRegionWidth) - halfRegion;
+            // Evenly over the sphere's surface, not the map, which stretches the far north and south
+            float sampleZ = (float) Planet.chartZ(Math.asin((rand.nextFloat() * 2f - 1f) * Math.sin(Planet.CLIP_LATITUDE)));
             
             float h = TerrainMesh.getLayeredHeight(sampleX, sampleZ, noise);
             heightSamples.add(h);
@@ -2983,7 +3062,7 @@ private static class SpeciesConfig {
         String name = "skybox";
         Mesh mesh = new Mesh(gl, InsideSphere.vertices.clone(), InsideSphere.indices.clone());
         Matrix4 modelMatrix = Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f);
-        Shader shader = new Shader(gl, "assets/shaders/vs_standard.txt", fragmentPath);
+        Shader shader = new Shader(gl, "assets/shaders/vs_standard.txt", fragmentPath).flat();
         Material material = new Material(new Vector3(0f, 0f, 0f), new Vector3(0f, 0f, 0f));
         material.setDiffuseMap(skyTexture);
         

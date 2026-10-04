@@ -224,7 +224,7 @@ public class OrganismManager {
 
     private List<Creature> populate(int cx, int cz) {
         List<Creature> list = new ArrayList<>();
-        Random rand = new Random(seed ^ (cx * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
+        Random rand = new Random(seed ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
         float centreX = (cx + 0.5f) * chunkSize, centreZ = (cz + 0.5f) * chunkSize;
         float[] presences = new float[species.size()];
         float total = 0f;

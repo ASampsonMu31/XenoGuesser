@@ -161,6 +161,18 @@ public class Camera {
     up.normalize();
   }
 
+  /** Which way the view faces across the ground, degrees from +x towards +z. */
+  public float getYaw() {
+    return yaw;
+  }
+
+  /** Turns the view about the vertical by this many degrees (towards +z). */
+  public void turn(float degrees) {
+    yaw += degrees;
+    updateFront();
+    updateCameraVectors();
+  }
+
   /** Moves across the ground without turning the view. */
   public void setGroundPosition(float x, float z) {
     this.position.x = x;

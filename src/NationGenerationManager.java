@@ -104,10 +104,11 @@ public class NationGenerationManager {
                     for (int dj = -1; dj <= 1; dj++) {
                         if (di == 0 && dj == 0) continue;
                         
-                        int nx = cx + di;
+                        // East and west run on round the planet
+                        int nx = Math.floorMod(cx + di, resolution);
                         int nz = cz + dj;
                         
-                        if (nx >= 0 && nx < resolution && nz >= 0 && nz < resolution) {
+                        if (nz >= 0 && nz < resolution) {
                             if (currentGrid[nx][nz] == 0 && newGrid[nx][nz] == 0) {
                                 hasEmptyNeighbor = true;
                                 
@@ -119,8 +120,10 @@ public class NationGenerationManager {
                                 
                                 // --- PER-COUNTRY NOISE FRICTION LOOKUP ---
                                 if (countryNoise != null) {
-                                    // Map eval output (roughly -1.0 to 1.0) to a friction multiplier
-                                    float noiseVal = countryNoise.eval(nx * COUNTRY_NOISE_SCALE, nz * COUNTRY_NOISE_SCALE);
+                                    // Map eval output (roughly -1.0 to 1.0) to a friction multiplier, sampled on the sphere
+                                    float cellX = ((float) nx / resolution) * totalRegionWidth - halfRegion;
+                                    float cellZ = ((float) nz / resolution) * totalRegionWidth - halfRegion;
+                                    float noiseVal = countryNoise.onSphere(Planet.surface(cellX, cellZ), COUNTRY_NOISE_SCALE * resolution / totalRegionWidth, 0f, 0f);
                                     // Scale to a range of roughly 0.2x to 1.8x speed
                                     float countryFriction = (float) ((noiseVal + 1.0) * 0.8 + 0.2);
                                     prob *= countryFriction;
@@ -180,9 +183,9 @@ public class NationGenerationManager {
         while (searchRadius < resolution) {
             for (int dx = -searchRadius; dx <= searchRadius; dx++) {
                 for (int dz = -searchRadius; dz <= searchRadius; dz++) {
-                    int nx = startX + dx;
+                    int nx = Math.floorMod(startX + dx, resolution);
                     int nz = startZ + dz;
-                    if (nx >= 0 && nx < resolution && nz >= 0 && nz < resolution) {
+                    if (nz >= 0 && nz < resolution) {
                         if (grid[nx][nz] != 0) {
                             return grid[nx][nz];
                         }
@@ -219,7 +222,7 @@ public class NationGenerationManager {
                 int simX = (int) (((float) x / width) * resolution);
                 int simZ = (int) (((float) z / height) * resolution);
                 
-                simX = Math.max(0, Math.min(simX, resolution - 1));
+                simX = Math.floorMod(simX, resolution);
                 simZ = Math.max(0, Math.min(simZ, resolution - 1));
                 
                 int cellVal = nationMap[simX][simZ];
@@ -242,11 +245,11 @@ public class NationGenerationManager {
     public int getNationAtWorld(float worldX, float worldZ, float totalRegionWidth) {
         float halfRegion = totalRegionWidth / 2.0f;
         
-        int simX = (int) (((worldX + halfRegion) / totalRegionWidth) * resolution);
+        int simX = (int) Math.floor(((worldX + halfRegion) / totalRegionWidth) * resolution);
         int simZ = (int) (((worldZ + halfRegion) / totalRegionWidth) * resolution);
         
         // Clamp to prevent out-of-bounds if the player reaches the absolute edge
-        simX = Math.max(0, Math.min(simX, resolution - 1));
+        simX = Math.floorMod(simX, resolution);   // round the planet
         simZ = Math.max(0, Math.min(simZ, resolution - 1));
         
         return nationMap[simX][simZ];

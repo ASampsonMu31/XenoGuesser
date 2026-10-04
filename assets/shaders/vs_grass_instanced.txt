@@ -16,18 +16,32 @@ uniform mat4 projection;
 uniform vec3 cameraPos; 
 uniform float time;
 uniform int worldSeed;
+uniform float planetWidth;
 
 float hash2D(vec2 p, float seedOffset) {
     return fract(sin(dot(p + seedOffset, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
+// The planet's curve (see Planet): lowered by curvature times the square of the distance
+// across the ground from curveCentre, along curveDown, the projection of a step up
+uniform vec2 curveCentre;
+uniform float curvature;
+uniform vec4 curveDown;
+
+vec4 planetDrop(vec3 world) {
+    vec2 d = world.xz - curveCentre;
+    return curveDown * (curvature * dot(d, d));
+}
+
 void main() {
     // 1. DYNAMIC ATLAS SELECTION
         // One of four blade shapes, and this blade's own width, lean, height and shade
-    float atlasHash = hash2D(aInstancePos.xz, float(worldSeed));
-    float widthHash = hash2D(aInstancePos.xz, float(worldSeed) + 17.0);
-    float leanHash = hash2D(aInstancePos.xz, float(worldSeed) + 31.0);
-    float shadeHash = hash2D(aInstancePos.xz, float(worldSeed) + 53.0);
+    // Where the blade is on the planet, the same whichever side of the map's join it's seen from
+    vec2 planetPos = vec2(mod(aInstancePos.x + planetWidth * 0.5, planetWidth), aInstancePos.z);
+    float atlasHash = hash2D(planetPos, float(worldSeed));
+    float widthHash = hash2D(planetPos, float(worldSeed) + 17.0);
+    float leanHash = hash2D(planetPos, float(worldSeed) + 31.0);
+    float shadeHash = hash2D(planetPos, float(worldSeed) + 53.0);
     vec2 modifiedUV = aTexCoords;
     modifiedUV.x = (aTexCoords.x + floor(atlasHash * 4.0)) * 0.25;
     TexCoords = modifiedUV;
@@ -57,5 +71,5 @@ void main() {
     }
 
     fWorldPos = worldPosition; 
-    gl_Position = projection * view * vec4(worldPosition, 1.0);
+    gl_Position = projection * view * vec4(worldPosition, 1.0) - planetDrop(worldPosition);
 }

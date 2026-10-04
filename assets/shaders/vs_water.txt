@@ -56,6 +56,17 @@ vec2 sampleMap(vec2 worldXZ) {
     return textureLod(waveMap, clamp((worldXZ - waveMapOrigin) / waveMapWidth, 0.0, 1.0), 0.0).rg;
 }
 
+// The planet's curve (see Planet): lowered by curvature times the square of the distance
+// across the ground from curveCentre, along curveDown, the projection of a step up
+uniform vec2 curveCentre;
+uniform float curvature;
+uniform vec4 curveDown;
+
+vec4 planetDrop(vec3 world) {
+    vec2 d = world.xz - curveCentre;
+    return curveDown * (curvature * dot(d, d));
+}
+
 void main() {
     vec3 world = vec3(model * vec4(position, 1.0));
     vec2 base = world.xz;
@@ -107,7 +118,7 @@ void main() {
         maxHeight += amplitude;
     }
 
-    gl_Position = viewProjection * vec4(displaced, 1.0);
+    gl_Position = viewProjection * vec4(displaced, 1.0) - planetDrop(displaced);
     PlanarDepth = gl_Position.w;
     aPos = displaced;
     aNormal = normalize(n);

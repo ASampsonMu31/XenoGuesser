@@ -12,8 +12,19 @@ out float PlanarDepth;
 uniform mat4 model;
 uniform mat4 mvpMatrix;
 
+// The planet's curve (see Planet): lowered by curvature times the square of the distance
+// across the ground from curveCentre, along curveDown, the projection of a step up
+uniform vec2 curveCentre;
+uniform float curvature;
+uniform vec4 curveDown;
+
+vec4 planetDrop(vec3 world) {
+    vec2 d = world.xz - curveCentre;
+    return curveDown * (curvature * dot(d, d));
+}
+
 void main() {
-    gl_Position = mvpMatrix * vec4(position, 1.0);
+    gl_Position = mvpMatrix * vec4(position, 1.0) - planetDrop(vec3(model * vec4(position, 1.0)));
     
     // Exact forward-facing depth used by water screen-space thickness calculations
     PlanarDepth = gl_Position.w; 

@@ -18,6 +18,11 @@ public class Matrix4 {
         this.values = values.clone();
     }
 
+    /** A matrix from 16 values, column by column (as OpenGL stores them). */
+    public static Matrix4 fromColumns(float[] values) {
+        return new Matrix4(values);
+    }
+
     public void set(int row, int column, float value) {
         if (row < 0 || row >= 4 || column < 0 || column >= 4) {
             throw new IndexOutOfBoundsException("Matrix indices must be between 0 and 3");

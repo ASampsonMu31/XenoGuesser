@@ -419,11 +419,11 @@ public class OrganismSpecies {
     /** Per-individual traits from where it lives: {size scale, leg scale, hue shift, morph (0 or 1)}. */
     public float[] traitsAt(float worldX, float worldZ, Random rand) {
         float clineScale = 1.0f / 18000f;
-        float size = 1.0f + 0.35f * sizeCline.eval(worldX * clineScale, worldZ * clineScale) + (rand.nextFloat() - 0.5f) * 0.12f;
-        float legs = 1.0f + 0.3f * legCline.eval(worldX * clineScale, worldZ * clineScale);
-        float hueShift = 0.12f * hueCline.eval(worldX * clineScale * 0.8f, worldZ * clineScale * 0.8f);
+        float size = 1.0f + 0.35f * sizeCline.onSphere(Planet.surface(worldX, worldZ), clineScale, 0f, 0f) + (rand.nextFloat() - 0.5f) * 0.12f;
+        float legs = 1.0f + 0.3f * legCline.onSphere(Planet.surface(worldX, worldZ), clineScale, 0f, 0f);
+        float hueShift = 0.12f * hueCline.onSphere(Planet.surface(worldX, worldZ), clineScale * 0.8f, 0f, 0f);
         // The share of the second morph runs smoothly from none to all across the range
-        float share = 0.5f + 0.9f * morphCline.eval(worldX * clineScale * 0.7f, worldZ * clineScale * 0.7f);
+        float share = 0.5f + 0.9f * morphCline.onSphere(Planet.surface(worldX, worldZ), clineScale * 0.7f, 0f, 0f);
         float morph = rand.nextFloat() < share ? 1f : 0f;
         return new float[] { size, legs, hueShift, morph };
     }

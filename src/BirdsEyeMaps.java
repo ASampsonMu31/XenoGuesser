@@ -86,7 +86,8 @@ public class BirdsEyeMaps {
             float pixelWidth = Math.max(MIN_BUILDING_PIXELS, width * pixelsPerUnit);
             float pixelDepth = Math.max(MIN_BUILDING_PIXELS, depth * pixelsPerUnit);
             g.setTransform(identity);
-            g.translate(worldToPixel(x), worldToPixel(z));
+            // Anything built past the map's join is drawn where it is on the planet
+            g.translate(worldToPixel((float) Planet.wrapX(x)), worldToPixel(z));
             // Local +X maps to world (cos, -sin), i.e. a clockwise turn on the map
             g.rotate(-Math.toRadians(rotationY));
             g.fill(new Rectangle2D.Float(-pixelWidth * 0.5f, -pixelDepth * 0.5f, pixelWidth, pixelDepth));
@@ -111,6 +112,17 @@ public class BirdsEyeMaps {
                 line.lineTo(worldToPixel(points.get(i).x), worldToPixel(points.get(i).z));
             }
             g.draw(line);
+            // ...and a road running over the map's join is drawn again from the other side
+            float pixelsRound = totalRegionWidth * detailResolution / totalRegionWidth;
+            for (Vector3 p : points) {
+                if (Math.abs(p.x) > totalRegionWidth * 0.5f) {
+                    float shift = p.x > 0 ? -pixelsRound : pixelsRound;
+                    g.translate(shift, 0);
+                    g.draw(line);
+                    g.translate(-shift, 0);
+                    break;
+                }
+            }
         });
     }
 
