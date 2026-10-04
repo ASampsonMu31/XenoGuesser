@@ -22,12 +22,14 @@ public class RoadNetworkBuilder {
     // Highway routing grid
     private static final float ROUTING_CELL_SIZE = 400.0f;
     private static final float ROUTING_LAND_MARGIN = 3.0f;
-    private static final float SLOPE_COST = 60.0f;
+    private static final float SLOPE_COST = 120.0f;
+    // Grades past this (rise over run) are dearer still, so roads wind round hills instead
+    private static final float GENTLE_GRADE = 0.07f, STEEP_GRADE_COST = 3000.0f;
     // Rugged cells (steep ground within them, not just between centres) cost extra to cross
     private static final float RUGGED_COST = 40.0f;
     // Finished roads are nudged sideways, up to this far a pass, to ease their gradients
-    private static final float EASE_OFFSET = 30.0f;
-    private static final int EASE_PASSES = 6;
+    private static final float EASE_OFFSET = 40.0f;
+    private static final int EASE_PASSES = 12;
     // Following an existing highway is cheaper, so routes merge into trunk roads
     private static final float EXISTING_ROAD_COST = 0.35f;
     private static final float HEURISTIC_WEIGHT = 0.6f;
@@ -42,6 +44,8 @@ public class RoadNetworkBuilder {
     // City streets
     private static final float STREET_URBANNESS = 0.28f;
     private static final int MIN_STREET_POINTS = 3;
+    // A street doesn't climb more steeply than this (rise over run) between its points
+    private static final float MAX_STREET_GRADE = 0.14f;
 
     // Country lanes
     private static final int LANES_FROM_HIGHWAYS = 700;
@@ -155,8 +159,10 @@ public class RoadNetworkBuilder {
         buildLanes();
         int laneCount = roads.size() - highwayCount - streetCount;
         closeLooseEnds();
-        System.out.printf("[ROADS] %d highway, %d street and %d lane paths, %d dead ends generated in %d ms%n",
-                highwayCount, streetCount, laneCount, deadEnds.size(), System.currentTimeMillis() - startTime);
+        int beforeTracks = roads.size();
+        buildTracks();
+        System.out.printf("[ROADS] %d highway, %d street, %d lane and %d track paths, %d dead ends generated in %d ms%n",
+                highwayCount, streetCount, laneCount, roads.size() - beforeTracks, deadEnds.size(), System.currentTimeMillis() - startTime);
         return roads;
     }
 
@@ -437,7 +443,8 @@ public class RoadNetworkBuilder {
 
                     float slope = Math.abs(cellHeight[next] - cellHeight[cell]) / stepLength;
                     float rugged = cellRugged[next];
-                    float stepCost = stepLength * (1.0f + SLOPE_COST * slope * slope + RUGGED_COST * rugged * rugged);
+                    float steep = Math.max(0f, slope - GENTLE_GRADE);
+                    float stepCost = stepLength * (1.0f + SLOPE_COST * slope * slope + STEEP_GRADE_COST * steep * steep + RUGGED_COST * rugged * rugged);
                     if (cellHasHighway[next]) {
                         stepCost *= EXISTING_ROAD_COST;
                     }
@@ -528,6 +535,13 @@ public class RoadNetworkBuilder {
         for (SettlementManager.Settlement settlement : settlementManager.getSettlements()) {
             float extent = settlement.radiusAtUrbanness(STREET_URBANNESS);
             float heading = streetRand.nextFloat() * (float) Math.PI;
+            // On a hillside the streets run along the slope, the cross streets up it
+            float span = Math.max(ROAD_STEP * 2f, extent * 0.5f);
+            float gx = TerrainMesh.getLayeredHeight(settlement.x + span, settlement.z, terrainNoise)
+                    - TerrainMesh.getLayeredHeight(settlement.x - span, settlement.z, terrainNoise);
+            float gz = TerrainMesh.getLayeredHeight(settlement.x, settlement.z + span, terrainNoise)
+                    - TerrainMesh.getLayeredHeight(settlement.x, settlement.z - span, terrainNoise);
+            if (Math.hypot(gx, gz) / (2f * span) > 0.035f) heading = (float) Math.atan2(gz, gx) + (float) Math.PI * 0.5f;
             float phaseA = streetRand.nextFloat();
             float phaseB = streetRand.nextFloat();
             if (extent < ROAD_STEP * 2.0f) {
@@ -580,9 +594,19 @@ public class RoadNetworkBuilder {
                 float x = settlement.x + dirX * t + sideX * (offset + drift);
                 float z = settlement.z + dirZ * t + sideZ * (offset + drift);
 
+                float height = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
                 boolean inTown = settlementManager.getUrbanness(x, z) >= STREET_URBANNESS
                         && settlementManager.dominantSettlementAt(x, z) == settlement
-                        && TerrainMesh.getLayeredHeight(x, z, terrainNoise) > seaLevelHeight + 0.5f;
+                        && height > seaLevelHeight + 0.5f;
+                // Too steep from the last point: the street stops short of the climb
+                if (inTown && !run.isEmpty()) {
+                    float[] last = run.get(run.size() - 1);
+                    float climb = Math.abs(height - TerrainMesh.getLayeredHeight(last[0], last[1], terrainNoise));
+                    if (climb > MAX_STREET_GRADE * (float) Math.hypot(x - last[0], z - last[1])) {
+                        emitStreet(run);
+                        run = new ArrayList<>();
+                    }
+                }
                 if (inTown) {
                     run.add(new float[] { x, z });
                 } else {
@@ -754,6 +778,86 @@ public class RoadNetworkBuilder {
     }
 
     // ==========================================
+    //              DIRT TRACKS
+    // ==========================================
+
+    private static final int TRACKS = 1400;
+    private static final float TRACK_MIN_LENGTH = 1500.0f, TRACK_MAX_LENGTH = 9000.0f;
+    private static final float TRACK_MAX_URBANNESS = 0.22f;
+    // How far ahead a track looks for open country to head into, and what counts as open
+    private static final float TRACK_LOOKAHEAD = 1800.0f, TRACK_CLEARANCE = 700.0f;
+
+    /**
+     * Dirt tracks branching off the highways and lanes (and each other) and running a long
+     * way out into the country, towards wherever there are fewest roads: wandering, keeping
+     * to the gentlest ground, and ending wherever they peter out, at the shore, at a town, or
+     * where they meet another road.
+     */
+    private void buildTracks() {
+        Random rand = new Random(seed + 424242L);
+        int made = 0;
+        for (int attempt = 0; attempt < TRACKS * 4 && made < TRACKS && !indexedPoints.isEmpty(); attempt++) {
+            int[] entry = indexedPoints.get(rand.nextInt(indexedPoints.size()));
+            RoadPath source = roads.get(entry[0]);
+            if (entry[1] < 1 || entry[1] >= source.points.size()) continue;
+            if (source.roadClass == RoadPath.RoadClass.STREET && rand.nextFloat() < 0.7f) continue;
+            Vector3 origin = source.points.get(entry[1]);
+            if (settlementManager.getUrbanness(origin.x, origin.z) > TRACK_MAX_URBANNESS) continue;
+            Vector3 previous = source.points.get(entry[1] - 1);
+            float along = (float) Math.atan2(origin.z - previous.z, origin.x - previous.x);
+            // Out to whichever side has open country ahead (if neither, usually not at all)
+            float best = Float.NaN;
+            for (float side : rand.nextBoolean() ? new float[] { 1f, -1f } : new float[] { -1f, 1f }) {
+                float heading = along + side * ((float) Math.PI * 0.5f + (rand.nextFloat() - 0.5f) * 0.8f);
+                float aheadX = origin.x + (float) Math.cos(heading) * TRACK_LOOKAHEAD;
+                float aheadZ = origin.z + (float) Math.sin(heading) * TRACK_LOOKAHEAD;
+                if (nearestRoad(aheadX, aheadZ, TRACK_CLEARANCE, -1, null, -1.0f) == null) {
+                    best = heading;
+                    break;
+                }
+            }
+            if (Float.isNaN(best)) {
+                if (rand.nextFloat() < 0.8f) continue;
+                best = along + (rand.nextBoolean() ? 1f : -1f) * (float) Math.PI * 0.5f;
+            }
+            if (growTrack(origin.x, origin.z, best, entry[0], rand)) made++;
+        }
+    }
+
+    private boolean growTrack(float startX, float startZ, float heading, int originPath, Random random) {
+        float length = TRACK_MIN_LENGTH + random.nextFloat() * (TRACK_MAX_LENGTH - TRACK_MIN_LENGTH);
+        int steps = (int) (length / ROAD_STEP);
+        RoadPath path = new RoadPath(RoadPath.RoadClass.DIRT);
+        path.points.add(groundPoint(startX, startZ));
+        float x = startX, z = startZ;
+        float drift = (random.nextFloat() - 0.5f) * 0.04f;
+        float clip = Planet.clipHalfHeight() * 0.95f;
+        for (int step = 0; step < steps; step++) {
+            heading += drift + (random.nextFloat() - 0.5f) * 0.45f;
+            heading = flattestHeading(x, z, heading);
+            float nx = x + (float) Math.cos(heading) * ROAD_STEP, nz = z + (float) Math.sin(heading) * ROAD_STEP;
+            float height = TerrainMesh.getLayeredHeight(nx, nz, terrainNoise);
+            // Peters out at the shore, the chart's edge, steep ground or the edge of a town
+            if (Math.abs(nx) > halfRegion || Math.abs(nz) > clip || height <= seaLevelHeight + 0.5f) break;
+            if (Math.abs(height - TerrainMesh.getLayeredHeight(x, z, terrainNoise)) > ROAD_STEP * 0.22f) break;
+            if (settlementManager.getUrbanness(nx, nz) > TRACK_MAX_URBANNESS + 0.08f) break;
+            x = nx;
+            z = nz;
+            // Meeting another road: on to it, and done
+            RoadHit hit = nearestRoad(x, z, LANE_JOIN_DISTANCE, step < 5 ? originPath : -1, null, -1.0f);
+            if (hit != null && step >= 3) {
+                path.points.add(groundPoint(hit.x, hit.z));
+                break;
+            }
+            path.points.add(groundPoint(x, z));
+        }
+        if (path.points.size() < 8) return false;
+        roads.add(path);
+        indexPath(roads.size() - 1);
+        return true;
+    }
+
+    // ==========================================
     //              LOOSE ENDS
     // ==========================================
 
@@ -765,7 +869,7 @@ public class RoadNetworkBuilder {
         int pathCount = roads.size();
         for (int pathIndex = 0; pathIndex < pathCount; pathIndex++) {
             RoadPath path = roads.get(pathIndex);
-            if (path.roadClass == RoadPath.RoadClass.LANE || path.points.size() < 2) {
+            if (path.roadClass == RoadPath.RoadClass.LANE || path.roadClass == RoadPath.RoadClass.DIRT || path.points.size() < 2) {
                 continue;
             }
             closeEnd(pathIndex, true);
@@ -1048,11 +1152,12 @@ public class RoadNetworkBuilder {
     private float flattestHeading(float x, float z, float heading) {
         float here = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
         float best = heading, bestScore = Float.MAX_VALUE;
-        for (float offset : new float[] { 0f, 0.3f, -0.3f, 0.6f, -0.6f }) {
+        for (float offset : new float[] { 0f, 0.3f, -0.3f, 0.6f, -0.6f, 0.95f, -0.95f }) {
             float h = heading + offset;
             float nx = x + (float) Math.cos(h) * ROAD_STEP, nz = z + (float) Math.sin(h) * ROAD_STEP;
             float grade = Math.abs(TerrainMesh.getLayeredHeight(nx, nz, terrainNoise) - here) / ROAD_STEP;
-            float score = grade * grade * 8.0f + Math.abs(offset) * 0.15f;
+            float steep = Math.max(0f, grade - GENTLE_GRADE);
+            float score = grade * grade * 8.0f + steep * steep * 300.0f + Math.abs(offset) * 0.15f;
             if (score < bestScore) {
                 bestScore = score;
                 best = h;
@@ -1089,7 +1194,8 @@ public class RoadNetworkBuilder {
                     float la = (float) Math.hypot(x - a[0], z - a[1]), lc = (float) Math.hypot(x - c[0], z - c[1]);
                     float ga = Math.abs(height - h[i - 1]) / Math.max(1f, la), gc = Math.abs(h[i + 1] - height) / Math.max(1f, lc);
                     float bend = (float) Math.hypot(x - midX, z - midZ) / ROAD_STEP;
-                    float score = (ga * ga * la + gc * gc * lc) * 10.0f + bend * bend * 6.0f;
+                    float steepA = Math.max(0f, ga - GENTLE_GRADE), steepC = Math.max(0f, gc - GENTLE_GRADE);
+                    float score = (ga * ga * la + gc * gc * lc) * 10.0f + (steepA * steepA * la + steepC * steepC * lc) * 200.0f + bend * bend * 6.0f;
                     if (score < bestScore) {
                         bestScore = score;
                         bestX = x;

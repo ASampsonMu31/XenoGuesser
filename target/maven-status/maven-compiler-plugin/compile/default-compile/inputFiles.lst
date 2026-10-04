@@ -31,6 +31,8 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingArt.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingProgress.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingScreen.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MainMenu.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapColours.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapLayersPanel.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapPanel.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Material.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MaterialConstants.java
@@ -48,6 +50,8 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\OrganismSpecies.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PackagingArt.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PerlinNoise.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Planet.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlanetName.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlanetVoice.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlayerBody.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ProceduralTextures.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Products.java
@@ -71,6 +75,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TextureLibrary.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TileableNoise.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TransmissionMessage.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TwoTriangles.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Vehicles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WorldArtGenerator.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WorldPalette.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\XenoGuesser.java

@@ -27,12 +27,9 @@ public class RegionalGenerationManager {
         this.seaLevelHeight = seaLevelHeight;
         this.worldSeed = seed;
 
-        // Latitudinal Baseline Configuration
-        // Warmest at the equator, cooling towards the poles
-        this.temperatureMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            float temp = (float) Math.cos(Planet.latitude(worldZ) * 1.15);
-            return Math.max(0.0f, Math.min(1.0f, temp));
-        });
+        // How warm it is, 0 coldest to 1 hottest (see temperatureAt)
+        this.temperatureNoise = new PerlinNoise(seed * 977L + 31L);
+        this.temperatureMap = new RegionalFactor(1.0f, this::temperatureAt);
 
         this.coldMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
             1.0f - this.temperatureMap.evaluate(cx, cz, worldX, worldZ)
@@ -42,6 +39,40 @@ public class RegionalGenerationManager {
     // ==========================================
     //        UNIVERSAL FACTORY DESIGNERS
     // ==========================================
+
+    private final PerlinNoise temperatureNoise;
+    // The ground's height above the sea in every chunk (from the water pre-scan), for how
+    // much colder the heights are
+    private float[] chunkAltitude;
+
+    /**
+     * How warm a place is, 0 coldest to 1 hottest: warmest at the equator and coldest at
+     * the poles; inland hotter than the coast in the tropics and colder towards the poles (the
+     * sea evens temperatures out); colder the higher the ground; and varying from region to
+     * region besides.
+     */
+    private float temperatureAt(int cx, int cz, float worldX, float worldZ) {
+        double latitude = Planet.latitude(worldZ);
+        float warmth = (float) Math.cos(latitude);
+        float temp = 0.06f + 0.94f * (float) Math.pow(Math.max(0.0, warmth), 1.6);
+        if (waterFieldSize > 0) {
+            int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
+            int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
+            int d = waterField[j * waterFieldSize + i];
+            if (d > 0) {
+                // The further inland, the more extreme: hotter where it's warm, colder where it's cool
+                float inland = Math.min(1f, d / 80f);
+                temp += 0.14f * inland * (warmth - 0.55f) * 2f;
+            }
+            if (chunkAltitude != null) {
+                // About a third of the scale colder for every thousand units up
+                temp -= Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * 0.00033f;
+            }
+        }
+        float[] surface = Planet.surface(worldX, worldZ);
+        temp += 0.09f * temperatureNoise.onSphere(surface, 1f / 9000f, 0f, 0f) + 0.04f * temperatureNoise.onSphere(surface, 1f / 2500f, 7.3f, 1.9f);
+        return Math.max(0.0f, Math.min(1.0f, temp));
+    }
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
         return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
@@ -100,7 +131,18 @@ public class RegionalGenerationManager {
     //       REFACTORED VISUALIZATION ENGINE
     // ==========================================
 
+    /** The colours of a temperature map, coldest to hottest: deep blue through pale to red. */
+    public static final float[][] TEMPERATURE_SPECTRUM = {
+        { 0.10f, 0.20f, 0.75f }, { 0.45f, 0.75f, 0.95f }, { 1.00f, 0.80f, 0.35f }, { 0.85f, 0.10f, 0.05f }
+    };
+
     public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label) {
+        return generateHeatmap(totalRegionWidth, physicalChunkSize, factorToVisualize, label, null);
+    }
+
+    /** As generateHeatmap, in the given four colours from lowest to highest (null for the usual red to green). */
+    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label,
+                                         float[][] colours) {
         int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
         int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
         int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
@@ -111,7 +153,7 @@ public class RegionalGenerationManager {
 
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 
-        float[][] spectrum = {
+        float[][] spectrum = colours != null ? colours : new float[][] {
             {0.85f, 0.00f, 0.00f}, // Red
             {1.00f, 0.50f, 0.00f}, // Orange
             {1.00f, 0.90f, 0.00f}, // Yellow
@@ -185,6 +227,7 @@ public class RegionalGenerationManager {
         waterFieldSize = (int) Math.ceil(half / physicalChunkSize) - waterFieldMin + 1;
         waterField = new short[waterFieldSize * waterFieldSize];
         java.util.Arrays.fill(waterField, (short) -1);
+        float[] altitude = new float[waterFieldSize * waterFieldSize];
 
         int[] queue = new int[waterFieldSize * waterFieldSize];
         int head = 0, tail = 0;
@@ -192,7 +235,9 @@ public class RegionalGenerationManager {
             for (int i = 0; i < waterFieldSize; i++) {
                 float worldX = (waterFieldMin + i + 0.5f) * physicalChunkSize;
                 float worldZ = (waterFieldMin + j + 0.5f) * physicalChunkSize;
-                if (TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise) <= seaLevelHeight) {
+                float height = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+                altitude[j * waterFieldSize + i] = height - seaLevelHeight;
+                if (height <= seaLevelHeight) {
                     waterField[j * waterFieldSize + i] = 0;
                     queue[tail++] = j * waterFieldSize + i;
                 }
@@ -207,6 +252,7 @@ public class RegionalGenerationManager {
             if (j > 0) tail = visit(cell - waterFieldSize, next, queue, tail);
             if (j < waterFieldSize - 1) tail = visit(cell + waterFieldSize, next, queue, tail);
         }
+        chunkAltitude = altitude;
     }
 
         // Bodies of water smaller than this (in chunks) are calm; waves reach full size at the upper bound

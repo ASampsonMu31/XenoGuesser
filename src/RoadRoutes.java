@@ -18,6 +18,8 @@ public final class RoadRoutes {
     private static final float CELL = 40f;
     private final float[] xs, zs;
     private final int[][] links;
+    // Which road each point is on, so a place can join the road it's beside rather than any road near
+    private final int[] pathOf;
     private final Map<Long, List<Integer>> grid = new HashMap<>();
 
     public RoadRoutes(InfrastructureManager infrastructure) {
@@ -31,7 +33,7 @@ public final class RoadRoutes {
         int n = points.size();
         xs = new float[n];
         zs = new float[n];
-        int[] pathOf = new int[n];
+        pathOf = new int[n];
         for (int i = 0; i < n; i++) {
             xs[i] = points.get(i)[0];
             zs[i] = points.get(i)[1];
@@ -88,24 +90,51 @@ public final class RoadRoutes {
         return found;
     }
 
-    private int nearest(float x, float z) {
-        for (float reach = CELL; reach <= CELL * 8; reach *= 2) {
-            int best = -1;
+    /**
+     * Where a place joins the roads: the nearest point on any road's line (not merely its nearest
+     * point, which on a long straight stretch may be on some other road altogether, across a
+     * crash barrier or someone's garden), as {point before, point after, x, z}; null if none is near.
+     */
+    private float[] onRoad(float x, float z) {
+        for (float reach = CELL * 2; reach <= CELL * 16; reach *= 2) {
+            float[] best = null;
             float bestDistance = Float.MAX_VALUE;
             for (int i : near(x, z, reach)) {
-                float dx = xs[i] - x, dz = zs[i] - z, d = dx * dx + dz * dz;
-                if (d < bestDistance) { bestDistance = d; best = i; }
+                for (int j : links[i]) {
+                    if (pathOf[j] != pathOf[i] || Math.abs(j - i) != 1) continue;
+                    float ex = xs[j] - xs[i], ez = zs[j] - zs[i], len2 = ex * ex + ez * ez;
+                    float t = len2 < 1e-6f ? 0f : Math.max(0f, Math.min(1f, ((x - xs[i]) * ex + (z - zs[i]) * ez) / len2));
+                    float px = xs[i] + ex * t, pz = zs[i] + ez * t;
+                    float d = (px - x) * (px - x) + (pz - z) * (pz - z);
+                    if (d < bestDistance) {
+                        bestDistance = d;
+                        best = new float[] { i, j, px, pz };
+                    }
+                }
             }
-            if (best >= 0) return best;
+            if (best != null) return best;
         }
-        return -1;
+        return null;
     }
 
-    /** The way along the roads between two places, as {x, z} points from a to b; empty if there's none nearby. */
+    /**
+     * The way along the roads between two places, as {x, z} points from a to b; empty if there's
+     * none nearby. Each place joins the road it's on where it's nearest, and sets off along it
+     * whichever way is shorter.
+     */
     public List<float[]> route(float ax, float az, float bx, float bz) {
         List<float[]> way = new ArrayList<>();
-        int start = nearest(ax, az), goal = nearest(bx, bz);
-        if (start < 0 || goal < 0) return way;
+        float[] from = onRoad(ax, az), to = onRoad(bx, bz);
+        if (from == null || to == null) return way;
+        int[] starts = { (int) from[0], (int) from[1] }, goals = { (int) to[0], (int) to[1] };
+        // On the same stretch: straight along it
+        if (Math.min(starts[0], starts[1]) == Math.min(goals[0], goals[1]) && Math.max(starts[0], starts[1]) == Math.max(goals[0], goals[1])) {
+            way.add(new float[] { ax, az });
+            way.add(new float[] { from[2], from[3] });
+            way.add(new float[] { to[2], to[3] });
+            way.add(new float[] { bx, bz });
+            return way;
+        }
         float straight = (float) Math.hypot(bx - ax, bz - az);
         float limit = straight * 3f + 400f;
         float[] cost = new float[xs.length];
@@ -113,30 +142,42 @@ public final class RoadRoutes {
         int[] previous = new int[xs.length];
         Arrays.fill(previous, -1);
         PriorityQueue<float[]> open = new PriorityQueue<>((p, q) -> Float.compare(p[0], q[0]));
-        cost[start] = 0f;
-        open.add(new float[] { heuristic(start, goal), start });
+        for (int s : starts) {
+            cost[s] = (float) Math.hypot(xs[s] - from[2], zs[s] - from[3]);
+            open.add(new float[] { cost[s] + heuristic(s, to[2], to[3]), s });
+        }
+        int goal = -1;
+        float bestTotal = Float.MAX_VALUE;
         while (!open.isEmpty()) {
             float[] top = open.poll();
+            if (top[0] >= bestTotal) break;
             int at = (int) top[1];
-            if (at == goal) break;
-            if (top[0] - heuristic(at, goal) > cost[at] + 1e-3f) continue;
+            if (top[0] - heuristic(at, to[2], to[3]) > cost[at] + 1e-3f) continue;
+            for (int g : goals) {
+                if (at == g) {
+                    float total = cost[at] + (float) Math.hypot(xs[at] - to[2], zs[at] - to[3]);
+                    if (total < bestTotal) { bestTotal = total; goal = at; }
+                }
+            }
             for (int next : links[at]) {
                 float c = cost[at] + (float) Math.hypot(xs[next] - xs[at], zs[next] - zs[at]);
                 if (c < cost[next] && c < limit) {
                     cost[next] = c;
                     previous[next] = at;
-                    open.add(new float[] { c + heuristic(next, goal), next });
+                    open.add(new float[] { c + heuristic(next, to[2], to[3]), next });
                 }
             }
         }
-        if (cost[goal] == Float.MAX_VALUE) return way;
+        if (goal < 0) return way;
         way.add(new float[] { bx, bz });
+        way.add(0, new float[] { to[2], to[3] });
         for (int at = goal; at >= 0; at = previous[at]) way.add(0, new float[] { xs[at], zs[at] });
+        way.add(0, new float[] { from[2], from[3] });
         way.add(0, new float[] { ax, az });
         return way;
     }
 
-    private float heuristic(int a, int b) {
-        return (float) Math.hypot(xs[a] - xs[b], zs[a] - zs[b]);
+    private float heuristic(int a, float x, float z) {
+        return (float) Math.hypot(xs[a] - x, zs[a] - z);
     }
 }

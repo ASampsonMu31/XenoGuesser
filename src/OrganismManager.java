@@ -40,6 +40,8 @@ public class OrganismManager {
         float x, z, heading;
         float targetX, targetZ;
         float pause;
+        // Off somewhere further, steadily and a little quicker, rather than grazing about
+        boolean travelling;
         float walking;
         float gaitPhase;
         Random rand;
@@ -86,6 +88,24 @@ public class OrganismManager {
 
     private boolean isWild(float x, float z) {
         return urbanness.at(x, z) < 0.12f;
+    }
+
+    // Whether a point is on (or within so far of) a road: creatures neither start nor stop on
+    // one, where the crash barriers along highways would hem them in (they may cross)
+    @FunctionalInterface
+    public interface RoadLookup {
+        boolean near(float worldX, float worldZ, float clearance);
+    }
+
+    private RoadLookup roads = (x, z, clearance) -> false;
+
+    public void setRoads(RoadLookup lookup) {
+        this.roads = lookup;
+    }
+
+    /** Somewhere a walking creature can be: dry land in the wild, off the roads. */
+    private boolean walkable(float x, float z) {
+        return TerrainMesh.getLayeredHeight(x, z, terrainNoise) > seaLevel + 1f && isWild(x, z) && !roads.near(x, z, 10f);
     }
 
     public OrganismManager(long seed, float chunkSize, float seaLevel, PerlinNoise terrainNoise,
@@ -246,7 +266,7 @@ public class OrganismManager {
                 float x = cx * chunkSize + rand.nextFloat() * chunkSize;
                 float z = cz * chunkSize + rand.nextFloat() * chunkSize;
                 boolean flies = s.locomotion == OrganismSpecies.Locomotion.FLYER;
-                if (!flies && (TerrainMesh.getLayeredHeight(x, z, terrainNoise) <= seaLevel + 1f || !isWild(x, z))) continue;
+                if (!flies && !walkable(x, z)) continue;
                 list.add(create(s, x, z, new Random(rand.nextLong())));
             }
         }
@@ -279,17 +299,33 @@ public class OrganismManager {
         return WorldPalette.hsv(hsv[0] + shift, hsv[1], hsv[2]);
     }
 
+    /**
+     * Where to go next. Mostly a purposeful trip: a good way off, roughly on the way it was
+     * already going (turning back towards home if it has wandered far), walked steadily. Now and
+     * then a little grazing about nearby instead.
+     */
     private void pickTarget(Creature c) {
-        for (int attempt = 0; attempt < 8; attempt++) {
-            double angle = c.rand.nextDouble() * Math.PI * 2;
-            float r = ROAM_RADIUS * (float) Math.sqrt(c.rand.nextDouble());
-            float tx = c.homeX + r * (float) Math.cos(angle), tz = c.homeZ + r * (float) Math.sin(angle);
-            if (TerrainMesh.getLayeredHeight(tx, tz, terrainNoise) > seaLevel + 1f && isWild(tx, tz)) {
+        c.travelling = c.rand.nextFloat() < 0.65f;
+        float fromHome = (float) Math.hypot(c.x - c.homeX, c.z - c.homeZ);
+        float towardsHome = (float) Math.atan2(c.homeX - c.x, c.homeZ - c.z);
+        for (int attempt = 0; attempt < 10; attempt++) {
+            float angle, r;
+            if (c.travelling) {
+                float base = fromHome > ROAM_RADIUS * 3f ? towardsHome : c.heading;
+                angle = base + (c.rand.nextFloat() - 0.5f) * 1.6f;
+                r = ROAM_RADIUS * (1.2f + 1.6f * c.rand.nextFloat());
+            } else {
+                angle = c.rand.nextFloat() * (float) Math.PI * 2f;
+                r = 10f + 25f * c.rand.nextFloat();
+            }
+            float tx = c.x + r * (float) Math.sin(angle), tz = c.z + r * (float) Math.cos(angle);
+            if (walkable(tx, tz)) {
                 c.targetX = tx;
                 c.targetZ = tz;
                 return;
             }
         }
+        c.travelling = false;
         c.targetX = c.homeX;
         c.targetZ = c.homeZ;
     }
@@ -300,9 +336,10 @@ public class OrganismManager {
             double angle = c.heading + Math.PI + (c.rand.nextDouble() - 0.5) * 2.2;
             float r = ROAM_RADIUS * (0.3f + 0.4f * c.rand.nextFloat());
             float tx = c.x + r * (float) Math.sin(angle), tz = c.z + r * (float) Math.cos(angle);
-            if (TerrainMesh.getLayeredHeight(tx, tz, terrainNoise) > seaLevel + 1f) {
+            if (TerrainMesh.getLayeredHeight(tx, tz, terrainNoise) > seaLevel + 1f && !roads.near(tx, tz, 10f)) {
                 c.targetX = tx;
                 c.targetZ = tz;
+                c.travelling = true;
                 return;
             }
         }
@@ -323,7 +360,7 @@ public class OrganismManager {
             c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond) % 1f;
             return;
         }
-        float speed = c.species.walkSpeed * c.sizeScale * c.legScale;
+        float speed = c.species.walkSpeed * c.sizeScale * c.legScale * (c.travelling ? 1.35f : 1f);
         boolean resting = c.pause > 0f;
         if (resting) {
             c.pause -= dt;
@@ -331,7 +368,8 @@ public class OrganismManager {
             float dx = c.targetX - c.x, dz = c.targetZ - c.z;
             float distance = (float) Math.sqrt(dx * dx + dz * dz);
             if (distance < 4f) {
-                c.pause = 1f + c.rand.nextFloat() * 6f;
+                // A short stop after a trip; a longer one grazing
+                c.pause = c.travelling ? 0.3f + c.rand.nextFloat() * 1.7f : 2f + c.rand.nextFloat() * 6f;
                 pickTarget(c);
             } else {
                 float desired = (float) Math.atan2(dx, dz);

@@ -204,6 +204,8 @@ private static class SpeciesConfig {
     private int grassVBO = 0;
     private int grassChunkCoordVBO = 0; 
     private int totalGrassInstances = 0;
+    // How many grass blades are in the instance buffer (thinned with distance), as drawn
+    private int drawnGrassInstances = 0;
     
     private final int GRASS_VIEW_DISTANCE = 21;
         private final int MAX_GRASS_LIMIT = 1200;
@@ -244,8 +246,6 @@ private static class SpeciesConfig {
 
     private final boolean IS_DEBUG_MODE_ACTIVE;
     private FactorName currentDebugFactor;
-    private boolean lastKeyboardG = false;
-    private boolean lastKeyboardH = false;
 
 
     private boolean isToTeleport = false;
@@ -266,15 +266,7 @@ private static class SpeciesConfig {
 
     // Bird's-eye minimap layers, rendered on a background thread at startup
     private static final int BIRDS_EYE_MAP_RESOLUTION = 750;
-    private volatile BufferedImage roadNetworkMap;
-    
-
-    private volatile BufferedImage buildingMap;
-    // Three times the resolution, swapped in when the player zooms the minimap
-    private volatile BufferedImage roadNetworkMapDetail;
-    
-
-    private volatile BufferedImage buildingMapDetail;
+    private volatile BirdsEyeMaps birdsEyeMaps;
 
     // Cities thin out trees and draw fewer distant details to pay for their extra buildings
     private static final float URBAN_FLORA_REDUCTION = 0.75f;
@@ -308,40 +300,25 @@ private static class SpeciesConfig {
     private Map<Integer, Integer> nationAtlasSizes;
     private Map<Integer, Integer> nationDirections;
 
+    /** The overlays the map can colour the land by. */
     public enum FactorName {
-      GRASS_ABUNDANCE,
-      GRASS_HEIGHT,
-      GRASS_COLOUR,
-      LEAF_COLOUR,
-      GRASS_TEMPERATURE_PREFERENCE,
-      LEAF_TEMPERATURE_PREFERENCE,
-      MOISTURE,
-      GRASS_PATCH_NOISE,
-      GRASS_HEIGHT_NOISE,
-      GRASS_COLOUR_NOISE,
-            LEAF_COLOUR_NOISE,
-      SOIL_COLOUR_VARIANT_A,
-      SOIL_COLOUR_VARIANT_B,
-      TREE_1_ABUNDANCE,
-      TREE_2_ABUNDANCE,
-      TREE_3_ABUNDANCE,
-      TREE_4_ABUNDANCE,
-      SHRUB_1_ABUNDANCE,
-      SHRUB_2_ABUNDANCE,
-      SHRUB_3_ABUNDANCE,
-      SHRUB_4_ABUNDANCE,
-            ORGANISM_1_HABITAT,
-      ORGANISM_2_HABITAT,
-      ORGANISM_3_HABITAT,
-      ORGANISM_4_HABITAT,
-      ORGANISM_5_HABITAT,
-      ORGANISM_6_HABITAT,
-      ORGANISM_7_HABITAT,
-      ORGANISM_8_HABITAT,
-      NATION_TERRITORIES,
-      ROAD_NETWORK,
-      
-      BUILDINGS
+      MOISTURE("Moisture"),
+      TEMPERATURE("Temperature"),
+      SOIL_COLOUR("Soil colour"),
+      ANIMAL_POPULATION("Animal population"),
+      WEALTH("Wealth"),
+      NATIONS("Nations");
+
+      private final String label;
+
+      FactorName(String label) {
+        this.label = label;
+      }
+
+      /** As the map's choices list it. */
+      public String label() {
+        return label;
+      }
     }
 
     public XenoGuesser_GLEventListener(
@@ -362,7 +339,23 @@ private static class SpeciesConfig {
         this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
         this.TOTAL_REGION_WIDTH = totalRegionWidth;
         this.IS_DEBUG_MODE_ACTIVE = isDebugModeActive;
-        this.currentDebugFactor = FactorName.GRASS_ABUNDANCE;
+        // Developer aid: -Dxenoguesser.minimap=NATIONS,ROADS,CONTOURS starts with that gradient
+        // map chosen and those layers ticked
+        this.currentDebugFactor = null;
+        String startingMap = System.getProperty("xenoguesser.minimap");
+        if (startingMap != null) {
+            for (String part : startingMap.split(",")) {
+                try {
+                    this.currentDebugFactor = FactorName.valueOf(part.trim());
+                } catch (IllegalArgumentException notGradient) {
+                    try {
+                        startingLayers.add(MapPanel.Layer.valueOf(part.trim()));
+                    } catch (IllegalArgumentException notLayer) {
+                        System.err.println("Unknown map: " + part);
+                    }
+                }
+            }
+        }
         
         this.camera.setPosition(new Vector3(0f, 5f, 15f));
         this.camera.setTarget(new Vector3(0f, 0f, 0f));
@@ -585,12 +578,71 @@ private static class SpeciesConfig {
         organismManager.setCollision(collision);
         inhabitants.setCollision(collision);
         this.organismManager.setUrbanness((x, z) -> infraManager.getUrbanness(x, z));
+        this.organismManager.setRoads((x, z, clearance) -> infraManager.isRoadLocation(x, z, clearance));
         startBirdsEyeMapRendering();
+    }
+
+    /**
+     * A nation's name in its own writing, as the map shows it: two to four of its letters
+     * (the same each time for the same world) in white with a dark edge, laid out in its
+     * direction of writing. Null if its letters can't be read.
+     */
+    private BufferedImage nationNameImage(int nationId) {
+        int alphabetId = infraManager.scripts().alphabet(nationId);
+        java.io.File dir = new java.io.File(RunFiles.ALPHABETS_DIR, "alphabet" + alphabetId);
+        java.io.File[] files = dir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
+        if (files == null || files.length < 2) return null;
+        java.util.Random rand = new java.util.Random(worldSeed * 131L + nationId * 7919L);
+        int letters = 2 + rand.nextInt(3);
+        int direction = infraManager.scripts().direction(nationId);
+        boolean vertical = direction >= 2, backwards = direction == 1 || direction == 3;
+        int cell = MapPanel.NATION_NAME_GLYPH, pad = 3, step = cell - 2;
+        int width = (vertical ? cell : step * (letters - 1) + cell) + pad * 2;
+        int height = (vertical ? step * (letters - 1) + cell : cell) + pad * 2;
+        // The letters' ink, then a dark edge round it and the ink in white on top
+        boolean[] ink = new boolean[width * height];
+        try {
+            for (int i = 0; i < letters; i++) {
+                // Glyph 0 is a space
+                int letter = 1 + rand.nextInt(files.length - 1);
+                BufferedImage glyph = javax.imageio.ImageIO.read(new java.io.File(dir, "glyph_" + letter + ".png"));
+                if (glyph == null) return null;
+                int slot = backwards ? letters - 1 - i : i;
+                int ox = pad + (vertical ? 0 : slot * step), oy = pad + (vertical ? slot * step : 0);
+                for (int y = 0; y < cell; y++) {
+                    for (int x = 0; x < cell; x++) {
+                        int gx = x * glyph.getWidth() / cell, gy = y * glyph.getHeight() / cell;
+                        if ((glyph.getRGB(gx, gy) & 0xFF) < 110) ink[(oy + y) * width + ox + x] = true;
+                    }
+                }
+            }
+        } catch (java.io.IOException e) {
+            return null;
+        }
+        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (ink[y * width + x]) {
+                    image.setRGB(x, y, 0xFFFAF8F0);
+                    continue;
+                }
+                boolean edge = false;
+                for (int dy = -2; dy <= 2 && !edge; dy++) {
+                    for (int dx = -2; dx <= 2 && !edge; dx++) {
+                        int nx = x + dx, ny = y + dy;
+                        edge = nx >= 0 && ny >= 0 && nx < width && ny < height && ink[ny * width + nx];
+                    }
+                }
+                if (edge) image.setRGB(x, y, 0xD8141218);
+            }
+        }
+        return image;
     }
 
     private void startBirdsEyeMapRendering() {
         Thread mapThread = new Thread(() -> {
             BirdsEyeMaps maps = new BirdsEyeMaps(BIRDS_EYE_MAP_RESOLUTION, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
+            birdsEyeMaps = maps;
             long startTime = System.currentTimeMillis();
 
             BufferedImage[] baseMap = maps.renderBaseMap();
@@ -602,16 +654,22 @@ private static class SpeciesConfig {
 
             
 
-            BufferedImage[] roads = maps.renderRoadMap(infraManager);
-            roadNetworkMapDetail = roads[1];
-            roadNetworkMap = roads[0];
-            onBirdsEyeMapReady(FactorName.ROAD_NETWORK);
+            // The nations' names, in their own writing, where their largest land is
+            List<Object[]> labels = new ArrayList<>();
+            for (float[] place : maps.nationLabelPlaces(nationManager)) {
+                BufferedImage name = nationNameImage((int) place[0]);
+                if (name != null) labels.add(new Object[] { name, place[1], place[2], place[3], place[4] > 0.5f });
+            }
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (minimap != null) minimap.setNationLabels(labels);
+            });
+            showLayer(MapPanel.Layer.CONTOURS, maps.renderContourLayer());
+            showLayer(MapPanel.Layer.ROADS, maps.renderRoadLayer(infraManager));
+            showLayer(MapPanel.Layer.BUILDINGS, maps.renderBuildingLayer(infraManager));
+            showLayer(MapPanel.Layer.SHOPS, maps.renderShopLayer(infraManager));
 
-            BufferedImage[] buildings = maps.renderBuildingMap(infraManager);
-            buildingMapDetail = buildings[1];
-            buildingMap = buildings[0];
-            onBirdsEyeMapReady(FactorName.BUILDINGS);
-
+            // Then every overlay, in the background, so choosing one later is instant
+            for (FactorName overlay : FactorName.values()) overlayImage(overlay);
             System.out.printf("[MINIMAP] Bird's-eye maps ready in %d ms%n", System.currentTimeMillis() - startTime);
         }, "birds-eye-map-renderer");
         mapThread.setDaemon(true);
@@ -619,11 +677,10 @@ private static class SpeciesConfig {
         mapThread.start();
     }
 
-    private void onBirdsEyeMapReady(FactorName factor) {
+    /** Hands a finished layer's images to the map. */
+    private void showLayer(MapPanel.Layer layer, BufferedImage[] images) {
         javax.swing.SwingUtilities.invokeLater(() -> {
-            if (minimap != null && currentDebugFactor == factor) {
-                assignHeatmapToMinimap(factor);
-            }
+            if (minimap != null) minimap.setLayerImages(layer, images);
         });
     }
 
@@ -730,16 +787,28 @@ private static class SpeciesConfig {
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
             if (!advanceLoading()) return;
             worldReady = true;
+            setBuilderThreads(false);
         }
 
-                // The next round is built behind the results screen, a slice per frame so the
-        // Loading button keeps spinning, and the results only close once it is ready
+        // The next round is built behind the results screen as soon as the guess is made, a
+        // slice per frame. Next Round then starts it at once if it's ready; if not, its button
+        // shows Loading until it is
+        if (minimap != null && minimap.takePrepareRequest() && !roundLoading) {
+            startBuildingNextRound(gl);
+        }
         if (minimap != null && minimap.isNextRoundRequested()) {
             minimap.clearNextRoundRequest();
-            roundLoading = true;
-            roundLoadingStarted = System.currentTimeMillis();
-            roundLoadingFrames = 0;
-            resetToNextRound(gl);
+            nextRoundWanted = true;
+            nextRoundWantedAt = System.currentTimeMillis();
+            if (!roundLoading && !nextRoundBuilt) startBuildingNextRound(gl);
+        }
+        if (nextRoundBuilt && nextRoundWanted) {
+            nextRoundBuilt = false;
+            nextRoundWanted = false;
+            System.out.printf("[ROUND] Next round started %d ms after it was asked for%n", System.currentTimeMillis() - nextRoundWantedAt);
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (minimap != null) minimap.finishRoundLoading();
+            });
         }
         if (roundLoading) {
             grassBudgetNanos = ROUND_LOADING_BUDGET_NANOS;
@@ -748,11 +817,10 @@ private static class SpeciesConfig {
             roundLoadingFrames++;
             if (grassCache.size() >= (GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1) && surroundingsBuilt()) {
                 roundLoading = false;
+                nextRoundBuilt = true;
+                setBuilderThreads(false);
                 System.out.printf("[ROUND] Next round built in %d ms over %d frames%n",
                         System.currentTimeMillis() - roundLoadingStarted, roundLoadingFrames);
-                javax.swing.SwingUtilities.invokeLater(() -> {
-                    if (minimap != null) minimap.finishRoundLoading();
-                });
             }
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
             return;
@@ -765,6 +833,19 @@ private static class SpeciesConfig {
 
         if (MENU_SHOT && loading.isFinished()) menuShot(gl);
         if (SIGN_SHOT && loading.isFinished()) signShot(gl);
+        // Developer aid: -Dxenoguesser.vehicleshot (=moving for one on the move, =driveway for one up a
+        // driveway, =door for someone coming out of their front door) stands by it two seconds in
+        if (VEHICLE_SHOT != null && loading.isFinished()) vehicleShotFrames++;
+        if (VEHICLE_SHOT != null && vehicleShotFrames == VEHICLE_SHOT_FRAME + 20) saveFrame(gl, "vehicle_shot.png");
+        if (VEHICLE_SHOT != null && loading.isFinished() && vehicleShotFrames == VEHICLE_SHOT_FRAME) {
+            Vector3 at = camera.getPosition();
+            float[] view = "door".equals(VEHICLE_SHOT) ? inhabitants.doorViewpoint(at.x, at.z)
+                    : inhabitants.vehicleViewpoint(at.x, at.z, VEHICLE_SHOT);
+            if (view != null) {
+                camera.setGroundPosition(view[0], view[1]);
+                camera.setTarget(new Vector3(view[0] + view[2] * 50f, at.y - 8f, view[1] + view[3] * 50f));
+            }
+        }
         render();
         if (!hideFirstPerson) drawHud(drawable);
 
@@ -785,6 +866,10 @@ private static class SpeciesConfig {
      * player's body is saved as the menu art.
      */
     private static final boolean SIGN_SHOT = System.getProperty("xenoguesser.signshot") != null;
+    private static final String VEHICLE_SHOT = System.getProperty("xenoguesser.vehicleshot");
+    // (after this many frames: -Dxenoguesser.vehicleshotframe)
+    private static final int VEHICLE_SHOT_FRAME = Integer.getInteger("xenoguesser.vehicleshotframe", 120);
+    private int vehicleShotFrames;
     private final java.util.Set<InfrastructureObject> signsShot = new java.util.HashSet<>();
     private Vector3 signShotEye, signShotTarget;
 
@@ -807,6 +892,8 @@ private static class SpeciesConfig {
             for (List<InfrastructureObject> objects : infraCache.values()) {
                 for (InfrastructureObject obj : objects) {
                     if (obj.type != InfrastructureObject.Type.SIGN || signsShot.contains(obj)) continue;
+                    // -Dxenoguesser.signshot=shaped: only posters on leaning or round walls
+                    if ("shaped".equals(System.getProperty("xenoguesser.signshot")) && !obj.shaped) continue;
                     float dx = obj.position.x - at.x, dz = obj.position.z - at.z;
                     float score = dx * dx + dz * dz;
                     if (obj.pictureCount == 0 && !obj.wallMounted) score += 1e9f;
@@ -823,7 +910,9 @@ private static class SpeciesConfig {
             nz = nz / len * side;
             float back = best.wallMounted ? Math.min(30f, Math.max(best.boardWidth * 0.75f, best.boardHeight * 1.6f) + 6f) : 40f;
             float lift = best.wallMounted ? 0f : 32f;
-            float ex = best.position.x + nx * back, ez = best.position.z + nz * back;
+            // -Dxenoguesser.signslant=0.8 views it from off to one side, by that much of the distance
+            float slant = Float.parseFloat(System.getProperty("xenoguesser.signslant", "0"));
+            float ex = best.position.x + nx * back - nz * back * slant, ez = best.position.z + nz * back + nx * back * slant;
             signShotEye = new Vector3(ex, best.position.y + lift, ez);
             signShotTarget = new Vector3(best.position.x, best.position.y + lift, best.position.z);
             camera.setPosition(signShotEye);
@@ -919,6 +1008,7 @@ private static class SpeciesConfig {
         // Noise values bunch around the middle, so thresholds come from their actual spread:
         // each variant takes over roughly the top third of its factor, blending in gradually
         float[] rangeA = percentiles(fa, 0.55f, 0.72f), rangeB = percentiles(fb, 0.55f, 0.72f);
+        soilBlendRanges = new float[][] { rangeA, rangeB };
         for (int py = 0; py < n; py++) {
             for (int px = 0; px < n; px++) {
                 float wa = ProceduralTextures.smoothstep(rangeA[0], rangeA[1], fa[py * n + px]);
@@ -1089,7 +1179,8 @@ private static class SpeciesConfig {
     private void initialiseCore() {
         // All textures were generated for this world by WorldArtGenerator before the window opened
         textures = new TextureLibrary();
-        textures.add(gl, "dirt_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL));
+        // Repeating: dirt tracks lay it at world scale, well past one tile
+        textures.addWrap(gl, "dirt_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL));
         textures.add(gl, "water_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SEA));
         textures.add(gl, "sky", WorldArtGenerator.pathFor(WorldArtGenerator.SKY));
         textures.add(gl, "sun_glow", WorldArtGenerator.pathFor(WorldArtGenerator.SUN_GLOW));
@@ -1140,6 +1231,7 @@ private static class SpeciesConfig {
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
                 enableAnisotropicFiltering(textures.get("dirt_diffuse"));
         textures.add(gl, "soil_regions", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS));
+        InfrastructureObject.soilRegions = textures.get("soil_regions");
         // East and west edges of the map are the same place on the planet
         if (textures.get("soil_regions") != null) {
             textures.get("soil_regions").setTexParameteri(gl, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
@@ -1190,7 +1282,7 @@ private static class SpeciesConfig {
 
         // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
         signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
-        Mesh signMeshBase = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);
+        Mesh signMeshBase = signBoardMesh(gl, 16);
         
         this.nationAtlases = new HashMap<>();
         this.nationAtlasSizes = new HashMap<>();
@@ -1454,6 +1546,7 @@ private static class SpeciesConfig {
         // Pictures of the locals, for signs
         deletePeoplePictures();
         inhabitants.setFlags(n -> textures.get(InfrastructureManager.nationTextureName("flag", n)));
+        inhabitants.setPackaging(n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
         peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, infraManager.products(),
                 n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
         if (System.getProperty("xenoguesser.dumpart") != null) dumpPeoplePictures();
@@ -1549,6 +1642,39 @@ private static class SpeciesConfig {
         if ("shop".equals(System.getProperty("xenoguesser.view"))) {
             // Developer aid: across the street from a shop, looking at its front
             float[] view = infraManager.shopViewpoint(dynamicRand);
+            if (view != null) {
+                spawnX = view[0];
+                spawnZ = view[1];
+                lookX = view[2];
+                lookZ = view[3];
+                foundDryLand = true;
+            }
+        }
+
+        // Developer aid: -Dxenoguesser.spawnat=x,z starts the round there
+        String spawnAt = System.getProperty("xenoguesser.spawnat");
+        if (spawnAt != null) {
+            String[] parts = spawnAt.split(",");
+            spawnX = Float.parseFloat(parts[0].trim());
+            spawnZ = Float.parseFloat(parts[1].trim());
+            foundDryLand = true;
+        }
+
+        if ("track".equals(System.getProperty("xenoguesser.view"))) {
+            // Developer aid: on a dirt track, looking along it
+            float[] view = infraManager.trackViewpoint(dynamicRand);
+            if (view != null) {
+                spawnX = view[0];
+                spawnZ = view[1];
+                lookX = view[2];
+                lookZ = view[3];
+                foundDryLand = true;
+            }
+        }
+
+        if ("raisedroad".equals(System.getProperty("xenoguesser.view"))) {
+            // Developer aid: looking at a raised road's retaining wall from below
+            float[] view = infraManager.raisedRoadViewpoint(dynamicRand);
             if (view != null) {
                 spawnX = view[0];
                 spawnZ = view[1];
@@ -1729,8 +1855,9 @@ private static class SpeciesConfig {
         float px = from.x, pz = from.z;
         for (int i = 0; i < steps; i++) {
             float sx = mx / steps, sz = mz / steps;
-            // Too steep to climb straight up: try sliding along the slope instead
-            if (tooSteep(px, pz, sx, sz)) {
+            // Too steep to climb straight up: try sliding along the slope instead (in the air,
+            // high enough above it, the slope doesn't matter)
+            if (jumpHeight < 1f && tooSteep(px, pz, sx, sz)) {
                 if (!tooSteep(px, pz, sx, 0f)) sz = 0f;
                 else if (!tooSteep(px, pz, 0f, sz)) sx = 0f;
                 else break;
@@ -1774,7 +1901,7 @@ private static class SpeciesConfig {
     private static final float JUMP_SPEED = 42f, GRAVITY = 90f;
     private volatile boolean jumpWanted;
     private boolean airborne;
-    private float jumpHeight, jumpVelocity;
+    private float jumpHeight, jumpVelocity, airborneEyeY;
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
     public void jump() {
@@ -1790,8 +1917,9 @@ private static class SpeciesConfig {
         float len = (float) Math.hypot(sx, sz);
         if (len < 1e-4f || landingPod.floorAt(x, z) > Float.NEGATIVE_INFINITY) return false;
         float dx = sx / len, dz = sz / len, span = 3f;
-        float ahead = TerrainMesh.getLayeredHeight(x + dx * span, z + dz * span, worldNoise);
-        float behind = TerrainMesh.getLayeredHeight(x - dx * span, z - dz * span, worldNoise);
+        // (roads' decks included, so their retaining walls can't be walked up)
+        float ahead = groundHeightAt(x + dx * span, z + dz * span);
+        float behind = groundHeightAt(x - dx * span, z - dz * span);
         return (ahead - behind) / (2f * span) > MAX_CLIMB;
     }
 
@@ -1894,9 +2022,24 @@ private static class SpeciesConfig {
         return rockColour;
     }
 
-    /** What the player stands on: the land, or the pod's stairs where they are higher. */
+    /** What the player stands on: the land or a road, or the pod's stairs where they are higher. */
     private float groundHeightAt(float x, float z) {
-        return Math.max(TerrainMesh.getLayeredHeight(x, z, worldNoise), landingPod.floorAt(x, z));
+        // Up on the road's deck where it stands above the ground
+        float ground = infraManager != null ? infraManager.walkingSurfaceY(x, z) : TerrainMesh.getLayeredHeight(x, z, worldNoise);
+        return Math.max(ground, landingPod.floorAt(x, z));
+    }
+
+    // The next round: built and waiting for the player, and whether they've asked for it
+    private boolean nextRoundBuilt, nextRoundWanted;
+    private long nextRoundWantedAt;
+
+    private void startBuildingNextRound(GL3 gl) {
+        roundLoading = true;
+        setBuilderThreads(true);
+        nextRoundBuilt = false;
+        roundLoadingStarted = System.currentTimeMillis();
+        roundLoadingFrames = 0;
+        resetToNextRound(gl);
     }
 
     public void resetToNextRound(GL3 gl) {
@@ -1904,12 +2047,18 @@ private static class SpeciesConfig {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
         chunkCache.clear();
+        terrainInFlight.clear();
+        grassGather = null;
+        floraInFlight.clear();
+        grassInFlight.clear();
         grassCache.clear(); 
         floraCache.clear();
 
         lastChunkX = Integer.MAX_VALUE;
         lastChunkZ = Integer.MAX_VALUE;
                 totalGrassInstances = 0;
+                drawnGrassInstances = 0;
+                grassDirty = true;
                 organismManager.clear();
         if (rockField != null) rockField.clear(gl);
         inhabitants.clear();
@@ -1927,7 +2076,98 @@ private static class SpeciesConfig {
      */
     private boolean overRoundBudget(int cx, int cz) {
         int ring = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
-        return (roundLoading || !worldReady) && ring > 2 && System.nanoTime() > roundChunkDeadline;
+        // Right round the player is built at once; everything else waits for spare time, a
+        // slice of each frame (bigger while loading), so crossing into a new chunk never
+        // stalls a frame building the whole of the next row
+        if (ring <= 1) return false;
+        if ((roundLoading || !worldReady) && ring <= 2) return false;
+        return System.nanoTime() > roundChunkDeadline;
+    }
+
+    // In play, building roads and buildings gets this much of each frame besides
+    private static final long INFRA_CHUNK_BUDGET_NANOS = 2_000_000L;
+    // In play, chunk building gets this much of each frame
+    private static final long PLAY_CHUNK_BUDGET_NANOS = 3_000_000L;
+    // Chunks are built this many rings beyond the view ahead of time, so they're ready when needed
+    private static final int PREFETCH_RINGS = 1;
+    // Some chunk work was left for later frames
+    private boolean chunkWorkPending;
+    // Which way the player has lately been walking, for building ahead of them first
+    private float walkDirX, walkDirZ, lastWalkX = Float.NaN, lastWalkZ;
+    private boolean grassDirty = true;
+    private int framesSinceGrassBuffer;
+    private boolean grassMovedChunk;
+    private int chunkScanCountdown;
+    private float[] grassStaging;
+    private boolean nearGrassArrived;
+    // Terrain chunks are worked out on these threads and only uploaded on the GL thread
+    private final java.util.concurrent.ExecutorService terrainBuilders = java.util.concurrent.Executors.newFixedThreadPool(
+            Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 2 - 1)), r -> {
+                Thread thread = new Thread(r, "terrain-builder");
+                thread.setDaemon(true);
+                thread.setPriority(Thread.NORM_PRIORITY - 1);
+                return thread;
+            });
+    private final Map<String, java.util.concurrent.Future<Object[]>> terrainInFlight = new HashMap<>();
+    // The world's first build gets every spare thread too
+    { setBuilderThreads(true); }
+    private final Map<String, Integer> terrainInFlightSegments = new HashMap<>();
+    private static final int MAX_TERRAIN_IN_FLIGHT = 48;
+    // While a round is being built behind the results (nothing else to draw), far more at once
+    private static final int LOADING_TERRAIN_IN_FLIGHT = 320, LOADING_UPLOADS_PER_FRAME = 80;
+    private static final int PLAY_BUILDERS = Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 2 - 1));
+    private static final int LOADING_BUILDERS = Math.max(PLAY_BUILDERS, Runtime.getRuntime().availableProcessors() - 1);
+
+    /** More builder threads while a round loads behind the results, fewer while it's being played. */
+    private void setBuilderThreads(boolean loading) {
+        java.util.concurrent.ThreadPoolExecutor pool = (java.util.concurrent.ThreadPoolExecutor) terrainBuilders;
+        int wanted = loading ? LOADING_BUILDERS : PLAY_BUILDERS;
+        if (wanted > pool.getMaximumPoolSize()) {
+            pool.setMaximumPoolSize(wanted);
+            pool.setCorePoolSize(wanted);
+        } else if (wanted < pool.getMaximumPoolSize()) {
+            pool.setCorePoolSize(wanted);
+            pool.setMaximumPoolSize(wanted);
+        }
+    }
+
+
+    /** Notes which way the player is heading. */
+    private void trackWalking(Vector3 at) {
+        if (!Float.isNaN(lastWalkX)) {
+            float dx = at.x - lastWalkX, dz = at.z - lastWalkZ;
+            float length = (float) Math.hypot(dx, dz);
+            if (length > 0.01f && length < 50f) {
+                walkDirX += (dx / length - walkDirX) * 0.1f;
+                walkDirZ += (dz / length - walkDirZ) * 0.1f;
+            }
+        }
+        lastWalkX = at.x;
+        lastWalkZ = at.z;
+    }
+
+    /** Chunk coordinates within radius rings of the player, nearest first and those ahead of them before those behind. */
+    private List<int[]> chunksByPriority(int radius) {
+        List<int[]> order = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
+        float heading = (float) Math.hypot(walkDirX, walkDirZ);
+        for (int cz = lastChunkZ - radius; cz <= lastChunkZ + radius; cz++) {
+            for (int cx = lastChunkX - radius; cx <= lastChunkX + radius; cx++) {
+                int dx = cx - lastChunkX, dz = cz - lastChunkZ;
+                int ring = Math.max(Math.abs(dx), Math.abs(dz));
+                float ahead = 0f;
+                if (heading > 0.2f && ring > 0) ahead = (dx * walkDirX + dz * walkDirZ) / ((float) Math.hypot(dx, dz) * heading);
+                order.add(new int[] { cx, cz, ring, Math.round((ring - ahead * 2.5f) * 100f) });
+            }
+        }
+        order.sort((a, b) -> Integer.compare(a[3], b[3]));
+        return order;
+    }
+
+    private static int terrainSegments(int ring) {
+        if (ring > 14) return 4;
+        if (ring > 7) return 10;
+        if (ring > 3) return 25;
+        return 50;
     }
 
     /** Whether every terrain, flora and building chunk in view has been built. */
@@ -1936,87 +2176,8 @@ private static class SpeciesConfig {
         return chunkCache.size() >= viewChunks && floraCache.size() >= viewChunks && infraCache.size() >= viewChunks;
     }
 
-    private void updateVisibleChunks(boolean forceImmediate) {
-        roundChunkDeadline = System.nanoTime() + ROUND_LOADING_BUDGET_NANOS;
-        infraManager.prepareRoadNetwork(
-            PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
-        );
-        Map<String, Integer> requiredChunksWithLod = new HashMap<>();
-
-        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
-                int deltaX = Math.abs(cx - lastChunkX);
-                int deltaZ = Math.abs(cz - lastChunkZ);
-                int chunkRingDistance = Math.max(deltaX, deltaZ);
-
-                int currentSegments;
-                if (chunkRingDistance > 14) currentSegments = 4;   
-                else if (chunkRingDistance > 7) currentSegments = 10;  
-                else if (chunkRingDistance > 3) currentSegments = 25;  
-                else currentSegments = 50;  
-
-                String key = cx + "_" + cz;
-                requiredChunksWithLod.put(key, currentSegments);
-            }
-        }
-
-        Iterator<Map.Entry<String, Model>> iterator = chunkCache.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<String, Model> entry = iterator.next();
-            String key = entry.getKey();
-            if (!requiredChunksWithLod.containsKey(key)) {
-                Model oldModel = entry.getValue();
-                                if (oldModel.mesh != null) oldModel.mesh.dispose(gl);
-                iterator.remove();
-                chunkBounds.remove(key);
-            }
-        }
-
-        for (Map.Entry<String, Integer> target : requiredChunksWithLod.entrySet()) {
-            String key = target.getKey();
-            int targetSegments = target.getValue();
-            
-            String[] coords = key.split("_");
-            int cx = Integer.parseInt(coords[0]);
-            int cz = Integer.parseInt(coords[1]);
-
-            boolean mustBuild = false;
-
-            if (chunkCache.containsKey(key)) {
-                Model cachedModel = chunkCache.get(key);
-                if (!cachedModel.name.endsWith("seg" + targetSegments)) {
-                    if (cachedModel.mesh != null) cachedModel.mesh.dispose(gl);
-                    mustBuild = true;
-                }
-            } else {
-                mustBuild = true;
-            }
-
-            if (mustBuild && overRoundBudget(cx, cz)) {
-                continue;
-            }
-            if (mustBuild) {
-                float dynamicScale = PHYSICAL_CHUNK_SIZE / (float) targetSegments;
-                Mesh chunkMesh = TerrainMesh.generateTerrainChunk(gl, targetSegments, dynamicScale, cx, cz, worldNoise);
-                                Model chunkModel = new Model("chunk_" + cx + "_" + cz + "_seg" + targetSegments, chunkMesh, globalModelMatrix, terrainShader, terrainMaterial, terrainRenderer, lights, camera);
-                chunkCache.put(key, chunkModel);
-                chunkBounds.put(key, chunkBoundingSphere(cx, cz));
-            }
-        }
-        
-        // --- MULTI-SPECIES PROBABILISTIC SPATIAL ECOSYSTEM SEEDING ---
-        Map<String, Boolean> activeFloraKeys = new HashMap<>();
-        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
-                activeFloraKeys.put(cx + "_" + cz, true);
-            }
-        }
-        floraCache.keySet().retainAll(activeFloraKeys.keySet());
-
-        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
-                String key = cx + "_" + cz;
-                if (!floraCache.containsKey(key) && !overRoundBudget(cx, cz)) {
+    /** One chunk's trees and shrubs (safe to work out off the GL thread). */
+    private List<FloraInstance> buildFloraChunk(int cx, int cz) {
                     List<FloraInstance> instances = new ArrayList<>();
                     float urbanness = infraManager.getUrbanness((cx + 0.5f) * PHYSICAL_CHUNK_SIZE, (cz + 0.5f) * PHYSICAL_CHUNK_SIZE);
                     
@@ -2056,7 +2217,7 @@ private static class SpeciesConfig {
                             if (cyWorld > seaLevelHeight + 0.1f
                                     && slopeAt(cxWorld, czWorld) < 0.9f
                                     && !landingPod.covers(cxWorld, czWorld, 8f)
-                                    && !infraManager.isRoadLocation(cxWorld, czWorld, 11.0f)
+                                    && !infraManager.isClearedForRoad(cxWorld, czWorld, 11.0f, 3.0f)
                                     && !infraManager.isBuildingLocation(cxWorld, czWorld, 6.0f)) {
                                 int randModelIndex = cRand.nextInt(FLORA_VARIATIONS);
                                 float randomScale = 0.70f + cRand.nextFloat() * 0.60f;
@@ -2066,36 +2227,12 @@ private static class SpeciesConfig {
                             }
                         }
                     }
-                    floraCache.put(key, instances);
-                }
-            }
-        }
+        return instances;
+    }
 
-        Map<String, Boolean> activeGrassKeys = new HashMap<>();
-        for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-                activeGrassKeys.put(cx + "_" + cz, true);
-            }
-        }
-        grassCache.keySet().retainAll(activeGrassKeys.keySet());
-
-        totalGrassInstances = 0;
-        boolean generatedThisFrame = false; 
-        long grassDeadline = System.nanoTime() + grassBudgetNanos;
-
-        for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-                String key = cx + "_" + cz;
-                float[] chunkGrassData = grassCache.get(key);
-                
-                if (chunkGrassData == null) {
-                    int distanceFromPlayer = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
-                    boolean prioritizeNearbyChunk = distanceFromPlayer <= 3;
-                    boolean overBudget = System.nanoTime() > grassDeadline;
-                    if (generatedThisFrame && overBudget && !forceImmediate && !prioritizeNearbyChunk) {
-                        continue; 
-                    }
-
+    /** One chunk's grass blades, five floats each (safe to work out off the GL thread). */
+    private float[] buildGrassChunk(int cx, int cz) {
+        float[] chunkGrassData;
                     int dynamicGrassAttempts = regionalManager.evaluateChunkAssetCount(
                         cx, cz, PHYSICAL_CHUNK_SIZE, 
                         GRASS_BASE_ABUNDANCE,
@@ -2137,7 +2274,7 @@ private static class SpeciesConfig {
                             boolean onSlope = ((rand1 * 7.31f + rand2 * 3.17f) % 1f) >= keep;
                             if (worldY > seaLevelHeight + 0.1f && !onSlope
                                     && !landingPod.covers(worldX, worldZ, -2f)
-                                    && !infraManager.isRoadLocation(worldX, worldZ, 11.0f)) {
+                                    && !infraManager.isClearedForRoad(worldX, worldZ, 11.0f, 1.5f)) {
                                 float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
                                 float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
 
@@ -2174,55 +2311,266 @@ private static class SpeciesConfig {
                         chunkGrassData = new float[0];
                     }
                     
+        return chunkGrassData;
+    }
+
+    private final Map<String, java.util.concurrent.Future<List<FloraInstance>>> floraInFlight = new HashMap<>();
+    private final Map<String, java.util.concurrent.Future<float[]>> grassInFlight = new HashMap<>();
+
+    private java.util.concurrent.Future<Object[]> grassGather;
+
+    /** Puts gathered grass blades (count of them, five floats each) into the instance buffer. */
+    private void uploadGrass(float[] data, int count) {
+        int floats = count * 5;
+        if (persistentGrassBuffer == null || floats > currentGrassGPUCapacityFloats) {
+            currentGrassGPUCapacityFloats = (int) (Math.max(floats, 5) * 1.2f);
+            persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
+            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+            gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
+        }
+        persistentGrassBuffer.clear();
+        persistentGrassBuffer.put(data, 0, floats);
+        persistentGrassBuffer.flip();
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+        gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, floats * 4L, persistentGrassBuffer);
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
+        drawnGrassInstances = count;
+    }
+
+    private void updateVisibleChunks(boolean forceImmediate) {
+        boolean loadingNow = roundLoading || !worldReady;
+        roundChunkDeadline = System.nanoTime() + (loadingNow ? ROUND_LOADING_BUDGET_NANOS : PLAY_CHUNK_BUDGET_NANOS);
+        infraManager.prepareRoadNetwork(
+            PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
+        );
+        int reach = VIEW_DISTANCE + PREFETCH_RINGS;
+        List<int[]> order = chunksByPriority(reach);
+        int uploadsThisFrame = 0;
+        boolean pending = false;
+
+        // --- TERRAIN: dropped well behind, built (or re-detailed) nearest and ahead first
+        Iterator<Map.Entry<String, Model>> iterator = chunkCache.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, Model> entry = iterator.next();
+            String[] coords = entry.getKey().split("_");
+            int ring = Math.max(Math.abs(Integer.parseInt(coords[0]) - lastChunkX), Math.abs(Integer.parseInt(coords[1]) - lastChunkZ));
+            if (ring > reach + 1) {
+                if (entry.getValue().mesh != null) entry.getValue().mesh.dispose(gl);
+                iterator.remove();
+                chunkBounds.remove(entry.getKey());
+            }
+        }
+        for (int[] c : order) {
+            int cx = c[0], cz = c[1], ring = c[2];
+            String key = cx + "_" + cz;
+            int targetSegments = terrainSegments(ring);
+            Model cachedModel = chunkCache.get(key);
+            if (cachedModel != null && cachedModel.name.endsWith("_seg" + targetSegments)) continue;
+            java.util.concurrent.Future<Object[]> building = terrainInFlight.get(key);
+            if (building != null && terrainInFlightSegments.get(key) != targetSegments) {
+                // Started at another level of detail before the player moved: start again
+                terrainInFlight.remove(key);
+                building = null;
+            }
+            Object[] data = null;
+            if (building != null && building.isDone() && uploadsThisFrame >= (loadingNow ? LOADING_UPLOADS_PER_FRAME : 6)) {
+                pending = true;
+                continue;
+            }
+            if (building != null && building.isDone()) {
+                uploadsThisFrame++;
+                try {
+                    data = building.get();
+                } catch (Exception e) {
+                    data = null;
+                }
+                terrainInFlight.remove(key);
+            } else if (building == null && ring <= 1 && cachedModel == null) {
+                // Right under the player and missing: now
+                data = TerrainMesh.buildChunkData(targetSegments, PHYSICAL_CHUNK_SIZE / (float) targetSegments, cx, cz, worldNoise);
+            } else if (building == null) {
+                if (terrainInFlight.size() < (loadingNow ? LOADING_TERRAIN_IN_FLIGHT : MAX_TERRAIN_IN_FLIGHT)) {
+                    final int segs = targetSegments, bx = cx, bz = cz;
+                    terrainInFlight.put(key, terrainBuilders.submit(() ->
+                            TerrainMesh.buildChunkData(segs, PHYSICAL_CHUNK_SIZE / (float) segs, bx, bz, worldNoise)));
+                    terrainInFlightSegments.put(key, targetSegments);
+                }
+                pending = true;
+                continue;
+            } else {
+                pending = true;
+                continue;
+            }
+            if (data == null) {
+                pending = true;
+                continue;
+            }
+            // Until the new mesh is up, a chunk keeps the detail it had
+            Mesh chunkMesh = new Mesh(gl, (float[]) data[0], (int[]) data[1]);
+            Model chunkModel = new Model("chunk_" + cx + "_" + cz + "_seg" + targetSegments, chunkMesh, globalModelMatrix, terrainShader, terrainMaterial, terrainRenderer, lights, camera);
+            if (cachedModel != null && cachedModel.mesh != null) cachedModel.mesh.dispose(gl);
+            chunkCache.put(key, chunkModel);
+            chunkBounds.put(key, chunkBoundingSphere(cx, cz));
+        }
+        terrainInFlight.keySet().removeIf(key -> {
+            String[] coords = key.split("_");
+            return Math.max(Math.abs(Integer.parseInt(coords[0]) - lastChunkX), Math.abs(Integer.parseInt(coords[1]) - lastChunkZ)) > reach + 1;
+        });
+
+        // --- MULTI-SPECIES PROBABILISTIC SPATIAL ECOSYSTEM SEEDING ---
+        floraInFlight.keySet().removeIf(key -> {
+            String[] coords = key.split("_");
+            return Math.max(Math.abs(Integer.parseInt(coords[0]) - lastChunkX), Math.abs(Integer.parseInt(coords[1]) - lastChunkZ)) > reach + 1;
+        });
+        floraCache.keySet().removeIf(key -> {
+            String[] coords = key.split("_");
+            return Math.max(Math.abs(Integer.parseInt(coords[0]) - lastChunkX), Math.abs(Integer.parseInt(coords[1]) - lastChunkZ)) > reach + 1;
+        });
+
+        for (int[] c : order) {
+            int cx = c[0], cz = c[1];
+            {
+                String key = cx + "_" + cz;
+                if (floraCache.containsKey(key)) continue;
+                if (overRoundBudget(cx, cz)) {
+                    pending = true;
+                    continue;
+                }
+                {
+                    java.util.concurrent.Future<List<FloraInstance>> growing = floraInFlight.get(key);
+                    if (growing == null && (c[2] <= 1 || forceImmediate)) {
+                        floraCache.put(key, buildFloraChunk(cx, cz));
+                        continue;
+                    }
+                    if (growing == null) {
+                        final int fx = cx, fz = cz;
+                        floraInFlight.put(key, terrainBuilders.submit(() -> buildFloraChunk(fx, fz)));
+                        pending = true;
+                        continue;
+                    }
+                    if (!growing.isDone()) {
+                        pending = true;
+                        continue;
+                    }
+                    floraInFlight.remove(key);
+                    List<FloraInstance> instances;
+                    try {
+                        instances = growing.get();
+                    } catch (Exception e) {
+                        continue;
+                    }
+                    floraCache.put(key, instances);
+                }
+            }
+        }
+
+        Map<String, Boolean> activeGrassKeys = new HashMap<>();
+        for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+                activeGrassKeys.put(cx + "_" + cz, true);
+            }
+        }
+        if (grassCache.keySet().retainAll(activeGrassKeys.keySet())) grassDirty = true;
+        grassInFlight.keySet().retainAll(activeGrassKeys.keySet());
+
+        totalGrassInstances = 0;
+        boolean generatedThisFrame = false; 
+        long grassDeadline = System.nanoTime() + grassBudgetNanos;
+
+        for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
+            for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
+                String key = cx + "_" + cz;
+                float[] chunkGrassData = grassCache.get(key);
+                
+                if (chunkGrassData == null) {
+                    int distanceFromPlayer = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+
+                    java.util.concurrent.Future<float[]> seeding = grassInFlight.get(key);
+                    if (seeding == null && (distanceFromPlayer <= 1 || forceImmediate)) {
+                        chunkGrassData = buildGrassChunk(cx, cz);
+                    } else if (seeding == null) {
+                        final int gx = cx, gz = cz;
+                        grassInFlight.put(key, terrainBuilders.submit(() -> buildGrassChunk(gx, gz)));
+                        pending = true;
+                        continue;
+                    } else if (!seeding.isDone()) {
+                        pending = true;
+                        continue;
+                    } else {
+                        grassInFlight.remove(key);
+                        try {
+                            chunkGrassData = seeding.get();
+                        } catch (Exception e) {
+                            continue;
+                        }
+                    }
                     grassCache.put(key, chunkGrassData);
                     generatedThisFrame = true; 
+                    grassDirty = true;
+                    if (distanceFromPlayer <= 8) nearGrassArrived = true;
                 }
                 totalGrassInstances += (chunkGrassData.length / 5);
             }
         }
 
-        if (totalGrassInstances > 0) {
-            int requiredFloats = totalGrassInstances * 5;
-
-            if (persistentGrassBuffer == null || requiredFloats > currentGrassGPUCapacityFloats) {
-                currentGrassGPUCapacityFloats = (int) (requiredFloats * 1.2f); 
-                persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
-                
-                gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
-                gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
+        // The grass buffer: gathered (thinned by distance from the player) on a worker thread
+        // whenever its contents change, and uploaded here once ready
+        if (grassGather != null && grassGather.isDone()) {
+            try {
+                Object[] gathered = grassGather.get();
+                uploadGrass((float[]) gathered[0], (Integer) gathered[1]);
+            } catch (Exception ignored) {
             }
-
-                        persistentGrassBuffer.clear();
-            int writtenGrassInstances = 0;
-
-
+            grassGather = null;
+        }
+        if (totalGrassInstances > 0 && grassDirty && grassGather == null
+                && (forceImmediate || grassMovedChunk || nearGrassArrived || grassInFlight.isEmpty() || drawnGrassInstances == 0)) {
+            nearGrassArrived = false;
+            grassDirty = false;
+            grassMovedChunk = false;
+            List<float[]> chunks = new ArrayList<>();
+            List<Integer> strides = new ArrayList<>();
             for (int cz = lastChunkZ - GRASS_VIEW_DISTANCE; cz <= lastChunkZ + GRASS_VIEW_DISTANCE; cz++) {
                 for (int cx = lastChunkX - GRASS_VIEW_DISTANCE; cx <= lastChunkX + GRASS_VIEW_DISTANCE; cx++) {
-                                        String key = cx + "_" + cz;
-                    float[] chunkGrassData = grassCache.get(key);
-                    if (chunkGrassData != null) {
-                        // Far grass is thinned: it shrinks below a pixel and fades into fog,
-                        // but drawing every blade out to the horizon was the costliest pass
-                        int ring = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
-                        int stride = ring <= 4 ? 1 : ring <= 8 ? 2 : ring <= 14 ? 4 : 8;
-                        if (stride == 1) {
-                            persistentGrassBuffer.put(chunkGrassData);
-                            writtenGrassInstances += chunkGrassData.length / 5;
-                        } else {
-                            for (int blade = 0; blade * 5 < chunkGrassData.length; blade += stride) {
-                                persistentGrassBuffer.put(chunkGrassData, blade * 5, 5);
-                                writtenGrassInstances++;
-                            }
+                    float[] chunkGrassData = grassCache.get(cx + "_" + cz);
+                    if (chunkGrassData == null) continue;
+                    // Far grass is thinned: it shrinks below a pixel and fades into fog,
+                    // but drawing every blade out to the horizon was the costliest pass
+                    int ring = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+                    chunks.add(chunkGrassData);
+                    strides.add(ring <= 4 ? 1 : ring <= 8 ? 2 : ring <= 14 ? 4 : 8);
+                }
+            }
+            int required = totalGrassInstances * 5;
+            java.util.concurrent.Callable<Object[]> gather = () -> {
+                float[] staging = new float[required];
+                int staged = 0, written = 0;
+                for (int i = 0; i < chunks.size(); i++) {
+                    float[] data = chunks.get(i);
+                    int stride = strides.get(i);
+                    if (stride == 1) {
+                        System.arraycopy(data, 0, staging, staged, data.length);
+                        staged += data.length;
+                        written += data.length / 5;
+                    } else {
+                        for (int blade = 0; blade * 5 < data.length; blade += stride) {
+                            System.arraycopy(data, blade * 5, staging, staged, 5);
+                            staged += 5;
+                            written++;
                         }
                     }
                 }
+                return new Object[] { staging, written };
+            };
+            if (forceImmediate || drawnGrassInstances == 0) {
+                try {
+                    Object[] gathered = gather.call();
+                    uploadGrass((float[]) gathered[0], (Integer) gathered[1]);
+                } catch (Exception ignored) {
+                }
+            } else {
+                grassGather = terrainBuilders.submit(gather);
             }
-                        persistentGrassBuffer.flip();
-            totalGrassInstances = writtenGrassInstances;
-
-            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
-            gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, persistentGrassBuffer.limit() * 4L, persistentGrassBuffer);
-            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
         }
 
         // --- MULTI-SPECIES INFRASTRUCTURE SEEDING ---
@@ -2235,7 +2583,8 @@ private static class SpeciesConfig {
         Iterator<Map.Entry<String, List<InfrastructureObject>>> infraIterator = infraCache.entrySet().iterator();
         while (infraIterator.hasNext()) {
             Map.Entry<String, List<InfrastructureObject>> entry = infraIterator.next();
-            if (!activeInfraKeys.containsKey(entry.getKey())) {
+            String[] infraCoords = entry.getKey().split("_");
+            if (Math.max(Math.abs(Integer.parseInt(infraCoords[0]) - lastChunkX), Math.abs(Integer.parseInt(infraCoords[1]) - lastChunkZ)) > reach + 1) {
                 for (InfrastructureObject obj : entry.getValue()) {
                     obj.dispose(gl);
                 }
@@ -2243,10 +2592,20 @@ private static class SpeciesConfig {
             }
         }
 
-        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
+        // Buildings and roads are quick to make (well under a millisecond a chunk), so they get a
+        // slice of the frame of their own rather than whatever the terrain and plants leave over;
+        // otherwise, walking on, towns ahead would only appear once already close
+        long infraDeadline = System.nanoTime() + INFRA_CHUNK_BUDGET_NANOS;
+        for (int[] c : order) {
+            int cx = c[0], cz = c[1];
+            {
                 String key = cx + "_" + cz;
-                if (!infraCache.containsKey(key) && !overRoundBudget(cx, cz)) {
+                if (infraCache.containsKey(key)) continue;
+                if (overRoundBudget(cx, cz) && System.nanoTime() > infraDeadline) {
+                    pending = true;
+                    continue;
+                }
+                {
                     List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
                         cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
                     );
@@ -2259,6 +2618,7 @@ private static class SpeciesConfig {
                 }
             }
         }
+        chunkWorkPending = pending;
     }
 
 
@@ -2368,18 +2728,26 @@ private static class SpeciesConfig {
             if (!airborne && !swimming) {
                 airborne = true;
                 jumpVelocity = JUMP_SPEED;
+                // From where the eyes are now (the walking height eases after the ground, so
+                // starting from the ground itself would jolt)
+                airborneEyeY = currentPos.y;
             }
         }
         if (airborne) {
-            // A ballistic arc above whatever ground is underfoot
-            jumpVelocity -= GRAVITY * (float) deltaTime;
-            jumpHeight += jumpVelocity * (float) deltaTime;
-            if (jumpHeight <= 0f || swimming) {
+            // A ballistic arc through the air, whatever the ground does beneath: it lands when
+            // it comes down to the ground (going up a slope, sooner; off a drop, later)
+            float dt = (float) deltaTime;
+            airborneEyeY += (jumpVelocity - GRAVITY * dt * 0.5f) * dt;
+            jumpVelocity -= GRAVITY * dt;
+            jumpHeight = Math.max(0f, airborneEyeY - targetCameraHeight);
+            if ((jumpVelocity <= 0f && airborneEyeY <= targetCameraHeight) || swimming) {
                 jumpHeight = 0f;
                 jumpVelocity = 0f;
                 airborne = false;
+                camera.setHeight(Math.max(airborneEyeY, targetCameraHeight - 0.5f));
+            } else {
+                camera.setHeight(Math.max(airborneEyeY, targetCameraHeight));
             }
-            camera.setHeight(targetCameraHeight + jumpHeight);
         } else {
             float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
             camera.setHeight(smoothedHeight);
@@ -2391,29 +2759,20 @@ private static class SpeciesConfig {
         int currentChunkX = (int) Math.floor((camera.getPosition().x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
         int currentChunkZ = (int) Math.floor((camera.getPosition().z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
 
-        if (currentChunkX != lastChunkX || currentChunkZ != lastChunkZ || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))) {
+        trackWalking(camera.getPosition());
+        boolean movedChunk = currentChunkX != lastChunkX || currentChunkZ != lastChunkZ;
+        if (movedChunk) {
+            grassDirty = true;   // the grass thins by distance from the player's chunk
+            grassMovedChunk = true;
+        }
+        chunkScanCountdown--;
+        // Waiting on work in the background: look in on it every few frames rather than rescanning every chunk each frame
+        if (movedChunk || (chunkScanCountdown <= 0 && (chunkWorkPending || grassCache.size() < ((GRASS_VIEW_DISTANCE * 2 + 1) * (GRASS_VIEW_DISTANCE * 2 + 1))))) {
+            chunkScanCountdown = 3;
             lastChunkX = currentChunkX;
             lastChunkZ = currentChunkZ;
             updateVisibleChunks(false);
         }
-
-        if (IS_DEBUG_MODE_ACTIVE && keyboard.g && !lastKeyboardG) {
-            FactorName[] values = FactorName.values();
-            // Fix: Use Math.floorMod to handle negative numbers safely
-            int prevIndex = Math.floorMod(currentDebugFactor.ordinal() - 1, values.length);
-            currentDebugFactor = values[prevIndex];
-            assignHeatmapToMinimap(currentDebugFactor);
-        }
-        lastKeyboardG = keyboard.g;
-
-        if (IS_DEBUG_MODE_ACTIVE && keyboard.h && !lastKeyboardH) {
-            FactorName[] values = FactorName.values();
-            // While standard % works fine for addition, using floorMod here keeps your code uniform
-            int nextIndex = Math.floorMod(currentDebugFactor.ordinal() + 1, values.length);
-            currentDebugFactor = values[nextIndex];
-            assignHeatmapToMinimap(currentDebugFactor);
-        }
-        lastKeyboardH = keyboard.h;
 
         // Night falls as the sun sinks: full day above 18 degrees, full night once it's 6 below
         float[] sunDir = Planet.sunDirection(currentPos.x, currentPos.z, sunDeclination, noonLongitude);
@@ -2616,6 +2975,7 @@ private static class SpeciesConfig {
                             || !frustum.intersectsSphere(obj.position.x, obj.position.y, obj.position.z, obj.boundingRadius)) {
                         continue;
                     }
+                    obj.setViewerDistanceSquared(distSq);
                     obj.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation, null, 0, 0);
                     continue;
                 }
@@ -2672,7 +3032,7 @@ private static class SpeciesConfig {
                 ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
 
         // --- INSTANCED GRASS PASS ---
-        if (totalGrassInstances > 0) {
+        if (drawnGrassInstances > 0) {
             gl.glDisable(GL.GL_CULL_FACE); 
 
             grassShader.use(gl);
@@ -2712,7 +3072,7 @@ private static class SpeciesConfig {
             grassShader.setVec3(gl, "u_GrassLush", new Vector3(lush[0], lush[1], lush[2]));
 
             gl.glBindVertexArray(grassVAO);
-            gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 6, totalGrassInstances);
+            gl.glDrawArraysInstanced(GL3.GL_TRIANGLES, 0, 6, drawnGrassInstances);
             gl.glBindVertexArray(0);
 
             gl.glEnable(GL.GL_CULL_FACE); 
@@ -2916,121 +3276,149 @@ private static class SpeciesConfig {
         return calculatedSeaLevel;
     }
 
+    // Layers the developer aid asks to start ticked
+    private final java.util.Set<MapPanel.Layer> startingLayers = java.util.EnumSet.noneOf(MapPanel.Layer.class);
+    // Gradient maps already worked out (they take a few seconds each)
+    private final Map<FactorName, BufferedImage> gradientCache = new java.util.concurrent.ConcurrentHashMap<>();
+
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
         if (!IS_DEBUG_MODE_ACTIVE) return;
-        // The first heatmap takes seconds to evaluate; build it off the UI thread so the
-        // loading screen keeps animating
-        FactorName initialFactor = currentDebugFactor;
-        RegionalFactor factor = factorFor(initialFactor);
-        if (factor == null) {
-            assignHeatmapToMinimap(initialFactor);
+        for (MapPanel.Layer layer : startingLayers) minimap.setLayerShown(layer, true);
+        List<String> gradients = new ArrayList<>();
+        for (FactorName f : FactorName.values()) gradients.add(f.label());
+        minimap.setLayerChoices(gradients, currentDebugFactor != null ? currentDebugFactor.label() : null, label -> {
+            FactorName chosen = null;
+            for (FactorName f : FactorName.values()) if (f.label().equals(label)) chosen = f;
+            chooseGradient(chosen);
+        });
+        if (currentDebugFactor != null) chooseGradient(currentDebugFactor);
+    }
+
+    /**
+     * Colours the map's land by an overlay, or by nothing given null. Every overlay is
+     * worked out in the background soon after the world is made, so it's normally ready at
+     * once; one asked for before then is finished off in the background and shown when ready,
+     * if it's still the one wanted.
+     */
+    public void chooseGradient(FactorName factorName) {
+        currentDebugFactor = factorName;
+        if (factorName == null) {
+            minimap.setOverlay(null, null, false);
+            return;
+        }
+        BufferedImage ready = gradientCache.get(factorName);
+        if (ready != null) {
+            minimap.setOverlay(ready, factorName.label(), factorName == FactorName.NATIONS);
             return;
         }
         Thread heatmapThread = new Thread(() -> {
-            BufferedImage snapshot = this.regionalManager.generateHeatmap(
-                TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factor, initialFactor.toString());
+            BufferedImage composed = overlayImage(factorName);
             javax.swing.SwingUtilities.invokeLater(() -> {
-                if (currentDebugFactor != initialFactor) return;
-                minimap.setHeatmapOverlay(snapshot);
-                minimap.setHeatmapVisible(true);
-                minimap.setHeatmapName(initialFactor.toString());
+                if (currentDebugFactor == factorName && composed != null) {
+                    minimap.setOverlay(composed, factorName.label(), factorName == FactorName.NATIONS);
+                }
             });
-        }, "initial-heatmap");
+        }, "gradient-map");
         heatmapThread.setDaemon(true);
         heatmapThread.start();
     }
 
-    public void assignHeatmapToMinimap(FactorName currentDebugFactor) {
-        if (this.IS_DEBUG_MODE_ACTIVE) {
-            
-            // 1. Intercept the Nation Territory view to bypass continuous factor generation
-            if (currentDebugFactor == FactorName.NATION_TERRITORIES) {
-                if (this.nationManager != null) {
-                    // Tell the Manager to upscale the render to match the chunk layout
-                    int chunkRes = (int)(TOTAL_REGION_WIDTH / PHYSICAL_CHUNK_SIZE); 
-                    BufferedImage nationSnapshot = this.nationManager.generateNationOverlay(chunkRes);
-                    
-                    minimap.setHeatmapOverlay(nationSnapshot);
-                    minimap.setHeatmapVisible(true);
-                    minimap.setHeatmapName("NATION_TERRITORIES");
+    /**
+     * The soil overlay: the soil's actual colour in every chunk, blended just as the ground's
+     * is (see buildSoilRegionMap): the base soil, the first regional soil blended in as far as
+     * its factor says, then the second over that as far as its own says.
+     */
+    private BufferedImage soilColourMap() {
+        WorldPalette palette = new WorldPalette(worldSeed);
+        float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
+        float[][] ranges = soilBlendRanges;
+        int minChunkX = (int) Math.floor((-TOTAL_REGION_WIDTH / 2.0f) / PHYSICAL_CHUNK_SIZE);
+        int maxChunkX = (int) Math.ceil((TOTAL_REGION_WIDTH / 2.0f) / PHYSICAL_CHUNK_SIZE);
+        int size = maxChunkX - minChunkX + 1;
+        BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        java.util.stream.IntStream.range(0, size).parallel().forEach(z -> {
+            int cz = minChunkX + z;
+            for (int x = 0; x < size; x++) {
+                int cx = minChunkX + x;
+                float worldX = (cx + 0.5f) * PHYSICAL_CHUNK_SIZE, worldZ = (cz + 0.5f) * PHYSICAL_CHUNK_SIZE;
+                float fa = soilVariantAFactor.evaluate(cx, cz, worldX, worldZ), fb = soilVariantBFactor.evaluate(cx, cz, worldX, worldZ);
+                float wa = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[0][0], ranges[0][1], fa);
+                float wb = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[1][0], ranges[1][1], fb);
+                int rgb = 0xFF;
+                for (int c = 0; c < 3; c++) {
+                    float colour = base[c] + (a[c] - base[c]) * wa;
+                    colour += (b[c] - colour) * wb;
+                    rgb = (rgb << 8) | Math.max(0, Math.min(255, Math.round(colour * 255f)));
                 }
-                return; // Exit method early
+                image.setRGB(x, z, rgb);
             }
-
-            // Bird's-eye layers are pre-rendered in the background and cover the whole map
-            if (currentDebugFactor == FactorName.ROAD_NETWORK
-                    
-                    || currentDebugFactor == FactorName.BUILDINGS) {
-                BufferedImage layer = switch (currentDebugFactor) {
-                    case ROAD_NETWORK -> this.roadNetworkMap;
-                    
-                    default -> this.buildingMap;
-                };
-                BufferedImage detail = switch (currentDebugFactor) {
-                    case ROAD_NETWORK -> this.roadNetworkMapDetail;
-                    
-                    default -> this.buildingMapDetail;
-                };
-                if (layer != null) {
-                    minimap.setHeatmapName(currentDebugFactor.toString());
-                    minimap.setFullMapOverlay(layer, detail);
-                } else {
-                    // Shown until the background render finishes and swaps the real layer in
-                    minimap.setHeatmapName(currentDebugFactor + " (generating...)");
-                    minimap.setFullMapOverlay(null, null);
-                }
-                minimap.setHeatmapVisible(true);
-                return;
-            }
-
-            // 2. Otherwise, look up and evaluate standard noise/growth parameters
-            RegionalFactor targetFactor = factorFor(currentDebugFactor);
-            
-            if (targetFactor != null) {
-                BufferedImage rawSnapshot = this.regionalManager.generateHeatmap(
-                    TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, targetFactor, currentDebugFactor.toString()
-                );
-                minimap.setHeatmapOverlay(rawSnapshot);
-                minimap.setHeatmapVisible(true);
-                minimap.setHeatmapName(currentDebugFactor.toString());
-            }
-        }
+        });
+        return image;
     }
 
+    /**
+     * An overlay ready to show on the map, worked out the first time it's asked for and kept
+     * (a second asker waits for the first to finish rather than doing it again).
+     */
+    private BufferedImage overlayImage(FactorName factorName) {
+        if (minimap == null) return null;
+        return gradientCache.computeIfAbsent(factorName, f -> {
+            if (f == FactorName.NATIONS) {
+                // Each nation filled in its own colour, chosen to stand apart from all the others,
+                // drawn sharp enough for its borders to stay smooth when zoomed in
+                BirdsEyeMaps maps = birdsEyeMaps;
+                return maps != null ? maps.renderNationOverlay(nationManager) : null;
+            }
+            if (f == FactorName.SOIL_COLOUR) return minimap.composeOverlay(soilColourMap());
+            BufferedImage heatmap = regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factorFor(f), f.toString(),
+                    f == FactorName.TEMPERATURE ? RegionalGenerationManager.TEMPERATURE_SPECTRUM : f == FactorName.WEALTH ? WEALTH_SPECTRUM : null);
+            return minimap.composeOverlay(heatmap);
+        });
+    }
+
+    // The animal-life overlay, made when first asked for
+    private RegionalFactor animalOverlay;
+    // The wealth overlay: how well off people are, from each nation's richness, more so in town
+    private RegionalFactor wealthOverlay;
+    // Its colours, poorest to richest: dull brown through to gold
+    private static final float[][] WEALTH_SPECTRUM = {
+        { 0.30f, 0.22f, 0.18f }, { 0.58f, 0.48f, 0.40f }, { 0.85f, 0.75f, 0.45f }, { 1.00f, 0.82f, 0.10f }
+    };
+    // Where each regional soil colour starts and finishes blending in (from its factor's spread of values)
+    private volatile float[][] soilBlendRanges;
+
     private RegionalFactor factorFor(FactorName factorName) {
-            return switch (factorName) {
-                case GRASS_ABUNDANCE -> this.grassAbundanceFactor;
-                case GRASS_HEIGHT -> this.grassHeightFactor;
-                case GRASS_COLOUR -> this.grassColourFactor;
-                case LEAF_COLOUR -> this.leafColourFactor;
-                case GRASS_TEMPERATURE_PREFERENCE -> this.grassTemperateFactor;
-                case LEAF_TEMPERATURE_PREFERENCE -> this.leafTemperateFactor;
-                case MOISTURE -> this.grassMoistureFactor;
-                case GRASS_PATCH_NOISE -> this.grassPatchNoiseFactor;
-                case GRASS_HEIGHT_NOISE -> this.grassHeightNoiseFactor;
-                case GRASS_COLOUR_NOISE -> this.grassColourNoiseFactor;
-                                case LEAF_COLOUR_NOISE -> this.leafColourNoiseFactor;
-                case SOIL_COLOUR_VARIANT_A -> this.soilVariantAFactor;
-                case SOIL_COLOUR_VARIANT_B -> this.soilVariantBFactor;
-                case TREE_1_ABUNDANCE -> this.speciesConfigs[0].abundanceFactor;
-                case TREE_2_ABUNDANCE -> this.speciesConfigs[1].abundanceFactor;
-                case TREE_3_ABUNDANCE -> this.speciesConfigs[2].abundanceFactor;
-                case TREE_4_ABUNDANCE -> this.speciesConfigs[3].abundanceFactor;
-                case SHRUB_1_ABUNDANCE -> this.speciesConfigs[4].abundanceFactor;
-                case SHRUB_2_ABUNDANCE -> this.speciesConfigs[5].abundanceFactor;
-                case SHRUB_3_ABUNDANCE -> this.speciesConfigs[6].abundanceFactor;
-                                case SHRUB_4_ABUNDANCE -> this.speciesConfigs[7].abundanceFactor;
-                case ORGANISM_1_HABITAT -> organismManager.habitat(0);
-                case ORGANISM_2_HABITAT -> organismManager.habitat(1);
-                case ORGANISM_3_HABITAT -> organismManager.habitat(2);
-                case ORGANISM_4_HABITAT -> organismManager.habitat(3);
-                case ORGANISM_5_HABITAT -> organismManager.habitat(4);
-                case ORGANISM_6_HABITAT -> organismManager.habitat(5);
-                case ORGANISM_7_HABITAT -> organismManager.habitat(6);
-                case ORGANISM_8_HABITAT -> organismManager.habitat(7);
-                default -> null; 
-            };
+        return switch (factorName) {
+            // Wettest at the water's edge, drying out inland
+            case MOISTURE -> this.grassMoistureFactor;
+            case TEMPERATURE -> regionalManager.temperatureMap;
+            case SOIL_COLOUR -> null;
+            case NATIONS -> null;
+            case WEALTH -> {
+                if (wealthOverlay == null) {
+                    wealthOverlay = new RegionalFactor(1f, (cx, cz, x, z) -> {
+                        int nation = nationManager.getNationAtWorld(x, z, TOTAL_REGION_WIDTH);
+                        return nation <= 0 ? 0f : infraManager.areaRichness(nation, settlementManager.getUrbanness(x, z));
+                    });
+                }
+                yield wealthOverlay;
+            }
+            case ANIMAL_POPULATION -> {
+                if (animalOverlay == null) {
+                    // How suited each place is to the wild creatures, averaged over every species
+                    // (the people who built the towns aren't among them)
+                    animalOverlay = new RegionalFactor(1f, (cx, cz, x, z) -> {
+                        int count = organismManager.speciesCount();
+                        if (count == 0) return 0f;
+                        float sum = 0f;
+                        for (int i = 0; i < count; i++) sum += organismManager.habitat(i).evaluate(cx, cz, x, z);
+                        return sum / count;
+                    });
+                }
+                yield animalOverlay;
+            }
+        };
     }
 
     // Mouse look gathered on the UI thread, applied at the start of the next frame
@@ -3068,6 +3456,26 @@ private static class SpeciesConfig {
         
         Renderer renderer = new Renderer();
         return new Model(name, mesh, modelMatrix, shader, material, renderer, lights, camera);
+    }
+
+    /**
+     * The board every sign is drawn on: as TwoTriangles (a unit square facing +Y, texture
+     * coordinates the same), but cut into strips across so a poster can bend round a curved wall.
+     */
+    private static Mesh signBoardMesh(GL3 gl, int strips) {
+        float[] vertices = new float[(strips + 1) * 2 * 8];
+        int[] indices = new int[strips * 6];
+        for (int i = 0; i <= strips; i++) {
+            float u = i / (float) strips, x = u - 0.5f;
+            float[][] pair = { { x, 0f, -0.5f, 0f, 1f, 0f, u, 1f }, { x, 0f, 0.5f, 0f, 1f, 0f, u, 0f } };
+            for (int k = 0; k < 2; k++) System.arraycopy(pair[k], 0, vertices, (i * 2 + k) * 8, 8);
+            if (i < strips) {
+                int a = i * 2;
+                int[] quad = { a, a + 1, a + 3, a, a + 3, a + 2 };
+                System.arraycopy(quad, 0, indices, i * 6, 6);
+            }
+        }
+        return new Mesh(gl, vertices, indices);
     }
 
     public FactorName getCurrentDebugFactor() {

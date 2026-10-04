@@ -42,6 +42,8 @@ public class OrganismMesh {
     public static final int PART_HAIR = 16;
     // The top a person wears over their torso, which may carry their nation's flag on the chest
     public static final int PART_TOP = 17;
+    // A shopping bag, in its own colour
+    public static final int PART_BAG = 18;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];

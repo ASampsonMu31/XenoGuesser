@@ -11,10 +11,19 @@ public class Renderer {
 
   private void doVertexShaderMatrices(GL3 gl, Shader shader, Matrix4 modelMatrix, Camera camera) { 
     shader.setFloatArray(gl, "model", modelMatrix.toFloatArrayForGLSL());
-    Matrix4 mvpMatrix = Matrix4.multiply(camera.getPerspectiveMatrix(), 
-                                   Matrix4.multiply(camera.getViewMatrix(), modelMatrix));
+    Matrix4 mvpMatrix = Matrix4.multiply(camera.getViewProjection(), modelMatrix);
     shader.setFloatArray(gl, "mvpMatrix", mvpMatrix.toFloatArrayForGLSL());
     shader.setVec3(gl, "viewPos", camera.getPosition());
+  }
+
+  // Uniform names for each light, made once
+  private static final String[][] LIGHT_NAMES = new String[64][3];
+  static {
+    for (int i = 0; i < 64; i++) {
+      LIGHT_NAMES[i][0] = "lights[" + i + "].position";
+      LIGHT_NAMES[i][1] = "lights[" + i + "].diffuse";
+      LIGHT_NAMES[i][2] = "lights[" + i + "].specular";
+    }
   }
 
   private void doLights(GL3 gl, Shader shader, Light[] lights) {
@@ -22,7 +31,7 @@ public class Renderer {
 
     for (int i = 0; i < lights.length; i++) {
         Light l = lights[i];
-        shader.setVec3(gl, "lights[" + i + "].position",  l.getPosition());
+        shader.setVec3(gl, LIGHT_NAMES[i][0],  l.getPosition());
         Vector3 diffuse;
         Vector3 specular;
         if (!l.getIsSun()) {
@@ -34,8 +43,8 @@ public class Renderer {
           diffuse = new Vector3(0.8f * brightnessProportion, 0.8f * brightnessProportion, 0.8f * brightnessProportion);
           specular = new Vector3(0.8f * brightnessProportion, 0.8f * brightnessProportion, 0.8f * brightnessProportion);
         }
-        shader.setVec3(gl, "lights[" + i + "].diffuse", diffuse);
-        shader.setVec3(gl, "lights[" + i + "].specular", specular);
+        shader.setVec3(gl, LIGHT_NAMES[i][1], diffuse);
+        shader.setVec3(gl, LIGHT_NAMES[i][2], specular);
     }
   }
   

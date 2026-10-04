@@ -33,6 +33,7 @@ uniform sampler2D detailTexture;
 uniform float detailAmount;
 // People: their hair, and the flag some wear on the chest of their top
 uniform vec3 hairColour;
+uniform vec3 bagColour;
 uniform sampler2D flagTexture;
 uniform int flagOnTop;
 // Goods (produce and packets): their nation's packaging texture, which u and v point into
@@ -94,6 +95,10 @@ void main() {
             vec2 f = vec2((vUV.x - 0.16) / 0.18, (vUV.y - 0.48) / 0.26);
             if (f.x > 0.0 && f.x < 1.0 && f.y > 0.0 && f.y < 1.0) albedo = texture(flagTexture, f).rgb;   // stored bottom row first, as v runs up the body
         }
+    } else if (vPart == 18) {
+        // A shopping bag: plastic or cloth, a little creased
+        albedo = bagColour * (0.85 + 0.2 * valueNoise(vUV * vec2(6.0, 4.0)));
+        shine = 0.5;
     } else if (vPart == 15) {
         albedo = texture(productTexture, vUV).rgb;
         shine = 0.45;

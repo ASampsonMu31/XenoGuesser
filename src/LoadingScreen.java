@@ -88,8 +88,11 @@ public class LoadingScreen extends JComponent {
     // the bottom. The game starts only when the player presses the button: Skip while it
     // plays, Begin once it has finished.
     private TransmissionMessage message;
-    private float[] charX;               // where each character of the transcript starts
+    private float[] charX;
+    private String charXText;               // where each character of the transcript starts
     private Font tickerFont;
+    // When the message finished, for scrolling its text off afterwards
+    private long tickerDoneAt;
     private Rectangle tickerBox = new Rectangle(), buttonBox = new Rectangle();
     private boolean buttonHovered;
     private boolean skipped;
@@ -201,7 +204,7 @@ public class LoadingScreen extends JComponent {
                 BufferedImage sheet = ImageIO.read(new File(LoadingArt.SPACEMAN));
                 Properties loaded = LoadingArt.readLayout();
                 TransmissionMessage loadedMessage = TransmissionMessage.load(
-                        multiplayer ? TransmissionMessage.MULTIPLAYER : TransmissionMessage.SINGLEPLAYER);
+                        multiplayer ? TransmissionMessage.MULTIPLAYER : TransmissionMessage.SINGLEPLAYER, worldSeed);
                 javax.swing.SwingUtilities.invokeLater(() -> {
                     message = loadedMessage;
                     if (message != null && !skipped) message.play();
@@ -323,7 +326,9 @@ public class LoadingScreen extends JComponent {
         g.fillRect(0, tickerBox.y, w, 1);
 
         String text = message.transcript();
-        if (tickerFont == null || tickerFont.getSize2D() != stripH * 0.42f) {
+        // (laid out again whenever the text changes: when the planet's name is settled)
+        if (tickerFont == null || tickerFont.getSize2D() != stripH * 0.42f || text != charXText) {
+            charXText = text;
             tickerFont = HudStyle.font(Font.PLAIN, stripH * 0.42f);
             charX = new float[text.length() + 1];
             java.awt.font.FontRenderContext frc = g.getFontRenderContext();
@@ -335,17 +340,30 @@ public class LoadingScreen extends JComponent {
         int whole = Math.min(text.length(), (int) spoken);
         float at = whole >= text.length() ? charX[text.length()]
                 : charX[whole] + (charX[Math.min(text.length(), whole + 1)] - charX[whole]) * (spoken - whole);
+        // Once it's all been said the text carries on left at the pace it went, until it's gone
+        if (message.isFinished() && !skipped) {
+            if (tickerDoneAt == 0L) tickerDoneAt = System.nanoTime();
+            float pace = charX[text.length()] / Math.max(1f, message.durationMillis());
+            at += pace * (System.nanoTime() - tickerDoneAt) / 1_000_000f;
+        }
         float anchor = w * 0.5f;
         float x = anchor - at;
+        // The planet's name is about to scroll into view: settled now, whether the world's own is ready or not
+        int nameAt = message.nameChar();
+        if (!message.nameSettled() && nameAt >= 0 && x + charX[Math.min(nameAt, text.length())] < w + stripH * 4f) message.settleName();
+        // Skipped, or scrolled right off: nothing left to show
+        boolean gone = skipped || x + charX[text.length()] < 0f;
         float baseline = tickerBox.y + stripH * 0.64f;
         g.setFont(tickerFont);
-        g.setColor(new Color(150, 165, 180, 140));
-        g.drawString(text, x, baseline);
-        Graphics2D said = (Graphics2D) g.create();
-        said.clipRect(0, tickerBox.y, Math.round(anchor), stripH);
-        said.setColor(new Color(235, 245, 255));
-        said.drawString(text, x, baseline);
-        said.dispose();
+        if (!gone) {
+            g.setColor(new Color(150, 165, 180, 140));
+            g.drawString(text, x, baseline);
+            Graphics2D said = (Graphics2D) g.create();
+            said.clipRect(0, tickerBox.y, Math.round(anchor), stripH);
+            said.setColor(new Color(235, 245, 255));
+            said.drawString(text, x, baseline);
+            said.dispose();
+        }
         // The source, over a fade at the left
         float labelX = stripH * 0.4f + stripH * 0.22f + 10;
         int labelW = Math.round(labelX + HudStyle.labelWidth(g, "Xenocorp transmission", stripH * 0.25f) + stripH * 1.6f);
@@ -644,6 +662,10 @@ public class LoadingScreen extends JComponent {
         s.fillOval(Math.round(feet[0] - drawWidth * 0.32f), Math.round(feet[1] - drawWidth * 0.06f), Math.round(drawWidth * 0.64f), Math.round(drawWidth * 0.14f));
         s.drawImage(spacemanSheet, x, y, x + Math.round(drawWidth), y + Math.round(drawHeight),
                 sx, sy, sx + LoadingArt.FRAME_WIDTH, sy + LoadingArt.FRAME_HEIGHT, null);
+        // As on the main menu: a hint under his feet that he can be turned
+        float unit = getHeight() / 1080f;
+        HudStyle.label(s, "Drag to turn", feet[0] - HudStyle.labelWidth(s, "Drag to turn", 15 * unit) / 2f,
+                feet[1] + drawWidth * 0.06f + 24 * unit, 15 * unit, new Color(230, 236, 245, 220));
         s.dispose();
     }
 

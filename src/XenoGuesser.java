@@ -106,6 +106,8 @@ public class XenoGuesser extends JFrame {
 
     // 3. The main menu first; the loading screen then covers everything until the round's first frame
     mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    // The planet's name is said (for the message from Xenocorp) while the menu is up
+    TransmissionMessage.prepare(worldSeed);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
 
     this.addComponentListener(new ComponentAdapter() {
@@ -177,6 +179,8 @@ public class XenoGuesser extends JFrame {
     layeredPane.remove(preview);
     loadingScreen = null;
     mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    // The planet's name is said (for the message from Xenocorp) while the menu is up
+    TransmissionMessage.prepare(worldSeed);
     mainMenu.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
     layeredPane.repaint();
@@ -461,6 +465,9 @@ public class XenoGuesser extends JFrame {
           break;
         }
         case "settings": setSettingsOpen(true); break;
+        // guess: a guess two seconds in; next: Next Round pressed twelve seconds in
+        case "guess": later(2000, () -> minimap.devGuess()); break;
+        case "next": later(Integer.getInteger("xenoguesser.nextdelay", 12000), () -> minimap.devNextRound()); break;
         default: break;
       }
     }
@@ -477,6 +484,16 @@ public class XenoGuesser extends JFrame {
           minimap.paint(mg);
           mg.dispose();
           javax.imageio.ImageIO.write(map, "png", new java.io.File(RunFiles.WORLD_DIR, "map_shot.png"));
+          // ...and the tick boxes beside it, if they're showing
+          MapLayersPanel layers = minimap.getLayersPanel();
+          if (layers != null && layers.isVisible() && layers.getWidth() > 0) {
+            java.awt.image.BufferedImage panel = new java.awt.image.BufferedImage(layers.getWidth(), layers.getHeight(),
+                java.awt.image.BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D pg = panel.createGraphics();
+            layers.paint(pg);
+            pg.dispose();
+            javax.imageio.ImageIO.write(panel, "png", new java.io.File(RunFiles.WORLD_DIR, "map_layers_shot.png"));
+          }
         } catch (Exception ex) {
           ex.printStackTrace();
         }
@@ -484,6 +501,12 @@ public class XenoGuesser extends JFrame {
       shot.setRepeats(false);
       shot.start();
     }
+  }
+
+  private static void later(int millis, Runnable action) {
+    javax.swing.Timer timer = new javax.swing.Timer(millis, e -> action.run());
+    timer.setRepeats(false);
+    timer.start();
   }
 
   private void layoutComponents() {
@@ -540,6 +563,18 @@ public class XenoGuesser extends JFrame {
         minimap.setBounds((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
     } else {
         minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
+    }
+    // The map's tick boxes, to its left while it's enlarged
+    MapLayersPanel layers = minimap.getLayersPanel();
+    if (layers != null) {
+        if (layers.getParent() != layeredPane) layeredPane.add(layers, JLayeredPane.PALETTE_LAYER);
+        boolean shown = minimap.isLargeMap() && !minimap.isFullScreenRevealMode();
+        layers.setVisible(shown);
+        if (shown) {
+            int height = Math.min(layers.wantedHeight(), minimap.getHeight() - 12);
+            layers.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() + 6, MapLayersPanel.WIDTH, height);
+            layers.revalidate();
+        }
     }
     layeredPane.revalidate();
     layeredPane.repaint();

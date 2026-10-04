@@ -44,6 +44,7 @@ public final class WorldPalette {
     public final float[] grassLush;
 
     private static final float MIN_SOIL_SKY_HUE_DISTANCE = 40f;
+    private static final float MIN_GRASS_SEA_HUE_DISTANCE = 60f;
     private static final float MIN_SUN_SKY_HUE_DISTANCE = 60f;
     private static final float GREY_SOIL_SATURATION = 0.14f;
 
@@ -106,13 +107,18 @@ public final class WorldPalette {
         float[] soilHsv = toHsv(soilBase);
         grassDry = hsv(0.07f + (soilHsv[0] - 0.07f) * 0.3f + (rng.nextFloat() - 0.5f) * 0.04f,
                 0.35f + rng.nextFloat() * 0.2f, 0.45f + rng.nextFloat() * 0.15f);
+        // ...and never too like the sea, so land and water can't be mistaken for each other
         float lushHue = 0f;
-        for (int attempt = 0; attempt < 32; attempt++) {
+        boolean found = false;
+        for (int attempt = 0; attempt < 64 && !found; attempt++) {
             lushHue = rng.nextFloat() < 0.35f ? (90f + rng.nextFloat() * 50f) / 360f : rng.nextFloat();
             boolean clearOfSky = hueDistance(lushHue * 360f, skyHsv[0] * 360f) >= 40f;
             boolean clearOfSoil = soilHsv[1] < GREY_SOIL_SATURATION || hueDistance(lushHue * 360f, soilHsv[0] * 360f) >= 40f;
-            if (clearOfSky && clearOfSoil) break;
+            boolean clearOfSea = hueDistance(lushHue * 360f, seaHue * 360f) >= MIN_GRASS_SEA_HUE_DISTANCE;
+            found = clearOfSky && clearOfSoil && clearOfSea;
         }
+        // Nothing fitting every rule: at least as far from the sea as can be
+        if (!found) lushHue = (seaHue + 0.5f) % 1f;
         grassLush = hsv(lushHue, 0.6f + rng.nextFloat() * 0.3f, 0.3f + rng.nextFloat() * 0.25f);
     }
 

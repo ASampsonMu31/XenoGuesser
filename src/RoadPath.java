@@ -8,7 +8,9 @@ public class RoadPath {
         // Rank orders who has priority at junctions: minor roads give way to higher ranks
         HIGHWAY(56.0f, 2),
         STREET(28.0f, 1),
-        LANE(24.0f, 0);
+        LANE(24.0f, 0),
+        // Unmade tracks out into the country: cleared earth, no paint
+        DIRT(15.0f, 0);
 
         public final float width;
         public final int rank;

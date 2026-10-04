@@ -29,9 +29,44 @@ uniform mat4 skyRotation;
 
 const float PI = 3.14159265359;
 
+// A hash of a whole-numbered cell, exact however far from the origin
+float cellHash(ivec2 c) {
+    uvec2 q = uvec2(c) * uvec2(1664525u, 22695477u) + uvec2(1013904223u, 1u);
+    uint h = q.x ^ (q.y * 747796405u);
+    h ^= h >> 16u;
+    h *= 2246822519u;
+    h ^= h >> 13u;
+    return float(h) / 4294967295.0;
+}
+
+float cellNoise(vec2 p) {
+    vec2 f = fract(p);
+    ivec2 i = ivec2(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cellHash(i), cellHash(i + ivec2(1, 0)), f.x), mix(cellHash(i + ivec2(0, 1)), cellHash(i + ivec2(1, 1)), f.x), f.y);
+}
+
+// Poor houses' walls and roofs (0 to 1): faded, streaked dark by rain, blotched with grime
+// and with pale patches of lichen and flaking
+uniform float weathering;
+
+vec3 weather(vec3 c) {
+    if (weathering <= 0.0) return c;
+    float w = weathering;
+    c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.45 * w);
+    float across = cellNoise(vec2(aPos.x * 0.45, aPos.y * 0.03)) * cellNoise(vec2(aPos.z * 0.45 + 31.0, aPos.y * 0.03 + 17.0));
+    c *= 1.0 - 0.55 * w * smoothstep(0.18, 0.5, across);
+    float grime = smoothstep(0.45, 0.75, cellNoise(aPos.xz * 0.07 + vec2(aPos.y * 0.09, 0.0)) * 0.65
+            + cellNoise(aPos.xz * 0.33 - vec2(0.0, aPos.y * 0.3)) * 0.35);
+    c = mix(c, vec3(0.16, 0.14, 0.1), 0.6 * w * grime);
+    float lichen = smoothstep(0.62, 0.8, cellNoise(aPos.xz * 0.21 + vec2(aPos.y * 0.17, 3.0)));
+    return mix(c, vec3(0.62, 0.66, 0.5), 0.55 * w * lichen);
+}
+
 void main() {
-    // Pure material ambient without texture multiplication
-    vec3 ambient = ambientLight * material.ambient;
+    // Pure material ambient without texture multiplication (stained, on a weathered house)
+    vec3 ambient = ambientLight * weather(material.ambient);
+    vec3 surface = weather(material.diffuse);
     
     vec3 norm = normalize(aNormal);
     vec3 viewDir = normalize(viewPos - aPos);
@@ -44,7 +79,7 @@ void main() {
         vec3 lightDir = normalize(light.position - aPos);  
         float diff = max(dot(norm, lightDir), 0.0);
         
-        totalDiffuse += light.diffuse * material.diffuse * diff;
+        totalDiffuse += light.diffuse * surface * diff;
         
         vec3 halfwayDir = normalize(lightDir + viewDir);  
         float spec = pow(max(dot(norm, halfwayDir), 0.0), material.shininess);

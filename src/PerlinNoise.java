@@ -3,7 +3,13 @@ import java.util.Random;
 public class PerlinNoise {
     private final int[] p = new int[512];
 
+    // The seed it was made from, for anything else that should vary with the same world
+    public final long seed;
+    // The world's continents, worked out from the seed when first needed (see TerrainMesh)
+    volatile float[][] continentCores;
+
     public PerlinNoise(long seed) {
+        this.seed = seed;
         int[] permutation = new int[256];
         for (int i = 0; i < 256; i++) {
             permutation[i] = i;

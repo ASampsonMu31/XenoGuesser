@@ -9,16 +9,19 @@ public class TerrainMesh {
      */
     public static float getLayeredHeight(float worldX, float worldZ, PerlinNoise noise) {
         float[] surface = Planet.surface(worldX, worldZ);
-        // LAYER 1: continentLayer1 (Ultra-low macro continental signals)
+        // LAYER 1: the continents. A handful of separate landmasses spread round the planet
+        // (see continentField), their coasts broken up by broad noise so they're irregular,
+        // now and then split into two or joined by an isthmus
         float f1 = 0.00003f;
-        float macroMacroVariationHeight = 800.0f;
         float rawNoise1 = noise.onSphere(surface, f1, 0f, 0f);
-        float continentLayer1 = (rawNoise1 * Math.abs(rawNoise1)) * macroMacroVariationHeight;
+        float f2 = 0.00008f;
+        float rawNoise2 = noise.onSphere(surface, f2, 0f, 0f);
+        // (out at sea the continents' pull fades, so islands can still rise from the broad noise)
+        float continent = Math.max(-0.3f, continentField(surface, noise));
+        float continentLayer1 = (continent + 0.4f * rawNoise1 + 0.55f * rawNoise2) * CONTINENT_HEIGHT;
 
         // LAYER 2: continentLayer2 (Master macro continental signals)
-        float f2 = 0.00008f;
         float macroVariationHeight = 400.0f;
-        float rawNoise2 = noise.onSphere(surface, f2, 0f, 0f);
         float continentLayer2 = (rawNoise2 * Math.abs(rawNoise2)) * macroVariationHeight;
 
         // LAYER 3: mountainLayer (Base mountains & deep canyons)
@@ -41,8 +44,8 @@ public class TerrainMesh {
         float baseHeight = mountainLayer + continentLayer2 + continentLayer1;
         // As on Earth, land thins out towards the poles: the crust sinks away at high latitudes
         float sinLatitude = Math.abs(surface[1]) / (float) Planet.radius();
-        float polar = Math.max(0f, Math.min(1f, (sinLatitude - 0.6f) / 0.4f));
-        baseHeight -= 200f * polar * polar * (3f - 2f * polar);
+        float polar = Math.max(0f, Math.min(1f, (sinLatitude - 0.62f) / 0.38f));
+        baseHeight -= 120f * polar * polar * (3f - 2f * polar);
 
         // LAYER 4: hillLayer (Mid-scale hills with low altitude suppression)
         float f4 = 0.001f;
@@ -66,6 +69,83 @@ public class TerrainMesh {
         float roughnessLayer = (1.0f - Math.abs(rawNoise5)) * a5;
 
         return baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
+    }
+
+    private static final float CONTINENT_HEIGHT = 480.0f;
+
+    /**
+     * How deep inside a continent a point on the sphere is: 1 at a continent's heart, 0 at
+     * its rough edge, below 0 out to sea (the most of any continent). Each continent is an
+     * oval patch of the sphere, some long and thin, some broad, at its own angle.
+     */
+    private static float continentField(float[] surface, PerlinNoise noise) {
+        float[][] cores = noise.continentCores;
+        if (cores == null) cores = continentCores(noise);
+        float inv = 1f / (float) Math.sqrt(surface[0] * surface[0] + surface[1] * surface[1] + surface[2] * surface[2]);
+        float px = surface[0] * inv, py = surface[1] * inv, pz = surface[2] * inv;
+        float best = -1f;
+        for (float[] c : cores) {
+            float facing = px * c[0] + py * c[1] + pz * c[2];
+            if (facing <= 0f) continue;
+            // Across the sphere from the continent's middle, along its long axis and across it
+            float along = px * c[3] + py * c[4] + pz * c[5];
+            float across = px * c[6] + py * c[7] + pz * c[8];
+            float q = (along * along) / (c[9] * c[9]) + (across * across) / (c[10] * c[10]);
+            best = Math.max(best, 1f - (float) Math.sqrt(q));
+        }
+        return best;
+    }
+
+    /**
+     * The world's continents, made once from its seed: five to eight, spread apart, kept
+     * away from the poles, each {middle (unit vector), long axis, short axis, long and short
+     * half-sizes (as sines of the angle)}.
+     */
+    private static synchronized float[][] continentCores(PerlinNoise noise) {
+        if (noise.continentCores != null) return noise.continentCores;
+        java.util.Random rand = new java.util.Random(noise.seed * 0x5DEECE66DL + 0xC0417L);
+        int count = 5 + rand.nextInt(4);
+        java.util.List<float[]> cores = new java.util.ArrayList<>();
+        for (int k = 0; k < count; k++) {
+            float[] centre = null;
+            for (int attempt = 0; attempt < 200; attempt++) {
+                double lat = Math.asin((rand.nextDouble() * 2 - 1) * Math.sin(Math.toRadians(55)));
+                double lon = rand.nextDouble() * Math.PI * 2;
+                float[] d = { (float) (Math.cos(lat) * Math.cos(lon)), (float) Math.sin(lat), (float) (Math.cos(lat) * Math.sin(lon)) };
+                boolean apart = true;
+                for (float[] other : cores) {
+                    if (d[0] * other[0] + d[1] * other[1] + d[2] * other[2] > Math.cos(0.85 - attempt * 0.002)) { apart = false; break; }
+                }
+                if (apart) { centre = d; break; }
+            }
+            if (centre == null) continue;
+            // Two directions along the sphere at the middle, turned to a random angle
+            float[] up = Math.abs(centre[1]) < 0.95f ? new float[] { 0f, 1f, 0f } : new float[] { 1f, 0f, 0f };
+            float[] east = normalise(cross(up, centre));
+            float[] north = cross(centre, east);
+            double turn = rand.nextDouble() * Math.PI;
+            float[] axis = new float[3], side = new float[3];
+            for (int i = 0; i < 3; i++) {
+                axis[i] = (float) (east[i] * Math.cos(turn) + north[i] * Math.sin(turn));
+                side[i] = (float) (-east[i] * Math.sin(turn) + north[i] * Math.cos(turn));
+            }
+            // Big and small continents alike; some long and thin
+            float size = 0.22f + rand.nextFloat() * 0.38f;
+            float aspect = 1f + rand.nextFloat() * 1.4f;
+            float major = (float) Math.sin(size * Math.sqrt(aspect)), minor = (float) Math.sin(size / Math.sqrt(aspect));
+            cores.add(new float[] { centre[0], centre[1], centre[2], axis[0], axis[1], axis[2], side[0], side[1], side[2], major, minor });
+        }
+        noise.continentCores = cores.toArray(new float[0][]);
+        return noise.continentCores;
+    }
+
+    private static float[] cross(float[] a, float[] b) {
+        return new float[] { a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0] };
+    }
+
+    private static float[] normalise(float[] v) {
+        float l = (float) Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        return new float[] { v[0] / l, v[1] / l, v[2] / l };
     }
 
     /**
@@ -112,6 +192,16 @@ public class TerrainMesh {
     }
 
     public static Mesh generateTerrainChunk(GL3 gl, int segments, float scale, int chunkX, int chunkZ, PerlinNoise noise) {
+        Object[] data = buildChunkData(segments, scale, chunkX, chunkZ, noise);
+        return new Mesh(gl, (float[]) data[0], (int[]) data[1]);
+    }
+
+    /**
+     * A terrain chunk's vertices and indices, {float[], int[]}, without touching the GPU, so
+     * it can be worked out on another thread and only uploaded on the GL thread. Heights are
+     * sampled once per grid point (and a border round it), normals taken from neighbours.
+     */
+    public static Object[] buildChunkData(int segments, float scale, int chunkX, int chunkZ, PerlinNoise noise) {
         int coreVertices = (segments + 1) * (segments + 1);
         int skirtVerticesCount = (segments + 1) * 4 - 4; // Safely drops corners
         
@@ -121,15 +211,29 @@ public class TerrainMesh {
         float globalStartZ = chunkZ * chunkSize;
 
         int vertexIndex = 0;
-        
+
+        // Heights on the grid and a one-step border round it
+        int side = segments + 3;
+        float[] grid = new float[side * side];
+        for (int z = -1; z <= segments + 1; z++) {
+            for (int x = -1; x <= segments + 1; x++) {
+                grid[(z + 1) * side + (x + 1)] = getLayeredHeight(globalStartX + (x * scale) - (chunkSize / 2.0f),
+                        globalStartZ + (z * scale) - (chunkSize / 2.0f), noise);
+            }
+        }
+        // Normals from the neighbours' heights, flattened as before (the slope across 0.2 units against 1 up)
+        float flatten = 0.1f / scale;
+
         // --- Step 1: Generate Standard Core Grid ---
         for (int z = 0; z <= segments; z++) {
             for (int x = 0; x <= segments; x++) {
                 float worldX = globalStartX + (x * scale) - (chunkSize / 2.0f);
                 float worldZ = globalStartZ + (z * scale) - (chunkSize / 2.0f);
-                float worldY = getLayeredHeight(worldX, worldZ, noise);
-                
-                float[] normal = calculateNormal(worldX, worldZ, noise);
+                int g = (z + 1) * side + (x + 1);
+                float worldY = grid[g];
+                float gx = (grid[g - 1] - grid[g + 1]) * flatten, gz = (grid[g - side] - grid[g + side]) * flatten;
+                float glen = (float) Math.sqrt(gx * gx + 1f + gz * gz);
+                float[] normal = { gx / glen, 1f / glen, gz / glen };
 
                 vertices[vertexIndex++] = worldX;
                 vertices[vertexIndex++] = worldY; 
@@ -245,6 +349,6 @@ public class TerrainMesh {
             indices[indexPointer++] = eastSkirtIndices[z + 1];
         }
 
-        return new Mesh(gl, vertices, indices);
+        return new Object[] { vertices, indices };
     }
 }

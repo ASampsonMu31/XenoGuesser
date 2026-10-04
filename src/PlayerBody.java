@@ -381,13 +381,18 @@ public class PlayerBody {
 
         // Where the compass is held: in front of the eyes, a little below and left of where
         // they look, following the view up and down within reach
+        // (even looking up at the sky, when it's raised high and drawn in closer so the arm
+        // reaches, the shoulder lifting a little)
         float held = compassBlend();
-        float lookDown = Math.max((float) Math.toRadians(-55), Math.min((float) Math.toRadians(15), pitch)) - COMPASS_BELOW;
-        float[] compassAt = {
-            COMPASS_REACH * (float) Math.sin(COMPASS_LEFT),
-            COMPASS_REACH * (float) Math.sin(lookDown),
-            COMPASS_REACH * (float) Math.cos(lookDown) * (float) Math.cos(COMPASS_LEFT)
-        };
+        float lookDown = Math.max((float) Math.toRadians(-69), Math.min((float) Math.toRadians(72), pitch - COMPASS_BELOW));
+        float high = Math.max(0f, (float) Math.sin(lookDown));
+        float shoulderLift = 1.6f * high * held;
+        float[] compassAt = compassPoint(COMPASS_REACH, lookDown);
+        float[] leftShoulder = { SHOULDER_SPAN, -SHOULDER_DROP + shoulderLift, back };
+        for (float reach = COMPASS_REACH; reach > 2.4f; reach -= 0.1f) {
+            compassAt = compassPoint(reach, lookDown);
+            if (Affine.length(Affine.subtract(compassAt, leftShoulder)) < (UPPER_ARM_LENGTH + FOREARM_LENGTH) * 0.95f) break;
+        }
 
         for (int side = 0; side < 2; side++) {
             float sign = side == 0 ? -1f : 1f;
@@ -395,7 +400,7 @@ public class PlayerBody {
             float stroke = strokePhase + side * (float) Math.PI;
 
             // Arms: swinging opposite the legs when walking, a front crawl when swimming
-            float[] shoulder = { sign * SHOULDER_SPAN, -SHOULDER_DROP, back };
+            float[] shoulder = { sign * SHOULDER_SPAN, -SHOULDER_DROP + (side == LEFT ? shoulderLift : 0f), back };
             float swing = -(float) Math.sin(phase) * walking;
             float[] walkHand = { shoulder[0] + sign * 0.5f, shoulder[1] - 6.1f + 0.4f * Math.abs(swing), shoulder[2] + swing * 2.0f + 0.3f };
             // Front crawl, in the tilted body's space (+Y ahead, +Z down into the water): the
@@ -416,11 +421,16 @@ public class PlayerBody {
             // thigh with the thumb forward; swimming it faces down into the water, thumb inwards
             float[] palm = lerp(new float[] { -sign, 0f, 0f }, new float[] { 0f, 0f, 1f }, s);
             boolean holding = side == LEFT && held > 0f;
+            // Holding the compass the wrist bends so the hand points level, ahead and in
+            float[] handAlong = null;
             if (holding) {
-                // Held out palm up, the compass resting on the glove
-                float[] reach = Affine.normalise(Affine.subtract(compassAt, shoulder));
+                // Held out palm up, the compass resting on the glove: the palm near level
+                // however high it's held, tipped only slightly towards the eyes
+                float[] toShoulder = Affine.subtract(compassAt, shoulder);
+                float[] reach = Affine.normalise(new float[] { toShoulder[0], 0f, toShoulder[2] });
+                handAlong = reach;
                 float[] toEyes = Affine.normalise(new float[] { -compassAt[0], -compassAt[1], -compassAt[2] });
-                float[] palmUp = Affine.normalise(new float[] { toEyes[0] * 0.5f, 1f + toEyes[1] * 0.5f, toEyes[2] * 0.5f });
+                float[] palmUp = Affine.normalise(new float[] { toEyes[0] * 0.25f, 1f, toEyes[2] * 0.25f });
                 float[] wrist = {
                     compassAt[0] - reach[0] * COMPASS_ON_PALM - palmUp[0] * PALM_TOP,
                     compassAt[1] - reach[1] * COMPASS_ON_PALM - palmUp[1] * PALM_TOP,
@@ -433,7 +443,9 @@ public class PlayerBody {
             float[] elbow = Affine.middleJoint(shoulder, hand, UPPER_ARM_LENGTH, FOREARM_LENGTH, bend);
             limb(body, shoulder, elbow, UPPER_ARM_LENGTH, UPPER_ARM + side);
             limb(body, elbow, hand, FOREARM_LENGTH, FOREARM + side);
-            float[] gloveFrame = Affine.frame(hand, Affine.subtract(hand, elbow), palm, 1f, 1f, 1f);
+            float[] along = Affine.normalise(Affine.subtract(hand, elbow));
+            if (handAlong != null) along = Affine.normalise(lerp(along, handAlong, held));
+            float[] gloveFrame = Affine.frame(hand, along, palm, 1f, 1f, 1f);
             Affine.multiply(body, gloveFrame, bones, (GLOVE + side) * 16);
             if (side == LEFT) poseCompass(body, gloveFrame, held);
 
@@ -452,6 +464,15 @@ public class PlayerBody {
             float[] bootFrame = Affine.frame(foot, toes, lerp(new float[] { 0f, 1f, 0f }, new float[] { 0f, 0f, 1f }, s), 1f, 1f, 1f);
             Affine.multiply(body, bootFrame, bones, (BOOT + side) * 16);
         }
+    }
+
+    /** A point at reach from the eyes, at elevation (radians) and a little to the left of the view. */
+    private static float[] compassPoint(float reach, float elevation) {
+        return new float[] {
+            reach * (float) Math.sin(COMPASS_LEFT),
+            reach * (float) Math.sin(elevation),
+            reach * (float) Math.cos(elevation) * (float) Math.cos(COMPASS_LEFT)
+        };
     }
 
     /**

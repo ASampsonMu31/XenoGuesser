@@ -37,6 +37,9 @@ uniform float regionWidth;
 uniform float useSoilRegions;
 // Bare rock showing through wherever the ground is steep (terrain only)
 uniform vec3 rockColour;
+// Dirt tracks (above 0, how gritty): the same soil as the ground round them, a little worn,
+// strewn with fine grit
+uniform float trackGrit;
 
 const float PI = 3.14159265359;
 
@@ -50,6 +53,41 @@ float valueNoise(vec2 p) {
     return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
 }
 
+// A hash of a whole-numbered cell, exact however far from the origin (the sine hash above
+// loses precision out there and smears into stripes)
+float cellHash(ivec2 c) {
+    uvec2 q = uvec2(c) * uvec2(1664525u, 22695477u) + uvec2(1013904223u, 1u);
+    uint h = q.x ^ (q.y * 747796405u);
+    h ^= h >> 16u;
+    h *= 2246822519u;
+    h ^= h >> 13u;
+    return float(h) / 4294967295.0;
+}
+
+float cellNoise(vec2 p) {
+    vec2 f = fract(p);
+    ivec2 i = ivec2(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cellHash(i), cellHash(i + ivec2(1, 0)), f.x), mix(cellHash(i + ivec2(0, 1)), cellHash(i + ivec2(1, 1)), f.x), f.y);
+}
+
+// Poor houses' walls and roofs (0 to 1): faded, streaked dark by rain, blotched with grime
+// and with pale patches of lichen and flaking
+uniform float weathering;
+
+vec3 weather(vec3 c) {
+    if (weathering <= 0.0) return c;
+    float w = weathering;
+    c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.45 * w);
+    float across = cellNoise(vec2(aPos.x * 0.45, aPos.y * 0.03)) * cellNoise(vec2(aPos.z * 0.45 + 31.0, aPos.y * 0.03 + 17.0));
+    c *= 1.0 - 0.55 * w * smoothstep(0.18, 0.5, across);
+    float grime = smoothstep(0.45, 0.75, cellNoise(aPos.xz * 0.07 + vec2(aPos.y * 0.09, 0.0)) * 0.65
+            + cellNoise(aPos.xz * 0.33 - vec2(0.0, aPos.y * 0.3)) * 0.35);
+    c = mix(c, vec3(0.16, 0.14, 0.1), 0.6 * w * grime);
+    float lichen = smoothstep(0.62, 0.8, cellNoise(aPos.xz * 0.21 + vec2(aPos.y * 0.17, 3.0)));
+    return mix(c, vec3(0.62, 0.66, 0.5), 0.55 * w * lichen);
+}
+
 void main() {
     vec2 scaledUV = aTexCoord * scale; 
 
@@ -58,7 +96,9 @@ void main() {
 
         vec3 texColor = sampledColor;
     if (useSoilRegions > 0.5) {
-        vec2 regionUV = aPos.xz / regionWidth + 0.5;
+        // (images load bottom row first, and the map's first row is its northern edge, so
+        // north is at the top of the texture: v runs the other way to z)
+        vec2 regionUV = vec2(aPos.x / regionWidth + 0.5, 0.5 - aPos.z / regionWidth);
         texColor *= texture(soilRegionMap, regionUV).rgb * 2.0;
 
         // Steep slopes are bare rock, banded in strata and broken up by grain and cracks
@@ -73,6 +113,48 @@ void main() {
             vec3 rock = tint * strata * (0.75 + 0.45 * grain) * (1.0 - 0.45 * crack);
             texColor = mix(texColor, rock, rockAmount);
         }
+    }
+
+    if (trackGrit > 0.0) {
+        // Worn a little paler than the ground beside it, in soft patches
+        texColor *= 1.08 + 0.07 * cellNoise(aPos.xz * 0.35);
+        // Grit: small stones of their own sizes and lumpy shapes, each sitting somewhere in
+        // its own unit cell (more cells holding one the grittier the track), lit a
+        // little on one side; smoothed at their edges, and fading out with distance before
+        // they can shimmer
+        float near = 1.0 - smoothstep(60.0, 150.0, length(viewPos - aPos));
+        if (near > 0.0) {
+            vec2 gp = aPos.xz;
+            ivec2 base = ivec2(floor(gp));
+            float pixel = length(fwidth(gp));
+            float cover = 0.0, tone = 1.0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    ivec2 c = base + ivec2(dx, dy);
+                    if (cellHash(c + ivec2(5, 9)) > 0.15 + 0.6 * trackGrit) continue;
+                    vec2 d = gp - (vec2(c) + vec2(0.15) + 0.7 * vec2(cellHash(c), cellHash(c + ivec2(13, 7))));
+                    float r = 0.14 + 0.22 * cellHash(c + ivec2(3, 21));
+                    float angle = atan(d.y, d.x);
+                    float lumpy = 1.0 + 0.22 * sin(angle * 3.0 + 6.283 * cellHash(c + ivec2(8, 2)))
+                                      + 0.1 * sin(angle * 5.0 + 6.283 * cellHash(c + ivec2(1, 19)));
+                    float dist = length(d) / (r * lumpy);
+                    // (a pixel's width from the smoothly varying position, not the distance, which
+                    // jumps where neighbouring cells meet and would draw lines along them)
+                    float edge = max(pixel / (r * lumpy), 0.05);
+                    float here = 1.0 - smoothstep(1.0 - edge, 1.0 + edge, dist);
+                    if (here > cover) {
+                        cover = here;
+                        // Its own shade, lighter on the side facing the light and darker away
+                        tone = 0.45 + 0.85 * cellHash(c + ivec2(11, 4)) - 0.25 * (d.x + d.y) / r;
+                    }
+                }
+            }
+            texColor *= mix(1.0, tone, cover * near);
+        }
+    }
+
+    if (weathering > 0.0) {
+        texColor = weather(texColor);
     }
 
     // Multiplicative blending for ambient lighting

@@ -83,13 +83,38 @@ public class Camera {
     pitch = (float) Math.toDegrees(Math.asin(v.y));
   }
 
+  // The view and view-projection, kept until the camera or its lens changes: thousands of
+  // things are drawn each frame and each asked for them
+  private Matrix4 cachedView, cachedViewProjection, cachedFor;
+  private final float[] cachedKey = new float[9];
+
   public Matrix4 getViewMatrix() {
+    refreshCache();
+    return cachedView;
+  }
+
+  /** Projection times view, for this frame. */
+  public Matrix4 getViewProjection() {
+    refreshCache();
+    if (cachedViewProjection == null || cachedFor != perspective) {
+      cachedViewProjection = Matrix4.multiply(perspective, cachedView);
+      cachedFor = perspective;
+    }
+    return cachedViewProjection;
+  }
+
+  private void refreshCache() {
+    float[] key = { position.x, position.y, position.z, front.x, front.y, front.z, up.x, up.y, up.z };
+    if (cachedView != null && java.util.Arrays.equals(key, cachedKey)) return;
+    System.arraycopy(key, 0, cachedKey, 0, 9);
     target = Vector3.add(position, front);
-    return Matrix4Transform.lookAt(position, target, up);
+    cachedView = Matrix4Transform.lookAt(position, target, up);
+    cachedViewProjection = null;
   }
   
   public void setPerspectiveMatrix(Matrix4 m) {
     perspective = m;
+    cachedViewProjection = null;
   }
   
   public Matrix4 getPerspectiveMatrix() {
