@@ -147,7 +147,8 @@ public class SettlementManager {
         Settlement best = null;
         float bestInfluence = 0.0f;
         for (Settlement settlement : settlements) {
-            float influence = settlement.influenceAt(worldX, worldZ);
+            float influence = Math.max(settlement.influenceAt(worldX, worldZ),
+                    Math.max(settlement.influenceAt(worldX - Planet.width(), worldZ), settlement.influenceAt(worldX + Planet.width(), worldZ)));
             if (influence > bestInfluence) {
                 bestInfluence = influence;
                 best = settlement;
@@ -204,6 +205,9 @@ public class SettlementManager {
         for (int i = 0; i < CANDIDATE_SAMPLES; i++) {
             float x = (rand.nextFloat() * 2.0f - 1.0f) * halfRegion * 0.97f;
             float z = (rand.nextFloat() * 2.0f - 1.0f) * halfRegion * 0.97f;
+            // Towns are founded on the map (they may spread over its join, see stampSettlement)
+            // and away from the clipped poles
+            if (Math.abs(x) > Planet.width() * 0.5f || Math.abs(z) > Planet.clipHalfHeight() - 3000f) continue;
             float habitability = computeHabitability(x, z);
             if (habitability > 0.02f) {
                 candidates.add(new float[] { x, z, (float) Math.pow(habitability, SITE_PREFERENCE_POWER) });
@@ -280,7 +284,8 @@ public class SettlementManager {
     private boolean isClearOfSettlements(float x, float z, float radius, List<Settlement> placed) {
         for (Settlement other : placed) {
             float spacing = SPACING_FACTOR * (radius + other.radius);
-            float dx = x - other.x;
+            // Measured round the planet, so towns either side of the map's join keep apart too
+            float dx = (float) Planet.wrapX(x - other.x);
             float dz = z - other.z;
             if (dx * dx + dz * dz < spacing * spacing) {
                 return false;
@@ -291,9 +296,19 @@ public class SettlementManager {
 
     /** Combines overlapping settlements as a probabilistic union so urbanness never exceeds 1. */
     private void stampSettlement(Settlement settlement) {
+        // A town near the map's join spreads over it: it's stamped where it is, and again a
+        // whole way round east and west, which lands in the margin beyond the other edge
+        for (float shift : new float[] { 0f, Planet.width(), -Planet.width() }) {
+            stampSettlement(settlement, shift);
+        }
+    }
+
+    private void stampSettlement(Settlement settlement, float shift) {
         float reach = settlement.radius * INFLUENCE_CUTOFF_SIGMAS;
-        int minI = Math.max(0, (int) Math.floor((settlement.x - reach + halfRegion) / urbanCellSize));
-        int maxI = Math.min(URBAN_GRID_RESOLUTION, (int) Math.ceil((settlement.x + reach + halfRegion) / urbanCellSize));
+        float sx = settlement.x + shift;
+        if (sx + reach < -halfRegion || sx - reach > halfRegion) return;
+        int minI = Math.max(0, (int) Math.floor((sx - reach + halfRegion) / urbanCellSize));
+        int maxI = Math.min(URBAN_GRID_RESOLUTION, (int) Math.ceil((sx + reach + halfRegion) / urbanCellSize));
         int minJ = Math.max(0, (int) Math.floor((settlement.z - reach + halfRegion) / urbanCellSize));
         int maxJ = Math.min(URBAN_GRID_RESOLUTION, (int) Math.ceil((settlement.z + reach + halfRegion) / urbanCellSize));
 
@@ -302,7 +317,7 @@ public class SettlementManager {
             for (int i = minI; i <= maxI; i++) {
                 float worldX = i * urbanCellSize - halfRegion;
                 int index = j * (URBAN_GRID_RESOLUTION + 1) + i;
-                float influence = settlement.influenceAt(worldX, worldZ);
+                float influence = settlement.influenceAt(worldX - shift, worldZ);
                 urbanGrid[index] = 1.0f - (1.0f - urbanGrid[index]) * (1.0f - influence);
             }
         }

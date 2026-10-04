@@ -118,7 +118,7 @@ private volatile boolean showHeatmap = false;
     private boolean isLarge = false;
     private Runnable onSizeChanged;
     private boolean isFullScreenReveal = false; 
-    private int currentMapSize = 150; 
+    private int currentMapSize = 210; 
 
     private int targetRoundScore = 0;
     private int currentDisplayScore = 0;
@@ -295,7 +295,7 @@ private volatile boolean showHeatmap = false;
                             int limitLeft = mapLeft + 5;
                             int limitRight = mapLeft + currentMapSize - 5;
                             int limitTop = mapTop + 5;
-                            int limitBottom = mapTop + currentMapSize - 5;
+                            int limitBottom = mapTop + mapHeight() - 5;
 
                             if (boxX < limitLeft) boxX = limitLeft;
                             else if (boxX + maxBoxWidth > limitRight) boxX = limitRight - maxBoxWidth;
@@ -362,7 +362,7 @@ private volatile boolean showHeatmap = false;
                     int mapLeft = visualMapX;
                     int mapTop = visualMapY;
                     int mapRight = mapLeft + currentMapSize;
-                    int mapBottom = mapTop + currentMapSize;
+                    int mapBottom = mapTop + mapHeight();
 
                     if (clickX >= mapLeft && clickX < mapRight && clickY >= mapTop && clickY < mapBottom) {
                         int localizedX = clickX - visualMapX;
@@ -385,7 +385,7 @@ private volatile boolean showHeatmap = false;
                     int localizedX = clickX - visualMapX;
                     int localizedY = clickY - visualMapY;
 
-                    if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < currentMapSize) {
+                    if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < mapHeight()) {
                         float corePixelX = screenToCoreX(clickX, visualMapX);
                         float corePixelY = screenToCoreY(clickY, visualMapY);
 
@@ -411,19 +411,19 @@ private volatile boolean showHeatmap = false;
         int mapLeft = visualMapX;
         int mapTop = visualMapY;
         float fractionX = (float) (e.getX() - mapLeft) / currentMapSize;
-        float fractionY = (float) (e.getY() - mapTop) / currentMapSize;
+        float fractionY = (float) (e.getY() - mapTop) / mapHeight();
         if (fractionX < 0.0f || fractionX > 1.0f || fractionY < 0.0f || fractionY > 1.0f) {
             return;
         }
 
         float cursorU = viewLeft() + fractionX / zoom;
-        float cursorV = viewTop() + fractionY / zoom;
+        float cursorV = viewTop() + fractionY * Planet.aspect() / zoom;
         float newZoom = zoom * (float) Math.pow(ZOOM_STEP, -e.getPreciseWheelRotation());
         zoom = Math.max(1.0f, Math.min(MAX_ZOOM, newZoom));
 
         float halfView = 0.5f / zoom;
         viewCentreU = clampCentre(cursorU - fractionX / zoom + halfView);
-        viewCentreV = clampCentre(cursorV - fractionY / zoom + halfView);
+        viewCentreV = clampCentreV(cursorV - fractionY * Planet.aspect() / zoom + halfView * Planet.aspect());
         repaint();
     }
 
@@ -438,12 +438,27 @@ private volatile boolean showHeatmap = false;
         return Math.max(halfView, Math.min(1.0f - halfView, centre));
     }
 
+    /**
+     * The map is a Mercator chart of the planet, wider than it is tall (see Planet): the
+     * square map images cover the chart's width both ways, and only the band between the
+     * clipped latitudes, its height aspect times its width, is shown.
+     */
+    private int mapHeight() {
+        return Math.round(currentMapSize * Planet.aspect());
+    }
+
+    private float clampCentreV(float centre) {
+        float halfView = 0.5f * Planet.aspect() / zoom;
+        float top = 0.5f - 0.5f * Planet.aspect(), bottom = 0.5f + 0.5f * Planet.aspect();
+        return Math.max(top + halfView, Math.min(bottom - halfView, centre));
+    }
+
     private float viewLeft() {
         return viewCentreU - 0.5f / zoom;
     }
 
     private float viewTop() {
-        return viewCentreV - 0.5f / zoom;
+        return viewCentreV - 0.5f * Planet.aspect() / zoom;
     }
 
     // Conversions between core map pixels (the mapImage grid) and screen pixels, respecting the zoom
@@ -577,7 +592,9 @@ private volatile boolean showHeatmap = false;
 
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
-            this.currentMapSize = Math.min(750, Math.max(300, parentHeight - 240)); 
+            int parentWidth = getParent().getWidth();
+            int tall = Math.min(750, Math.max(300, parentHeight - 240));
+            this.currentMapSize = Math.min(Math.max(300, parentWidth - 80), Math.round(tall / Planet.aspect()));
         } else {
             this.currentMapSize = 650;
         }
@@ -688,7 +705,7 @@ private volatile boolean showHeatmap = false;
             this.setSize(getParent().getSize());
             
             this.visualMapX = (getWidth() - currentMapSize) / 2;
-            this.visualMapY = Math.max(20, (getHeight() - currentMapSize) / 2 - 45);
+            this.visualMapY = Math.max(20, (getHeight() - mapHeight()) / 2 - 45);
             
             this.btnWidth = currentMapSize;
             this.btnHeight = 40;
@@ -696,7 +713,7 @@ private volatile boolean showHeatmap = false;
             this.noteBtnWidth = btnWidth;
             this.noteBtnHeight = 55; 
             this.noteBtnX = visualMapX;
-            this.noteBtnY = visualMapY + currentMapSize + BORDER_SIZE + 15; 
+            this.noteBtnY = visualMapY + mapHeight() + BORDER_SIZE + 15; 
             
             this.btnX = visualMapX;
             this.btnY = noteBtnY + noteBtnHeight + 15; 
@@ -714,7 +731,7 @@ private volatile boolean showHeatmap = false;
             int bottomSpace = needsExtraSpace ? EXTRA_BOTTOM_SPACE : 0;
             
             int panelWidth = currentMapSize + (BORDER_SIZE * 2) + HORIZONTAL_SHUFFLE_OFFSET + 2;
-            int panelHeight = currentMapSize + (BORDER_SIZE * 2) + bottomSpace;
+            int panelHeight = mapHeight() + (BORDER_SIZE * 2) + bottomSpace;
             
             this.setPreferredSize(new Dimension(panelWidth, panelHeight));
             
@@ -724,7 +741,7 @@ private volatile boolean showHeatmap = false;
             this.btnWidth = panelWidth - 24;
             this.btnHeight = 40;
             this.btnX = (panelWidth - btnWidth) / 2;
-            this.btnY = currentMapSize + (BORDER_SIZE * 2) + 7;
+            this.btnY = mapHeight() + (BORDER_SIZE * 2) + 7;
 
             if (noteArea != null && noteArea.isVisible()) {
                 noteArea.setVisible(false);
@@ -772,7 +789,7 @@ private volatile boolean showHeatmap = false;
             float[] fractions = {0.0f, 0.5f, 1.0f};
             Color[] colours = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
 
-            int mapFrameH = currentMapSize + (BORDER_SIZE * 2);
+            int mapFrameH = mapHeight() + (BORDER_SIZE * 2);
             int mapFrameW = currentMapSize + (BORDER_SIZE * 2);
             int startX = mapX - BORDER_SIZE;
             int startY = mapY - BORDER_SIZE;
@@ -817,11 +834,12 @@ private volatile boolean showHeatmap = false;
                 mapSource = detailSource;
             }
             Shape frameClip = g2d.getClip();
-            g2d.clipRect(mapX, mapY, currentMapSize, currentMapSize);
+            g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
             AffineTransform mapTransform = new AffineTransform();
             mapTransform.translate(mapX - viewLeft() * zoom * currentMapSize, mapY - viewTop() * zoom * currentMapSize);
             mapTransform.scale(zoom * currentMapSize / mapSource.getWidth(), zoom * currentMapSize / mapSource.getHeight());
             g2d.drawImage(mapSource, mapTransform, null);
+            drawGraticule(g2d, mapX, mapY);
             g2d.setClip(frameClip);
 
             if (zoom > 1.01f) {
@@ -831,7 +849,7 @@ private volatile boolean showHeatmap = false;
                 int zoomW = zoomFm.stringWidth(zoomLabel) + 12;
                 int zoomH = zoomFm.getAscent() + 8;
                 int zoomX = mapX + currentMapSize - zoomW - 8;
-                int zoomY = mapY + currentMapSize - zoomH - 8;
+                int zoomY = mapY + mapHeight() - zoomH - 8;
                 g2d.setColor(new Color(25, 25, 27, 195));
                 g2d.fillRoundRect(zoomX, zoomY, zoomW, zoomH, 8, 8);
                 g2d.setColor(Color.WHITE);
@@ -887,7 +905,7 @@ private volatile boolean showHeatmap = false;
                 for (MapNote note : savedNotes) {
                     int drawX = coreToScreenX(note.coreX, mapX);
                     int drawY = coreToScreenY(note.coreY, mapY);
-                    if (drawX < mapX || drawX > mapX + currentMapSize || drawY < mapY || drawY > mapY + currentMapSize) {
+                    if (drawX < mapX || drawX > mapX + currentMapSize || drawY < mapY || drawY > mapY + mapHeight()) {
                         continue;
                     }
 
@@ -936,7 +954,7 @@ private volatile boolean showHeatmap = false;
                         int limitLeft = mapX + 5;
                         int limitRight = mapX + currentMapSize - 5;
                         int limitTop = mapY + 5;
-                        int limitBottom = mapY + currentMapSize - 5;
+                        int limitBottom = mapY + mapHeight() - 5;
 
                         if (boxX < limitLeft) {
                             boxX = limitLeft;
@@ -977,7 +995,7 @@ private volatile boolean showHeatmap = false;
                 int displayGoalY = coreToScreenY(goalY, mapY);
 
                 Shape markerClip = g2d.getClip();
-                g2d.clipRect(mapX, mapY, currentMapSize, currentMapSize);
+                g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
 
                 if (isFullScreenReveal) {
                     int targetLineX = displayPinX + (int) ((displayGoalX - displayPinX) * lineProgress);
@@ -1096,7 +1114,7 @@ private volatile boolean showHeatmap = false;
                         int textH = scoreFm.getAscent();
                         
                         int centerMapX = mapX + (currentMapSize / 2);
-                        int centerMapY = mapY + (currentMapSize / 2);
+                        int centerMapY = mapY + (mapHeight() / 2);
                         
                         int targetHUDX = -getX() + HudStyle.HUD_MARGIN + HudStyle.SCORE_TARGET_X;
                         int targetHUDY = -getY() + HudStyle.HUD_MARGIN + HudStyle.SCORE_TARGET_Y;
@@ -1134,7 +1152,7 @@ private volatile boolean showHeatmap = false;
         this.isLarge = false;
         this.mapSize = MapSize.SMALL;
         this.hasPin = false;
-        this.currentMapSize = 150;
+        this.currentMapSize = 210;
         resetZoom();
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
@@ -1191,8 +1209,9 @@ private volatile boolean showHeatmap = false;
         isLarge = size == MapSize.LARGE;
         int parentHeight = getParent() != null ? getParent().getHeight() : 900;
         currentMapSize = switch (size) {
-            case SMALL -> 150;
-            case LARGE -> (int) (parentHeight * 0.60f);
+            case SMALL -> 210;
+            case LARGE -> Math.min((int) (parentHeight * 0.60f / Planet.aspect()),
+                    getParent() != null ? (int) (getParent().getWidth() * 0.55f) : 900);
         };
         if (!isLarge) resetZoom();
         updateGeometryLayouts();
@@ -1239,16 +1258,40 @@ private volatile boolean showHeatmap = false;
         this.nextRoundRequested = false;
     }
 
+    /**
+     * Lines of latitude and longitude every 30 degrees (the equator a little stronger): the
+     * map is a Mercator chart of the planet, so the parallels spread out towards the poles.
+     */
+    private void drawGraticule(Graphics2D g2d, int mapX, int mapY) {
+        float span = zoom * currentMapSize;
+        float originX = mapX - viewLeft() * span, originY = mapY - viewTop() * span;
+        java.awt.Stroke old = g2d.getStroke();
+        g2d.setStroke(new BasicStroke(1f));
+        for (int lon = -150; lon <= 150; lon += 30) {
+            float fx = (float) ((Planet.chartX(Math.toRadians(lon)) + halfRegion) / totalRegionWidth);
+            int px = Math.round(originX + fx * span);
+            g2d.setColor(new Color(255, 255, 255, lon == 0 ? 70 : 38));
+            g2d.drawLine(px, mapY, px, mapY + mapHeight());
+        }
+        for (int lat = -80; lat <= 80; lat += lat == -80 || lat == 60 ? 20 : 30) {
+            float fy = (float) ((Planet.chartZ(Math.toRadians(lat)) + halfRegion) / totalRegionWidth);
+            int py = Math.round(originY + fy * span);
+            g2d.setColor(new Color(255, 255, 255, lat == 0 ? 70 : 38));
+            g2d.drawLine(mapX, py, mapX + currentMapSize, py);
+        }
+        g2d.setStroke(old);
+    }
+
     private void calculateAndApplyScore() {
-        double deltaX = pinX - goalX;
-        double deltaY = pinY - goalY;
-        double pixelDistance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-
+        // The map is a Mercator chart of the planet: where each point is on it, in world units
         float mapWidthPixels = mapImage.getWidth();
-        double realWorldDistance = (pixelDistance / mapWidthPixels) * totalRegionWidth;
+        float mapHeightPixels = mapImage.getHeight();
+        double pinWorldX = (pinX / mapWidthPixels - 0.5) * totalRegionWidth, pinWorldZ = (pinY / mapHeightPixels - 0.5) * totalRegionWidth;
+        double goalWorldX = (goalX / mapWidthPixels - 0.5) * totalRegionWidth, goalWorldZ = (goalY / mapHeightPixels - 0.5) * totalRegionWidth;
+        // How far apart they really are: the shortest way round the sphere's surface
+        double realWorldDistance = Planet.surfaceDistance(pinWorldX, pinWorldZ, goalWorldX, goalWorldZ);
 
-        double maxDiagonalDistance = Math.sqrt(2.0) * totalRegionWidth;
-        double kConstant = maxDiagonalDistance / 14.0f; 
+        double kConstant = Planet.greatestDistance() / 7.0;
         int score = (int) Math.round(5000.0 * Math.exp(-realWorldDistance / kConstant));
         
         if (score < 0) score = 0;

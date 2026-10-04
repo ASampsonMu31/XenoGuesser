@@ -219,7 +219,11 @@ public class XenoGuesser extends JFrame {
       PerlinNoise worldNoise = new PerlinNoise(worldSeed);
       float physicalChunkSize = 100.0f;
       float totalRegionWidth = 150_000f;
+      Planet.setWidth(totalRegionWidth);
       float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
+      // Where the map's left and right edges join: the meridian crossing the least land
+      float joinLand = Planet.chooseJoin((x, z) -> TerrainMesh.getLayeredHeight(x, z, worldNoise), seaLevelHeight);
+      System.out.printf("[PLANET] The map's join crosses %.1f%% land%n", joinLand * 100f);
       
       Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, seaLevelHeight);
       MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
@@ -466,6 +470,13 @@ public class XenoGuesser extends JFrame {
           Rectangle area = new Rectangle(getLocationOnScreen(), getSize());
           javax.imageio.ImageIO.write(new Robot().createScreenCapture(area), "png",
               new java.io.File(RunFiles.WORLD_DIR, "window_shot.png"));
+          // The map on its own, drawn straight from the panel (whatever is on screen)
+          java.awt.image.BufferedImage map = new java.awt.image.BufferedImage(Math.max(1, minimap.getWidth()), Math.max(1, minimap.getHeight()),
+              java.awt.image.BufferedImage.TYPE_INT_ARGB);
+          java.awt.Graphics2D mg = map.createGraphics();
+          minimap.paint(mg);
+          mg.dispose();
+          javax.imageio.ImageIO.write(map, "png", new java.io.File(RunFiles.WORLD_DIR, "map_shot.png"));
         } catch (Exception ex) {
           ex.printStackTrace();
         }

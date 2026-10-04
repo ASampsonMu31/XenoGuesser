@@ -28,6 +28,40 @@ public class Shader {
     }
     if (DISPLAY_SHADERS) display();
     ID = compileAndLink(gl);
+    synchronized (ALL) {
+      ALL.add(this);
+    }
+  }
+
+  private boolean flat;
+
+  /** Leaves this shader out of the planet's curve (the sky, which is drawn round the viewer). */
+  public Shader flat() {
+    flat = true;
+    return this;
+  }
+
+  // Every shader made, so the planet's curve can be handed to all of them at once
+  private static final java.util.List<Shader> ALL = new java.util.ArrayList<>();
+
+  /**
+   * The world is a sphere (see Planet): every shader drawing the world lowers each vertex by
+   * curvature times the square of its distance across the ground from centre, along down
+   * (the view-projection of a unit step up), so the horizon curves away.
+   */
+  public static void setPlanetCurve(GL3 gl, float centreX, float centreZ, float curvature, float[] down) {
+    synchronized (ALL) {
+      for (Shader shader : ALL) {
+        if (shader.ID == 0 || shader.flat) continue;
+        int c = shader.location(gl, "curveCentre");
+        if (c == -1) continue;
+        gl.glUseProgram(shader.ID);
+        gl.glUniform2f(c, centreX, centreZ);
+        gl.glUniform1f(shader.location(gl, "curvature"), curvature);
+        gl.glUniform4f(shader.location(gl, "curveDown"), down[0], down[1], down[2], down[3]);
+        gl.glUniform1f(shader.location(gl, "planetWidth"), Planet.width());
+      }
+    }
   }
   
   public int getID() {

@@ -290,10 +290,17 @@ public class PlayerBody {
             compassTime += dt;
             if (compassTime > 2f * COMPASS_RAISE + COMPASS_HOLD) compassTime = -1f;
             // The needle is a damped pendulum pulled towards north; its heading is kept in
-            // the world, so it holds steady as the body turns under it
+            // the world, so it holds steady as the body turns under it. North on the map is
+            // north on the planet (it's a Mercator chart), but the pull weakens towards the
+            // poles, where the planet's field points into the ground: there the needle is
+            // sluggish, any jolt sends it wandering, and at the pole itself it points anywhere
+            float pull = Planet.compassPull(eye.z);
             float step = Math.min(dt, 0.05f);
-            needleSpin += (-38f * needleAngle - 4.5f * needleSpin) * step;
+            float wobble = (1f - pull) * (1f - pull) * 6f;
+            needleSpin += (-38f * pull * pull * (float) Math.sin(needleAngle) - 4.5f * needleSpin
+                    + (needleKick.nextFloat() - 0.5f) * wobble * 20f) * step;
             needleAngle += needleSpin * step;
+            needleAngle = (float) Math.atan2(Math.sin(needleAngle), Math.cos(needleAngle));
         }
     }
 

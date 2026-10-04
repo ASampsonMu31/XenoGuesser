@@ -5,16 +5,37 @@
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
 layout (location = 2) in vec3 colour;
+// Coarse rocks only: the chunk each belongs to
+layout (location = 3) in vec2 chunk;
 
 out vec3 aPos;
 out vec3 aNormal;
 out vec3 aColour;
 
 uniform mat4 viewProjection;
+// Coarse rocks in chunks within detailedRings of detailedCentre are drawn in detail instead
+uniform int coarse;
+uniform vec2 detailedCentre;
+uniform float detailedRings;
+
+// The planet's curve (see Planet): lowered by curvature times the square of the distance
+// across the ground from curveCentre, along curveDown, the projection of a step up
+uniform vec2 curveCentre;
+uniform float curvature;
+uniform vec4 curveDown;
+
+vec4 planetDrop(vec3 world) {
+    vec2 d = world.xz - curveCentre;
+    return curveDown * (curvature * dot(d, d));
+}
 
 void main() {
     aPos = position;
     aNormal = normal;
     aColour = colour;
-    gl_Position = viewProjection * vec4(position, 1.0);
+    gl_Position = viewProjection * vec4(position, 1.0) - planetDrop(position);
+    vec2 offset = abs(chunk - detailedCentre);
+    if (coarse == 1 && max(offset.x, offset.y) <= detailedRings) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // outside the view: the detailed rock is here
+    }
 }

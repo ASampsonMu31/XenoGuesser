@@ -28,9 +28,9 @@ public class RegionalGenerationManager {
         this.worldSeed = seed;
 
         // Latitudinal Baseline Configuration
+        // Warmest at the equator, cooling towards the poles
         this.temperatureMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            float normalizedZ = worldZ / this.halfRegion;
-            float temp = (float) Math.cos(normalizedZ * (Math.PI / 2.0));
+            float temp = (float) Math.cos(Planet.latitude(worldZ) * 1.15);
             return Math.max(0.0f, Math.min(1.0f, temp));
         });
 
@@ -77,7 +77,7 @@ public class RegionalGenerationManager {
         
         PerlinNoise noise = new PerlinNoise(worldSeed + uniqueOffset);
         return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
-            (noise.eval(worldX * scale, worldZ * scale) + 1.0f) / 2.0f
+            (noise.onSphere(Planet.surface(worldX, worldZ), scale, 0f, 0f) + 1.0f) / 2.0f
         );
     }
 

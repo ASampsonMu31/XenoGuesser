@@ -11,8 +11,19 @@ out vec3 aNormal;
 
 uniform mat4 viewProjection;
 
+// The planet's curve (see Planet): lowered by curvature times the square of the distance
+// across the ground from curveCentre, along curveDown, the projection of a step up
+uniform vec2 curveCentre;
+uniform float curvature;
+uniform vec4 curveDown;
+
+vec4 planetDrop(vec3 world) {
+    vec2 d = world.xz - curveCentre;
+    return curveDown * (curvature * dot(d, d));
+}
+
 void main() {
     aPos = position;
     aNormal = normal;
-    gl_Position = viewProjection * vec4(position, 1.0);
+    gl_Position = viewProjection * vec4(position, 1.0) - planetDrop(position);
 }

@@ -796,6 +796,10 @@ public class InfrastructureManager {
 
     /** Whether a point lies within clearance of the edge of any road or turning circle. */
     public boolean isRoadLocation(float worldX, float worldZ, float clearance) {
+        return roadAt(worldX, worldZ, clearance) || (nearJoin(worldX) && roadAt(otherSide(worldX), worldZ, clearance));
+    }
+
+    private boolean roadAt(float worldX, float worldZ, float clearance) {
         for (RoadSegment segment : segmentsNear(worldX, worldZ, clearance + MAX_ROAD_HALF_WIDTH)) {
             float limit = segment.width * 0.5f + clearance;
             if (distanceSquaredToSegment(worldX, worldZ, segment.start, segment.end) <= limit * limit) {
@@ -810,6 +814,10 @@ public class InfrastructureManager {
         if (!roadNetworkInitialized) {
             return false;
         }
+        return buildingAt(worldX, worldZ, clearance) || (nearJoin(worldX) && buildingAt(otherSide(worldX), worldZ, clearance));
+    }
+
+    private boolean buildingAt(float worldX, float worldZ, float clearance) {
         for (House house : housesNear(worldX, worldZ, maxHouseReach + clearance)) {
             float[] local = worldToLocal(house, worldX, worldZ);
             if (local[0] >= house.houseMinX() - clearance && local[0] <= house.houseMaxX() + clearance
@@ -822,6 +830,10 @@ public class InfrastructureManager {
 
     /** Whether a point lies inside any house plot (garden and fence included). */
     private boolean isPlotLocation(float worldX, float worldZ, float clearance) {
+        return plotAt(worldX, worldZ, clearance) || (nearJoin(worldX) && plotAt(otherSide(worldX), worldZ, clearance));
+    }
+
+    private boolean plotAt(float worldX, float worldZ, float clearance) {
         for (House house : housesNear(worldX, worldZ, maxPlotReach + clearance)) {
             float[] local = worldToLocal(house, worldX, worldZ);
             if (local[0] >= house.plotMinX - clearance && local[0] <= house.plotMaxX + clearance
@@ -1323,8 +1335,8 @@ public class InfrastructureManager {
         long key = chunkKey(cx, cz);
         recording = new ArrayList<>();
 
-        List<House> chunkHouses = housesByChunk.get(key);
-        if (chunkHouses != null) {
+        List<House> chunkHouses = across(cx, cz, housesByChunk, this::shifted);
+        if (!chunkHouses.isEmpty()) {
             for (House house : chunkHouses) {
                 NationBatch batch = batches.computeIfAbsent(house.nationId, NationBatch::new);
                 bakeHouse(batch, house, objects);
@@ -1354,8 +1366,8 @@ public class InfrastructureManager {
             }
         }
 
-        List<RoadSegment> segments = roadSegmentsByChunk.get(key);
-        if (segments != null) {
+        List<RoadSegment> segments = across(cx, cz, roadSegmentsByChunk, this::shifted);
+        if (!segments.isEmpty()) {
             for (RoadSegment segment : segments) {
                 NationBatch batch = batches.computeIfAbsent(segment.nationId, NationBatch::new);
                 if (segment.culDeSac) {
@@ -2406,18 +2418,84 @@ public class InfrastructureManager {
 
     // ------------------------------------------------------------------ SHOPS
 
+    /**
+     * Shops gather into commercial districts: each town has a shopping centre round its
+     * middle, bigger and busier the bigger the town, where most buildings are shops; from
+     * there shopping streets run on along the roads, a shop's neighbours on the same road
+     * likely shops too; and here and there, a lone corner shop in the suburbs.
+     */
     private void chooseShops() {
+        Map<House, Random> rolls = new HashMap<>();
+        for (House house : houses) rolls.put(house, new Random(house.seed ^ 0x5409L));
+        // The town centre
         for (House house : houses) {
-            float urban = settlementManager.getUrbanness(house.x, house.z);
-            float chance = Math.max(0f, Math.min(0.55f, (urban - 0.5f) * 1.2f));
-            Random rand = new Random(house.seed ^ 0x5409L);
-            if (chance <= 0f || rand.nextFloat() >= chance) continue;
-            BuildingStyle style = styleOf(house);
-            if (frontLength(style, house) < style.doorWidth * house.sizeScale * 2.2f + 14f) continue;
-            house.shop = new Shop(house, rand);
-            shops.add(house.shop);
+            if (!canBeShop(house)) continue;
+            SettlementManager.Settlement town = settlementManager.dominantSettlementAt(house.x, house.z);
+            if (town == null) continue;
+            float dx = (float) Planet.wrapX(house.x - town.x), dz = house.z - town.z;
+            float distance = (float) Math.sqrt(dx * dx + dz * dz);
+            // Villages have a shop or two at their heart; cities a district a few streets across
+            float size = Math.min(1f, town.radius / 1600f);
+            float core = town.radius * (0.35f + 0.3f * size);
+            float chance = (0.35f + 0.6f * size) * (float) Math.exp(-(distance / core) * (distance / core));
+            if (rolls.get(house).nextFloat() < chance) makeShop(house, rolls.get(house));
         }
-        System.out.printf("[SHOPS] %d shops in the town centres%n", shops.size());
+        // Shopping streets: next door to a shop, on the same road, is likely another
+        Map<Integer, List<House>> byRoad = new HashMap<>();
+        for (House house : houses) byRoad.computeIfAbsent(house.frontagePath, k -> new ArrayList<>()).add(house);
+        for (int pass = 0; pass < 3; pass++) {
+            List<House> joining = new ArrayList<>();
+            for (List<House> road : byRoad.values()) {
+                for (House house : road) {
+                    if (house.shop != null || !canBeShop(house)) continue;
+                    for (House other : road) {
+                        if (other.shop == null) continue;
+                        if (nextDoor(house, other)) {
+                            if (rolls.get(house).nextFloat() < 0.5f * settlementManager.getUrbanness(house.x, house.z) + 0.15f) joining.add(house);
+                            break;
+                        }
+                    }
+                }
+            }
+            for (House house : joining) makeShop(house, rolls.get(house));
+        }
+        // The odd corner shop out in the suburbs
+        for (House house : houses) {
+            if (house.shop == null && canBeShop(house) && settlementManager.getUrbanness(house.x, house.z) > 0.25f
+                    && rolls.get(house).nextFloat() < 0.012f) {
+                makeShop(house, rolls.get(house));
+            }
+        }
+        int lone = 0;
+        for (Shop shop : shops) {
+            boolean neighbour = false;
+            for (House other : byRoad.get(shop.house.frontagePath)) {
+                if (other == shop.house || other.shop == null) continue;
+                if (nextDoor(shop.house, other)) { neighbour = true; break; }
+            }
+            if (!neighbour) lone++;
+        }
+        System.out.printf("[SHOPS] %d shops of %d buildings (%.1f%%), %d on their own%n", shops.size(), houses.size(),
+                100f * shops.size() / Math.max(1, houses.size()), lone);
+    }
+
+    /** Whether two buildings on the same road are next door to (or straight across from) each other. */
+    private static boolean nextDoor(House a, House b) {
+        float dx = (float) Planet.wrapX(a.x - b.x), dz = a.z - b.z;
+        float reach = ((a.plotMaxX - a.plotMinX) + (b.plotMaxX - b.plotMinX)) * 0.5f + 60f;
+        return dx * dx + dz * dz < reach * reach;
+    }
+
+    /** A building with a front wide enough for a shop window either side of the door. */
+    private boolean canBeShop(House house) {
+        BuildingStyle style = styleOf(house);
+        return frontLength(style, house) >= style.doorWidth * house.sizeScale * 2.2f + 10f;
+    }
+
+    private void makeShop(House house, Random rand) {
+        if (house.shop != null) return;
+        house.shop = new Shop(house, rand);
+        shops.add(house.shop);
     }
 
     /** How long the wall facing the road is. */
@@ -3733,6 +3811,64 @@ public class InfrastructureManager {
         float dx = worldX - house.x;
         float dz = worldZ - house.z;
         return new float[] { cosine * dx - sine * dz, sine * dx + cosine * dz };
+    }
+
+    // ------------------------------------------------------------------ the map's join
+
+    /**
+     * What stands in a chunk: its own, plus whatever was built a whole way round the planet
+     * east or west of it, in the margin past the other edge of the map (a town near the
+     * join spreads over it), moved round to here. So both sides of the join show the same.
+     */
+    private <T> List<T> across(int cx, int cz, Map<Long, List<T>> byChunk, java.util.function.BiFunction<T, Float, T> move) {
+        List<T> found = new ArrayList<>();
+        List<T> own = byChunk.get(chunkKey(cx, cz));
+        if (own != null) found.addAll(own);
+        int round = Math.round(Planet.width() / roadChunkSize);
+        for (int k : new int[] { round, -round }) {
+            List<T> other = byChunk.get(chunkKey(cx + k, cz));
+            if (other == null) continue;
+            for (T thing : other) found.add(move.apply(thing, -k * roadChunkSize));
+        }
+        return found;
+    }
+
+    private final Map<House, House> shiftedHouses = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** A house moved a whole way round the planet (dx is plus or minus the map's width). */
+    private House shifted(House house, float dx) {
+        return shiftedHouses.computeIfAbsent(house, original -> {
+            try {
+                House copy = new House();
+                for (java.lang.reflect.Field field : House.class.getDeclaredFields()) {
+                    if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                    field.setAccessible(true);
+                    field.set(copy, field.get(original));
+                }
+                copy.x += dx;
+                copy.doorway = null;
+                return copy;
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+    }
+
+    private RoadSegment shifted(RoadSegment segment, float dx) {
+        RoadSegment copy = new RoadSegment(new Vector3(segment.start.x + dx, segment.start.y, segment.start.z),
+                new Vector3(segment.end.x + dx, segment.end.y, segment.end.z), segment.startTangent, segment.endTangent,
+                segment.nationId, segment.pathIndex, segment.roadClass, segment.startDistance, segment.length, segment.width, segment.culDeSac);
+        copy.railed = segment.railed;
+        return copy;
+    }
+
+    /** The same place a whole way round the planet, on the other side of the map's join, if this is near it. */
+    private static float otherSide(float x) {
+        return x > 0 ? x - Planet.width() : x + Planet.width();
+    }
+
+    private static boolean nearJoin(float x) {
+        return Math.abs(x) > Planet.width() * 0.5f - RegionalGenerationManager.GENERATION_MARGIN - 1000f;
     }
 
     private int chunkIndex(float coordinate) {
