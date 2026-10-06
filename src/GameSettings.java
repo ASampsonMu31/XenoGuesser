@@ -5,8 +5,18 @@ public final class GameSettings {
 
     private static final Preferences STORE = Preferences.userRoot().node("xenoguesser");
     private static volatile boolean showFps = STORE.getBoolean("showFps", true);
+    // Fullscreen, or in a window: always fullscreen at startup (a window is for this game only)
+    private static volatile boolean fullscreen = true;
 
     private GameSettings() {
+    }
+
+    public static boolean fullscreen() {
+        return fullscreen;
+    }
+
+    public static void setFullscreen(boolean on) {
+        fullscreen = on;
     }
 
     public static boolean showFps() {

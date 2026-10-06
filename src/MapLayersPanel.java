@@ -40,7 +40,35 @@ public class MapLayersPanel extends JPanel {
     private static final Font HEADING_FONT = new Font("Arial", Font.BOLD, 12);
     private static final int ROW_HEIGHT = 34, BOX = 18, ICON = 24;
 
-    private final JPanel list = new JPanel();
+    // (as wide as the space beside its scroll bar, so nothing in a row runs under the bar)
+    private final JPanel list = new ScrollableList();
+
+    private static final class ScrollableList extends JPanel implements javax.swing.Scrollable {
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(java.awt.Rectangle visible, int orientation, int direction) {
+            return 16;
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(java.awt.Rectangle visible, int orientation, int direction) {
+            return Math.max(16, visible.height - 32);
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
+    }
     private final Function<String, Image> icons;
     private final List<Row> overlayRows = new ArrayList<>();
     private String chosenOverlay;
@@ -196,7 +224,8 @@ public class MapLayersPanel extends JPanel {
             g2.setFont(HEADING_FONT);
             g2.setColor(new Color(150, 155, 165));
             String count = String.valueOf(members.size());
-            g2.drawString(count, w - 12 - g2.getFontMetrics().stringWidth(count), baseline);
+            // (clear of the scroll bar beside the list)
+            g2.drawString(count, w - 14 - g2.getFontMetrics().stringWidth(count), baseline);
             g2.dispose();
         }
     }

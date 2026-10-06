@@ -12,21 +12,23 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
 import javax.swing.JPanel;
 
-/** The settings, opened with Esc during the game. For now the only setting is the FPS counter. */
+/** The settings, opened with Esc during the game: the FPS counter, and fullscreen or windowed. */
 public class SettingsMenu extends JPanel {
 
-    public static final int W = 440, H = 300;
+    public static final int W = 440, H = 362;
 
     private final Runnable onResume;
-    private final Runnable onQuit;
+    private final Runnable onQuit, onDisplayChanged;
     private final Rectangle fpsRow = new Rectangle(30, 96, W - 60, 52);
-    private final Rectangle resumeButton = new Rectangle(30, 196, (W - 72) / 2, 44);
-    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 196, (W - 72) / 2, 44);
+    private final Rectangle fullscreenRow = new Rectangle(30, 158, W - 60, 52);
+    private final Rectangle resumeButton = new Rectangle(30, 258, (W - 72) / 2, 44);
+    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 258, (W - 72) / 2, 44);
     private Rectangle hovered;
 
-    public SettingsMenu(Runnable onResume, Runnable onQuit) {
+    public SettingsMenu(Runnable onResume, Runnable onQuit, Runnable onDisplayChanged) {
         this.onResume = onResume;
         this.onQuit = onQuit;
+        this.onDisplayChanged = onDisplayChanged;
         setOpaque(true);
         setPreferredSize(new Dimension(W, H));
         setSize(W, H);
@@ -35,6 +37,7 @@ public class SettingsMenu extends JPanel {
             @Override
             public void mouseMoved(MouseEvent e) {
                 Rectangle over = fpsRow.contains(e.getPoint()) ? fpsRow
+                        : fullscreenRow.contains(e.getPoint()) ? fullscreenRow
                         : resumeButton.contains(e.getPoint()) ? resumeButton
                         : quitButton.contains(e.getPoint()) ? quitButton : null;
                 if (over != hovered) {
@@ -55,6 +58,10 @@ public class SettingsMenu extends JPanel {
                 if (e.getButton() != MouseEvent.BUTTON1) return;
                 if (fpsRow.contains(e.getPoint())) {
                     GameSettings.setShowFps(!GameSettings.showFps());
+                    repaint();
+                } else if (fullscreenRow.contains(e.getPoint())) {
+                    GameSettings.setFullscreen(!GameSettings.fullscreen());
+                    onDisplayChanged.run();
                     repaint();
                 } else if (resumeButton.contains(e.getPoint())) {
                     onResume.run();
@@ -83,13 +90,24 @@ public class SettingsMenu extends JPanel {
             g.setColor(new Color(120, 205, 235, 70));
             g.fillRect(30, 70, W - 60, 1);
 
-            // FPS counter: a toggle switch
-            paintRowBackground(g, fpsRow);
+            paintToggle(g, fpsRow, "Show FPS counter", GameSettings.showFps(), "On", "Off");
+            paintToggle(g, fullscreenRow, "Fullscreen", GameSettings.fullscreen(), "Fullscreen", "Windowed");
+
+            paintButton(g, resumeButton, "Resume", true);
+            paintButton(g, quitButton, "Quit game", false);
+        } finally {
+            g.dispose();
+        }
+    }
+
+    /** A setting's row: its name, and a switch showing whether it's on (with a word for each). */
+    private void paintToggle(Graphics2D g, Rectangle row, String name, boolean on, String onWord, String offWord) {
+        {
+            paintRowBackground(g, row);
             g.setFont(HudStyle.font(Font.PLAIN, 16f));
             g.setColor(HudStyle.VALUE);
-            g.drawString("Show FPS counter", fpsRow.x + 16, fpsRow.y + 32);
-            boolean on = GameSettings.showFps();
-            int sw = 52, sh = 26, sx = fpsRow.x + fpsRow.width - sw - 14, sy = fpsRow.y + (fpsRow.height - sh) / 2;
+            g.drawString(name, row.x + 16, row.y + 32);
+            int sw = 52, sh = 26, sx = row.x + row.width - sw - 14, sy = row.y + (row.height - sh) / 2;
             g.setColor(on ? new Color(40, 150, 185) : new Color(55, 62, 72));
             g.fill(new RoundRectangle2D.Float(sx, sy, sw, sh, sh, sh));
             g.setColor(on ? HudStyle.ACCENT : new Color(110, 120, 132));
@@ -98,13 +116,8 @@ public class SettingsMenu extends JPanel {
             int knob = sh - 6;
             g.setColor(on ? Color.WHITE : new Color(185, 192, 200));
             g.fillOval(on ? sx + sw - knob - 3 : sx + 3, sy + 3, knob, knob);
-            HudStyle.label(g, on ? "On" : "Off", sx - 12 - HudStyle.labelWidth(g, on ? "On" : "Off", 10f), sy + 17, 10f,
-                    on ? HudStyle.ACCENT : HudStyle.DIM);
-
-            paintButton(g, resumeButton, "Resume", true);
-            paintButton(g, quitButton, "Quit game", false);
-        } finally {
-            g.dispose();
+            String word = on ? onWord : offWord;
+            HudStyle.label(g, word, sx - 12 - HudStyle.labelWidth(g, word, 10f), sy + 17, 10f, on ? HudStyle.ACCENT : HudStyle.DIM);
         }
     }
 

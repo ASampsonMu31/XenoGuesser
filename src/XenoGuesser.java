@@ -74,32 +74,33 @@ public class XenoGuesser extends JFrame {
     // 1. Establish the World Seed Early for Deterministic Generation
     worldSeed = FIXED_SEED != null ? FIXED_SEED : System.currentTimeMillis();
 
-    // 2. Setup Window Configurations
-    this.setUndecorated(false); 
+    // 2. The window: no system frame, so it can go between fullscreen and windowed (with a title
+    // bar of its own) without being rebuilt, which would lose the 3D view
+    this.setUndecorated(true);
     this.setResizable(false);
-    
-    Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-    this.setSize(screenSize.width, screenSize.height);
-    this.setMinimumSize(screenSize);
-    this.setMaximumSize(screenSize);
-    this.setLocationRelativeTo(null); 
-    this.setExtendedState(JFrame.MAXIMIZED_BOTH);
-    
-    this.addWindowStateListener(new WindowStateListener() {
-        @Override
-        public void windowStateChanged(WindowEvent e) {
-            if (e.getNewState() != JFrame.MAXIMIZED_BOTH) {
-                setExtendedState(JFrame.MAXIMIZED_BOTH);
-            }
-        }
-    });
-    
     this.getContentPane().setBackground(Color.BLACK);
-    this.setBackground(Color.BLACK); 
-    
+    this.setBackground(Color.BLACK);
+
     layeredPane = new JLayeredPane();
-    layeredPane.setOpaque(false); 
+    layeredPane.setOpaque(false);
+    // (the layers are the window's content itself: the 3D view, drawn by the system, only stays
+    // under the loading screen and menus laid over it when they share this pane)
     this.setContentPane(layeredPane);
+    // The title bar (windowed only) and the settings, over everything else, from the start
+    titleBar = new WindowTitleBar(this, this::shutdownGame);
+    layeredPane.add(titleBar, Integer.valueOf(TOP_LAYER));
+    // Grab edges for resizing the window (windowed only), keeping the screen's shape
+    Rectangle screenShape = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration().getBounds();
+    screenAspect = screenShape.width / (float) screenShape.height;
+    int[][] edges = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+    resizers = new WindowResizer[edges.length];
+    for (int k = 0; k < edges.length; k++) {
+      resizers[k] = new WindowResizer(this, edges[k][0], edges[k][1], screenAspect, WindowTitleBar.HEIGHT);
+      layeredPane.add(resizers[k], Integer.valueOf(TOP_LAYER + 1));
+    }
+    settingsMenu = new SettingsMenu(() -> setSettingsOpen(false), this::shutdownGame, this::applyDisplayMode);
+    layeredPane.add(settingsMenu, Integer.valueOf(TOP_LAYER));
+    applyDisplayMode();
 
     System.setProperty("sun.awt.noerasebackground", "true"); 
     System.setProperty("sun.java2d.noddraw", "true");
@@ -113,15 +114,29 @@ public class XenoGuesser extends JFrame {
     this.addComponentListener(new ComponentAdapter() {
         @Override
         public void componentMoved(ComponentEvent e) {
-            if (getExtendedState() != JFrame.MAXIMIZED_BOTH) {
-                setExtendedState(JFrame.MAXIMIZED_BOTH);
-            }
-            if (isWindowLocked && lockedWindowPosition != null) {
+            // (held where it is while the map's reveal plays; otherwise it stays wherever it's put)
+            if (isWindowLocked && lockedWindowPosition != null && !getLocation().equals(lockedWindowPosition)) {
                 setLocation(lockedWindowPosition);
-            } else if (permanentWindowPosition != null && getExtendedState() == JFrame.NORMAL) {
-                setLocation(permanentWindowPosition);
             }
+            keepFullscreen();
         }
+
+        @Override
+        public void componentResized(ComponentEvent e) {
+            keepFullscreen();
+        }
+
+        @Override
+        public void componentShown(ComponentEvent e) {
+            keepFullscreen();
+        }
+    });
+    // (once it's on screen, fullscreen again: Windows may have sized it otherwise as it opened)
+    addWindowListener(new WindowAdapter() {
+      @Override
+      public void windowOpened(WindowEvent e) {
+        applyDisplayMode();
+      }
     });
 
     layeredPane.addComponentListener(new ComponentAdapter() {
@@ -144,9 +159,9 @@ public class XenoGuesser extends JFrame {
     KeyAdapter escapeQuitListener = new KeyAdapter() {
         @Override
         public void keyPressed(KeyEvent e) {
-            // Until the game starts Esc quits; after that it opens the settings
+            // Before the game starts (the menu, the cockpit) Esc opens or closes the settings too
             if (e.getKeyCode() == KeyEvent.VK_ESCAPE && !inGame) {
-                shutdownGame();
+                setSettingsOpen(!settingsOpen);
             }
         }
     };
@@ -293,7 +308,6 @@ public class XenoGuesser extends JFrame {
     glEventListener.setLoading(loadingProgress, this::onWorldReady);
     minimap.setOnSizeChanged(this::onMapChanged);
 
-    settingsMenu = new SettingsMenu(() -> setSettingsOpen(false), this::shutdownGame);
 
     canvas.addGLEventListener(glEventListener);
     installControls();
@@ -301,7 +315,6 @@ public class XenoGuesser extends JFrame {
     layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);
     layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);
     layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);
-    layeredPane.add(settingsMenu, JLayeredPane.POPUP_LAYER);
     layoutComponents();
 
     animator = new FPSAnimator(canvas, 60);
@@ -318,6 +331,7 @@ public class XenoGuesser extends JFrame {
   private void enterGame() {
     loadingScreen.stop();
     layeredPane.remove(loadingScreen);
+    layoutComponents();
     layeredPane.repaint();
     canvas.requestFocus();
     inGame = true;
@@ -439,18 +453,22 @@ public class XenoGuesser extends JFrame {
 
   private void onMapChanged() {
     gameHUD.setVisible(minimap.isFullScreenRevealMode());
+    // (the 3D view goes aside behind the results, and comes back for the next round)
+    SwingUtilities.invokeLater(this::layoutComponents);
     updateMouseMode();
   }
 
   private void setSettingsOpen(boolean open) {
     settingsOpen = open;
     settingsMenu.setVisible(open);
+    layoutComponents();
     if (open) {
       keysDown.removeIf(k -> k != KeyEvent.VK_ESCAPE);
-      keyboardInput.releaseAll();
+      if (keyboardInput != null) keyboardInput.releaseAll();
     }
-    glEventListener.setMenuOpen(open);
-    updateMouseMode();
+    // (before the game, there's no game to pause or mouse to free)
+    if (glEventListener != null) glEventListener.setMenuOpen(open);
+    if (canvas != null) updateMouseMode();
     layeredPane.repaint();
   }
 
@@ -525,17 +543,89 @@ public class XenoGuesser extends JFrame {
     timer.start();
   }
 
+  // The layer the title bar and settings go in, over the menu and the loading screen
+  private static final int TOP_LAYER = JLayeredPane.DRAG_LAYER + 50;
+
   private void layoutComponents() {
     int paneWidth = layeredPane.getWidth();
-    int paneHeight = layeredPane.getHeight();
-    if (mainMenu != null) mainMenu.setBounds(0, 0, paneWidth, paneHeight);
-    if (loadingScreen != null) loadingScreen.setBounds(0, 0, paneWidth, paneHeight);
+    // Below the title bar when there is one
+    int top = titleBar != null && titleBar.isVisible() ? WindowTitleBar.HEIGHT : 0;
+    contentTop = top;
+    int paneHeight = layeredPane.getHeight() - top;
+    if (titleBar != null) titleBar.setBounds(0, 0, paneWidth, WindowTitleBar.HEIGHT);
+    if (resizers != null) {
+      boolean windowed = titleBar.isVisible();
+      int t = WindowResizer.THICKNESS, fullH = layeredPane.getHeight();
+      Rectangle[] at = { new Rectangle(0, 0, t, fullH), new Rectangle(paneWidth - t, 0, t, fullH),
+          new Rectangle(0, 0, paneWidth, t), new Rectangle(0, fullH - t, paneWidth, t) };
+      for (int k = 0; k < resizers.length; k++) {
+        resizers[k].setVisible(windowed);
+        resizers[k].setBounds(at[k]);
+      }
+    }
+    if (settingsMenu != null) {
+      settingsMenu.setBounds((paneWidth - SettingsMenu.W) / 2, top + (paneHeight - SettingsMenu.H) / 2, SettingsMenu.W, SettingsMenu.H);
+    }
+    if (mainMenu != null) mainMenu.setBounds(0, top, paneWidth, paneHeight);
+    if (loadingScreen != null) loadingScreen.setBounds(0, top, paneWidth, paneHeight);
     if (canvas == null) return;
 
-    canvas.setBounds(0, 0, paneWidth - 2, paneHeight - 2);
+    // While the cockpit is up the 3D view (drawn by the system, over everything) waits just off
+    // the window's edge at full size, still drawing as the world loads, so it can't cover it
+    boolean cockpit = (loadingScreen != null && loadingScreen.getParent() == layeredPane)
+        // (and behind the results, while the next round is built behind them)
+        || (minimap != null && minimap.isFullScreenRevealMode());
+    // (far off, so however quickly the window is pulled wider it's never seen)
+    canvas.setBounds(cockpit ? paneWidth + 20000 : 0, top, paneWidth - 2, paneHeight - 2);
+    // The map sized afresh for the space there is now
+    minimap.fitToWindow(paneWidth, paneHeight);
     updateMinimapBounds(layeredPane, minimap);
-    gameHUD.setBounds(HudStyle.HUD_MARGIN, HudStyle.HUD_MARGIN, gameHUD.getWidth(), gameHUD.getHeight());
-    settingsMenu.setBounds((paneWidth - SettingsMenu.W) / 2, (paneHeight - SettingsMenu.H) / 2, SettingsMenu.W, SettingsMenu.H);
+    gameHUD.setBounds(HudStyle.HUD_MARGIN, top + HudStyle.HUD_MARGIN, gameHUD.getWidth(), gameHUD.getHeight());
+  }
+
+  private WindowTitleBar titleBar;
+  // Where the game's area starts below the title bar (0 in fullscreen)
+  private static int contentTop;
+  private WindowResizer[] resizers;
+  // The screen's width over its height: the game area keeps this shape in a window
+  private float screenAspect = 16f / 9f;
+  // Where the window was last when windowed, to put it back there
+  private Rectangle windowedBounds;
+
+  /**
+   * Fullscreen (filling the screen it's on, no title bar) or windowed (a window most of the
+   * screen's size with the game's own title bar, where it was last, else in the middle), as
+   * the settings say.
+   */
+  public void applyDisplayMode() {
+    GraphicsConfiguration config = getGraphicsConfiguration() != null ? getGraphicsConfiguration()
+        : GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice().getDefaultConfiguration();
+    Rectangle screen = config.getBounds();
+    boolean wasWindowed = titleBar.isVisible() && isShowing();
+    if (wasWindowed) windowedBounds = getBounds();
+    if (GameSettings.fullscreen()) {
+      titleBar.setVisible(false);
+      setBounds(screen);
+    } else {
+      titleBar.setVisible(true);
+      if (windowedBounds == null) {
+        int w = Math.round(screen.width * 0.8f), h = Math.round(w / screenAspect) + WindowTitleBar.HEIGHT;
+        windowedBounds = new Rectangle(screen.x + (screen.width - w) / 2, screen.y + (screen.height - h) / 2, w, h);
+      }
+      setBounds(windowedBounds);
+    }
+    layoutComponents();
+    layeredPane.revalidate();
+    layeredPane.repaint();
+  }
+
+  /** In fullscreen, puts the window back over the whole screen should anything have moved or shrunk it. */
+  private void keepFullscreen() {
+    if (!GameSettings.fullscreen() || titleBar == null || !isShowing()) return;
+    Rectangle screen = getGraphicsConfiguration().getBounds();
+    if (!getBounds().equals(screen)) SwingUtilities.invokeLater(() -> {
+      if (GameSettings.fullscreen() && !getBounds().equals(getGraphicsConfiguration().getBounds())) applyDisplayMode();
+    });
   }
 
   public void lockWindowDragging() {
@@ -596,7 +686,8 @@ public class XenoGuesser extends JFrame {
     PreviewCard card = minimap.getPreviewCard();
     if (card.getParent() != layeredPane) layeredPane.add(card, JLayeredPane.PALETTE_LAYER);
     // (down to just above the map, lined up with the tick-box panel's left edge, clear of the map's key hint at the right)
-    int cardHeight = Math.min(PreviewCard.WIDTH + 70, minimap.getY() - 20);
+    // (below the title bar, when windowed)
+    int cardHeight = Math.min(PreviewCard.WIDTH + 70, minimap.getY() - contentTop - 20);
     boolean cardShown = minimap.isLargeMap() && !minimap.isFullScreenRevealMode() && card.hasSubject() && cardHeight > 120;
     card.setVisible(cardShown);
     if (cardShown) card.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() - cardHeight - 6, card.wantedWidth(), cardHeight);

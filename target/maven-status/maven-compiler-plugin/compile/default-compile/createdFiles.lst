@@ -19,6 +19,7 @@ OrganismManager$RoadLookup.class
 SoftwareRenderer$SurfaceShader.class
 XenoGuesser$7.class
 OrganismSpecies$Leg.class
+MapLayersPanel$ScrollableList.class
 RegionalFactor$Builder.class
 HudStyle$Item.class
 ProceduralTextures$SoilModel.class
@@ -35,6 +36,7 @@ OrganismMesh$Profile.class
 RockField$Chunk.class
 InfrastructureManager$RoadPathVisitor.class
 MapLayersPanel$Row.class
+WindowResizer.class
 Material.class
 Inhabitants$Phase.class
 XenoGuesser$2.class
@@ -90,6 +92,7 @@ MapPanel.class
 XenoGuesser$6.class
 BirdsEyeMaps$1.class
 RoadNetworkBuilder$RoadHit.class
+WindowTitleBar.class
 XenoGuesser_GLEventListener$FactorName.class
 MapColours.class
 OrganismParts.class
@@ -123,6 +126,7 @@ XenoGuesser$4.class
 Inhabitants$Culture.class
 LoadingProgress$Stage.class
 BuildingStyle$RoofFinish.class
+WindowResizer$1.class
 GlyphGenerator$Look.class
 ProceduralTextures$LeafShape.class
 XenoGuesser$3.class
@@ -195,6 +199,7 @@ BuildingStyle$FormVariant.class
 TextureLibrary.class
 GlyphGenerator.class
 MapPanel$Layer.class
+WindowTitleBar$1.class
 Collision.class
 OrganismManager$Creature.class
 Light.class

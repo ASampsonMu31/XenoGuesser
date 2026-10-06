@@ -1381,6 +1381,28 @@ public class MapPanel extends JPanel {
     }
 
     /** M: enlarges the small map, or shrinks the large one. */
+    /**
+     * Resizes the map for the space the window now has (it's laid out again whenever the window
+     * changes size, or goes between fullscreen and windowed): the enlarged map and the results'
+     * map are sized from it; the small map stays as it is.
+     */
+    public void fitToWindow(int width, int height) {
+        int size;
+        if (isFullScreenReveal) {
+            int tall = Math.min(750, Math.max(300, height - 240));
+            size = Math.min(Math.max(300, width - 80), Math.round(tall / Planet.aspect()));
+        } else if (isLarge) {
+            size = Math.min((int) (height * 0.60f / Planet.aspect()), (int) (width * 0.55f));
+        } else {
+            return;
+        }
+        if (size == currentMapSize || size <= 0) return;
+        currentMapSize = size;
+        updateGeometryLayouts();
+        repaint();
+        if (onSizeChanged != null) onSizeChanged.run();
+    }
+
     public void toggleSize() {
         setMapSize(mapSize == MapSize.SMALL ? MapSize.LARGE : MapSize.SMALL);
     }

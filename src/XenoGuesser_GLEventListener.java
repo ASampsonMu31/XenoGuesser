@@ -830,13 +830,68 @@ private static class SpeciesConfig {
         if (height <= 0) height = 1;
         if (width <= 0) width = 1;
         
-        this.currentWidth = width;
-        this.currentHeight = height;
+        // The world is drawn at most at full HD (as many pixels), then scaled up to fill a larger
+        // screen; the HUD over it is drawn at the screen's own size, so it stays sharp
+        this.screenWidth = width;
+        this.screenHeight = height;
+        float shrink = (float) Math.min(1.0, Math.sqrt(MAX_RENDER_PIXELS / ((double) width * height)));
+        this.currentWidth = Math.max(1, Math.round(width * shrink));
+        this.currentHeight = Math.max(1, Math.round(height * shrink));
         gl.glViewport(0, 0, width, height);
         
                 applyProjection();
 
-        createDepthFramebuffer(gl, width, height);
+        createDepthFramebuffer(gl, currentWidth, currentHeight);
+        createSceneFramebuffer(gl);
+    }
+
+    // The most pixels the world is drawn at (full HD), and the size of the screen it's shown on
+    private static final double MAX_RENDER_PIXELS = 1920.0 * 1080.0;
+    private int screenWidth = 1024, screenHeight = 768;
+    // Where the world is drawn when it's smaller than the screen (0 when it's drawn straight there)
+    private int sceneFbo, sceneColour, sceneDepth;
+
+    /** The framebuffer the world is drawn into when it's drawn smaller than the screen. */
+    private void createSceneFramebuffer(GL3 gl) {
+        if (sceneFbo != 0) {
+            gl.glDeleteFramebuffers(1, new int[] { sceneFbo }, 0);
+            gl.glDeleteRenderbuffers(2, new int[] { sceneColour, sceneDepth }, 0);
+            sceneFbo = 0;
+        }
+        if (currentWidth == screenWidth && currentHeight == screenHeight) return;
+        int[] ids = new int[2];
+        gl.glGenFramebuffers(1, ids, 0);
+        sceneFbo = ids[0];
+        gl.glGenRenderbuffers(2, ids, 0);
+        sceneColour = ids[0];
+        sceneDepth = ids[1];
+        gl.glBindRenderbuffer(GL3.GL_RENDERBUFFER, sceneColour);
+        gl.glRenderbufferStorage(GL3.GL_RENDERBUFFER, GL3.GL_RGBA8, currentWidth, currentHeight);
+        gl.glBindRenderbuffer(GL3.GL_RENDERBUFFER, sceneDepth);
+        gl.glRenderbufferStorage(GL3.GL_RENDERBUFFER, GL3.GL_DEPTH_COMPONENT24, currentWidth, currentHeight);
+        gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);
+        gl.glFramebufferRenderbuffer(GL3.GL_FRAMEBUFFER, GL3.GL_COLOR_ATTACHMENT0, GL3.GL_RENDERBUFFER, sceneColour);
+        gl.glFramebufferRenderbuffer(GL3.GL_FRAMEBUFFER, GL3.GL_DEPTH_ATTACHMENT, GL3.GL_RENDERBUFFER, sceneDepth);
+        gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+    }
+
+    /** Draws the world (into the smaller framebuffer if there is one, then scaled up onto the screen). */
+    private void renderScene(GL3 gl) {
+        if (sceneFbo != 0) {
+            gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);
+            gl.glViewport(0, 0, currentWidth, currentHeight);
+        }
+        try {
+            render();
+        } finally {
+            if (sceneFbo != 0) {
+                gl.glBindFramebuffer(GL3.GL_READ_FRAMEBUFFER, sceneFbo);
+                gl.glBindFramebuffer(GL3.GL_DRAW_FRAMEBUFFER, 0);
+                gl.glBlitFramebuffer(0, 0, currentWidth, currentHeight, 0, 0, screenWidth, screenHeight, GL3.GL_COLOR_BUFFER_BIT, GL3.GL_LINEAR);
+                gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+                gl.glViewport(0, 0, screenWidth, screenHeight);
+            }
+        }
     }
 
         private void applyProjection() {
@@ -935,7 +990,7 @@ private static class SpeciesConfig {
                 camera.setTarget(new Vector3(view[0] + view[2] * 50f, at.y - 8f, view[1] + view[3] * 50f));
             }
         }
-        render();
+        renderScene(gl);
         if (!hideFirstPerson) drawHud(drawable);
         advancePreviews(gl);
 
@@ -1043,7 +1098,7 @@ private static class SpeciesConfig {
     }
 
     private void saveFrameTo(GL3 gl, File file) {
-        int w = currentWidth, h = currentHeight;
+        int w = screenWidth, h = screenHeight;
         java.nio.ByteBuffer pixels = com.jogamp.common.nio.Buffers.newDirectByteBuffer(w * h * 4);
         gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
         Thread writer = new Thread(() -> {
@@ -3041,7 +3096,7 @@ private static class SpeciesConfig {
             plane.renderDepthPass(gl, depthPrePassShader, viewProjection);
         }
         
-        gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+        gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);   // (back to where the world is drawn)
 
         // --- PASS 2: MAIN FORWARD DRAW ---
         gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
@@ -3408,7 +3463,7 @@ private static class SpeciesConfig {
     private void drawHud(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
         // Pictures are painted at the screen's pixel density so they stay sharp when Windows scales the display
-        float scale = drawable instanceof java.awt.Component c && c.getWidth() > 0 ? currentWidth / (float) c.getWidth() : 1f;
+        float scale = drawable instanceof java.awt.Component c && c.getWidth() > 0 ? screenWidth / (float) c.getWidth() : 1f;
         boolean rescaled = scale != hudScale;
         hudScale = scale;
         int margin = Math.round(HudStyle.HUD_MARGIN * scale);
@@ -3429,7 +3484,7 @@ private static class SpeciesConfig {
                 BufferedImage image = HudStyle.canvas(HudStyle.FPS_W, HudStyle.FPS_H, scale, g);
                 HudStyle.paintFps(g[0], fps);
                 g[0].dispose();
-                hud.put("fps", image, currentWidth - image.getWidth() - Math.round(8 * scale), Math.round(6 * scale));
+                hud.put("fps", image, screenWidth - image.getWidth() - Math.round(8 * scale), Math.round(6 * scale));
             }
         } else {
             hud.setVisible("fps", false);
@@ -3443,7 +3498,12 @@ private static class SpeciesConfig {
             BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
             HudStyle.paintInventory(g[0], items);
             g[0].dispose();
-            hud.put("inventory", image, margin, currentHeight - image.getHeight() - margin);
+            hud.put("inventory", image, margin, 0);
+        }
+        // (kept at the bottom however the window is resized)
+        if (hud.has("inventory")) {
+            int h = Math.round(HudStyle.inventoryHeight(2) * scale);
+            hud.move("inventory", margin, screenHeight - h - margin);
         }
 
         if (minimap != null) {
@@ -3466,12 +3526,14 @@ private static class SpeciesConfig {
             }
             // Just above the map, lined up with its right-hand edge
             java.awt.Rectangle map = minimap.getBounds();
+            java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
+            if (view != null) map.translate(-view.getX(), -view.getY());
             hud.move("mapHint", Math.round((map.x + map.width - 12) * scale) - hud.width("mapHint"),
                     Math.round((map.y - 8) * scale) - Math.round(HudStyle.HINT_H * scale));
         }
 
         hud.setDim(menuOpen ? 0.45f : 0f);
-        hud.draw(gl, currentWidth, currentHeight);
+        hud.draw(gl, screenWidth, screenHeight);
     }
 
     private double getSeconds() {
