@@ -26,10 +26,10 @@ import javax.sound.sampled.SourceDataLine;
 public class TransmissionMessage {
 
     // Each message is a recording (.wav) and its transcript with word timings (.txt)
-    public static final String SINGLEPLAYER = "assets/audio/xenocorp_singleplayer";
-    public static final String MULTIPLAYER = "assets/audio/xenocorp_multiplayer";
+    public static final String SINGLEPLAYER = GamePaths.HOME + "assets/audio/xenocorp_singleplayer";
+    public static final String MULTIPLAYER = GamePaths.HOME + "assets/audio/xenocorp_multiplayer";
     // The planet sentence said with a stock name, unprocessed, for when the world's own isn't ready
-    public static final String FALLBACK_AUDIO = "assets/audio/planet_fallback.wav";
+    public static final String FALLBACK_AUDIO = GamePaths.HOME + "assets/audio/planet_fallback.wav";
     public static final String FALLBACK_NAME = "Groonia";
 
     // Where the planet's name goes in the transcript

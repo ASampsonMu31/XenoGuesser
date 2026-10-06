@@ -23,7 +23,7 @@ import com.xenoguesser.math.Vector3;
  */
 public final class LoadingArt {
 
-    public static final String DIR = "assets/art";
+    public static final String DIR = GamePaths.HOME + "assets/art";
     public static final String COCKPIT = DIR + "/cockpit.png";
     public static final String SPACEMAN = DIR + "/spaceman_turntable.png";
     // The main menu's background: a frame of the game itself, made with -Dxenoguesser.menushot

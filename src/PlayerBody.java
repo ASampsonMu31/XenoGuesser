@@ -109,7 +109,7 @@ public class PlayerBody {
     private final java.util.Random needleKick = new java.util.Random();
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_organism.txt", "assets/shaders/fs_organism.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         // In first person the eyes are inside the helmet, so it is left off
         mesh = buildMesh(false).build(gl);
         glass = buildGlass().build(gl);

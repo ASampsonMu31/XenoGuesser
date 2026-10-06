@@ -2028,10 +2028,13 @@ public class InfrastructureManager {
     private void appendDeckUnderside(NationBatch batch, float[][] left, float[][] right) {
         MeshBuilder slab = null;
         for (int i = 0; i + 1 < left.length; i++) {
-            float drop = Math.min(left[i][1] - TerrainMesh.getLayeredHeight(left[i][0], left[i][2], terrainNoise),
+            float drop = Math.max(left[i][1] - TerrainMesh.getLayeredHeight(left[i][0], left[i][2], terrainNoise),
                     right[i][1] - TerrainMesh.getLayeredHeight(right[i][0], right[i][2], terrainNoise));
-            float dropNext = Math.min(left[i + 1][1] - TerrainMesh.getLayeredHeight(left[i + 1][0], left[i + 1][2], terrainNoise),
+            float dropNext = Math.max(left[i + 1][1] - TerrainMesh.getLayeredHeight(left[i + 1][0], left[i + 1][2], terrainNoise),
                     right[i + 1][1] - TerrainMesh.getLayeredHeight(right[i + 1][0], right[i + 1][2], terrainNoise));
+            // (wherever either edge stands on pillars: on a hillside the downhill edge does, and
+            // the road's underside shows between them; where the uphill edge is in the hill, the
+            // slab there is hidden in it)
             if (Math.max(drop, dropNext) < PILLAR_DROP * 0.5f) continue;
             if (slab == null) slab = batch.builder("roadwall");
             int a = slab.addVertex(left[i][0], left[i][1] - 1.6f, left[i][2], 0f, -1f, 0f, 0f, 0f);

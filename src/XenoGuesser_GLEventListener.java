@@ -1357,16 +1357,16 @@ private static class SpeciesConfig {
         l.setMaterial(m);
         lights[0] = l;
 
-        skyModel = makeSkybox(gl, "assets/shaders/fs_single_sky.txt", textures.get("sky"));
+        skyModel = makeSkybox(gl, GamePaths.HOME + "assets/shaders/fs_single_sky.txt", textures.get("sky"));
         
         chunkCache = new HashMap<>();
         grassCache = new HashMap<>(); 
         floraCache = new HashMap<>();
 
-        terrainShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_standard_d.txt");
-        depthPrePassShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_depth_only.txt");
-        solidShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_solid.txt");
-        glassShader = new Shader(gl, "assets/shaders/vs_glass.txt", "assets/shaders/fs_glass.txt");
+        terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
+        depthPrePassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_depth_only.txt");
+        solidShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_solid.txt");
+        glassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_glass.txt", GamePaths.HOME + "assets/shaders/fs_glass.txt");
 
         terrainMaterial = new Material(
             new Vector3(1.0f, 1.0f, 1.0f), 
@@ -1427,7 +1427,7 @@ private static class SpeciesConfig {
         }
 
         // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
-        signboardShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_signboard.txt");
+        signboardShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_signboard.txt");
         Mesh signMeshBase = signBoardMesh(gl, 16);
         
         this.nationAtlases = new HashMap<>();
@@ -1485,7 +1485,7 @@ private static class SpeciesConfig {
         floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
         floraLeafModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
         
-        leafShader = new Shader(gl, "assets/shaders/vs_standard.txt", "assets/shaders/fs_leaf.txt");
+        leafShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_leaf.txt");
         initialiseWaterAndGrass();
     }
 
@@ -1578,7 +1578,7 @@ private static class SpeciesConfig {
     }
 
     private void initialiseWaterAndGrass() {
-                waterShader = new Shader(gl, "assets/shaders/vs_water.txt", "assets/shaders/fs_water.txt");
+                waterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_water.txt", GamePaths.HOME + "assets/shaders/fs_water.txt");
                 waveMapTexture = createWaveMapTexture();
         
         waterMaterial = new Material(
@@ -1604,7 +1604,7 @@ private static class SpeciesConfig {
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE);
         gl.glGenerateMipmap(GL.GL_TEXTURE_2D);
 
-        grassShader = new Shader(gl, "assets/shaders/vs_grass_instanced.txt", "assets/shaders/fs_grass_instanced.txt");
+        grassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_grass_instanced.txt", GamePaths.HOME + "assets/shaders/fs_grass_instanced.txt");
 
         float[] grassVertices = {
             -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
@@ -3696,7 +3696,7 @@ private static class SpeciesConfig {
     private java.awt.Image loadIcon(String file) {
         return choiceIcons.computeIfAbsent(file, f -> {
             try {
-                return ImageIO.read(new File("assets/icons/" + f + ".png"));
+                return ImageIO.read(new File(GamePaths.HOME + "assets/icons/" + f + ".png"));
             } catch (Exception e) {
                 return new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
             }
@@ -4267,7 +4267,7 @@ private static class SpeciesConfig {
         String name = "skybox";
         Mesh mesh = new Mesh(gl, InsideSphere.vertices.clone(), InsideSphere.indices.clone());
         Matrix4 modelMatrix = Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f);
-        Shader shader = new Shader(gl, "assets/shaders/vs_standard.txt", fragmentPath).flat();
+        Shader shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", fragmentPath).flat();
         Material material = new Material(new Vector3(0f, 0f, 0f), new Vector3(0f, 0f, 0f));
         material.setDiffuseMap(skyTexture);
         

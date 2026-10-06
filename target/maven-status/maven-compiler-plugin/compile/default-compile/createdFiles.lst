@@ -10,6 +10,7 @@ InfrastructureManager$Doorway.class
 BuildingStyle$RoofType.class
 NationKinship.class
 OrganismSpecies$Locomotion.class
+GamePaths.class
 InfrastructureManager$BuildingVisitor.class
 Model.class
 Products.class

@@ -195,7 +195,7 @@ public class OrganismManager {
     }
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_organism.txt", "assets/shaders/fs_organism.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         for (OrganismSpecies s : species) {
             s.buildMeshes(gl);
         }

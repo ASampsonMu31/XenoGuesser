@@ -37,7 +37,7 @@ public class LandingPod {
     private float x, z, ground, footGround, stairScale, heading;
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_organism.txt", "assets/shaders/fs_organism.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         mesh = buildMesh().build(gl);
     }
 

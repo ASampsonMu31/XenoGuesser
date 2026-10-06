@@ -85,7 +85,7 @@ public class RockField {
     }
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_rock.txt", "assets/shaders/fs_rock.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rock.txt", GamePaths.HOME + "assets/shaders/fs_rock.txt");
     }
 
     // ------------------------------------------------------------------ regional character

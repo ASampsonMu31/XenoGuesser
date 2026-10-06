@@ -39,7 +39,10 @@ public final class LoadingProgress {
         }
     }
 
-    private static final File TIMINGS_FILE = new File(".loading_times.properties");
+    // (kept with the player's own app data, which can always be written, wherever the game is installed)
+    private static final File TIMINGS_FILE = new File(System.getenv("LOCALAPPDATA") != null
+            ? new File(System.getenv("LOCALAPPDATA"), "XenoGuesser") : new File(System.getProperty("user.home"), ".xenoguesser"),
+            "loading_times.properties");
 
     private final Map<Stage, Long> expectedMillis = new EnumMap<>(Stage.class);
     private final Map<Stage, Long> measuredMillis = new EnumMap<>(Stage.class);
@@ -152,6 +155,7 @@ public final class LoadingProgress {
             long blended = measured == null ? expected : (expected + measured) / 2;
             out.setProperty(s.name(), Long.toString(blended));
         }
+        TIMINGS_FILE.getParentFile().mkdirs();
         try (FileWriter writer = new FileWriter(TIMINGS_FILE)) {
             out.store(writer, "XenoGuesser loading-stage durations (ms), learned to improve the loading bar estimate");
         } catch (Exception e) {

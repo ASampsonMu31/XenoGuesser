@@ -315,9 +315,9 @@ public class Weather {
 
     private void ensureGl(GL3 gl) {
         if (cloudShader != null) return;
-        cloudShader = new Shader(gl, "assets/shaders/vs_cloud.txt", "assets/shaders/fs_cloud.txt").flat();
-        rainShader = new Shader(gl, "assets/shaders/vs_rain.txt", "assets/shaders/fs_rain.txt").flat();
-        snowShader = new Shader(gl, "assets/shaders/vs_snow.txt", "assets/shaders/fs_snow.txt").flat();
+        cloudShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_cloud.txt", GamePaths.HOME + "assets/shaders/fs_cloud.txt").flat();
+        rainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rain.txt", GamePaths.HOME + "assets/shaders/fs_rain.txt").flat();
+        snowShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_snow.txt", GamePaths.HOME + "assets/shaders/fs_snow.txt").flat();
         int[] ids = new int[2];
         gl.glGenVertexArrays(2, ids, 0);
         emptyVao = ids[0];

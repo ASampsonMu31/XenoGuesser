@@ -33,7 +33,7 @@
             <artifactId>jogamp-fat</artifactId>
             <version>2.6.0</version>
             <scope>system</scope>
-            <systemPath>c:/jogl26/jogamp-fat.jar</systemPath>
+            <systemPath>${project.basedir}/lib/jogamp-fat.jar</systemPath>
         </dependency>
 
         <dependency>
@@ -49,6 +49,21 @@
         <dependency>
             <groupId>ai.djl.pytorch</groupId>
             <artifactId>pytorch-model-zoo</artifactId>
+        </dependency>
+
+        <!-- PyTorch's own library for Windows, bundled so nothing is downloaded on first run -->
+        <dependency>
+            <groupId>ai.djl.pytorch</groupId>
+            <artifactId>pytorch-native-cpu</artifactId>
+            <classifier>win-x86_64</classifier>
+            <version>2.1.1</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>ai.djl.pytorch</groupId>
+            <artifactId>pytorch-jni</artifactId>
+            <version>2.1.1-0.26.0</version>
+            <scope>runtime</scope>
         </dependency>
 
         <dependency>
@@ -83,6 +98,45 @@
         <sourceDirectory>src</sourceDirectory>
 
         <plugins>
+            <!-- The game's jar: its manifest lists every library beside it, in lib/ -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+                <configuration>
+                    <finalName>xenoguesser</finalName>
+                    <archive>
+                        <manifest>
+                            <mainClass>XenoGuesser</mainClass>
+                            <addClasspath>true</addClasspath>
+                            <classpathPrefix>lib/</classpathPrefix>
+                        </manifest>
+                        <!-- (JOGL is in the project's own lib/, not from Maven) -->
+                        <manifestEntries>
+                            <Class-Path>lib/jogamp-fat.jar</Class-Path>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+            <!-- Every library the game needs, copied into target/package/lib -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-libraries</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>copy-dependencies</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/package/lib</outputDirectory>
+                            <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
