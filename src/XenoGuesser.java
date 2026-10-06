@@ -40,7 +40,7 @@ public class XenoGuesser extends JFrame {
   private SettingsMenu settingsMenu;
   private boolean settingsOpen;
   private volatile boolean inGame;
-  private final Set<Integer> keysDown = new HashSet<>();
+  private final Set<Integer> keysDown = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   private final long worldSeed;
   private final LoadingProgress loadingProgress = new LoadingProgress();
@@ -106,6 +106,8 @@ public class XenoGuesser extends JFrame {
 
     // 3. The main menu first; the loading screen then covers everything until the round's first frame
     mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    // The planet's name is said (for the message from Xenocorp) while the menu is up
+    TransmissionMessage.prepare(worldSeed);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
 
     this.addComponentListener(new ComponentAdapter() {
@@ -177,6 +179,8 @@ public class XenoGuesser extends JFrame {
     layeredPane.remove(preview);
     loadingScreen = null;
     mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    // The planet's name is said (for the message from Xenocorp) while the menu is up
+    TransmissionMessage.prepare(worldSeed);
     mainMenu.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
     layeredPane.repaint();
@@ -207,9 +211,8 @@ public class XenoGuesser extends JFrame {
     glWarmUp.start();
     try {
       loadingProgress.begin(LoadingProgress.Stage.WRITING_SYSTEMS);
-      try (GlyphGenerator generator = new GlyphGenerator("models/cvae_generator.pt")) {
-          int totalDatasetAlphabets = 30; // Matches Omniglot training bounds
-          generator.generateAllSystems(totalDatasetAlphabets, RunFiles.ALPHABETS_DIR, worldSeed);
+      try (GlyphGenerator generator = new GlyphGenerator()) {
+          generator.generateAllSystems(RunFiles.ALPHABETS_DIR, worldSeed);
       } catch (Exception e) {
           System.err.println("CRITICAL ERROR: Failed to generate writing systems.");
           e.printStackTrace();
@@ -351,8 +354,12 @@ public class XenoGuesser extends JFrame {
           switch (code) {
             case KeyEvent.VK_M: minimap.toggleSize(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
-            case KeyEvent.VK_C:
+            // The inventory: each item by its number
+            case KeyEvent.VK_1: case KeyEvent.VK_NUMPAD1:
               if (!minimap.isFullScreenRevealMode()) glEventListener.useCompass();
+              break;
+            case KeyEvent.VK_2: case KeyEvent.VK_NUMPAD2:
+              if (!minimap.isFullScreenRevealMode()) glEventListener.useThermometer();
               break;
             default: break;
           }
@@ -396,6 +403,11 @@ public class XenoGuesser extends JFrame {
         updateMouseMode();
       }
     });
+  }
+
+  /** Whether a key is held down just now (while playing). */
+  public boolean isKeyHeld(int keyCode) {
+    return keysDown.contains(keyCode);
   }
 
   private Point viewCentreOnScreen() {
@@ -461,11 +473,22 @@ public class XenoGuesser extends JFrame {
           break;
         }
         case "settings": setSettingsOpen(true); break;
+        case "thermometer": later(1200, () -> glEventListener.useThermometer()); break;
+        // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
+        case "zoom": {
+          String[] at = System.getProperty("xenoguesser.mapzoomat", "0.5,0.5").split(",");
+          later(1500, () -> minimap.devZoom(8f, Float.parseFloat(at[0]), Float.parseFloat(at[1])));
+          break;
+        }
+        // guess: a guess two seconds in (-Dxenoguesser.guessdelay); next: Next Round pressed
+        // twelve seconds in (-Dxenoguesser.nextdelay)
+        case "guess": later(Integer.getInteger("xenoguesser.guessdelay", 2000), () -> minimap.devGuess()); break;
+        case "next": later(Integer.getInteger("xenoguesser.nextdelay", 12000), () -> minimap.devNextRound()); break;
         default: break;
       }
     }
     if (test.contains("shot")) {
-      javax.swing.Timer shot = new javax.swing.Timer(2600, e -> {
+      javax.swing.Timer shot = new javax.swing.Timer(Integer.getInteger("xenoguesser.shotdelay", 2600), e -> {
         try {
           Rectangle area = new Rectangle(getLocationOnScreen(), getSize());
           javax.imageio.ImageIO.write(new Robot().createScreenCapture(area), "png",
@@ -477,6 +500,16 @@ public class XenoGuesser extends JFrame {
           minimap.paint(mg);
           mg.dispose();
           javax.imageio.ImageIO.write(map, "png", new java.io.File(RunFiles.WORLD_DIR, "map_shot.png"));
+          // ...and the tick boxes beside it, if they're showing
+          MapLayersPanel layers = minimap.getLayersPanel();
+          if (layers != null && layers.isVisible() && layers.getWidth() > 0) {
+            java.awt.image.BufferedImage panel = new java.awt.image.BufferedImage(layers.getWidth(), layers.getHeight(),
+                java.awt.image.BufferedImage.TYPE_INT_RGB);
+            java.awt.Graphics2D pg = panel.createGraphics();
+            layers.paint(pg);
+            pg.dispose();
+            javax.imageio.ImageIO.write(panel, "png", new java.io.File(RunFiles.WORLD_DIR, "map_layers_shot.png"));
+          }
         } catch (Exception ex) {
           ex.printStackTrace();
         }
@@ -484,6 +517,12 @@ public class XenoGuesser extends JFrame {
       shot.setRepeats(false);
       shot.start();
     }
+  }
+
+  private static void later(int millis, Runnable action) {
+    javax.swing.Timer timer = new javax.swing.Timer(millis, e -> action.run());
+    timer.setRepeats(false);
+    timer.start();
   }
 
   private void layoutComponents() {
@@ -541,6 +580,26 @@ public class XenoGuesser extends JFrame {
     } else {
         minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
     }
+    // The map's tick boxes, to its left while it's enlarged
+    MapLayersPanel layers = minimap.getLayersPanel();
+    if (layers != null) {
+        if (layers.getParent() != layeredPane) layeredPane.add(layers, JLayeredPane.PALETTE_LAYER);
+        boolean shown = minimap.isLargeMap() && !minimap.isFullScreenRevealMode();
+        layers.setVisible(shown);
+        if (shown) {
+            int height = Math.min(layers.wantedHeight(), minimap.getHeight() - 12);
+            layers.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() + 6, MapLayersPanel.WIDTH, height);
+            layers.revalidate();
+        }
+    }
+    // The turning animal or plant whose range is shown, in the space above the map
+    PreviewCard card = minimap.getPreviewCard();
+    if (card.getParent() != layeredPane) layeredPane.add(card, JLayeredPane.PALETTE_LAYER);
+    // (down to just above the map, lined up with the tick-box panel's left edge, clear of the map's key hint at the right)
+    int cardHeight = Math.min(PreviewCard.WIDTH + 70, minimap.getY() - 20);
+    boolean cardShown = minimap.isLargeMap() && !minimap.isFullScreenRevealMode() && card.hasSubject() && cardHeight > 120;
+    card.setVisible(cardShown);
+    if (cardShown) card.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() - cardHeight - 6, card.wantedWidth(), cardHeight);
     layeredPane.revalidate();
     layeredPane.repaint();
   }

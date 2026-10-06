@@ -8,7 +8,9 @@ public class RoadPath {
         // Rank orders who has priority at junctions: minor roads give way to higher ranks
         HIGHWAY(56.0f, 2),
         STREET(28.0f, 1),
-        LANE(24.0f, 0);
+        LANE(24.0f, 0),
+        // Unmade tracks out into the country: cleared earth, no paint
+        DIRT(15.0f, 0);
 
         public final float width;
         public final int rank;
@@ -21,6 +23,9 @@ public class RoadPath {
 
     public final RoadClass roadClass;
     public final List<Vector3> points = new ArrayList<>();
+    // A road on an island the main network never reached (see RoadNetworkBuilder.buildIslandTracks):
+    // houses are built along it even when it's a dirt track
+    public boolean island;
 
     public RoadPath(RoadClass roadClass) {
         this.roadClass = roadClass;

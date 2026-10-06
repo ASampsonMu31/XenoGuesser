@@ -15,7 +15,7 @@ import com.xenoguesser.math.Vector3;
  * roads; everything is then baked per chunk into a handful of merged meshes.
  */
 public class InfrastructureManager {
-    private static final float ROAD_SURFACE_OFFSET = 2.0f;
+    private static final float ROAD_SURFACE_OFFSET = 0.6f;
     private static final int ROAD_SEGMENT_SUBDIVISIONS = 8;
     private static final int LINE_SAMPLES_PER_SEGMENT = 24;
     private static final float ROAD_LINE_SURFACE_OFFSET = 0.35f;
@@ -32,7 +32,9 @@ public class InfrastructureManager {
     // Guard rails line rural highways in nations that build them
     private static final float RAIL_MAX_URBANNESS = 0.2f;
     private static final float RAIL_OFFSET = 3.0f;
-    private static final float RAIL_JUNCTION_CLEARANCE = 8.0f;
+    // How far past the edge of a road joining a guard-railed one its rail stays open, so
+    // vehicles turning in or out have room to swing round
+    private static final float RAIL_JUNCTION_CLEARANCE = 30.0f;
 
     // Roadside signs roll once per road segment rather than per attempt, so scale the nation's sign chance up
     private static final double ROADSIDE_SIGN_CHANCE_SCALE = 40.0;
@@ -58,6 +60,9 @@ public class InfrastructureManager {
     private static final float PLOT_ROAD_MARGIN = 2.0f;
     private static final float PLOT_HIGHWAY_MARGIN = 7.0f;
     private static final float GATE_HALF_WIDTH = 7.0f;
+    // A driveway beside the house: how wide, and how far it keeps from the walls
+    private static final float DRIVEWAY_WIDTH = 22.0f;
+    private static final float DRIVEWAY_LIFT = 0.5f;
     // Neighbouring fenced plots closer than this join up, sharing one fence between them
     private static final float FENCE_JOIN_GAP = 26.0f;
     // Fence outlines: the plain plot, an irregular outline, the front boundary only
@@ -87,6 +92,12 @@ public class InfrastructureManager {
     private final Map<Integer, FenceStyle> fenceStyles;
     private final Map<String, Material> materials = new HashMap<>();
     private final NationGenerationManager nationManager;
+    // Which nations are at odds (see NationKinship.hostile), and how far each cell of the
+    // nation map is from a border between two that are, in cells (see hostileBorderDistance)
+    private final NationKinship kinship;
+    private final float[] borderGap;
+    // Islands the main roads never reached have a wealth of their own (see RoadNetworkBuilder.buildIslandTracks)
+    private volatile RoadNetworkBuilder islandWealth;
     private final SettlementManager settlementManager;
     private final XenoGuesser_GLEventListener mainListener;
     private final long worldSeed;
@@ -108,6 +119,8 @@ public class InfrastructureManager {
     // How proudly each nation flies its flag, 0 to 1: how often flags appear on houses,
     // flagpoles and signs
     private final Map<Integer, Float> patriotism = new HashMap<>();
+    // How keen each nation is on pasting posters on its walls, 0.3 to 1
+    private final Map<Integer, Float> posterKeenness = new HashMap<>();
     // Maps for signs are drawn here, off the GL thread
     private static final java.util.concurrent.ExecutorService SIGN_MAP_ARTIST = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "sign-map-artist");
@@ -148,6 +161,8 @@ public class InfrastructureManager {
         private final float length;
         private final float width;
         private final boolean culDeSac;
+        // The deck's height at each subdivision, once worked out
+        volatile float[] deck;
         private boolean railed;
 
         private RoadSegment(Vector3 start, Vector3 end, Vector3 startTangent, Vector3 endTangent, int nationId,
@@ -208,6 +223,16 @@ public class InfrastructureManager {
         private float[] paddock;
         private Doorway doorway;
         private Shop shop;
+        // How well off the household is (0 to 1, see areaRichness); how weathered its walls and
+        // roof are (0 none to 3 badly); whether it's dressed up with pillars and a cornice
+        private float richness;
+        private int weathering;
+        private boolean grand;
+        // A driveway down one side (-1 left, 1 right, 0 none), between these local x
+        private int drivewaySide;
+        private float driveMinX, driveMaxX;
+        // The front door's corners in world space {x, y, z}: bottom left, bottom right, top right, top left
+        private float[][] doorCorners;
 
 
         private float plotCentreLocalX() {
@@ -246,7 +271,8 @@ public class InfrastructureManager {
             this.house = house;
             this.nationId = house.nationId;
             this.colour = rand.nextInt(4);
-            this.grocer = rand.nextFloat() < 0.5f;
+            // Fresh produce is likelier where people are poorer; the well off buy packets and boxes
+            this.grocer = rand.nextFloat() < 0.8f - 0.65f * house.richness;
         }
     }
 
@@ -283,6 +309,12 @@ public class InfrastructureManager {
 
                 // Neighbouring nations share conventions, so styles are dealt out geographically
         NationKinship kinship = new NationKinship(nationManager);
+        // The nations' cultures: about one to every two or three nations, each with a writing
+        // system of its own (so no more than there are writing systems)
+        int cultureCount = Math.max(2, Math.round(numNations / 2.5f));
+        if (NationScripts.available() > 0) cultureCount = Math.min(cultureCount, NationScripts.available());
+        int[] cultures = kinship.assignCultures(new Random(seed * 31L + 7L), cultureCount);
+        this.kinship = kinship;
         WorldPalette palette = new WorldPalette(seed);
         this.roadLineStyles = RoadLineStyle.generateForNations(seed, numNations, kinship);
                 this.buildingStyles = BuildingStyle.generateForNations(seed, numNations, kinship, palette);
@@ -291,7 +323,8 @@ public class InfrastructureManager {
         this.guardRailStyles = GuardRailStyle.generateForNations(seed, numNations);
         this.fenceStyles = FenceStyle.generateForNations(seed, numNations, kinship);
         this.flags = FlagDesigner.design(seed, numNations, kinship);
-        this.scripts = new NationScripts(seed, numNations);
+        this.scripts = new NationScripts(seed, numNations, cultures);
+        this.borderGap = hostileBorderDistance();
         this.products = new Products(seed, numNations, kinship);
         for (int n = 1; n <= numNations; n++) {
             // Shop fronts are painted in strong colours, unlike the houses round them
@@ -309,6 +342,7 @@ public class InfrastructureManager {
             // Most nations are fairly reserved; a few fly flags everywhere
             float roll = new Random(seed * 53L + n * 977L).nextFloat();
             patriotism.put(n, 0.05f + 0.95f * (float) Math.pow(roll, 1.4));
+            posterKeenness.put(n, 0.3f + 0.7f * new Random(seed * 59L + n * 613L).nextFloat());
         }
         // The wind that every flag in this world flies in
         this.windAngle = new Random(seed * 71L + 5L).nextFloat() * (float) Math.PI * 2;
@@ -339,6 +373,16 @@ public class InfrastructureManager {
         return new Vector3(c[0], c[1], c[2]);
     }
 
+    /** How wide a nation's dirt tracks are: from footpaths to broad cart tracks. */
+    private float trackWidth(int nationId) {
+        return 14f + 6f * nationRandom(67L, nationId).nextFloat();
+    }
+
+    /** How gritty a nation's tracks are, from packed smooth earth (0) to stony (1). */
+    private float trackGrit(int nationId) {
+        return nationRandom(61L, nationId).nextFloat();
+    }
+
     public static String nationTextureName(String part, int nationId) {
         return part + "_nation" + nationId;
     }
@@ -347,8 +391,16 @@ public class InfrastructureManager {
      * Generators for every nation's wall, roof and fence textures, keyed by texture name,
      * for WorldArtGenerator to run alongside the world's other textures.
      */
+    // The curtains' pictures, one for each of this world's curtain colours (then 0 to 3)
+    private static final String CURTAIN_TEXTURE = "curtains_";
+
     public Map<String, java.util.function.Supplier<java.awt.image.BufferedImage>> textureJobs() {
         Map<String, java.util.function.Supplier<java.awt.image.BufferedImage>> jobs = new LinkedHashMap<>();
+        for (int k = 0; k < CURTAIN_COLOURS; k++) {
+            Vector3 c = curtainColour(k);
+            long curtainSeed = worldSeed * 47L + k;
+            jobs.put(CURTAIN_TEXTURE + k, () -> ArchitectureTextures.curtains(curtainSeed, new float[] { c.x, c.y, c.z }));
+        }
         for (Map.Entry<Integer, BuildingStyle> entry : buildingStyles.entrySet()) {
             int nation = entry.getKey();
             BuildingStyle style = entry.getValue();
@@ -395,12 +447,23 @@ public class InfrastructureManager {
 
     /**
      * Picks a house's form from its nation's mix, tilted by its town's favourites; taller
-     * forms are likelier towards the middle of a town, so centres rise above the suburbs.
+     * forms are likelier towards the middle of a town, so centres rise above the suburbs, and
+     * where people are richer, whose houses are taller and less like everyone else's (the
+     * nation's rarer forms come up more often).
      */
-    private int chooseForm(float x, float z, int nationId, long houseSeed) {
+    private int chooseForm(float x, float z, int nationId, long houseSeed, float richness) {
         BuildingStyle[] forms = formStyles.get(nationId);
         float[] weights = forms[0].formWeights;
         float urbanness = settlementManager.getUrbanness(x, z);
+        // In the heart of a big city, most buildings are towers, the more so the richer it is
+        float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, settlementManager.getCitySize(x, z));
+        float towerChance = Math.min(0.92f, big * smoothstep(0.3f, 0.75f, urbanness) * (0.55f + 0.6f * richness));
+        Random towerRoll = new Random(houseSeed ^ 0x5BD1E995L);
+        if (towerRoll.nextFloat() < towerChance) {
+            List<Integer> towers = new ArrayList<>();
+            for (int f = 0; f < forms.length; f++) if (forms[f].tower) towers.add(f);
+            if (!towers.isEmpty()) return towers.get(towerRoll.nextInt(towers.size()));
+        }
         SettlementManager.Settlement town = urbanness > 0.05f ? settlementManager.dominantSettlementAt(x, z) : null;
         Random townRand = town == null ? null : new Random(worldSeed ^ (town.rank * 0xC2B2AE3D27D4EB4FL));
         float[] tilted = new float[weights.length];
@@ -408,7 +471,8 @@ public class InfrastructureManager {
         for (int f = 0; f < weights.length; f++) {
             float townBias = townRand == null ? 1.0f : (float) Math.exp(townRand.nextGaussian() * 0.7);
             float lift = Math.max(0.0f, forms[f].wallHeight / forms[0].wallHeight - 1.0f);
-            tilted[f] = weights[f] * townBias * (1.0f + 3.0f * urbanness * lift);
+            float usual = (float) Math.pow(Math.max(1e-4f, weights[f]), 1.0f - 0.75f * richness);
+            tilted[f] = forms[f].tower ? 0f : usual * townBias * (1.0f + 3.0f * urbanness * lift + 4.0f * richness * richness * lift);
             total += tilted[f];
         }
         float pick = new Random(houseSeed ^ 0x3C6EF372FE94F82AL).nextFloat() * total;
@@ -458,8 +522,26 @@ public class InfrastructureManager {
         public final int path;
         public final float urbanness;
         public final long id;
+        // A shop's door: people go in to shop, but nobody lives there
+        public final boolean shop;
+        // The way through the front fence (or where it would be), straight out from the door
+        public final float gateX, gateZ;
+        // How far the opening in the front runs each way along the road from the kerb point
+        // (gate, and driveway if there is one), so nobody parks across it
+        public final float gapBefore, gapAfter;
+        // The driveway, or null: {mouth x, z (where it meets the front), inward x, z (unit, towards
+        // the back), its length, its width, x, z (unit, across it towards the garden path)}
+        public final float[] driveway;
+        // The front door's corners {x, y, z} (bottom left, bottom right, top right, top left), once built
+        public volatile float[][] doorCorners;
 
-        private Doorway(float[] inside, float[] door, float[] kerb, float[] roadDir, int nationId, int path, float urbanness, long id) {
+        private Doorway(float[] inside, float[] door, float[] kerb, float[] roadDir, int nationId, int path, float urbanness, long id, boolean shop,
+                        float[] gate, float[] gap, float[] driveway) {
+            this.gateX = gate[0];
+            this.gateZ = gate[1];
+            this.gapBefore = gap[0];
+            this.gapAfter = gap[1];
+            this.driveway = driveway;
             this.insideX = inside[0];
             this.insideZ = inside[1];
             this.doorX = door[0];
@@ -472,6 +554,7 @@ public class InfrastructureManager {
             this.path = path;
             this.urbanness = urbanness;
             this.id = id;
+            this.shop = shop;
         }
     }
 
@@ -575,8 +658,31 @@ public class InfrastructureManager {
                 if (sl > 1e-3f) roadDir = new float[] { sx / sl, sz / sl };
             }
         }
+        // The gate: on the line of the front fence, straight out from the door
+        float[] gateLocal = followKerb(house, 0f);
+        float[] gate = localToWorld(house.x, house.z, house.rotationY, 0f, gateLocal[1]);
+        float gapMin = -GATE_HALF_WIDTH, gapMax = GATE_HALF_WIDTH;
+        float[] driveway = null;
+        if (house.drivewaySide != 0 && house.shop == null) {
+            gapMin = Math.min(gapMin, house.driveMinX - 1f);
+            gapMax = Math.max(gapMax, house.driveMaxX + 1f);
+            float cx = (house.driveMinX + house.driveMaxX) * 0.5f;
+            float frontZ = followKerb(house, cx)[1];
+            float[] mouth = localToWorld(house.x, house.z, house.rotationY, cx, frontZ);
+            float[] in = localToWorld(0f, 0f, house.rotationY, 0f, -1f);
+            float[] across = localToWorld(0f, 0f, house.rotationY, -house.drivewaySide, 0f);
+            driveway = new float[] { mouth[0], mouth[1], in[0], in[1], frontZ + house.depth * 0.5f,
+                    house.driveMaxX - house.driveMinX, across[0], across[1] };
+        }
+        // The opening measured along the road from the kerb point
+        float[] sideways = localToWorld(0f, 0f, house.rotationY, 1f, 0f);
+        float sense = sideways[0] * roadDir[0] + sideways[1] * roadDir[1] >= 0f ? 1f : -1f;
+        float kerbLocalX = worldToLocal(house, kerb[0], kerb[1])[0];
+        float a = (gapMin - kerbLocalX) * sense, b = (gapMax - kerbLocalX) * sense;
+        float[] gap = { Math.min(a, b), Math.max(a, b) };
         house.doorway = new Doorway(inside, door, kerb, roadDir, house.nationId, house.frontagePath,
-                settlementManager.getUrbanness(house.x, house.z), house.seed);
+                settlementManager.getUrbanness(house.x, house.z), house.seed, house.shop != null, gate, gap, driveway);
+        house.doorway.doorCorners = house.doorCorners;
         return house.doorway;
     }
 
@@ -612,12 +718,21 @@ public class InfrastructureManager {
 
         RoadNetworkBuilder builder = new RoadNetworkBuilder(worldSeed, totalRegionWidth, seaLevelHeight, noise,
                 settlementManager, nationManager);
+        builder.setNationRichness(this::nationRichness);
+        // (dirt tracks don't cross fenced borders)
+        builder.setHostile(kinship::hostile);
+        islandWealth = builder;
         roadNetwork.addAll(builder.build());
+        straightenCrossings();
         deadEnds.addAll(builder.getDeadEnds());
 
         for (int pathIndex = 0; pathIndex < roadNetwork.size(); pathIndex++) {
             RoadPath path = roadNetwork.get(pathIndex);
             float width = path.roadClass.width;
+            if (path.roadClass == RoadPath.RoadClass.DIRT && !path.points.isEmpty()) {
+                Vector3 first = path.points.get(0);
+                width = trackWidth(nationManager.getNationAtWorld(first.x, first.z, totalRegionWidth));
+            }
             // Running distance along the path keeps dash patterns continuous across segments
             float distanceAlongPath = 0.0f;
             for (int i = 0; i < path.points.size() - 1; i++) {
@@ -645,10 +760,19 @@ public class InfrastructureManager {
             }
         }
 
+        findBorderChecks();
+
         long startTime = System.currentTimeMillis();
         placeHouses();
         System.out.printf("[HOUSES] %d houses placed along the roads in %d ms%n", houses.size(), System.currentTimeMillis() - startTime);
         chooseShops();
+        // Fences go up once it's known which buildings are shops (they have none)
+        connectNeighbourFences();
+        for (House house : houses) {
+            if (house.drivewaySide != 0 && house.shop == null) noteDriveway(house);
+        }
+        // The road graph for walking and for maps, got ready in the background
+        SIGN_MAP_ARTIST.submit(this::routes);
         for (List<RoadSegment> bucket : roadSegmentsByChunk.values()) {
             for (RoadSegment segment : bucket) {
                                 boolean playable = Math.abs(segment.start.x) < regionWidth * 0.5f && Math.abs(segment.start.z) < regionWidth * 0.5f;
@@ -728,21 +852,10 @@ public class InfrastructureManager {
             float alongZ = (segment.end.z - segment.start.z) / segment.length;
             float side = rand.nextBoolean() ? 1f : -1f;
             float acrossX = -alongZ * side, acrossZ = alongX * side;
-            float cx, cz, dirX, dirZ;
-            if (rand.nextFloat() < 0.2f) {
-                // Down on the road itself, stairs along it
-                cx = rx;
-                cz = rz;
-                dirX = alongX * side;
-                dirZ = alongZ * side;
-            } else {
-                // Off to one side, stairs towards the road
-                float off = segment.width * 0.5f + reach * 0.75f + rand.nextFloat() * 45f;
-                cx = rx + acrossX * off;
-                cz = rz + acrossZ * off;
-                dirX = -acrossX;
-                dirZ = -acrossZ;
-            }
+            // Off to one side (never on the road, where it would be in the traffic's way), stairs towards it
+            float off = segment.width * 0.5f + reach + 4f + rand.nextFloat() * 45f;
+            float cx = rx + acrossX * off, cz = rz + acrossZ * off;
+            float dirX = -acrossX, dirZ = -acrossZ;
             float sx = cx + dirX * standsAt, sz = cz + dirZ * standsAt;
             float fx = cx + dirX * reach, fz = cz + dirZ * reach;
             if (isPlotLocation(cx, cz, reach) || isPlotLocation(sx, sz, 8f) || isPlotLocation(fx, fz, 8f)) continue;
@@ -753,6 +866,13 @@ public class InfrastructureManager {
                 feetDry = dryLand.test(cx + (float) Math.cos(a) * 36f, cz + (float) Math.sin(a) * 36f);
             }
             if (!feetDry) continue;
+            // Clear of every road, legs and all
+            boolean offRoad = !isRoadLocation(cx, cz, 30f);
+            for (int leg = 0; leg < 4 && offRoad; leg++) {
+                double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
+                offRoad = !isRoadLocation(cx + (float) Math.cos(a) * 36f, cz + (float) Math.sin(a) * 36f, 6f);
+            }
+            if (!offRoad) continue;
             return new float[] { sx, sz, dirX, dirZ };
         }
         return null;
@@ -777,6 +897,14 @@ public class InfrastructureManager {
         };
     }
 
+    /** Visits every shop's building (without its extension). */
+    public void forEachShop(BuildingVisitor visitor) {
+        for (Shop shop : shops) {
+            House house = shop.house;
+            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId);
+        }
+    }
+
     /** Visits every building footprint in the region; extensions are visited as their own rectangle. */
     public void forEachBuilding(BuildingVisitor visitor) {
         for (House house : houses) {
@@ -794,9 +922,54 @@ public class InfrastructureManager {
     //          SPATIAL QUERIES
     // ==========================================
 
+    /**
+     * Whether a point is on ground cleared for a road: within clearance of a made road's
+     * edge, or on a dirt track itself (within trackMargin of its edge), so a track's bare
+     * earth spans just the ground cleared for it.
+     */
+    public boolean isClearedForRoad(float worldX, float worldZ, float clearance, float trackMargin) {
+        if (onDriveway(worldX, worldZ)) return true;
+        return clearedAt(worldX, worldZ, clearance, trackMargin) || (nearJoin(worldX) && clearedAt(otherSide(worldX), worldZ, clearance, trackMargin));
+    }
+
+    private boolean clearedAt(float worldX, float worldZ, float clearance, float trackMargin) {
+        for (RoadSegment segment : segmentsNear(worldX, worldZ, clearance + MAX_ROAD_HALF_WIDTH)) {
+            float limit = segment.width * 0.5f + (segment.roadClass == RoadPath.RoadClass.DIRT ? trackMargin : clearance);
+            if (distanceSquaredToSegment(worldX, worldZ, segment.start, segment.end) <= limit * limit) return true;
+        }
+        return false;
+    }
+
     /** Whether a point lies within clearance of the edge of any road or turning circle. */
     public boolean isRoadLocation(float worldX, float worldZ, float clearance) {
         return roadAt(worldX, worldZ, clearance) || (nearJoin(worldX) && roadAt(otherSide(worldX), worldZ, clearance));
+    }
+
+    /**
+     * The height of what someone walking at (x, z) stands on: the road's raised surface on a
+     * road (eased down to the ground over a pace or so beyond its edge), otherwise the ground.
+     */
+    public float walkingSurfaceY(float worldX, float worldZ) {
+        float ground = TerrainMesh.getLayeredHeight(worldX, worldZ, terrainNoise);
+        if (!roadNetworkInitialized) return ground;
+        float inside = roadDepth(worldX, worldZ);
+        if (nearJoin(worldX)) inside = Math.max(inside, roadDepth(otherSide(worldX), worldZ));
+        final float easing = 1.5f;
+        if (inside <= -easing) return ground;
+        float road = roadSurfaceY(worldX, worldZ);
+        float t = Math.min(1f, (inside + easing) / easing);
+        return ground + (road - ground) * t;
+    }
+
+    /** How far inside the nearest road's edge a point is (negative outside it). */
+    private float roadDepth(float worldX, float worldZ) {
+        float best = -Float.MAX_VALUE;
+        for (RoadSegment segment : segmentsNear(worldX, worldZ, 2f + MAX_ROAD_HALF_WIDTH)) {
+            if (segment.roadClass == RoadPath.RoadClass.DIRT) continue;
+            float distance = (float) Math.sqrt(distanceSquaredToSegment(worldX, worldZ, segment.start, segment.end));
+            best = Math.max(best, segment.width * 0.5f - distance);
+        }
+        return best;
     }
 
     private boolean roadAt(float worldX, float worldZ, float clearance) {
@@ -826,6 +999,24 @@ public class InfrastructureManager {
             }
         }
         return false;
+    }
+
+    /**
+     * How high the top of any house over a point is (its walls' top, rising towards the
+     * middle under its roof); NaN if no house stands there.
+     */
+    public float roofAt(float worldX, float worldZ) {
+        float best = Float.NaN;
+        for (House house : housesNear(worldX, worldZ, maxHouseReach)) {
+            float[] local = worldToLocal(house, worldX, worldZ);
+            float minX = house.houseMinX(), maxX = house.houseMaxX(), half = house.depth * 0.5f;
+            if (local[0] < minX || local[0] > maxX || local[1] < -half || local[1] > half) continue;
+            float halfWidth = (maxX - minX) * 0.5f, middle = (maxX + minX) * 0.5f;
+            float inwards = 1f - Math.max(Math.abs(local[0] - middle) / Math.max(1f, halfWidth), Math.abs(local[1]) / Math.max(1f, half));
+            float top = house.baseY + house.mainWallHeight + styleOf(house).roofHeight * house.sizeScale * Math.max(0f, inwards);
+            if (Float.isNaN(best) || top > best) best = top;
+        }
+        return best;
     }
 
     /** Whether a point lies inside any house plot (garden and fence included). */
@@ -900,7 +1091,8 @@ public class InfrastructureManager {
                 deadEnds.size(), endHouses.size(), deadEnds.size() - endHouses.size());
         for (List<RoadSegment> bucket : roadSegmentsByChunk.values()) {
             for (RoadSegment segment : bucket) {
-                if (!segment.culDeSac && !segment.railed) {
+                // (dirt tracks have no houses, except on islands the main roads never reached)
+                if (!segment.culDeSac && !segment.railed && (segment.roadClass != RoadPath.RoadClass.DIRT || roadNetwork.get(segment.pathIndex).island)) {
                     rollHousesAlong(segment, candidates);
                 }
             }
@@ -921,7 +1113,7 @@ public class InfrastructureManager {
             int cellZ = (int) Math.floor(centre[1] / PLOT_INDEX_CELL);
             int reach = (int) Math.ceil((candidate.plotRadius() + largestPlot + PLOT_GAP) / PLOT_INDEX_CELL);
 
-            boolean blocked = false;
+            boolean blocked = straddlesFencedBorder(candidate);
             for (int dz = -reach; dz <= reach && !blocked; dz++) {
                 for (int dx = -reach; dx <= reach && !blocked; dx++) {
                     List<House> cell = plotIndex.get(chunkKey(cellX + dx, cellZ + dz));
@@ -948,8 +1140,10 @@ public class InfrastructureManager {
             float plotReach = Math.max(Math.max(-candidate.plotMinX, candidate.plotMaxX), Math.max(-candidate.plotMinZ, candidate.plotMaxZ));
             maxPlotReach = Math.max(maxPlotReach, plotReach * 1.42f);
         }
-        connectNeighbourFences();
     }
+
+    // How much more closely houses line the roads of islands the main roads never reached
+    private static final float ISLAND_HOUSING = 3f;
 
     private void rollHousesAlong(RoadSegment segment, List<House> candidates) {
         long segmentSeed = worldSeed ^ ((long) segment.pathIndex * 0x9E3779B97F4A7C15L)
@@ -967,6 +1161,8 @@ public class InfrastructureManager {
         }
         float perHundred = (float) (ruralProbability * RURAL_FRONTAGE_SCALE) * (0.3f + 0.7f * habitability)
                 + urbanDensity * (float) Math.pow(urbanness, URBAN_DENSITY_EXPONENT);
+        // An island's few roads are where all its people live, so they're built up more closely
+        if (roadNetwork.get(segment.pathIndex).island) perHundred *= ISLAND_HOUSING;
         float attemptsExact = perHundred * segment.length / 100.0f * 2.0f * PLACEMENT_OVERSAMPLE;
         int attempts = (int) attemptsExact;
         if (rand.nextFloat() < attemptsExact - attempts) {
@@ -1006,11 +1202,13 @@ public class InfrastructureManager {
                 continue;
             }
             house.nationId = nationId;
-            house.form = chooseForm(roadX, roadZ, nationId, house.seed);
+            house.richness = areaRichness(nationId, settlementManager.getUrbanness(roadX, roadZ), roadX, roadZ);
+            house.sizeScale *= 1f + 0.35f * house.richness * house.richness;
+            house.form = chooseForm(roadX, roadZ, nationId, house.seed, house.richness);
             BuildingStyle style = styleOf(house);
             house.width = style.width * house.sizeScale;
             house.depth = style.depth * house.sizeScale;
-            if (extensionRoll < style.extensionChance) {
+            if (extensionRoll < style.extensionChance * (1f + house.richness)) {
                 house.extensionSide = extensionLeft ? -1 : 1;
                 house.extensionWidth = house.width * style.extensionWidthRatio;
                 house.extensionDepth = house.depth * style.extensionDepthRatio;
@@ -1025,6 +1223,7 @@ public class InfrastructureManager {
             float overhang = style.roofOverhang * house.sizeScale;
             house.plotMinX = house.houseMinX() - overhang - sideYard;
             house.plotMaxX = house.houseMaxX() + overhang + sideYard;
+            decideDriveway(house, overhang);
             house.plotMinZ = -house.depth * 0.5f - overhang - backYard;
             house.plotMaxZ = house.depth * 0.5f + house.setback - FRONT_FENCE_GAP;
 
@@ -1033,6 +1232,7 @@ public class InfrastructureManager {
             }
             house.wallVariant = chooseWallVariant(house.x, house.z, house.nationId, house.seed);
         decideFence(house);
+        decideLook(house);
             candidates.add(house);
         }
     }
@@ -1119,11 +1319,13 @@ public class InfrastructureManager {
             return null;
         }
         house.nationId = nationId;
-        house.form = chooseForm(end.x, end.z, nationId, house.seed);
+        house.richness = areaRichness(nationId, settlementManager.getUrbanness(end.x, end.z), end.x, end.z);
+        house.sizeScale *= 1f + 0.35f * house.richness * house.richness;
+        house.form = chooseForm(end.x, end.z, nationId, house.seed, house.richness);
         BuildingStyle style = styleOf(house);
         house.width = style.width * house.sizeScale;
         house.depth = style.depth * house.sizeScale;
-        if (attempt == 0 && extensionRoll < style.extensionChance) {
+        if (attempt == 0 && extensionRoll < style.extensionChance * (1f + house.richness)) {
             house.extensionSide = extensionLeft ? -1 : 1;
             house.extensionWidth = house.width * style.extensionWidthRatio;
             house.extensionDepth = house.depth * style.extensionDepthRatio;
@@ -1138,6 +1340,7 @@ public class InfrastructureManager {
         float overhang = style.roofOverhang * house.sizeScale;
         house.plotMinX = house.houseMinX() - overhang - sideYard;
         house.plotMaxX = house.houseMaxX() + overhang + sideYard;
+        decideDriveway(house, overhang);
         house.plotMinZ = -house.depth * 0.5f - overhang - backYard;
         house.plotMaxZ = house.depth * 0.5f + house.setback - FRONT_FENCE_GAP;
 
@@ -1146,6 +1349,7 @@ public class InfrastructureManager {
         }
         house.wallVariant = chooseWallVariant(house.x, house.z, house.nationId, house.seed);
         decideFence(house);
+        decideLook(house);
         return house;
     }
 
@@ -1306,12 +1510,17 @@ public class InfrastructureManager {
                     continue;
                 }
                 String part = entry.getKey();
-                boolean doubleSided = part.equals("rail") || part.equals("band") || part.equals("fence") || part.equals("security")
+                boolean doubleSided = part.equals("rail") || part.equals("band") || part.equals("fence") || part.equals("security") || part.equals("roadwall")
+                        || part.equals("borderfence") || part.equals("barbed") || part.startsWith(BOOTH_PART)
                         || part.startsWith("curtain") || part.equals("flag") || part.equals("goods");
-                                boolean paint = part.equals("line");
-                Material material = material(part, nationId);
-                parts.add(new InfrastructureObject.BatchPart(entry.getValue().vertexArray(), entry.getValue().indexArray(),
-                        material, doubleSided, paint, material.diffuseMapExists(), part.equals("glass")));
+                                boolean paint = part.equals("line") || part.equals("driveway");
+                int wornAt = part.indexOf(WORN);
+                Material material = material(wornAt < 0 ? part : part.substring(0, wornAt), nationId);
+                InfrastructureObject.BatchPart batchPart = new InfrastructureObject.BatchPart(entry.getValue().vertexArray(), entry.getValue().indexArray(),
+                        material, doubleSided, paint, material.diffuseMapExists(), part.equals("glass"), part);
+                if (wornAt >= 0) batchPart.weathering = Integer.parseInt(part.substring(wornAt + WORN.length())) / 3f;
+                if (part.equals("dirt")) batchPart.trackGrit = 0.05f + 0.95f * trackGrit(nationId);
+                parts.add(batchPart);
             }
             if (parts.isEmpty() || minX > maxX) {
                 return null;
@@ -1321,7 +1530,12 @@ public class InfrastructureManager {
             float centreY = TerrainMesh.getLayeredHeight(centreX, centreZ, terrainNoise);
             float halfDiagonal = 0.5f * (float) Math.sqrt((maxX - minX) * (maxX - minX) + (maxZ - minZ) * (maxZ - minZ));
             float radius = Math.max(halfDiagonal, maxY - centreY);
-            return InfrastructureObject.createBatch(new Vector3(centreX, centreY, centreZ), nationId, radius, parts);
+            InfrastructureObject batch = InfrastructureObject.createBatch(new Vector3(centreX, centreY, centreZ), nationId, radius, parts);
+            // The goods on shop shelves and small flags vanish into the distance before the buildings
+            // do; what's seen through windows (curtains, rooms, shop interiors) lasts nearly as long
+            batch.setDetailDistance(p -> p.name.equals("goods") || p.name.equals("shelf") || p.name.equals("flag"), 700f);
+            batch.setDetailDistance(p -> p.name.startsWith("curtain") || p.name.equals("interior") || p.name.equals("shopinterior"), 1700f);
+            return batch;
         }
     }
 
@@ -1347,7 +1561,7 @@ public class InfrastructureManager {
                 float urban = settlementManager.getUrbanness(house.x, house.z);
                 Random poleRand = new Random(house.seed ^ 0x9013L);
                 if (urban > 0.25f && poleRand.nextFloat() < patriotismOf(house.nationId) * 0.45f * urban) {
-                    float side = poleRand.nextBoolean() ? 1f : -1f;
+                    float side = house.drivewaySide != 0 ? -house.drivewaySide : poleRand.nextBoolean() ? 1f : -1f;
                     float[] at = localToWorld(house.x, house.z, house.rotationY,
                             side > 0 ? house.plotMaxX - 4f : house.plotMinX + 4f, house.plotMaxZ - 4f);
                     if (!inKeepClear(at[0], at[1]) && !isRoadLocation(at[0], at[1], 2f)) {
@@ -1365,6 +1579,10 @@ public class InfrastructureManager {
                 }
             }
         }
+
+        borderFences(batches, cx, cz);
+        borderBooths(batches, cx, cz);
+        crossoverLines(batches, cx, cz);
 
         List<RoadSegment> segments = across(cx, cz, roadSegmentsByChunk, this::shifted);
         if (!segments.isEmpty()) {
@@ -1459,6 +1677,10 @@ public class InfrastructureManager {
         return materials.computeIfAbsent(part + "_" + nationId, ignored -> {
                         Vector3 specular = new Vector3(0.03f, 0.03f, 0.03f);
             BuildingStyle building = buildingStyles.get(nationId);
+            if (part.startsWith(BOOTH_PART)) {
+                int v = Integer.parseInt(part.substring(BOOTH_PART.length()));
+                return texturedOr(wallVariantTextureName(v), wallVariants.get(v).colour, specular, 2.0f);
+            }
             if (part.startsWith("wall_variant")) {
                 int v = Integer.parseInt(part.substring("wall_variant".length()));
                 return texturedOr(wallVariantTextureName(v), wallVariants.get(v).colour, specular, 2.0f);
@@ -1501,8 +1723,13 @@ public class InfrastructureManager {
                 case "interior":
                     return new Material(new Vector3(0.025f, 0.025f, 0.03f), new Vector3(0.03f, 0.03f, 0.035f), new Vector3(0f, 0f, 0f), 2.0f);
                 case "curtain0": case "curtain1": case "curtain2": case "curtain3": {
-                    Vector3 cloth = curtainColour(part.charAt(7) - '0');
-                    return new Material(cloth, cloth, new Vector3(0.02f, 0.02f, 0.02f), 2.0f);
+                    int k = part.charAt(7) - '0';
+                    return texturedOr(CURTAIN_TEXTURE + k, curtainColour(k), new Vector3(0.02f, 0.02f, 0.02f), 2.0f);
+                }
+                case "blind0": case "blind1": case "blind2": case "blind3": {
+                    // (a tower's upper windows: the same curtains, seen from far below)
+                    int k = part.charAt(5) - '0';
+                    return texturedOr(CURTAIN_TEXTURE + k, curtainColour(k), new Vector3(0.02f, 0.02f, 0.02f), 2.0f);
                 }
                 case "frame":
                     return new Material(building.frameColour, building.frameColour, specular, 2.0f);
@@ -1510,10 +1737,47 @@ public class InfrastructureManager {
                     Vector3 metal = fenceStyles.get(nationId).securityColour;
                     return new Material(metal, metal, new Vector3(0.3f, 0.3f, 0.3f), 24.0f);
                 }
+                case "dirt":
+                    // The ground's own soil texture: the track is the ground, worn bare
+                    return texturedOr("dirt_diffuse", new Vector3(0.5f, 0.4f, 0.3f), new Vector3(0.1f, 0.1f, 0.1f), 4.0f);
+                case "finery": {
+                    // The nation's dressing stone: marble, cream stone, gilt or dark granite
+                    Random pick = nationRandom(83L, nationId);
+                    Vector3[] stones = { new Vector3(0.9f, 0.89f, 0.86f), new Vector3(0.9f, 0.82f, 0.64f),
+                            new Vector3(0.86f, 0.66f, 0.22f), new Vector3(0.22f, 0.22f, 0.25f) };
+                    Vector3 stone = stones[pick.nextInt(stones.length)];
+                    return new Material(stone, stone, new Vector3(0.35f, 0.33f, 0.3f), 32.0f);
+                }
+                case "driveway": {
+                    // Paving: a little of the nation's stone in it
+                    Random tint = nationRandom(59L, nationId);
+                    float grey = 0.36f + tint.nextFloat() * 0.2f;
+                    Vector3 paving = new Vector3(grey + tint.nextFloat() * 0.08f, grey + tint.nextFloat() * 0.05f, grey);
+                    return new Material(paving, paving, new Vector3(0.05f, 0.05f, 0.05f), 2.0f);
+                }
+                case "roadwall": {
+                    // Weathered concrete
+                    Vector3 concrete = new Vector3(0.55f, 0.54f, 0.52f);
+                    return new Material(concrete, concrete, specular, 2.0f);
+                }
                 case "secwall": {
                     // Plain rendered concrete, a little tinted by the nation's metalwork
                     Vector3 metal = fenceStyles.get(nationId).securityColour;
                     Vector3 concrete = new Vector3(0.62f + metal.x * 0.15f, 0.6f + metal.y * 0.15f, 0.57f + metal.z * 0.15f);
+                    return new Material(concrete, concrete, specular, 2.0f);
+                }
+                case "borderfence": {
+                    // Galvanised steel
+                    Vector3 steel = new Vector3(0.56f, 0.58f, 0.6f);
+                    return new Material(steel, steel, new Vector3(0.45f, 0.45f, 0.45f), 30.0f);
+                }
+                case "barbed": {
+                    Vector3 wire = new Vector3(0.32f, 0.31f, 0.3f);
+                    return new Material(wire, wire, new Vector3(0.5f, 0.5f, 0.5f), 40.0f);
+                }
+                case "borderpost": {
+                    // Heavy concrete gateposts, with a band of warning paint on them
+                    Vector3 concrete = new Vector3(0.6f, 0.59f, 0.56f);
                     return new Material(concrete, concrete, specular, 2.0f);
                 }
                 case "fence":
@@ -1527,13 +1791,53 @@ public class InfrastructureManager {
     //          ROAD GEOMETRY
     // ==========================================
 
+    /**
+     * The height of the road deck at a point on a road's centreline: level with the highest
+     * ground across the road's width (the half-width of the widest road there), so the road
+     * is flat across, with no sideways camber: its higher side meets the ground and its lower
+     * side is built up on a wall. Small dips are bridged. It depends only on where the point
+     * is, so roads meeting at a junction meet at the same height. Roads ride a low causeway
+     * wherever they dip below the sea.
+     */
     private float roadSurfaceY(float x, float z) {
-        // Roads ride a low causeway wherever they dip below the sea
-        return Math.max(TerrainMesh.getLayeredHeight(x, z, terrainNoise), seaLevel + 1.0f) + ROAD_SURFACE_OFFSET;
+        float reach = RoadPath.RoadClass.LANE.width * 0.5f;
+        if (roadNetworkInitialized) {
+            for (RoadSegment segment : segmentsNear(x, z, MAX_ROAD_HALF_WIDTH + 1f)) {
+                float half = segment.width * 0.5f;
+                if (half > reach && distanceSquaredToSegment(x, z, segment.start, segment.end) <= (half + 1f) * (half + 1f)) reach = half;
+            }
+        }
+        float top = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+        int around = reach > 16f ? 12 : 8;
+        for (int k = 0; k < around; k++) {
+            double angle = k * 2 * Math.PI / around;
+            for (float r : new float[] { reach * 0.5f, reach }) {
+                top = Math.max(top, TerrainMesh.getLayeredHeight(x + (float) Math.cos(angle) * r, z + (float) Math.sin(angle) * r, terrainNoise));
+            }
+        }
+        return Math.max(top, seaLevel + 1.0f) + ROAD_SURFACE_OFFSET;
     }
 
     /** Positions of a line offset sideways from the centreline, one per subdivision, mitred at the ends. */
     private float[][] offsetEdge(RoadSegment segment, float offset) {
+        return offsetEdge(segment, offset, deckHeights(segment));
+    }
+
+    /** The deck's height at each subdivision along a segment's centreline. */
+    private float[] deckHeights(RoadSegment segment) {
+        // Worked out once per segment: the surface, its edges, rails and supports all ask
+        float[] known = segment.deck;
+        if (known != null) return known;
+        float[] deck = new float[ROAD_SEGMENT_SUBDIVISIONS + 1];
+        for (int i = 0; i <= ROAD_SEGMENT_SUBDIVISIONS; i++) {
+            float t = (float) i / ROAD_SEGMENT_SUBDIVISIONS;
+            deck[i] = roadSurfaceY(segment.start.x + (segment.end.x - segment.start.x) * t, segment.start.z + (segment.end.z - segment.start.z) * t);
+        }
+        segment.deck = deck;
+        return deck;
+    }
+
+    private float[][] offsetEdge(RoadSegment segment, float offset, float[] deck) {
         float[][] edge = new float[ROAD_SEGMENT_SUBDIVISIONS + 1][];
         float halfOffset = Math.abs(offset);
         float sign = Math.signum(offset);
@@ -1555,15 +1859,25 @@ public class InfrastructureManager {
             }
             float edgeX = x + sideX * sign;
             float edgeZ = z + sideZ * sign;
-            edge[i] = new float[] { edgeX, roadSurfaceY(edgeX, edgeZ), edgeZ };
+            // Level across the road: the edge is as high as the deck at the centreline
+            edge[i] = new float[] { edgeX, deck[i], edgeZ };
         }
         return edge;
     }
 
     private void appendRoadSegment(NationBatch batch, RoadSegment segment) {
         float halfWidth = segment.width * 0.5f;
-        float[][] leftEdge = offsetEdge(segment, -halfWidth);
-        float[][] rightEdge = offsetEdge(segment, halfWidth);
+        float[] deck = deckHeights(segment);
+        float[][] leftEdge = offsetEdge(segment, -halfWidth, deck);
+        float[][] rightEdge = offsetEdge(segment, halfWidth, deck);
+        if (segment.roadClass == RoadPath.RoadClass.DIRT) {
+            appendTrack(batch, segment, leftEdge, rightEdge);
+            return;
+        }
+        // Where the deck stands above the ground: a wall down to it, or pillars where it's high
+        appendRoadSupports(batch, leftEdge, -1f, segment);
+        appendRoadSupports(batch, rightEdge, 1f, segment);
+        appendDeckUnderside(batch, leftEdge, rightEdge);
 
         MeshBuilder asphalt = batch.builder("asphalt");
         int firstVertex = -1;
@@ -1588,7 +1902,7 @@ public class InfrastructureManager {
         List<RoadSegment> crossing = new ArrayList<>();
         float midX = (segment.start.x + segment.end.x) * 0.5f;
         float midZ = (segment.start.z + segment.end.z) * 0.5f;
-        for (RoadSegment other : segmentsNear(midX, midZ, segment.length * 0.5f + segment.width + MAX_ROAD_HALF_WIDTH)) {
+        for (RoadSegment other : segmentsNear(midX, midZ, segment.length * 0.5f + segment.width + MAX_ROAD_HALF_WIDTH + RAIL_JUNCTION_CLEARANCE)) {
             if (other.pathIndex != segment.pathIndex || other.culDeSac) {
                 crossing.add(other);
             }
@@ -1599,6 +1913,133 @@ public class InfrastructureManager {
             GuardRailStyle style = guardRailStyles.get(segment.nationId);
             appendGuardRail(batch, segment, style, -1.0f, crossing);
             appendGuardRail(batch, segment, style, 1.0f, crossing);
+        }
+    }
+
+    // Below this the drop is left to the asphalt's own edge; above, a retaining wall; higher
+    // still, pillars under a deck slab
+    private static final float SUPPORT_MIN_DROP = 1.8f, PILLAR_DROP = 8f;
+
+    /**
+     * Holds up one side of a raised stretch of road. Where the ground falls away below the
+     * deck a vertical retaining wall runs from the road's edge down into the ground; where
+     * it falls a long way, the deck is a slab on square pillars instead.
+     */
+    private void appendRoadSupports(NationBatch batch, float[][] edge, float side, RoadSegment segment) {
+        int n = edge.length;
+        float[] ground = new float[n];
+        float deepest = 0f;
+        for (int i = 0; i < n; i++) {
+            ground[i] = TerrainMesh.getLayeredHeight(edge[i][0], edge[i][2], terrainNoise);
+            deepest = Math.max(deepest, edge[i][1] - ground[i]);
+        }
+        if (deepest < SUPPORT_MIN_DROP) return;
+        MeshBuilder wall = batch.builder("roadwall");
+        for (int i = 0; i + 1 < n; i++) {
+            float dropA = edge[i][1] - ground[i], dropB = edge[i + 1][1] - ground[i + 1];
+            if (Math.max(dropA, dropB) < SUPPORT_MIN_DROP) continue;
+            boolean pillars = Math.min(dropA, dropB) > PILLAR_DROP;
+            // Outwards from the road, for which way the face points
+            float ax = edge[i + 1][0] - edge[i][0], az = edge[i + 1][2] - edge[i][2];
+            float length = (float) Math.hypot(ax, az);
+            if (length < 1e-3f) continue;
+            float outX = -az / length * side, outZ = ax / length * side;
+            float bottomA = pillars ? edge[i][1] - 1.6f : ground[i] - 1.5f;
+            float bottomB = pillars ? edge[i + 1][1] - 1.6f : ground[i + 1] - 1.5f;
+            float[][] quad = { { edge[i][0], edge[i][1] - 0.05f, edge[i][2] }, { edge[i + 1][0], edge[i + 1][1] - 0.05f, edge[i + 1][2] },
+                    { edge[i + 1][0], bottomB, edge[i + 1][2] }, { edge[i][0], bottomA, edge[i][2] } };
+            int first = -1;
+            for (int k = 0; k < 4; k++) {
+                float v = k < 2 ? 0f : (quad[k][1] - quad[0][1]) * 0.1f;
+                int index = wall.addVertex(quad[k][0], quad[k][1], quad[k][2], outX, 0f, outZ, (k == 1 || k == 2 ? length : 0f) * 0.1f, v);
+                if (first < 0) first = index;
+            }
+            // Counter-clockwise seen from outside
+            float[] e1 = { quad[1][0] - quad[0][0], quad[1][1] - quad[0][1], quad[1][2] - quad[0][2] };
+            float[] e2 = { quad[3][0] - quad[0][0], quad[3][1] - quad[0][1], quad[3][2] - quad[0][2] };
+            float facing = (e1[1] * e2[2] - e1[2] * e2[1]) * outX + (e1[0] * e2[1] - e1[1] * e2[0]) * outZ;
+            if (facing > 0f) {
+                wall.addTriangle(first, first + 1, first + 3);
+                wall.addTriangle(first + 1, first + 2, first + 3);
+            } else {
+                wall.addTriangle(first, first + 3, first + 1);
+                wall.addTriangle(first + 1, first + 3, first + 2);
+            }
+            if (pillars && i % 2 == 0) {
+                // A pillar under the deck's edge, set in a little
+                float px = edge[i][0] - outX * 1.5f, pz = edge[i][2] - outZ * 1.5f;
+                float base = TerrainMesh.getLayeredHeight(px, pz, terrainNoise) - 1f;
+                addBox(wall, px, base, pz, ax / length, az / length, 1.1f, 1.1f, edge[i][1] - 1.6f - base);
+            }
+        }
+    }
+
+    /**
+     * A dirt track: the ground itself, worn bare and gritty, laid over the ground point by
+     * point (following its slope across as well as along) just above it. A fine mesh, so the
+     * ground never shows through between its points; textured just as the ground is, so its
+     * soil matches what's round it.
+     */
+    private void appendTrack(NationBatch batch, RoadSegment segment, float[][] leftEdge, float[][] rightEdge) {
+        MeshBuilder dirt = batch.builder("dirt");
+        int along = Math.max(2, Math.round(segment.length / 3f)), across = Math.max(2, Math.round(segment.width / 3f));
+        int first = -1;
+        for (int i = 0; i <= along; i++) {
+            float t = (float) i / along;
+            float[] l = edgePoint(leftEdge, t), r = edgePoint(rightEdge, t);
+            for (int j = 0; j <= across; j++) {
+                float u = (float) j / across;
+                float x = l[0] + (r[0] - l[0]) * u, z = l[2] + (r[2] - l[2]) * u;
+                float y = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+                // Lit as the ground is: its normal flattened the same way, so the two match
+                float nx = (TerrainMesh.getLayeredHeight(x - 1f, z, terrainNoise) - TerrainMesh.getLayeredHeight(x + 1f, z, terrainNoise)) * 0.1f;
+                float nz = (TerrainMesh.getLayeredHeight(x, z - 1f, terrainNoise) - TerrainMesh.getLayeredHeight(x, z + 1f, terrainNoise)) * 0.1f;
+                float length = (float) Math.sqrt(nx * nx + 1f + nz * nz);
+                int index = dirt.addVertex(x, y + TRACK_LIFT, z, nx / length, 1f / length, nz / length, (x + 50f) / 100f, (z + 50f) / 100f);
+                if (first < 0) first = index;
+                batch.include(x, y, z, 0f);
+            }
+        }
+        int row = across + 1;
+        for (int i = 0; i < along; i++) {
+            for (int j = 0; j < across; j++) {
+                int a = first + i * row + j, b = a + 1, c = a + row, d = c + 1;
+                dirt.addTriangle(a, b, c);
+                dirt.addTriangle(b, d, c);
+            }
+        }
+    }
+
+    /** A point t of the way along an edge's subdivisions. */
+    private static float[] edgePoint(float[][] edge, float t) {
+        float scaled = Math.max(0f, Math.min(1f, t)) * (edge.length - 1);
+        int i = Math.min((int) Math.floor(scaled), edge.length - 2);
+        float f = scaled - i;
+        return new float[] { edge[i][0] + (edge[i + 1][0] - edge[i][0]) * f, 0f, edge[i][2] + (edge[i + 1][2] - edge[i][2]) * f };
+    }
+
+    // How far a track lies above the ground (with a depth offset as well, so it never flickers into it)
+    private static final float TRACK_LIFT = 0.45f;
+
+    // How long a stretch of track one repeat of its texture covers
+    private static final float TRACK_TEXTURE_LENGTH = 15f;
+
+    /** Where the deck stands on pillars, the slab's underside, so it can be seen from beneath. */
+    private void appendDeckUnderside(NationBatch batch, float[][] left, float[][] right) {
+        MeshBuilder slab = null;
+        for (int i = 0; i + 1 < left.length; i++) {
+            float drop = Math.min(left[i][1] - TerrainMesh.getLayeredHeight(left[i][0], left[i][2], terrainNoise),
+                    right[i][1] - TerrainMesh.getLayeredHeight(right[i][0], right[i][2], terrainNoise));
+            float dropNext = Math.min(left[i + 1][1] - TerrainMesh.getLayeredHeight(left[i + 1][0], left[i + 1][2], terrainNoise),
+                    right[i + 1][1] - TerrainMesh.getLayeredHeight(right[i + 1][0], right[i + 1][2], terrainNoise));
+            if (Math.max(drop, dropNext) < PILLAR_DROP * 0.5f) continue;
+            if (slab == null) slab = batch.builder("roadwall");
+            int a = slab.addVertex(left[i][0], left[i][1] - 1.6f, left[i][2], 0f, -1f, 0f, 0f, 0f);
+            slab.addVertex(right[i][0], right[i][1] - 1.6f, right[i][2], 0f, -1f, 0f, 1f, 0f);
+            slab.addVertex(left[i + 1][0], left[i + 1][1] - 1.6f, left[i + 1][2], 0f, -1f, 0f, 0f, 1f);
+            slab.addVertex(right[i + 1][0], right[i + 1][1] - 1.6f, right[i + 1][2], 0f, -1f, 0f, 1f, 1f);
+            slab.addTriangle(a, a + 2, a + 1);
+            slab.addTriangle(a + 1, a + 2, a + 3);
         }
     }
 
@@ -1786,12 +2227,13 @@ public class InfrastructureManager {
         int sides = 20;
         float centreX = segment.start.x;
         float centreZ = segment.start.z;
-        int centre = asphalt.addVertex(centreX, roadSurfaceY(centreX, centreZ), centreZ, 0.0f, 1.0f, 0.0f, 0.5f, 0.5f);
+        float level = roadSurfaceY(centreX, centreZ);
+        int centre = asphalt.addVertex(centreX, level, centreZ, 0.0f, 1.0f, 0.0f, 0.5f, 0.5f);
         for (int i = 0; i <= sides; i++) {
             double angle = 2.0 * Math.PI * i / sides;
             float x = centreX + (float) Math.cos(angle) * radius;
             float z = centreZ + (float) Math.sin(angle) * radius;
-            asphalt.addVertex(x, roadSurfaceY(x, z), z, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f);
+            asphalt.addVertex(x, level, z, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f);
             batch.include(x, 0.0f, z, 0.0f);
         }
         for (int i = 0; i < sides; i++) {
@@ -1835,6 +2277,8 @@ public class InfrastructureManager {
             if (coveringRank(mid[0], mid[2], crossing, RAIL_JUNCTION_CLEARANCE) >= 0) {
                 continue;
             }
+            // (nor by a border crossing, where the booth, lights and gates stand)
+            if (borderCheckAt(mid[0], mid[2], RAIL_CLEAR_OF_BORDER) >= 0) continue;
             float[] start = railBase(base, t0);
             float[] end = railBase(base, t1);
             recordSegment(start[0], start[2], end[0], end[2], 0.5f, style.railHeight + style.railSize * 0.5f);
@@ -1932,23 +2376,30 @@ public class InfrastructureManager {
                 BuildingStyle.WallVariant variant = wallVariants.get(house.wallVariant);
         // Shops are painted, standing out from the houses round them
         String wallPart = house.shop != null ? "shopwall" + house.shop.colour : wallVariantTextureName(house.wallVariant);
+        // Weathered houses' walls and roofs are drawn stained (see BatchPart.weathering)
+        String worn = house.shop == null && house.weathering > 0 ? WORN + house.weathering : "";
+        wallPart += worn;
+        String roofPart = "roof" + worn;
         HouseWall[] walls = extrudeWalls(batch.builder(wallPart), house, footprint, house.mainWallHeight, style.taper, smooth,
                 variant.tileWidth, variant.tileHeight);
 
         if (style.footprint == BuildingStyle.Footprint.BOX) {
                         float[] roofV = roofVertices.get(roofKey(house.nationId, house.form));
             int[] roofIdx = roofIndices.get(roofKey(house.nationId, house.form));
-            bake(batch.builder("roof"), roofV, roofIdx, house, house.width * style.taper + 2.0f * overhang, style.roofHeight * scale,
+            bake(batch.builder(roofPart), roofV, roofIdx, house, house.width * style.taper + 2.0f * overhang, style.roofHeight * scale,
                     house.depth * style.taper + 2.0f * overhang, 0, house.mainWallHeight, 0, style.roofTileSize);
         } else {
-            centredRoof(batch.builder("roof"), house, footprint, style, house.mainWallHeight, overhang, smooth);
+            centredRoof(batch.builder(roofPart), house, footprint, style, house.mainWallHeight, overhang, smooth);
         }
 
         // The door sits in the middle of the wall that faces the road
         HouseWall front = frontWall(walls);
         float doorHalfW = Math.min(style.doorWidth * scale, front.length * 0.7f) * 0.5f;
         float doorH = style.doorHeight * scale;
-        wallPanel(batch.builder("door"), house, front, 0.5f, house.doorBase + doorH * 0.5f, doorHalfW, doorH * 0.5f, DOOR_OFFSET);
+        house.doorCorners = wallPanel(batch.builder("door"), house, front, 0.5f, house.doorBase + doorH * 0.5f, doorHalfW, doorH * 0.5f, DOOR_OFFSET);
+        if (house.doorway != null) house.doorway.doorCorners = house.doorCorners;
+        if (house.drivewaySide != 0 && house.shop == null) bakeDriveway(batch, house);
+        if (house.grand || (house.shop != null && house.richness > 0.6f)) dressUp(batch, house, walls, scale);
 
         if (house.extensionSide != 0) {
             float centreX = house.extensionSide * (house.width + house.extensionWidth) * 0.5f;
@@ -1959,7 +2410,7 @@ public class InfrastructureManager {
                     centreX + house.extensionSide * 0.1f, centreZ);
                         HouseWall[] wingWalls = extrudeWalls(batch.builder(wallPart), house, wing, house.extensionWallHeight, 1.0f, false,
                     variant.tileWidth, variant.tileHeight);
-            bake(batch.builder("roof"), roofVertices.get(roofKey(house.nationId, house.form)), roofIndices.get(roofKey(house.nationId, house.form)), house,
+            bake(batch.builder(roofPart), roofVertices.get(roofKey(house.nationId, house.form)), roofIndices.get(roofKey(house.nationId, house.form)), house,
                     house.extensionWidth + 2.0f * extensionOverhang, style.roofHeight * scale * style.extensionHeightRatio,
                     house.extensionDepth + 2.0f * extensionOverhang, centreX, house.extensionWallHeight, centreZ, style.roofTileSize);
             HouseWall wingFront = frontWall(wingWalls);
@@ -1973,7 +2424,9 @@ public class InfrastructureManager {
         Random signs = new Random(house.seed ^ 0x51C4L);
         if (house.shop != null) shopFront(batch, house, style, front, objects);
         float urbanHere = settlementManager.getUrbanness(house.x, house.z);
-        if (house.shop != null ? signs.nextFloat() < 0.6f : urbanHere > 0.45f && signs.nextFloat() < 0.2f * urbanHere) {
+        // Posters: on most shops, and on plenty of houses, more in town and in nations keen on them
+        float keen = posterKeenness.getOrDefault(house.nationId, 0.6f);
+        if (house.shop != null ? signs.nextFloat() < 0.6f + 0.3f * keen : urbanHere > 0.02f && signs.nextFloat() < keen * (0.6f + 0.4f * urbanHere)) {
             wallPoster(house, walls, front, objects, signs);
         }
         // Now and then a flag flies from a short pole above the door, more often in town
@@ -1985,6 +2438,77 @@ public class InfrastructureManager {
 
         float roofTop = house.baseY + house.mainWallHeight + style.roofHeight * scale;
         batch.include(house.x, roofTop, house.z, Math.max(house.plotMaxX - house.plotMinX, house.plotMaxZ - house.plotMinZ));
+    }
+
+    // Marks a part drawn weathered: the part's name, this, then how badly (1 to 3)
+    private static final String WORN = "~worn";
+
+    /**
+     * A well-off house's finery, in the nation's dressing stone: a cornice running round
+     * under the roof, and a pillar either side of the door holding up a beam over it.
+     */
+    private void dressUp(NationBatch batch, House house, HouseWall[] walls, float scale) {
+        MeshBuilder stone = batch.builder("finery");
+        float out = 1.8f * scale, tall = 2.6f * scale;
+        for (HouseWall wall : walls) {
+            float[] n = wall.normal;
+            float y = wall.topA[1], yB = wall.topB[1];
+            float[][] local = {
+                    { wall.topA[0], y - tall, wall.topA[2] }, { wall.topB[0], yB - tall, wall.topB[2] },
+                    { wall.topB[0] + n[0] * out, yB - tall, wall.topB[2] + n[2] * out }, { wall.topA[0] + n[0] * out, y - tall, wall.topA[2] + n[2] * out },
+                    { wall.topA[0], y, wall.topA[2] }, { wall.topB[0], yB, wall.topB[2] },
+                    { wall.topB[0] + n[0] * out, yB, wall.topB[2] + n[2] * out }, { wall.topA[0] + n[0] * out, y, wall.topA[2] + n[2] * out } };
+            float[][] w = new float[8][];
+            for (int i = 0; i < 8; i++) {
+                float[] xz = localToWorld(house.x, house.z, house.rotationY, local[i][0], local[i][2]);
+                w[i] = new float[] { xz[0], house.baseY + local[i][1], xz[1] };
+            }
+            solidBox(stone, w);
+        }
+        float[][] c = house.doorCorners;
+        if (c == null) return;
+        float ax = c[1][0] - c[0][0], az = c[1][2] - c[0][2], width = (float) Math.hypot(ax, az);
+        if (width < 1e-3f) return;
+        ax /= width;
+        az /= width;
+        float[] door = localToWorld(house.x, house.z, house.rotationY, 0f, house.depth * 0.5f + 10f);
+        float nx = -az, nz = ax;
+        float midX = (c[0][0] + c[1][0]) * 0.5f, midZ = (c[0][2] + c[1][2]) * 0.5f;
+        if (nx * (door[0] - midX) + nz * (door[1] - midZ) < 0f) { nx = -nx; nz = -nz; }
+        float r = 1.4f * scale, top = c[3][1] + 3.5f * scale, bottom = house.baseY;
+        float[][] posts = { { c[0][0] - ax * (r + 1f), c[0][2] - az * (r + 1f) }, { c[1][0] + ax * (r + 1f), c[1][2] + az * (r + 1f) } };
+        for (float[] at : posts) {
+            float px = at[0] + nx * (r + 0.6f), pz = at[1] + nz * (r + 0.6f);
+            solidBox(stone, boxCorners(px, pz, ax, az, nx, nz, r, r, bottom, top));
+        }
+        // The beam across the tops
+        float bx = midX + nx * (r + 0.6f), bz = midZ + nz * (r + 0.6f);
+        solidBox(stone, boxCorners(bx, bz, ax, az, nx, nz, width * 0.5f + 2f * r + 1.5f, r * 1.1f, top, top + 2.2f * scale));
+    }
+
+    /** The eight corners of an upright box: bottom four then top four, in order round. */
+    private static float[][] boxCorners(float cx, float cz, float ax, float az, float nx, float nz, float halfAlong, float halfOut, float y0, float y1) {
+        float[][] corners = new float[8][];
+        float[][] round = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+        for (int i = 0; i < 4; i++) {
+            float x = cx + ax * halfAlong * round[i][0] + nx * halfOut * round[i][1];
+            float z = cz + az * halfAlong * round[i][0] + nz * halfOut * round[i][1];
+            corners[i] = new float[] { x, y0, z };
+            corners[i + 4] = new float[] { x, y1, z };
+        }
+        return corners;
+    }
+
+    /** A closed box from eight corners (bottom four then top four, in order round), faces lit outward. */
+    private static void solidBox(MeshBuilder builder, float[][] w) {
+        float[] centre = new float[3];
+        for (float[] p : w) for (int k = 0; k < 3; k++) centre[k] += p[k] / 8f;
+        builder.addConvexFace(centre, w[0], w[1], w[2], w[3]);
+        builder.addConvexFace(centre, w[4], w[5], w[6], w[7]);
+        for (int i = 0; i < 4; i++) {
+            int j = (i + 1) % 4;
+            builder.addConvexFace(centre, w[i], w[j], w[j + 4], w[i + 4]);
+        }
     }
 
     /** One flat face of a house's walls, from its bottom edge to its (possibly slanted) top edge, in house-local space. */
@@ -2096,34 +2620,43 @@ public class InfrastructureManager {
 
     /**
      * Builds the walls' faces, leaving a hole wherever a window was cut: the wall is split
-     * into horizontal bands at the windows' tops and bottoms, and each band into pieces
-     * either side of the windows crossing it.
+     * into horizontal bands at the windows' tops and bottoms, and every band is cut at the
+     * sides of every window (on any floor), the pieces inside a window left out. Cutting each
+     * band at the same places means neighbouring bands share their corners exactly: a long
+     * piece meeting several short ones along a floor line would leave a hairline crack there.
      */
     private void emitWalls(MeshBuilder builder, House house, HouseWall[] walls, float tileWidth, float tileHeight) {
         for (HouseWall wall : walls) {
             float height = wall.topA[1];
             java.util.TreeSet<Float> levels = new java.util.TreeSet<>();
+            java.util.TreeSet<Float> cuts = new java.util.TreeSet<>();
             levels.add(0f);
             levels.add(height);
+            cuts.add(0f);
+            cuts.add(1f);
             for (float[] o : wall.openings) {
                 levels.add(Math.max(0f, Math.min(height, o[2])));
                 levels.add(Math.max(0f, Math.min(height, o[3])));
+                cuts.add(Math.max(0f, Math.min(1f, o[0])));
+                cuts.add(Math.max(0f, Math.min(1f, o[1])));
             }
             Float[] ys = levels.toArray(new Float[0]);
+            Float[] ss = cuts.toArray(new Float[0]);
             for (int b = 0; b + 1 < ys.length; b++) {
                 float ya = ys[b], yb = ys[b + 1];
                 if (yb - ya < 1e-4f) continue;
-                List<float[]> holes = new ArrayList<>();
-                for (float[] o : wall.openings) {
-                    if (o[2] <= ya + 1e-4f && o[3] >= yb - 1e-4f) holes.add(o);
+                for (int c = 0; c + 1 < ss.length; c++) {
+                    float sa = ss[c], sb = ss[c + 1];
+                    if (sb - sa < 1e-4f) continue;
+                    boolean hole = false;
+                    for (float[] o : wall.openings) {
+                        if (o[2] <= ya + 1e-4f && o[3] >= yb - 1e-4f && o[0] <= sa + 1e-4f && o[1] >= sb - 1e-4f) {
+                            hole = true;
+                            break;
+                        }
+                    }
+                    if (!hole) wallPiece(builder, house, wall, sa, sb, ya, yb, tileWidth, tileHeight);
                 }
-                holes.sort((p, q) -> Float.compare(p[0], q[0]));
-                float s = 0f;
-                for (float[] hole : holes) {
-                    wallPiece(builder, house, wall, s, hole[0], ya, yb, tileWidth, tileHeight);
-                    s = Math.max(s, hole[1]);
-                }
-                wallPiece(builder, house, wall, s, 1f, ya, yb, tileWidth, tileHeight);
             }
         }
     }
@@ -2337,31 +2870,22 @@ public class InfrastructureManager {
         wall.openings.add(new float[] { s0, s1, y0, y1 });
 
         float[] n = wall.normal;
+        // Behind the opening, the household's drawn curtains, painted on a panel (see
+        // ArchitectureTextures.curtains), with the opening lined from the wall's face back to it
+        // all round, so nothing shows through round the curtains
+        int colour = (int) Math.floorMod(house.seed, (long) CURTAIN_COLOURS);
         float[] along = normalise(sub(wallPoint(wall, s1, y0), wallPoint(wall, s0, y0)));
         float[] up = { 0f, 1f, 0f };
-
-        // The lining of the opening, back to the panel behind it
         MeshBuilder reveal = batch.builder("frame");
-        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s0, y1, 0), inset(wall, s0, y1, WINDOW_DEPTH), inset(wall, s0, y0, WINDOW_DEPTH), along);
-        localQuad(reveal, house, inset(wall, s1, y0, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, WINDOW_DEPTH), inset(wall, s1, y0, WINDOW_DEPTH), scale3(along, -1));
-        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s1, y0, 0), inset(wall, s1, y0, WINDOW_DEPTH), inset(wall, s0, y0, WINDOW_DEPTH), up);
-        localQuad(reveal, house, inset(wall, s0, y1, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, WINDOW_DEPTH), inset(wall, s0, y1, WINDOW_DEPTH), scale3(up, -1));
-        // The dark room behind, closing the hole
-        localQuad(batch.builder("interior"), house, inset(wall, s0, y0, WINDOW_DEPTH), inset(wall, s1, y0, WINDOW_DEPTH),
-                inset(wall, s1, y1, WINDOW_DEPTH), inset(wall, s0, y1, WINDOW_DEPTH), n);
-
-        // Drawn curtains, two panels hanging in soft folds, meeting with a narrow gap
-        Random rand = new Random(house.seed ^ ((long) (s * 1000) * 31L) ^ (long) (centreY * 17));
-        int colour = (int) Math.floorMod(house.seed, (long) CURTAIN_COLOURS);
-        MeshBuilder cloth = batch.builder("curtain" + colour);
-        float gap = (0.01f + 0.03f * rand.nextFloat()) * (s1 - s0);
-        float sm = (s0 + s1) * 0.5f;
-        curtainPanel(cloth, house, wall, s0, sm - gap, y0 + 0.15f, y1 - 0.1f, along, rand);
-        curtainPanel(cloth, house, wall, sm + gap, s1, y0 + 0.15f, y1 - 0.1f, along, rand);
-
-        // The pane, set back a little from the wall
-        localQuad(batch.builder("glass"), house, inset(wall, s0, y0, GLASS_SETBACK), inset(wall, s1, y0, GLASS_SETBACK),
-                inset(wall, s1, y1, GLASS_SETBACK), inset(wall, s0, y1, GLASS_SETBACK), n);
+        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s0, y1, 0), inset(wall, s0, y1, CURTAIN_DEPTH), inset(wall, s0, y0, CURTAIN_DEPTH), along);
+        localQuad(reveal, house, inset(wall, s1, y0, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, CURTAIN_DEPTH), inset(wall, s1, y0, CURTAIN_DEPTH), scale3(along, -1));
+        localQuad(reveal, house, inset(wall, s0, y0, 0), inset(wall, s1, y0, 0), inset(wall, s1, y0, CURTAIN_DEPTH), inset(wall, s0, y0, CURTAIN_DEPTH), up);
+        localQuad(reveal, house, inset(wall, s0, y1, 0), inset(wall, s1, y1, 0), inset(wall, s1, y1, CURTAIN_DEPTH), inset(wall, s0, y1, CURTAIN_DEPTH), scale3(up, -1));
+        localQuad(batch.builder("blind" + colour), house, inset(wall, s0, y0, CURTAIN_DEPTH), inset(wall, s1, y0, CURTAIN_DEPTH),
+                inset(wall, s1, y1, CURTAIN_DEPTH), inset(wall, s0, y1, CURTAIN_DEPTH), n);
+        // (a tower's hundreds of upper windows have no frames: far too much to build)
+        float floorHeight = style.wallHeight * house.sizeScale / style.floors;
+        if (style.tower && centreY - house.doorBase > floorHeight * TOWER_DETAILED_FLOORS) return;
 
         // The frame: a flat surround just proud of the wall
         float f = style.frameSize;
@@ -2381,39 +2905,17 @@ public class InfrastructureManager {
         }
     }
 
-    // How deep the window is set into the wall, and how far back its glass sits
-    private static final float WINDOW_DEPTH = 1.8f, GLASS_SETBACK = 0.4f, CURTAIN_DEPTH = 1.35f;
+    // How many of a tower's lowest floors have framed windows
+    private static final int TOWER_DETAILED_FLOORS = 2;
+    // How deep a window's curtains are set back into the wall
+    private static final float CURTAIN_DEPTH = 1.0f;
+    // How far back a shop window's glass sits
+    private static final float GLASS_SETBACK = 0.4f;
     private static final int CURTAIN_COLOURS = 4;
 
     /** A point on the wall's face pushed straight in (or out, if depth is negative) from it. */
     private static float[] inset(HouseWall wall, float s, float y, float depth) {
         return sub(wallPoint(wall, s, y), scale3(wall.normal, depth));
-    }
-
-    /** One curtain: a sheet in vertical folds, a strip of quads whose depth ripples across it. */
-    private void curtainPanel(MeshBuilder builder, House house, HouseWall wall, float s0, float s1, float y0, float y1,
-                              float[] along, Random rand) {
-        if (s1 - s0 < 1e-3f) return;
-        float width = (s1 - s0) * wall.length;
-        int folds = Math.max(2, Math.round(width / 1.6f));
-        int steps = folds * 4;
-        float amplitude = 0.22f;
-        float phase = rand.nextFloat() * (float) Math.PI * 2;
-        int[] bottom = new int[steps + 1], top = new int[steps + 1];
-        for (int i = 0; i <= steps; i++) {
-            float t = i / (float) steps;
-            float angle = phase + t * folds * (float) Math.PI * 2;
-            float depth = CURTAIN_DEPTH + amplitude * (float) Math.sin(angle);
-            float slope = amplitude * (float) Math.cos(angle) * folds * (float) Math.PI * 2 / width;
-            float[] normal = normalise(add(wall.normal, scale3(along, slope)));
-            float s = s0 + (s1 - s0) * t;
-            bottom[i] = houseVertex(builder, house, inset(wall, s, y0, depth), normal, t, 0f);
-            top[i] = houseVertex(builder, house, inset(wall, s, y1, depth), normal, t, 1f);
-        }
-        for (int i = 0; i < steps; i++) {
-            addOutwardQuad(builder, house, bottom[i], bottom[i + 1], top[i + 1], top[i],
-                    inset(wall, s0, y0, 0f), inset(wall, s1, y0, 0f), inset(wall, s1, y1, 0f), wall.normal);
-        }
     }
 
     // ------------------------------------------------------------------ SHOPS
@@ -2436,14 +2938,14 @@ public class InfrastructureManager {
             float distance = (float) Math.sqrt(dx * dx + dz * dz);
             // Villages have a shop or two at their heart; cities a district a few streets across
             float size = Math.min(1f, town.radius / 1600f);
-            float core = town.radius * (0.35f + 0.3f * size);
-            float chance = (0.35f + 0.6f * size) * (float) Math.exp(-(distance / core) * (distance / core));
+            float core = town.radius * (0.55f + 0.45f * size);
+            float chance = (0.45f + 0.5f * size) * (float) Math.exp(-(distance / core) * (distance / core));
             if (rolls.get(house).nextFloat() < chance) makeShop(house, rolls.get(house));
         }
         // Shopping streets: next door to a shop, on the same road, is likely another
         Map<Integer, List<House>> byRoad = new HashMap<>();
         for (House house : houses) byRoad.computeIfAbsent(house.frontagePath, k -> new ArrayList<>()).add(house);
-        for (int pass = 0; pass < 3; pass++) {
+        for (int pass = 0; pass < 4; pass++) {
             List<House> joining = new ArrayList<>();
             for (List<House> road : byRoad.values()) {
                 for (House house : road) {
@@ -2451,7 +2953,7 @@ public class InfrastructureManager {
                     for (House other : road) {
                         if (other.shop == null) continue;
                         if (nextDoor(house, other)) {
-                            if (rolls.get(house).nextFloat() < 0.5f * settlementManager.getUrbanness(house.x, house.z) + 0.15f) joining.add(house);
+                            if (rolls.get(house).nextFloat() < 0.6f * settlementManager.getUrbanness(house.x, house.z) + 0.25f) joining.add(house);
                             break;
                         }
                     }
@@ -2489,13 +2991,56 @@ public class InfrastructureManager {
     /** A building with a front wide enough for a shop window either side of the door. */
     private boolean canBeShop(House house) {
         BuildingStyle style = styleOf(house);
+        // (towers are offices and flats, not shops)
+        if (style.tower) return false;
         return frontLength(style, house) >= style.doorWidth * house.sizeScale * 2.2f + 10f;
     }
 
     private void makeShop(House house, Random rand) {
         if (house.shop != null) return;
+        growShop(house);
         house.shop = new Shop(house, rand);
         shops.add(house.shop);
+        // Open to the street: no fence round a shop, and customers park in the road
+        house.fenced = false;
+        house.secure = false;
+        house.drivewaySide = 0;
+    }
+
+    /**
+     * A shop where people are well off is bigger: grown (taller too) as far as its plot allows,
+     * keeping some front garden and side and back yards.
+     */
+    private void growShop(House house) {
+        if (house.richness < 0.3f) return;
+        BuildingStyle style = styleOf(house);
+        float overhang = style.roofOverhang * house.sizeScale;
+        float span = house.houseMaxX() - house.houseMinX();
+        float side = Math.min(house.houseMinX() - house.plotMinX, house.plotMaxX - house.houseMaxX()) - overhang - 3f;
+        float front = house.setback - 8f;
+        float back = (-house.depth * 0.5f - overhang) - house.plotMinZ - 3f;
+        float grow = 1f + 0.6f * (house.richness - 0.3f);
+        grow = Math.min(grow, 1f + 2f * Math.max(0f, side) / span);
+        grow = Math.min(grow, 1f + 2f * Math.max(0f, Math.min(front, back)) / house.depth);
+        if (grow < 1.05f) return;
+        float[] before = { house.sizeScale, house.width, house.depth, house.extensionWidth, house.extensionDepth, house.setback };
+        house.sizeScale *= grow;
+        house.width *= grow;
+        house.depth *= grow;
+        house.extensionWidth *= grow;
+        house.extensionDepth *= grow;
+        house.setback -= (grow - 1f) * before[2] * 0.5f;
+        if (!settleOnGround(house, style)) {
+            house.sizeScale = before[0];
+            house.width = before[1];
+            house.depth = before[2];
+            house.extensionWidth = before[3];
+            house.extensionDepth = before[4];
+            house.setback = before[5];
+            settleOnGround(house, style);
+            return;
+        }
+        maxHouseReach = Math.max(maxHouseReach, Math.max(-house.houseMinX(), house.houseMaxX()) + house.depth * 0.5f);
     }
 
     /** How long the wall facing the road is. */
@@ -2525,6 +3070,45 @@ public class InfrastructureManager {
         float back = Float.parseFloat(System.getProperty("xenoguesser.shopdistance", "50"));
         float side = Float.parseFloat(System.getProperty("xenoguesser.shopside", "0"));
         return new float[] { door.kerbX + dx * back + door.roadDirX * side, door.kerbZ + dz * back + door.roadDirZ * side, -dx, -dz };
+    }
+
+    /**
+     * Developer aid: beside a raised stretch of road, on its lower side some way off,
+     * looking at its retaining wall, as {x, z, lookX, lookZ}; null if there's none.
+     */
+    public float[] raisedRoadViewpoint(Random rand) {
+        float[] best = null;
+        float bestDrop = 3f;
+        for (int attempt = 0; attempt < 4000 && !landSegments.isEmpty(); attempt++) {
+            RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
+            float mx = (segment.start.x + segment.end.x) * 0.5f, mz = (segment.start.z + segment.end.z) * 0.5f;
+            float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
+            float length = (float) Math.hypot(dx, dz);
+            if (length < 1f) continue;
+            float sideX = -dz / length, sideZ = dx / length, half = segment.width * 0.5f;
+            float deck = roadSurfaceY(mx, mz);
+            for (float sign = -1f; sign <= 1f; sign += 2f) {
+                float ex = mx + sideX * half * sign, ez = mz + sideZ * half * sign;
+                float drop = deck - TerrainMesh.getLayeredHeight(ex, ez, terrainNoise);
+                if (drop > bestDrop && drop < 12f) {
+                    bestDrop = drop;
+                    float out = 70f;
+                    best = new float[] { ex + sideX * sign * out, ez + sideZ * sign * out, -sideX * sign, -sideZ * sign };
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Developer aid: standing on a dirt track looking along it, as {x, z, lookX, lookZ}; null if there's none. */
+    public float[] trackViewpoint(Random rand) {
+        for (int attempt = 0; attempt < 20000 && !landSegments.isEmpty(); attempt++) {
+            RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
+            if (segment.roadClass != RoadPath.RoadClass.DIRT || segment.length < 1f) continue;
+            float dx = (segment.end.x - segment.start.x) / segment.length, dz = (segment.end.z - segment.start.z) / segment.length;
+            return new float[] { segment.start.x, segment.start.z, dx, dz };
+        }
+        return null;
     }
 
     /** The shop nearest a point within reach, preferring one in the same nation; null if none. */
@@ -2558,8 +3142,153 @@ public class InfrastructureManager {
         return name;
     }
 
+    /**
+     * A way on foot from one place to another by the shortest way along the roads, keeping
+     * to the side of the road as on a pavement: {x, z} points. Empty if there's none.
+     */
+    public List<float[]> walkingRoute(float ax, float az, float bx, float bz) {
+        List<float[]> way = routes().route(ax, az, bx, bz);
+        List<float[]> kept = new ArrayList<>(way.size());
+        for (int i = 0; i < way.size(); i++) {
+            float[] p = way.get(i);
+            if (i == 0 || i == way.size() - 1) {
+                kept.add(p);
+                continue;
+            }
+            float[] before = way.get(i - 1), after = way.get(i + 1);
+            float dx = after[0] - before[0], dz = after[1] - before[1];
+            float length = (float) Math.hypot(dx, dz);
+            if (length < 1e-3f) continue;
+            // On the pavement, just off the edge of the carriageway where the traffic runs
+            float aside = roadAtPoint(p[0], p[1])[0] + 1.3f;
+            kept.add(new float[] { p[0] - dz / length * aside, p[1] + dx / length * aside });
+        }
+        return kept;
+    }
+
+    /**
+     * The road at a point: {half its width, its rank (2 highway, 1 street, 0 lane or track),
+     * the nation it runs through, 1 if a dirt track}, from the nearest road; a lane's if none is near.
+     */
+    public float[] roadAtPoint(float x, float z) {
+        RoadSegment best = null;
+        float nearest = Float.MAX_VALUE;
+        for (RoadSegment segment : segmentsNear(x, z, MAX_ROAD_HALF_WIDTH + 20f)) {
+            float d = distanceSquaredToSegment(x, z, segment.start, segment.end);
+            if (d < nearest) { nearest = d; best = segment; }
+        }
+        if (best == null) return new float[] { RoadPath.RoadClass.LANE.width * 0.5f, 0f, 1f, 0f };
+        return new float[] { best.width * 0.5f, best.rank(), best.nationId, best.roadClass == RoadPath.RoadClass.DIRT ? 1f : 0f };
+    }
+
+    /** The shortest way along the roads between two points, along the roads' middles: {x, z} points. */
+    public List<float[]> drivingRoute(float ax, float az, float bx, float bz) {
+        return routes().route(ax, az, bx, bz);
+    }
+
+    /**
+     * Somewhere for a drive out: the middle of another settlement, between minDistance and
+     * maxDistance away, as {x, z}; null if there's none.
+     */
+    public float[] settlementBetween(float x, float z, float minDistance, float maxDistance, Random rand) {
+        List<SettlementManager.Settlement> all = settlementManager.getSettlements();
+        List<SettlementManager.Settlement> fit = new ArrayList<>();
+        for (SettlementManager.Settlement s : all) {
+            float d = (float) Planet.surfaceDistance(x, z, s.x, s.z);
+            if (d >= minDistance && d <= maxDistance) fit.add(s);
+        }
+        if (fit.isEmpty()) return null;
+        SettlementManager.Settlement pick = fit.get(rand.nextInt(fit.size()));
+        return new float[] { pick.x, pick.z };
+    }
+
+    /**
+     * A place to leave a vehicle width wide at the edge of the road nearest (x, z), on the side
+     * towards (towardsX, towardsZ): pulled right over, partly up on the verge on a narrow road,
+     * so it never stands in the way. Returns {x, z, along x, along z (the road's direction
+     * there), out x, out z (unit, towards the edge it's at), the road's half width, its
+     * nation}; null if that's at a junction (or no road is near).
+     */
+    public float[] kerbSpot(float x, float z, float towardsX, float towardsZ, float width) {
+        RoadSegment best = null;
+        float nearest = Float.MAX_VALUE;
+        for (RoadSegment segment : segmentsNear(x, z, MAX_ROAD_HALF_WIDTH + 30f)) {
+            if (segment.culDeSac) continue;
+            float d = distanceSquaredToSegment(x, z, segment.start, segment.end);
+            if (d < nearest) { nearest = d; best = segment; }
+        }
+        if (best == null) return null;
+        float[] centre = nearestOnSegment(x, z, best);
+        float ax = best.end.x - best.start.x, az = best.end.z - best.start.z, length = (float) Math.hypot(ax, az);
+        if (length < 1e-3f) return null;
+        ax /= length;
+        az /= length;
+        float nx = -az, nz = ax;
+        if (nx * (towardsX - centre[0]) + nz * (towardsZ - centre[1]) < 0f) { nx = -nx; nz = -nz; }
+        float half = best.width * 0.5f;
+        // Up on the verge a little where there's one, but inside the crash barrier where there's that
+        float out = best.railed || best.roadClass == RoadPath.RoadClass.HIGHWAY
+                ? Math.max(half * 0.32f, half - width * 0.5f - 2f)
+                : Math.max(half * 0.32f, half + 2.5f - width * 0.5f);
+        float px = centre[0] + nx * out, pz = centre[1] + nz * out;
+        // Not across the mouth of another road
+        for (RoadSegment other : segmentsNear(px, pz, MAX_ROAD_HALF_WIDTH + width + 10f)) {
+            if (other.pathIndex == best.pathIndex || other.culDeSac) continue;
+            float reach = other.width * 0.5f + width * 0.5f + 6f;
+            if (distanceSquaredToSegment(px, pz, other.start, other.end) < reach * reach) return null;
+        }
+        return new float[] { px, pz, ax, az, nx, nz, half, best.nationId };
+    }
+
+    /**
+     * A point on a road's middle between minDistance and maxDistance from (x, z), likelier on
+     * bigger roads (highways most of all, dirt tracks hardly ever), as {x, z}; null if none.
+     */
+    public float[] roadPointBetween(float x, float z, float minDistance, float maxDistance, Random rand) {
+        List<RoadSegment> fit = new ArrayList<>();
+        List<Float> weights = new ArrayList<>();
+        float total = 0f;
+        for (RoadSegment segment : segmentsNear(x, z, maxDistance)) {
+            if (segment.culDeSac) continue;
+            float mx = (segment.start.x + segment.end.x) * 0.5f, mz = (segment.start.z + segment.end.z) * 0.5f;
+            float d = (float) Math.hypot(mx - x, mz - z);
+            if (d < minDistance || d > maxDistance) continue;
+            float w = segment.roadClass == RoadPath.RoadClass.HIGHWAY ? 8f : segment.roadClass == RoadPath.RoadClass.STREET ? 2f
+                    : segment.roadClass == RoadPath.RoadClass.DIRT ? 0.2f : 1f;
+            fit.add(segment);
+            weights.add(w);
+            total += w;
+        }
+        if (fit.isEmpty()) return null;
+        float roll = rand.nextFloat() * total;
+        for (int i = 0; i < fit.size(); i++) {
+            roll -= weights.get(i);
+            if (roll <= 0f || i == fit.size() - 1) {
+                RoadSegment s = fit.get(i);
+                float t = rand.nextFloat();
+                return new float[] { s.start.x + (s.end.x - s.start.x) * t, s.start.z + (s.end.z - s.start.z) * t };
+            }
+        }
+        return null;
+    }
+
+    /** Which side of the road a nation drives on: 1 the right, -1 the left. */
+    public float drivingSide(int nationId) {
+        return nationRandom(71L, nationId).nextFloat() < 0.6f ? 1f : -1f;
+    }
+
+    /** The door of the shop nearest a point, within reach; null if there's none. */
+    public Doorway shopDoorNear(float x, float z, float reach, int nationId) {
+        Shop shop = nearestShop(x, z, reach, nationId);
+        return shop == null ? null : doorwayOf(shop.house);
+    }
+
     private synchronized RoadRoutes routes() {
-        if (routes == null) routes = new RoadRoutes(this);
+        if (routes == null) {
+            long start = System.currentTimeMillis();
+            routes = new RoadRoutes(this);
+            System.out.printf("[ROADS] Route graph ready in %d ms%n", System.currentTimeMillis() - start);
+        }
         return routes;
     }
 
@@ -2681,6 +3410,9 @@ public class InfrastructureManager {
      * Fills each level of a display window with goods: heaps of produce and rows of
      * packets, a few of each kind together, sized to the shelf they stand on.
      */
+    // The most goods set out along one shelf of a shop window
+    private static final int MOST_GOODS_PER_SHELF = 18;
+
     private void stockWindow(MeshBuilder goods, House house, HouseWall wall, float s0, float s1, float[] levels, float[] tops, Random rand) {
         int nation = house.nationId;
         boolean grocer = house.shop.grocer;
@@ -2698,7 +3430,9 @@ public class InfrastructureManager {
             int remaining = 0;
             boolean packet = false;
             int index = 0;
-            while (t < width - 0.5f) {
+            // (a very wide window, as in a big shop, has its goods only so far along each shelf)
+            int placed = 0;
+            while (t < width - 0.5f && placed++ < MOST_GOODS_PER_SHELF) {
                 if (remaining <= 0) {
                     packet = grocer ? rand.nextFloat() < 0.2f : rand.nextFloat() < 0.75f;
                     index = rand.nextInt(packet ? packets.size() : crops.size());
@@ -2784,48 +3518,81 @@ public class InfrastructureManager {
     }
 
     /**
-     * Now and then a poster pasted flat on a wall, often an advert for a shop nearby: on a
-     * stretch of wall clear of windows and doors.
+     * Now and then a poster pasted on a wall, often an advert for a shop nearby: on a
+     * stretch of wall clear of windows and doors, leaning with the wall if it leans and
+     * curving round it if it's round, and above the fence if the house has one, so the
+     * fence doesn't hide it.
      */
     private void wallPoster(House house, HouseWall[] walls, HouseWall front, List<InfrastructureObject> objects, Random rand) {
         float scale = 0.5f + rand.nextFloat() * 0.2f;
         float w = 30f * scale, h = 22f * scale;
+        // The middle of the footprint, for how round a curved wall is
+        float cx = 0f, cz = 0f;
+        for (HouseWall wall : walls) { cx += wall.bottomA[0]; cz += wall.bottomA[2]; }
+        cx /= walls.length;
+        cz /= walls.length;
+        FenceStyle fence = house.fenced ? fenceStyles.get(house.nationId) : null;
+        float fenceHeight = fence == null ? 0f : house.secure ? fence.securityHeight : fence.height;
         int start = rand.nextInt(walls.length);
         for (int k = 0; k < walls.length; k++) {
             HouseWall wall = walls[(start + k) % walls.length];
-            if (wall == front && house.shop == null) continue;
-            if (wall.length < w + 3f || wall.topA[1] < house.doorBase + h + 4f) continue;
+            boolean curved = wall.normalA != wall.normal;
+            float[] mid = mid(wall.bottomA, wall.bottomB);
+            float radius = curved ? (float) Math.hypot(mid[0] - cx, mid[2] - cz) : 0f;
+            // A round wall is one curve, made of short straight pieces: the poster may span several
+            if (curved ? radius * 2f * (float) Math.PI < w * 3f : wall.length < w + 3f) continue;
+            if (wall.topA[1] < house.doorBase + h + 4f) continue;
             float yc = house.doorBase + Math.min(wall.topA[1] - house.doorBase - h * 0.5f - 1.5f, h * 0.5f + 4f);
-            // Clear of the ground, wherever it rises against this wall
-            float[] foot = localToWorldPoint(house, wallPoint(wall, 0.5f, 0f));
-            float ground = Math.max(TerrainMesh.getLayeredHeight(foot[0], foot[2], terrainNoise),
-                    Math.max(TerrainMesh.getLayeredHeight(localToWorldPoint(house, wallPoint(wall, 0.5f - (w * 0.5f) / wall.length, 0f))[0],
-                            localToWorldPoint(house, wallPoint(wall, 0.5f - (w * 0.5f) / wall.length, 0f))[2], terrainNoise),
-                            TerrainMesh.getLayeredHeight(localToWorldPoint(house, wallPoint(wall, 0.5f + (w * 0.5f) / wall.length, 0f))[0],
-                                    localToWorldPoint(house, wallPoint(wall, 0.5f + (w * 0.5f) / wall.length, 0f))[2], terrainNoise)));
+            // Clear of the ground, wherever it rises against this wall, and of any fence
+            float halfAlong = curved ? 0f : (w * 0.5f) / wall.length;
+            float ground = -Float.MAX_VALUE;
+            for (float s = 0.5f - halfAlong; s <= 0.5f + halfAlong + 1e-4f; s += Math.max(1e-3f, halfAlong)) {
+                float[] foot = localToWorldPoint(house, wallPoint(wall, s, 0f));
+                ground = Math.max(ground, TerrainMesh.getLayeredHeight(foot[0], foot[2], terrainNoise));
+            }
             yc = Math.max(yc, ground + 3f - house.baseY + h * 0.5f);
+            if (fenceHeight > 0f) yc = Math.max(yc, ground - house.baseY + fenceHeight + 1.5f + h * 0.5f);
             if (yc + h * 0.5f > wall.topA[1] - 1f) continue;
-            float halfS = (w * 0.5f + 0.8f) / wall.length;
             boolean clear = true;
-            for (float[] o : wall.openings) {
-                if (o[1] > 0.5f - halfS && o[0] < 0.5f + halfS && o[3] > yc - h * 0.5f - 0.8f && o[2] < yc + h * 0.5f + 0.8f) {
-                    clear = false;
-                    break;
+            if (curved) {
+                // Every piece of the wall it covers, by angle round the middle
+                float facing = (float) Math.atan2(mid[2] - cz, mid[0] - cx);
+                float halfAngle = (w * 0.5f + 1f) / radius;
+                for (HouseWall other : walls) {
+                    float[] om = mid(other.bottomA, other.bottomB);
+                    float angle = (float) Math.atan2(om[2] - cz, om[0] - cx);
+                    float apart = Math.abs((float) Math.atan2(Math.sin(angle - facing), Math.cos(angle - facing)));
+                    if (apart > halfAngle + other.length * 0.5f / radius) continue;
+                    for (float[] o : other.openings) {
+                        if (o[3] > yc - h * 0.5f - 0.8f && o[2] < yc + h * 0.5f + 0.8f) clear = false;
+                    }
+                    if (other == front && yc - h * 0.5f < house.doorBase + styleOf(house).doorHeight * house.sizeScale + 1f) clear = false;
+                }
+            } else {
+                float halfS = (w * 0.5f + 0.8f) / wall.length;
+                for (float[] o : wall.openings) {
+                    if (o[1] > 0.5f - halfS && o[0] < 0.5f + halfS && o[3] > yc - h * 0.5f - 0.8f && o[2] < yc + h * 0.5f + 0.8f) {
+                        clear = false;
+                        break;
+                    }
+                }
+                if (wall == front) {
+                    // Beside the door, not over it
+                    float doorHalf = styleOf(house).doorWidth * house.sizeScale * 0.5f / wall.length;
+                    if (0.5f - halfS < 0.5f + doorHalf + 0.02f && 0.5f + halfS > 0.5f - doorHalf - 0.02f) clear = false;
                 }
             }
-            if (wall == front) {
-                // Beside a shop's door
-                float doorHalf = styleOf(house).doorWidth * house.sizeScale * 0.5f / wall.length;
-                if (0.5f - halfS < 0.5f + doorHalf + 0.02f && 0.5f + halfS > 0.5f - doorHalf - 0.02f) clear = false;
-            }
             if (!clear) continue;
+            // Pasted flat against the face, which may lean: the poster leans the same way
             float[] n = horizontal(wall.normal);
-            float[] at = add(wallPoint(wall, 0.5f, yc), scale3(n, 0.3f + standOff(wall, 0.5f, yc, h)));
+            float tilt = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, wall.normal[1]))));
+            float[] at = add(wallPoint(wall, 0.5f, yc), scale3(wall.normal, curved ? 0.45f : 0.3f));
             float[] world = localToWorldPoint(house, at);
             float[] worldNormal = localToWorld(0f, 0f, house.rotationY, n[0], n[2]);
             int maxGlyphs = Math.max(1, mainListener != null ? mainListener.getNationAtlasSize(house.nationId) : 10);
             InfrastructureObject poster = InfrastructureObject.createWallSign(new Vector3(world[0], world[1], world[2]), house.nationId,
-                    facingRotation(worldNormal[0], worldNormal[1]), w, h, false, false, randomText(rand, maxGlyphs, 40, 120));
+                    facingRotation(worldNormal[0], worldNormal[1]), w, h, false, false, randomText(rand, maxGlyphs, 40, 120),
+                    tilt, radius);
             decorateSign(poster, rand, maxGlyphs, true);
             objects.add(poster);
             return;
@@ -2940,7 +3707,7 @@ public class InfrastructureManager {
      * A flat rectangle lying on a (possibly slanted) wall: centred at fraction s along the
      * wall and at height centreY, following the wall's lean, and lifted off it by offset.
      */
-    private void wallPanel(MeshBuilder builder, House house, HouseWall wall, float s, float centreY,
+    private float[][] wallPanel(MeshBuilder builder, House house, HouseWall wall, float s, float centreY,
                            float halfW, float halfH, float offset) {
         float wallHeight = wall.topA[1];
         float[] along = normalise(sub(wall.bottomB, wall.bottomA));
@@ -2961,6 +3728,7 @@ public class InfrastructureManager {
                 (wall.bottomA[0] + wall.bottomB[0]) * 0.5f - wall.normal[0] * 5.0f,
                 (wall.bottomA[2] + wall.bottomB[2]) * 0.5f - wall.normal[2] * 5.0f);
         builder.addConvexFace(new float[] { inside[0], house.baseY + centreY, inside[1] }, corners);
+        return corners;
     }
 
     /** Adds a house-local point to a builder in world space, turning its normal with the house. */
@@ -3060,6 +3828,232 @@ public class InfrastructureManager {
         for (int i = 0; i + 2 < indices.length; i += 3) {
             builder.addTriangle(first + indices[i], first + indices[i + 1], first + indices[i + 2]);
         }
+    }
+
+    /**
+     * Poorer households' houses are weathered, streaked and stained, more so the poorer; the
+     * richest are dressed up with pillars round the door and a cornice under the roof.
+     */
+    private void decideLook(House house) {
+        Random rand = new Random(house.seed ^ 0x3EA7E2L);
+        float poor = Math.max(0f, Math.min(1f, (0.5f - house.richness) / 0.4f));
+        house.weathering = rand.nextFloat() < 0.2f + 0.8f * poor ? Math.min(3, Math.round(poor * (0.6f + 0.6f * rand.nextFloat()) * 3f)) : 0;
+        house.grand = house.richness > 0.5f && rand.nextFloat() < (house.richness - 0.5f) * 2.2f;
+    }
+
+    /**
+     * A nation's own random numbers for one purpose (salt). The seed is scrambled first: Java's
+     * Random gives almost the same first number for seeds that differ by a little, which would
+     * make every nation alike.
+     */
+    private Random nationRandom(long salt, int nationId) {
+        long h = worldSeed * 0x9E3779B97F4A7C15L + salt * 0xC2B2AE3D27D4EB4FL + nationId * 0x165667B19E3779F9L;
+        h ^= h >>> 31;
+        h *= 0xBF58476D1CE4E5B9L;
+        h ^= h >>> 29;
+        return new Random(h);
+    }
+
+    /**
+     * How well off a nation is, 0.1 to 0.9: the same for the whole world's life. Its towns are
+     * richer than its countryside (see areaRichness).
+     */
+    public float nationRichness(int nationId) {
+        return 0.1f + 0.8f * nationRandom(131L, nationId).nextFloat();
+    }
+
+    /**
+     * How well off the people at a point are: the nation's richness, more so in town, and far
+     * less near a fenced border (see borderBlight), on both sides of it.
+     */
+    // A city counts as big from this size to fully big at this (1 the planet's largest), and the
+    // biggest are this much richer than the nation's usual towns
+    private static final float BIG_CITY_FROM = 0.3f, BIG_CITY_TO = 0.75f, BIG_CITY_WEALTH = 0.8f;
+
+    public float areaRichness(int nationId, float urbanness, float x, float z) {
+        RoadNetworkBuilder islands = islandWealth;
+        float island = islands == null ? Float.NaN : islands.islandRichnessAt(x, z);
+        float base = Float.isNaN(island) ? nationRichness(nationId) : island;
+        // (big cities draw the money: the bigger the city, the richer its people)
+        float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, settlementManager.getCitySize(x, z));
+        return Math.min(1f, base * (0.55f + 0.9f * urbanness) * (1f + BIG_CITY_WEALTH * big)) * (1f - BORDER_POVERTY * borderBlight(x, z));
+    }
+
+    // How much of their wealth people right on a fenced border have lost, and how far (in
+    // nation-map cells, each a few hundred metres) the loss reaches either side
+    private static final float BORDER_POVERTY = 0.75f, BORDER_POVERTY_REACH = 5f;
+
+    /** 1 right on a fenced border between nations at odds, fading to 0 BORDER_POVERTY_REACH cells away. */
+    public float borderBlight(float x, float z) {
+        float gap = borderGapAt(x, z);
+        if (gap >= BORDER_POVERTY_REACH) return 0f;
+        float t = 1f - gap / BORDER_POVERTY_REACH;
+        return t * t * (3f - 2f * t);
+    }
+
+    /** The distance to the nearest fenced border, in nation-map cells, blended between cells. */
+    private float borderGapAt(float x, float z) {
+        int res = nationManager.nationMap.length;
+        float width = Planet.width(), cell = width / res;
+        float gx = (x + width * 0.5f) / cell - 0.5f, gz = (z + width * 0.5f) / cell - 0.5f;
+        int x0 = (int) Math.floor(gx), z0 = (int) Math.floor(gz);
+        float fx = gx - x0, fz = gz - z0;
+        float sum = 0f;
+        for (int k = 0; k < 4; k++) {
+            int dx = k & 1, dz = k >> 1;
+            int i = Math.floorMod(x0 + dx, res), j = Math.max(0, Math.min(res - 1, z0 + dz));
+            sum += borderGap[j * res + i] * (dx == 0 ? 1f - fx : fx) * (dz == 0 ? 1f - fz : fz);
+        }
+        return sum;
+    }
+
+    /**
+     * How far each cell of the nation map is from a border between nations at odds, in cells
+     * (0 on such a border, counted out to a little past where it matters).
+     */
+    private float[] hostileBorderDistance() {
+        int[][] map = nationManager.nationMap;
+        int res = map.length;
+        float[] gap = new float[res * res];
+        java.util.Arrays.fill(gap, Float.MAX_VALUE);
+        java.util.ArrayDeque<int[]> queue = new java.util.ArrayDeque<>();
+        for (int x = 0; x < res; x++) {
+            for (int z = 0; z < res; z++) {
+                int id = map[x][z];
+                boolean edge = kinship.hostile(id, map[(x + 1) % res][z]) || kinship.hostile(id, map[Math.floorMod(x - 1, res)][z])
+                        || (z + 1 < res && kinship.hostile(id, map[x][z + 1])) || (z > 0 && kinship.hostile(id, map[x][z - 1]));
+                if (edge) {
+                    gap[z * res + x] = 0f;
+                    queue.add(new int[] { x, z });
+                }
+            }
+        }
+        // Out from the borders, a step at a time (diagonals the longer way)
+        while (!queue.isEmpty()) {
+            int[] c = queue.poll();
+            float here = gap[c[1] * res + c[0]];
+            if (here > BORDER_POVERTY_REACH + 2f) continue;
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nz = c[1] + dz;
+                    if ((dx == 0 && dz == 0) || nz < 0 || nz >= res) continue;
+                    int nx = Math.floorMod(c[0] + dx, res);
+                    float step = dx != 0 && dz != 0 ? 1.41421f : 1f;
+                    if (here + step < gap[nz * res + nx]) {
+                        gap[nz * res + nx] = here + step;
+                        queue.add(new int[] { nx, nz });
+                    }
+                }
+            }
+        }
+        for (int i = 0; i < gap.length; i++) gap[i] = Math.min(gap[i], BORDER_POVERTY_REACH + 3f);
+        return gap;
+    }
+
+    /**
+     * Whether the house has a driveway down one side for a car, the likelier the richer the
+     * area; the plot is widened to take it. It goes on the side away from any extension.
+     */
+    private void decideDriveway(House house, float overhang) {
+        house.drivewaySide = 0;
+        Random rand = new Random(house.seed ^ 0xD71E3AL);
+        float urbanness = settlementManager.getUrbanness(house.x, house.z);
+        if (rand.nextFloat() >= 0.85f * areaRichness(house.nationId, urbanness, house.x, house.z)) return;
+        int side = house.extensionSide != 0 ? -house.extensionSide : (rand.nextBoolean() ? 1 : -1);
+        house.drivewaySide = side;
+        if (side > 0) {
+            house.driveMinX = house.houseMaxX() + overhang + 1f;
+            house.driveMaxX = house.driveMinX + DRIVEWAY_WIDTH;
+            house.plotMaxX = Math.max(house.plotMaxX, house.driveMaxX + 3f);
+        } else {
+            house.driveMaxX = house.houseMinX() - overhang - 1f;
+            house.driveMinX = house.driveMaxX - DRIVEWAY_WIDTH;
+            house.plotMinX = Math.min(house.plotMinX, house.driveMinX - 3f);
+        }
+    }
+
+    /**
+     * The driveway's surface: paving laid over the ground from the road's edge back to the
+     * back of the house, and noted so grass doesn't grow through it.
+     */
+    private void bakeDriveway(NationBatch batch, House house) {
+        MeshBuilder paving = batch.builder("driveway");
+        float cx = (house.driveMinX + house.driveMaxX) * 0.5f;
+        float frontZ = followKerb(house, cx)[1] + FRONT_FENCE_GAP;
+        float backZ = -house.depth * 0.5f;
+        int along = Math.max(2, Math.round((frontZ - backZ) / 4f)), across = Math.max(2, Math.round(DRIVEWAY_WIDTH / 4f));
+        int first = -1;
+        for (int i = 0; i <= along; i++) {
+            float lz = backZ + (frontZ - backZ) * i / along;
+            for (int j = 0; j <= across; j++) {
+                float lx = house.driveMinX + (house.driveMaxX - house.driveMinX) * j / across;
+                float[] w = localToWorld(house.x, house.z, house.rotationY, lx, lz);
+                float y = TerrainMesh.getLayeredHeight(w[0], w[1], terrainNoise);
+                float nx = (TerrainMesh.getLayeredHeight(w[0] - 1f, w[1], terrainNoise) - TerrainMesh.getLayeredHeight(w[0] + 1f, w[1], terrainNoise)) * 0.5f;
+                float nz = (TerrainMesh.getLayeredHeight(w[0], w[1] - 1f, terrainNoise) - TerrainMesh.getLayeredHeight(w[0], w[1] + 1f, terrainNoise)) * 0.5f;
+                float length = (float) Math.sqrt(nx * nx + 1f + nz * nz);
+                int index = paving.addVertex(w[0], y + DRIVEWAY_LIFT, w[1], nx / length, 1f / length, nz / length, lx / 12f, lz / 12f);
+                if (first < 0) first = index;
+                batch.include(w[0], y, w[1], 0f);
+            }
+        }
+        int row = across + 1;
+        for (int i = 0; i < along; i++) {
+            for (int j = 0; j < across; j++) {
+                int a = first + i * row + j, b = a + 1, c = a + row, d = c + 1;
+                // Wound to face up (turning the house keeps it so)
+                paving.addTriangle(a, c, b);
+                paving.addTriangle(b, c, d);
+            }
+        }
+    }
+
+    /** Notes where a driveway is (its corners, by the chunks it touches), so grass keeps off it. */
+    private void noteDriveway(House house) {
+        float cx = (house.driveMinX + house.driveMaxX) * 0.5f;
+        float frontZ = followKerb(house, cx)[1] + FRONT_FENCE_GAP;
+        float backZ = -house.depth * 0.5f;
+        float[][] corners = {
+                localToWorld(house.x, house.z, house.rotationY, house.driveMinX, backZ),
+                localToWorld(house.x, house.z, house.rotationY, house.driveMaxX, backZ),
+                localToWorld(house.x, house.z, house.rotationY, house.driveMaxX, frontZ),
+                localToWorld(house.x, house.z, house.rotationY, house.driveMinX, frontZ) };
+        float[] quad = { corners[0][0], corners[0][1], corners[1][0], corners[1][1], corners[2][0], corners[2][1], corners[3][0], corners[3][1] };
+        float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+        for (float[] c : corners) {
+            minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]);
+            minZ = Math.min(minZ, c[1]); maxZ = Math.max(maxZ, c[1]);
+        }
+        for (int chunkZ = chunkIndex(minZ); chunkZ <= chunkIndex(maxZ); chunkZ++) {
+            for (int chunkX = chunkIndex(minX); chunkX <= chunkIndex(maxX); chunkX++) {
+                drivewaysByChunk.compute(chunkKey(chunkX, chunkZ), (k, list) -> {
+                    List<float[]> copy = list == null ? new ArrayList<>() : new ArrayList<>(list);
+                    copy.add(quad);
+                    return copy;
+                });
+            }
+        }
+    }
+
+    // The driveways' outlines (four corners, x z pairs, in order round), by road chunk
+    private final Map<Long, List<float[]>> drivewaysByChunk = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Whether a point is on a driveway. */
+    private boolean onDriveway(float x, float z) {
+        List<float[]> quads = drivewaysByChunk.get(chunkKey(chunkIndex(x), chunkIndex(z)));
+        if (quads == null) return false;
+        for (float[] q : quads) {
+            boolean inside = true;
+            float sign = 0f;
+            for (int i = 0; i < 4 && inside; i++) {
+                float ax = q[i * 2], az = q[i * 2 + 1], bx = q[(i * 2 + 2) % 8], bz = q[(i * 2 + 3) % 8];
+                float cross = (bx - ax) * (z - az) - (bz - az) * (x - ax);
+                if (sign == 0f) sign = Math.signum(cross);
+                else if (cross * sign < 0f) inside = false;
+            }
+            if (inside) return true;
+        }
+        return false;
     }
 
     /**
@@ -3168,8 +4162,14 @@ public class InfrastructureManager {
         }
         float[] frontRight = front.get(0), frontLeft = front.get(front.size() - 1);
         List<float[]> run = new ArrayList<>();
+        // The gate in front of the door, widened to take in the driveway if there is one
+        float gapMin = -GATE_HALF_WIDTH, gapMax = GATE_HALF_WIDTH;
+        if (house.drivewaySide != 0) {
+            gapMin = Math.min(gapMin, house.driveMinX - 1f);
+            gapMax = Math.max(gapMax, house.driveMaxX + 1f);
+        }
         for (float[] point : front) {
-            if (Math.abs(point[0]) < GATE_HALF_WIDTH) {
+            if (point[0] > gapMin && point[0] < gapMax) {
                 fenceLine(batch, builder, house, style, run);
                 run = new ArrayList<>();
                 continue;
@@ -3252,8 +4252,8 @@ public class InfrastructureManager {
         for (int i = 0; i + 1 < localPoints.size(); i++) {
             float[] a = localToWorld(house.x, house.z, house.rotationY, localPoints.get(i)[0], localPoints.get(i)[1]);
             float[] b = localToWorld(house.x, house.z, house.rotationY, localPoints.get(i + 1)[0], localPoints.get(i + 1)[1]);
+            // (solid only where it's actually built: see fenceRun)
             fenceRun(batch, builder, style, house.secure, a[0], a[1], b[0], b[1]);
-            recordSegment(a[0], a[1], b[0], b[1], house.secure ? 0.8f : 0.4f, house.secure ? style.securityHeight : style.height);
         }
     }
 
@@ -3286,6 +4286,7 @@ public class InfrastructureManager {
             if (isRoadLocation((a[0] + b[0]) * 0.5f, (a[2] + b[2]) * 0.5f, 1.0f)) {
                 continue;
             }
+            recordSegment(a[0], a[2], b[0], b[2], secure ? 0.8f : 0.4f, h);
             if (secure) {
                 switch (style.securityType) {
                     case HIGH_WALL -> {
@@ -3340,6 +4341,532 @@ public class InfrastructureManager {
         float[] last = points[pieces];
         if (posts && !isRoadLocation(last[0], last[2], 1.0f)) {
             addBox(builder, last[0], last[1] - 1.0f, last[2], dirX, dirZ, 0.6f, 0.6f, h + 1.5f);
+        }
+    }
+
+    // ==========================================
+    //          FENCED BORDERS
+    // ==========================================
+
+    // Where a tarmac road goes through a fenced border: {x, z (on the border, mid-road), the
+    // road's direction x, z, its half width, the booth's x, z, the way its guard faces x, z,
+    // the booth's nation}, and those near each chunk
+    private final List<float[]> borderChecks = new ArrayList<>();
+    private final Map<Long, List<Integer>> borderChecksByChunk = new HashMap<>();
+    // How far back from the border the booth stands, how far out from the road's edge, and
+    // how close a vehicle comes before it stops to be checked
+    private static final float BOOTH_BACK = 14f, BOOTH_OUT = 14f;
+    // A booth's part: its wall variant's material, drawn from both sides
+    private static final String BOOTH_PART = "booth_variant";
+    // The booth's half width, wall and roof heights; and how far round its middle the border
+    // fence is pushed back to leave it room
+    private static final float BOOTH_HALF = 10f, BOOTH_WALL = 13f, BOOTH_ROOF = 34f, BOOTH_ROOM = 19f;
+
+    // How far either side of a border crossing the road is made straight
+    private static final float STRAIGHT_REACH = 75f;
+
+    /**
+     * Where a tarmac road crosses a border that gets a check or traffic lights, the road runs
+     * dead straight for a way either side (along the way it was heading there), so the booths,
+     * lights and markings all line up with it and nothing stands in the road.
+     */
+    private void straightenCrossings() {
+        for (RoadPath path : roadNetwork) {
+            if (path.roadClass == RoadPath.RoadClass.DIRT) continue;
+            List<Vector3> pts = path.points;
+            for (int i = 0; i + 1 < pts.size(); i++) {
+                Vector3 a = pts.get(i), b = pts.get(i + 1);
+                int na = nationAt(a.x, a.z), nb = nationAt(b.x, b.z);
+                if (na == nb || na < 1 || nb < 1) continue;
+                if (!kinship.hostile(na, nb) && drivingSide(na) == drivingSide(nb)) continue;
+                float[] p = borderCrossing(new float[] { a.x, a.z }, new float[] { b.x, b.z }, na);
+                // Its heading there, from a little way either side
+                Vector3 before = pts.get(Math.max(0, i - 1)), after = pts.get(Math.min(pts.size() - 1, i + 2));
+                float dx = after.x - before.x, dz = after.z - before.z, len = (float) Math.hypot(dx, dz);
+                if (len < 1e-3f) continue;
+                dx /= len;
+                dz /= len;
+                // The points within reach either side go; a straight run takes their place
+                int first = i, last = i + 1;
+                while (first > 0 && Math.hypot(pts.get(first).x - p[0], pts.get(first).z - p[1]) < STRAIGHT_REACH) first--;
+                while (last < pts.size() - 1 && Math.hypot(pts.get(last).x - p[0], pts.get(last).z - p[1]) < STRAIGHT_REACH) last++;
+                List<Vector3> run = new ArrayList<>();
+                for (float t = -STRAIGHT_REACH; t <= STRAIGHT_REACH + 0.01f; t += 15f) {
+                    float x = p[0] + dx * t, z = p[1] + dz * t;
+                    run.add(new Vector3(x, TerrainMesh.getLayeredHeight(x, z, terrainNoise), z));
+                }
+                // (the run goes the path's own way)
+                List<Vector3> keepHead = new ArrayList<>(pts.subList(0, first + 1));
+                List<Vector3> keepTail = new ArrayList<>(pts.subList(last, pts.size()));
+                boolean forward = (b.x - a.x) * dx + (b.z - a.z) * dz >= 0f;
+                if (!forward) java.util.Collections.reverse(run);
+                pts.clear();
+                pts.addAll(keepHead);
+                pts.addAll(run);
+                pts.addAll(keepTail);
+                i = keepHead.size() + run.size() - 1;
+            }
+        }
+    }
+
+    /** Finds every place a tarmac road crosses a fenced border, and where its booth stands. */
+    private void findBorderChecks() {
+        for (RoadPath path : roadNetwork) {
+            if (path.roadClass == RoadPath.RoadClass.DIRT) continue;
+            for (int i = 0; i + 1 < path.points.size(); i++) {
+                Vector3 a = path.points.get(i), b = path.points.get(i + 1);
+                int na = nationAt(a.x, a.z), nb = nationAt(b.x, b.z);
+                // Fenced borders get a check; open ones (alike cultures) only if the two drive on
+                // different sides of the road, for the traffic lights
+                if (na == nb || na < 1 || nb < 1) continue;
+                boolean fenced = kinship.hostile(na, nb);
+                if (!fenced && drivingSide(na) == drivingSide(nb)) continue;
+                float[] p = borderCrossing(new float[] { a.x, a.z }, new float[] { b.x, b.z }, na);
+                boolean near = false;
+                for (float[] other : borderChecks) near |= Math.hypot(other[0] - p[0], other[1] - p[1]) < 40f;
+                if (near) continue;
+                float dx = b.x - a.x, dz = b.z - a.z, len = (float) Math.max(1e-3, Math.hypot(dx, dz));
+                dx /= len;
+                dz /= len;
+                float half = path.roadClass.width * 0.5f;
+                float px = -dz, pz = dx;
+                // Where the two sides drive on different sides of the road, a crossover: traffic
+                // lights at each end, taking turns, and (at a fenced border) a booth at each end
+                float lights = drivingSide(na) != drivingSide(nb) ? 1f : 0f;
+                // On the near side of the border (at a crossover, its near end), beside the road,
+                // its guard looking out over it
+                float back = lights > 0f ? CROSS_HALF : BOOTH_BACK;
+                float bx = p[0] - dx * back + px * (half + BOOTH_OUT), bz = p[1] - dz * back + pz * (half + BOOTH_OUT);
+                if (fenced) {
+                    booths.add(new float[] { bx, bz, -px, -pz, na, dx, dz });
+                    if (lights > 0f) {
+                        // and the far end's, across the road, for the far side's guard
+                        booths.add(new float[] { p[0] + dx * back - px * (half + BOOTH_OUT), p[1] + dz * back - pz * (half + BOOTH_OUT), px, pz, nb, dx, dz });
+                    }
+                }
+                // (c[12]: 1 for a fenced border with its booth and checks, 0 for an open one)
+                borderChecks.add(new float[] { p[0], p[1], dx, dz, half, bx, bz, -px, -pz, na, nb, lights, fenced ? 1f : 0f });
+                int index = borderChecks.size() - 1;
+                borderChecksByChunk.computeIfAbsent(chunkKeyAt(p[0], p[1]), k -> new ArrayList<>()).add(index);
+            }
+        }
+        int lit = 0;
+        for (float[] c : borderChecks) if (c[11] > 0f) lit++;
+        System.out.printf("[BORDERS] %d border checks on the roads, %d with traffic lights%n", borderChecks.size(), lit);
+    }
+
+    // The booths at border checks: {x, z, the way the guard faces x, z, nation, the road's way x, z}
+    private final List<float[]> booths = new ArrayList<>();
+    // How far either side of the border a crossover's ends (its lights and booths) are
+    private static final float CROSS_HALF = 45f;
+
+    // Traffic lights at a crossing: how long each side's traffic has to cross, and the pause
+    // between (both lights off) while the last across clear the crossing; how far back from the
+    // border each side's cars wait at a red light; how far from a crossing the guard rails stop
+    private static final float LIGHT_GO = 14f, LIGHT_CLEAR = 7f, LIGHT_STOP_BACK = CROSS_HALF, RAIL_CLEAR_OF_BORDER = CROSS_HALF + 30f;
+
+    /**
+     * Whose turn it is to cross at border check i: 1 the traffic coming from the booth's side,
+     * 2 that from the other side, 0 neither (the pause between); always 3 (anyone) where there
+     * are no lights.
+     */
+    public int borderTurn(int i) {
+        float[] c = borderChecks.get(i);
+        if (c[11] <= 0f) return 3;
+        float cycle = 2f * (LIGHT_GO + LIGHT_CLEAR);
+        // (each crossing a little out of step with the others)
+        double t = (System.currentTimeMillis() / 1000.0 + i * 7.3) % cycle;
+        if (t < LIGHT_GO) return 1;
+        if (t < LIGHT_GO + LIGHT_CLEAR) return 0;
+        if (t < 2f * LIGHT_GO + LIGHT_CLEAR) return 2;
+        return 0;
+    }
+
+    /**
+     * How far ahead the line is where a vehicle at (x, z) heading (dirX, dirZ) must wait at a
+     * border's traffic light that isn't its turn; NaN if it may go on (or there's none ahead).
+     */
+    public float borderHoldAhead(float x, float z, float dirX, float dirZ, float reach) {
+        int cx = chunkIndex(x), cz = chunkIndex(z);
+        float nearest = Float.NaN;
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                List<Integer> near = borderChecksByChunk.get(chunkKey(cx + dx, cz + dz));
+                if (near == null) continue;
+                for (int i : near) {
+                    float[] c = borderChecks.get(i);
+                    if (c[11] <= 0f) continue;
+                    float with = dirX * c[2] + dirZ * c[3];
+                    if (Math.abs(with) < 0.3f) continue;
+                    // Coming from the booth's side (with the road's way) or from the other
+                    int side = with > 0f ? 1 : 2;
+                    if (borderTurn(i) == side) continue;
+                    float back = with > 0f ? -LIGHT_STOP_BACK : LIGHT_STOP_BACK;
+                    float lx = c[0] + c[2] * back - x, lz = c[1] + c[3] * back - z;
+                    float ahead = lx * dirX + lz * dirZ;
+                    float off = Math.abs(lx * c[3] - lz * c[2]);
+                    if (ahead < -1.5f || ahead > reach || off > c[4] + 6f) continue;
+                    if (Float.isNaN(nearest) || ahead < nearest) nearest = ahead;
+                }
+            }
+        }
+        return nearest;
+    }
+
+    // Each world's two traffic light colours (one for each side's turn), and how they're arranged
+    private float[][] lightColours;
+
+    /**
+     * The traffic lights at the crossings: {x, z (the pole's foot), the way the road runs x, z,
+     * whether the lamps are one above the other (1) or side by side (0), the crossing's number,
+     * colour A rgb (the booth's side's turn), colour B rgb}.
+     */
+    public List<float[]> borderLights() {
+        if (lightColours == null) {
+            Random rand = new Random(worldSeed * 211L + 5L);
+            float hue = rand.nextFloat();
+            lightColours = new float[][] { WorldPalette.hsv(hue, 0.85f, 1f), WorldPalette.hsv(hue + 0.3f + rand.nextFloat() * 0.4f, 0.85f, 1f) };
+        }
+        List<float[]> lights = new ArrayList<>();
+        for (int i = 0; i < borderChecks.size(); i++) {
+            float[] c = borderChecks.get(i);
+            if (c[11] <= 0f) continue;
+            // One at each end of the crossover, across the road from that end's booth
+            float px = -c[3], pz = c[2];
+            float vertical = new Random(worldSeed * 7L + i).nextBoolean() ? 1f : 0f;
+            float[] a = lightColours[0], b = lightColours[1];
+            for (float end = -1f; end <= 1f; end += 2f) {
+                float x = c[0] + c[2] * CROSS_HALF * end + px * end * (c[4] + 5f), z = c[1] + c[3] * CROSS_HALF * end + pz * end * (c[4] + 5f);
+                lights.add(new float[] { x, z, c[2], c[3], vertical, i, a[0], a[1], a[2], b[0], b[1], b[2] });
+            }
+        }
+        return lights;
+    }
+
+    /** The border checks' booths: {x, z, the way their guard faces x, z, nation}. */
+    public List<float[]> borderBooths() {
+        List<float[]> booths = new ArrayList<>();
+        for (float[] b : this.booths) booths.add(new float[] { b[0], b[1], b[2], b[3], b[4] });
+        return booths;
+    }
+
+    /**
+     * The next border check on the road ahead of a vehicle at (x, z) heading (dirX, dirZ), as
+     * {its number, how far ahead the place to stop beside its booth is}; null if none within
+     * reach. Vehicles from either way stop level with the booth.
+     */
+    public float[] borderStopAhead(float x, float z, float dirX, float dirZ, float reach) {
+        int cx = chunkIndex(x), cz = chunkIndex(z);
+        float[] best = null;
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                List<Integer> near = borderChecksByChunk.get(chunkKey(cx + dx, cz + dz));
+                if (near == null) continue;
+                for (int i : near) {
+                    float[] c = borderChecks.get(i);
+                    if (c[12] <= 0f) continue;   // (an open border: no check)
+                    // Level with the booth, on the road's middle line: at a crossover, the booth at
+                    // the end the vehicle comes in by
+                    float with = dirX * c[2] + dirZ * c[3];
+                    float back = c[11] > 0f ? (with >= 0f ? -CROSS_HALF : CROSS_HALF) : -BOOTH_BACK;
+                    float sx = c[0] + c[2] * back, sz = c[1] + c[3] * back;
+                    float ox = sx - x, oz = sz - z;
+                    float ahead = ox * dirX + oz * dirZ;
+                    // (how far off the road's line it is: within the road)
+                    float off = Math.abs(ox * c[3] - oz * c[2]);
+                    float alongRoad = Math.abs(ox * c[2] + oz * c[3]);
+                    if (ahead < -2f || ahead > reach || off > c[4] + 6f || alongRoad > reach) continue;
+                    if (best == null || ahead < best[1]) best = new float[] { i, ahead };
+                }
+            }
+        }
+        return best;
+    }
+
+    /** Where the border fence must keep clear of a booth: pushed out round its middle. */
+    private float[] clearOfBooths(float[] p) {
+        for (float[] c : booths) {
+            float dx = p[0] - c[0], dz = p[1] - c[1];
+            float d = (float) Math.hypot(dx, dz);
+            if (d >= BOOTH_ROOM) continue;
+            if (d < 1e-3f) { dx = c[5]; dz = c[6]; d = 1f; }
+            return new float[] { c[0] + dx / d * BOOTH_ROOM, c[1] + dz / d * BOOTH_ROOM };
+        }
+        return p;
+    }
+
+    /** Which border check a point on the road is within reach of, by its number, or -1. */
+    public int borderCheckAt(float x, float z, float reach) {
+        int cx = chunkIndex(x), cz = chunkIndex(z);
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                List<Integer> near = borderChecksByChunk.get(chunkKey(cx + dx, cz + dz));
+                if (near == null) continue;
+                for (int i : near) {
+                    float[] c = borderChecks.get(i);
+                    if (Math.hypot(c[0] - x, c[1] - z) < reach) return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The booths of any border checks in this chunk: a small concrete box beside the road,
+     * waist high, with a pillar at each corner holding up a flat roof (its guard stands in it:
+     * see Inhabitants).
+     */
+    private void borderBooths(Map<Integer, NationBatch> batches, int cx, int cz) {
+        for (float[] c : booths) {
+            float x = c[0], z = c[1];
+            if (chunkIndex(x) != cx || chunkIndex(z) != cz) continue;
+            NationBatch batch = batches.computeIfAbsent((int) c[4], NationBatch::new);
+            // Built of the plain local material (the nation's walls there), seen from inside and out
+            int variant = chooseWallVariant(x, z, (int) c[4], (long) (x * 31f) ^ (long) (z * 17f));
+            MeshBuilder concrete = batch.builder(BOOTH_PART + variant);
+            concrete.setPlanarTextureScale(1.0f / wallVariants.get(variant).tileWidth);
+            float ground = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+            float along = c[5], across = c[6];
+            float half = BOOTH_HALF, wall = BOOTH_WALL, roof = BOOTH_ROOF;
+            // Four thin walls round its floor, chest high to the guard standing inside
+            float thick = 0.8f, sx = -across, sz = along;
+            for (float sign = -1f; sign <= 1f; sign += 2f) {
+                float o = sign * (half - thick);
+                // (front and back, running sideways; then the sides, running along)
+                addBox(concrete, x + along * o, ground - 2f, z + across * o, sx, sz, half, thick, wall + 2f);
+                addBox(concrete, x + sx * o, ground - 2f, z + sz * o, along, across, half, thick, wall + 2f);
+            }
+            for (int k = 0; k < 4; k++) {
+                float sa = (k & 1) == 0 ? -1f : 1f, sb = (k & 2) == 0 ? -1f : 1f;
+                float px = x + along * sa * (half - 1.2f) - across * sb * (half - 1.2f);
+                float pz = z + across * sa * (half - 1.2f) + along * sb * (half - 1.2f);
+                addBox(concrete, px, ground + wall, pz, along, across, 1.1f, 1.1f, roof - wall);
+            }
+            float r = half + 3.2f;
+            addBox(concrete, x, ground + roof, z, along, across, r, r, 2.6f);
+            // (the roof's underside, which a box leaves open)
+            float[][] under = new float[4][];
+            float[][] signs = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+            for (int k = 0; k < 4; k++) {
+                under[k] = new float[] { x + along * r * signs[k][0] - across * r * signs[k][1], ground + roof,
+                        z + across * r * signs[k][0] + along * r * signs[k][1] };
+            }
+            concrete.addConvexFace(new float[] { x, ground + roof + 2f, z }, under);
+            batch.include(x, ground + roof + 2f, z, half + 3f);
+            recordCircle(x, z, half + 0.5f);
+        }
+    }
+
+    /**
+     * The crossovers' road markings: two lines crossing in an X over the middle, from each
+     * side's lane at one end to the other side of the road at the other.
+     */
+    private void crossoverLines(Map<Integer, NationBatch> batches, int cx, int cz) {
+        for (float[] c : borderChecks) {
+            if (c[11] <= 0f || chunkIndex(c[0]) != cx || chunkIndex(c[1]) != cz) continue;
+            NationBatch batch = batches.computeIfAbsent((int) c[9], NationBatch::new);
+            MeshBuilder paint = batch.builder("line");
+            float dx = c[2], dz = c[3], px = -dz, pz = dx, lane = c[4] * 0.5f, reach = CROSS_HALF - 8f, w = 0.9f;
+            int steps = 16;
+            for (float flip = -1f; flip <= 1f; flip += 2f) {
+                for (int k = 0; k < steps; k++) {
+                    float t0 = k / (float) steps, t1 = (k + 1) / (float) steps;
+                    float[][] q = new float[4][];
+                    for (int e = 0; e < 2; e++) {
+                        float t = e == 0 ? t0 : t1;
+                        float along = -reach + 2f * reach * t, lat = flip * lane * (1f - 2f * t);
+                        float x = c[0] + dx * along + px * lat, z = c[1] + dz * along + pz * lat;
+                        // (across the line, square to the road)
+                        float y = roadSurfaceY(x, z) + 0.15f;
+                        q[e * 2] = new float[] { x - px * w, y, z - pz * w };
+                        q[e * 2 + 1] = new float[] { x + px * w, y, z + pz * w };
+                    }
+                    int a = paint.addVertex(q[0][0], q[0][1], q[0][2], 0f, 1f, 0f, 0f, 0f);
+                    int b = paint.addVertex(q[1][0], q[1][1], q[1][2], 0f, 1f, 0f, 1f, 0f);
+                    int d = paint.addVertex(q[2][0], q[2][1], q[2][2], 0f, 1f, 0f, 0f, 1f);
+                    int e = paint.addVertex(q[3][0], q[3][1], q[3][2], 0f, 1f, 0f, 1f, 1f);
+                    // (both windings: whichever faces up is drawn)
+                    paint.addTriangle(a, b, e);
+                    paint.addTriangle(a, e, d);
+                    paint.addTriangle(a, e, b);
+                    paint.addTriangle(a, d, e);
+                }
+            }
+            batch.include(c[0], roadSurfaceY(c[0], c[1]) + 1f, c[1], CROSS_HALF + 4f);
+        }
+    }
+
+    // Border fences: how often the border is sampled (and so the length of each stretch of
+    // fence), how tall the fence is, the gap for a road through it, and how far the
+    // gateposts stand from the road's middle
+    private static final float BORDER_STEP = 6f, BORDER_FENCE_HEIGHT = 26f, BORDER_GATE_CLEARANCE = 4f;
+
+    /**
+     * The fence along any border in this chunk between nations at odds (see
+     * NationKinship.hostile): tall chain-link on steel posts, barbed wire strung along arms
+     * leaning out at the top, and where a road crosses, a gap between heavy gateposts with
+     * the gates swung open back along the fence. The border is traced on a grid fixed to the
+     * world (marching squares, each crossing found closely by halving), so neighbouring chunks
+     * meet; under water there is none.
+     */
+    private void borderFences(Map<Integer, NationBatch> batches, int cx, int cz) {
+        float size = roadChunkSize;
+        float x0 = (cx - 0.5f) * size, z0 = (cz - 0.5f) * size;
+        // Far from any such border (the borders wander up to a couple of cells from the map's)
+        if (borderGapAt(x0 + size * 0.5f, z0 + size * 0.5f) > 3.5f) return;
+        int i0 = (int) Math.ceil(x0 / BORDER_STEP), i1 = (int) Math.ceil((x0 + size) / BORDER_STEP);
+        int j0 = (int) Math.ceil(z0 / BORDER_STEP), j1 = (int) Math.ceil((z0 + size) / BORDER_STEP);
+        int w = i1 - i0 + 1, h = j1 - j0 + 1;
+        int[] owner = new int[w * h];
+        boolean any = false;
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                owner[j * w + i] = nationAt((i0 + i) * BORDER_STEP, (j0 + j) * BORDER_STEP);
+                if (owner[j * w + i] != owner[0]) any = true;
+            }
+        }
+        if (!any) return;
+        for (int j = 0; j + 1 < h; j++) {
+            for (int i = 0; i + 1 < w; i++) {
+                // Corners round the square, and the crossings on its sides between nations at odds
+                float ax = (i0 + i) * BORDER_STEP, az = (j0 + j) * BORDER_STEP;
+                float[][] corner = { { ax, az }, { ax + BORDER_STEP, az }, { ax + BORDER_STEP, az + BORDER_STEP }, { ax, az + BORDER_STEP } };
+                int[] id = { owner[j * w + i], owner[j * w + i + 1], owner[(j + 1) * w + i + 1], owner[(j + 1) * w + i] };
+                List<float[]> crossings = new ArrayList<>();
+                int a = 0, b = 0;
+                for (int k = 0; k < 4; k++) {
+                    int n = (k + 1) % 4;
+                    if (!kinship.hostile(id[k], id[n])) continue;
+                    crossings.add(borderCrossing(corner[k], corner[n], id[k]));
+                    a = id[k];
+                    b = id[n];
+                }
+                if (crossings.isEmpty()) continue;
+                NationBatch batch = batches.computeIfAbsent(Math.min(a, b), NationBatch::new);
+                if (crossings.size() == 2) {
+                    borderFencePiece(batch, crossings.get(0), crossings.get(1));
+                } else if (crossings.size() == 4) {
+                    borderFencePiece(batch, crossings.get(0), crossings.get(1));
+                    borderFencePiece(batch, crossings.get(2), crossings.get(3));
+                } else {
+                    // Three nations meet: each crossing runs in to the middle
+                    float[] middle = { ax + BORDER_STEP * 0.5f, az + BORDER_STEP * 0.5f };
+                    for (float[] crossing : crossings) borderFencePiece(batch, crossing, middle);
+                }
+            }
+        }
+    }
+
+    /** Whether a house's plot (with a margin) reaches across a fenced border, where the fence would run through it. */
+    private boolean straddlesFencedBorder(House house) {
+        // (nor on a border check's booth)
+        for (float[] c : booths) {
+            if (Math.hypot(c[0] - house.x, c[1] - house.z) < house.plotRadius() + BOOTH_ROOM + 6f) return true;
+        }
+        if (borderGapAt(house.x, house.z) > 3.5f) return false;
+        float margin = 4f;
+        float[][] corners = { { house.plotMinX - margin, house.plotMinZ - margin }, { house.plotMaxX + margin, house.plotMinZ - margin },
+                { house.plotMaxX + margin, house.plotMaxZ + margin }, { house.plotMinX - margin, house.plotMaxZ + margin } };
+        int own = house.nationId;
+        for (float[] c : corners) {
+            float[] at = localToWorld(house.x, house.z, house.rotationY, c[0], c[1]);
+            if (kinship.hostile(own, nationAt(at[0], at[1]))) return true;
+        }
+        return false;
+    }
+
+    private int nationAt(float x, float z) {
+        return nationManager.getNationAtWorld(x, z, Planet.width());
+    }
+
+    /** Where between two points the border lies, found by halving (a belongs to nation first). */
+    private float[] borderCrossing(float[] a, float[] b, int first) {
+        float lo = 0f, hi = 1f;
+        for (int k = 0; k < 4; k++) {
+            float mid = (lo + hi) * 0.5f;
+            if (nationAt(a[0] + (b[0] - a[0]) * mid, a[1] + (b[1] - a[1]) * mid) == first) lo = mid; else hi = mid;
+        }
+        float t = (lo + hi) * 0.5f;
+        return new float[] { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t };
+    }
+
+    /** One stretch of border fence between two points on the border (with a gatepost where a road begins). */
+    private void borderFencePiece(NationBatch batch, float[] from, float[] to) {
+        // (bending back round any booth beside the gateway)
+        from = clearOfBooths(from);
+        to = clearOfBooths(to);
+        float length = (float) Math.hypot(to[0] - from[0], to[1] - from[1]);
+        if (length < 0.05f) return;
+        float dirX = (to[0] - from[0]) / length, dirZ = (to[1] - from[1]) / length;
+        float[] a = { from[0], TerrainMesh.getLayeredHeight(from[0], from[1], terrainNoise), from[1] };
+        float[] b = { to[0], TerrainMesh.getLayeredHeight(to[0], to[1], terrainNoise), to[1] };
+        if (Math.min(a[1], b[1]) < seaLevel + 0.5f) return;
+        boolean roadA = isRoadLocation(a[0], a[2], BORDER_GATE_CLEARANCE), roadB = isRoadLocation(b[0], b[2], BORDER_GATE_CLEARANCE);
+        float hgt = BORDER_FENCE_HEIGHT;
+        if (roadA && roadB) return;
+        if (roadA || roadB) {
+            // The gateway: a heavy post at the road's side, and the gate swung back along the fence
+            float[] post = roadA ? b : a;
+            float awayX = roadA ? dirX : -dirX, awayZ = roadA ? dirZ : -dirZ;
+            MeshBuilder posts = batch.builder("borderpost");
+            posts.setPlanarTextureScale(0.1f);
+            addBox(posts, post[0], post[1] - 2f, post[2], dirX, dirZ, 1.6f, 1.6f, hgt + 8f);
+            batch.include(post[0], post[1] + hgt + 8f, post[2], 4f);
+            recordCircle(post[0], post[2], 2.2f);
+            MeshBuilder gate = batch.builder("borderfence");
+            float side = 2.4f;
+            float[] hinge = { post[0] - awayZ * side, post[1], post[2] + awayX * side };
+            float[] free = { hinge[0] + awayX * 12f, TerrainMesh.getLayeredHeight(hinge[0] + awayX * 12f, hinge[2] + awayZ * 12f, terrainNoise), hinge[2] + awayZ * 12f };
+            addPrism(gate, hinge, free, 0.5f, 0.8f, 1.6f);
+            addPrism(gate, hinge, free, 0.5f, hgt * 0.5f - 0.4f, hgt * 0.5f + 0.4f);
+            addPrism(gate, hinge, free, 0.5f, hgt - 1.6f, hgt - 0.8f);
+            uprights(gate, hinge, free, awayX, awayZ, 1.5f, 0.12f, 0.8f, hgt - 0.8f);
+            addBox(gate, free[0], free[1] + 0.2f, free[2], awayX, awayZ, 0.4f, 0.4f, hgt - 0.6f);
+            batch.include(free[0], free[1] + hgt, free[2], 2f);
+            return;
+        }
+        batch.include(a[0], a[1] + hgt + 4f, a[2], 4f);
+        batch.include(b[0], b[1] + hgt + 4f, b[2], 4f);
+        recordSegment(a[0], a[2], b[0], b[2], 0.5f, hgt + 4f);
+        MeshBuilder mesh = batch.builder("borderfence");
+        mesh.setPlanarTextureScale(0.1f);
+        // Chain-link: rails top, middle and bottom, and close-set wires between
+        addPrism(mesh, a, b, 0.3f, 0.2f, 0.8f);
+        addPrism(mesh, a, b, 0.3f, hgt * 0.5f - 0.3f, hgt * 0.5f + 0.3f);
+        addPrism(mesh, a, b, 0.3f, hgt - 0.6f, hgt);
+        uprights(mesh, a, b, dirX, dirZ, 0.9f, 0.06f, 0.2f, hgt);
+        // A post at every other grid point (fixed to the world, so it's the same from both chunks)
+        if (Math.floorMod(Math.round(a[0] * 0.37f) + Math.round(a[2] * 0.61f), 2) == 0) {
+            addBox(mesh, a[0], a[1] - 1.5f, a[2], dirX, dirZ, 0.45f, 0.45f, hgt + 1.5f);
+            // Its arm leaning out at the top, carrying the wire
+            float[] foot = { a[0], a[1] + hgt, a[2] };
+            float[] tip = { a[0] - dirZ * 2.4f, a[1] + hgt + 3.6f, a[2] + dirX * 2.4f };
+            addRod(batch.builder("barbed"), foot, tip, 0.22f);
+            float[] other = { a[0] + dirZ * 2.4f, a[1] + hgt + 3.6f, a[2] - dirX * 2.4f };
+            addRod(batch.builder("barbed"), foot, other, 0.22f);
+        }
+        // Barbed wire: strands along the top of the arms on both sides, and a coil between them
+        MeshBuilder wire = batch.builder("barbed");
+        for (int strand = 0; strand < 3; strand++) {
+            float out = 0.8f + strand * 0.8f, up = hgt + 1.2f + strand * 1.2f;
+            for (float sideSign = -1f; sideSign <= 1f; sideSign += 2f) {
+                float sx = -dirZ * out * sideSign, sz = dirX * out * sideSign;
+                addRod(wire, new float[] { a[0] + sx, a[1] + up, a[2] + sz }, new float[] { b[0] + sx, b[1] + up, b[2] + sz }, 0.07f);
+            }
+        }
+        // The coil: loops round the top of the fence, a few to each stretch
+        int loops = Math.max(1, Math.round(length / 1.6f));
+        float radius = 1.3f;
+        float[] previous = null;
+        int steps = loops * 8;
+        for (int k = 0; k <= steps; k++) {
+            float t = (float) k / steps;
+            float angle = t * loops * (float) Math.PI * 2f;
+            float cx = a[0] + (b[0] - a[0]) * t, cy = a[1] + (b[1] - a[1]) * t + hgt + 1.4f, cz = a[2] + (b[2] - a[2]) * t;
+            float across = (float) Math.cos(angle) * radius, up = (float) Math.sin(angle) * radius;
+            float[] p = { cx - dirZ * across, cy + up, cz + dirX * across };
+            if (previous != null) addRod(wire, previous, p, 0.06f);
+            previous = p;
         }
     }
 

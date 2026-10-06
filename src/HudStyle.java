@@ -216,6 +216,32 @@ public final class HudStyle {
         }
     }
 
+    /** A glass thermometer: a tube with a red bulb and its red column part way up, against a little scale. */
+    public static void paintThermometerIcon(Graphics2D g, float x, float y, float size) {
+        float cx = x + size / 2f;
+        float tubeW = size * 0.16f, top = y + size * 0.06f, bulbR = size * 0.15f, bulbY = y + size - bulbR - size * 0.04f;
+        // Ticks beside it
+        g.setColor(new Color(210, 225, 235, 180));
+        g.setStroke(new BasicStroke(size * 0.03f));
+        for (int i = 0; i < 6; i++) {
+            float ty = top + size * 0.08f + i * size * 0.11f;
+            float len = i % 2 == 0 ? size * 0.16f : size * 0.1f;
+            g.draw(new java.awt.geom.Line2D.Float(cx + tubeW * 0.9f, ty, cx + tubeW * 0.9f + len, ty));
+        }
+        // The glass
+        java.awt.geom.RoundRectangle2D tube = new java.awt.geom.RoundRectangle2D.Float(cx - tubeW / 2f, top, tubeW, bulbY - top, tubeW, tubeW);
+        g.setColor(new Color(225, 238, 245, 200));
+        g.fill(tube);
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - bulbR, bulbY - bulbR, bulbR * 2, bulbR * 2));
+        // The red column and bulb
+        g.setColor(new Color(215, 35, 30));
+        float inner = tubeW * 0.5f, level = top + size * 0.32f;
+        g.fill(new java.awt.geom.Rectangle2D.Float(cx - inner / 2f, level, inner, bulbY - level));
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - bulbR * 0.75f, bulbY - bulbR * 0.75f, bulbR * 1.5f, bulbR * 1.5f));
+        g.setColor(new Color(255, 255, 255, 120));
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - bulbR * 0.45f, bulbY - bulbR * 0.55f, bulbR * 0.4f, bulbR * 0.4f));
+    }
+
     /** A brass pocket compass seen from above, needle pointing up. */
     public static void paintCompassIcon(Graphics2D g, float x, float y, float size) {
         float cx = x + size / 2f, cy = y + size / 2f, r = size * 0.46f;

@@ -193,6 +193,45 @@ public final class ArchitectureTextures {
     // Fences
     // ------------------------------------------------------------------------------------
 
+    /**
+     * Drawn curtains, seen through a window: two panels of cloth in the given colour hanging in
+     * soft vertical folds (light on each fold's crest, shadow in its trough), gathered a little
+     * at the top, with a narrow dark gap between them where they meet, and a dark hem.
+     */
+    public static BufferedImage curtains(long seed, float[] colour) {
+        Random rand = new Random(seed);
+        int w = 128, h = 128;
+        BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        float gap = 0.015f + 0.03f * rand.nextFloat();
+        int folds = 4 + rand.nextInt(3);
+        float phase = rand.nextFloat() * 6.28f;
+        int dark = 0x0E0C10;
+        for (int y = 0; y < h; y++) {
+            float v = y / (float) (h - 1);   // 0 at the top
+            for (int x = 0; x < w; x++) {
+                float u = x / (float) (w - 1);
+                float fromMiddle = Math.abs(u - 0.5f);
+                if (fromMiddle < gap) {
+                    image.setRGB(x, y, dark);
+                    continue;
+                }
+                // Folds across each panel, bunched a little tighter towards the top
+                float across = u < 0.5f ? u / (0.5f - gap) : (u - 0.5f - gap) / (0.5f - gap);
+                float wave = (float) Math.sin(phase + across * folds * Math.PI * 2 * (1f + 0.15f * (1f - v)));
+                float shade = 0.72f + 0.28f * wave;
+                // The edge where the two panels meet falls into shadow, as does the hem
+                shade *= 0.75f + 0.25f * Math.min(1f, (fromMiddle - gap) / 0.06f);
+                if (v > 0.94f) shade *= 0.7f;
+                if (v < 0.05f) shade *= 0.85f;
+                int r = Math.min(255, Math.round(colour[0] * shade * 255f));
+                int g = Math.min(255, Math.round(colour[1] * shade * 255f));
+                int b = Math.min(255, Math.round(colour[2] * shade * 255f));
+                image.setRGB(x, y, (r << 16) | (g << 8) | b);
+            }
+        }
+        return image;
+    }
+
     public static BufferedImage fence(long seed, FenceStyle style) {
         Random rng = WorldPalette.rng(seed, 0xFE4CL);
         int n = FENCE_SIZE;

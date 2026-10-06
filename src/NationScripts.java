@@ -15,18 +15,32 @@ public final class NationScripts {
     private final int[] alphabet;    // which generated alphabet, from 1
     private final List<List<BufferedImage>> glyphCache = new ArrayList<>();
 
-    public NationScripts(long worldSeed, int nations) {
+    /** How many writing systems this world has (generated before the nations were made). */
+    public static int available() {
+        File[] folders = new File(RunFiles.ALPHABETS_DIR).listFiles(File::isDirectory);
+        return folders != null ? folders.length : 0;
+    }
+
+    /**
+     * Each culture (see NationKinship.assignCultures) has a writing system of its own, which
+     * no other culture uses, and its own direction of writing; all its nations write with it.
+     */
+    public NationScripts(long worldSeed, int nations, int[] culture) {
         direction = new int[nations + 1];
         alphabet = new int[nations + 1];
-        File[] folders = new File(RunFiles.ALPHABETS_DIR).listFiles(File::isDirectory);
-        int available = folders != null ? folders.length : 0;
         Random rand = new Random(worldSeed + 999L);
+        // The writing systems dealt out to the cultures, one each, in a random order
+        List<Integer> systems = new ArrayList<>();
+        for (int i = 1; i <= Math.max(1, available()); i++) systems.add(i);
+        java.util.Collections.shuffle(systems, rand);
+        int[] cultureDirection = new int[nations + 1];
+        for (int c = 0; c <= nations; c++) cultureDirection[c] = rand.nextInt(4);
         for (int n = 1; n <= nations; n++) {
-            int d = rand.nextInt(4);
+            int d = cultureDirection[culture[n]];
             // Developer aid: -Dxenoguesser.signdirection=0..3 gives every nation one writing direction
             if (System.getProperty("xenoguesser.signdirection") != null) d = Integer.getInteger("xenoguesser.signdirection", d);
             direction[n] = d;
-            alphabet[n] = 1 + rand.nextInt(Math.max(1, available));
+            alphabet[n] = systems.get(culture[n] % systems.size());
         }
         for (int n = 0; n <= nations; n++) glyphCache.add(null);
     }

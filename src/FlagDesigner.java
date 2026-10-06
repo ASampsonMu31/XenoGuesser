@@ -250,9 +250,10 @@ public final class FlagDesigner {
     public static Map<Integer, Spec> design(long seed, int nations, NationKinship kinship) {
         Random rng = new Random(seed * 97L + 13L);
         Layout[] families = Layout.values();
-        int[] layoutGroup = kinship.clusters(rng, Math.max(2, nations / 3), 0.25f);
-        int[] paletteGroup = kinship.clusters(rng, Math.max(2, nations / 3), 0.3f);
-        int[] emblemGroup = kinship.clusters(rng, Math.max(2, nations / 3), 0.35f);
+        // A culture's nations (see NationKinship.assignCultures) share a flag tradition: its
+        // layout, colours and emblem, now and then set aside by a nation of its own
+        int[] layoutGroup = new int[nations + 1], paletteGroup = new int[nations + 1], emblemGroup = new int[nations + 1];
+        for (int n = 1; n <= nations; n++) layoutGroup[n] = paletteGroup[n] = emblemGroup[n] = kinship.cultureOf(n);
         // Each group's tradition
         Layout[] groupLayout = new Layout[nations + 1];
         List<List<float[]>> groupPalette = new ArrayList<>();

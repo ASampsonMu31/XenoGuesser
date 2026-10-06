@@ -454,6 +454,24 @@ public class RockField {
         gl.glBindVertexArray(0);
     }
 
+    /**
+     * How high the top of a rock is over a point (a dome over its footprint), given the
+     * ground there; NaN if no rock stands there.
+     */
+    public float topAt(float x, float z, float ground) {
+        Chunk chunk = chunks.get(key((int) Math.floor(x / chunkSize), (int) Math.floor(z / chunkSize)));
+        if (chunk == null || chunk.solids == null) return Float.NaN;
+        float best = Float.NaN;
+        for (int i = 0; i < chunk.solids.length; i += 4) {
+            float dx = x - chunk.solids[i], dz = z - chunk.solids[i + 1], r = chunk.solids[i + 2];
+            float d2 = (dx * dx + dz * dz) / (r * r);
+            if (d2 >= 1f) continue;
+            float top = ground + chunk.solids[i + 3] * (float) Math.sqrt(1f - d2);
+            if (Float.isNaN(best) || top > best) best = top;
+        }
+        return best;
+    }
+
     /** The bigger rocks near a point, as solid circles. */
     public void obstaclesNear(float x, float z, float reach, Collision.Sink sink) {
         int cx0 = (int) Math.floor((x - reach - 10f) / chunkSize), cx1 = (int) Math.floor((x + reach + 10f) / chunkSize);

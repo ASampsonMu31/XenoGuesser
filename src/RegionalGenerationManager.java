@@ -21,18 +21,20 @@ public class RegionalGenerationManager {
     // Direct structural object handles replacing old functional callback lambdas
     public final RegionalFactor temperatureMap;
     public final RegionalFactor coldMap;
+    // How much rain falls, 0 driest to 1 wettest (see rainfallAt)
+    public final RegionalFactor rainfallMap;
+    private final PerlinNoise rainfallNoise;
 
     public RegionalGenerationManager(long seed, float totalRegionWidth, float seaLevelHeight) {
         this.halfRegion = totalRegionWidth / 2.0f; 
         this.seaLevelHeight = seaLevelHeight;
         this.worldSeed = seed;
 
-        // Latitudinal Baseline Configuration
-        // Warmest at the equator, cooling towards the poles
-        this.temperatureMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            float temp = (float) Math.cos(Planet.latitude(worldZ) * 1.15);
-            return Math.max(0.0f, Math.min(1.0f, temp));
-        });
+        // How warm it is, 0 coldest to 1 hottest (see temperatureAt)
+        this.temperatureNoise = new PerlinNoise(seed * 977L + 31L);
+        this.temperatureMap = new RegionalFactor(1.0f, this::temperatureAt);
+        this.rainfallNoise = new PerlinNoise(seed * 613L + 97L);
+        this.rainfallMap = new RegionalFactor(1.0f, this::rainfallAt);
 
         this.coldMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
             1.0f - this.temperatureMap.evaluate(cx, cz, worldX, worldZ)
@@ -42,6 +44,97 @@ public class RegionalGenerationManager {
     // ==========================================
     //        UNIVERSAL FACTORY DESIGNERS
     // ==========================================
+
+    private final PerlinNoise temperatureNoise;
+    // The ground's height above the sea in every chunk (from the water pre-scan), for how
+    // much colder the heights are
+    private float[] chunkAltitude;
+
+    /**
+     * How warm a place is, 0 coldest to 1 hottest: warmest at the equator and coldest at
+     * the poles; inland hotter than the coast in the tropics and colder towards the poles (the
+     * sea evens temperatures out); colder the higher the ground; and varying from region to
+     * region besides.
+     */
+    private float temperatureAt(int cx, int cz, float worldX, float worldZ) {
+        double latitude = Planet.latitude(worldZ);
+        float warmth = (float) Math.cos(latitude);
+        float temp = 0.06f + 0.94f * (float) Math.pow(Math.max(0.0, warmth), 1.6);
+        if (waterFieldSize > 0) {
+            int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
+            int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
+            int d = waterField[j * waterFieldSize + i];
+            if (d > 0) {
+                // The further inland, the more extreme: hotter where it's warm, colder where it's cool
+                float inland = Math.min(1f, d / 80f);
+                temp += 0.14f * inland * (warmth - 0.55f) * 2f;
+            }
+            if (chunkAltitude != null) {
+                // About a third of the scale colder for every thousand units up
+                temp -= Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * ALTITUDE_CHILL;
+            }
+        }
+        float[] surface = Planet.surface(worldX, worldZ);
+        temp += 0.09f * temperatureNoise.onSphere(surface, 1f / 9000f, 0f, 0f) + 0.04f * temperatureNoise.onSphere(surface, 1f / 2500f, 7.3f, 1.9f);
+        return Math.max(0.0f, Math.min(1.0f, temp));
+    }
+
+    // The moisture map (wettest at the water's edge, drying out inland), which the rainfall follows
+    private RegionalFactor moistureMap;
+
+    /** Sets the moisture map the rainfall is worked out from (the map's Moisture overlay). */
+    public void setMoistureMap(RegionalFactor moisture) {
+        this.moistureMap = moisture;
+    }
+
+    /**
+     * How much rain falls at a place over a year on average, 0 driest to 1 wettest (the
+     * weather on any one day is drawn from this: see Weather). Mostly it's:
+     * <ul>
+     *   <li>moisture: rain comes from water evaporated off the sea, so it falls most where the
+     *       moisture map is high and is dry far inland;</li>
+     *   <li>and broad regional patterns (noise at the scale of countries), as the prevailing
+     *       winds and mountains make some regions wet and others dry at any latitude, like
+     *       rainy Britain or dry Sudan;</li>
+     *   <li>with a little temperature: warm air can hold more water, but it's only a nudge,
+     *       and the coldest places are drier.</li>
+     * </ul>
+     */
+    private float rainfallAt(int cx, int cz, float worldX, float worldZ) {
+        float moisture = moistureMap != null ? moistureMap.evaluate(cx, cz, worldX, worldZ) : 0.5f;
+        float warmth = temperatureMap.evaluate(cx, cz, worldX, worldZ);
+        float supply = 0.1f + 0.9f * moisture;
+        float capacity = 0.7f + 0.3f * (float) Math.sqrt(warmth);
+        float[] surface = Planet.surface(worldX, worldZ);
+        float regional = 1f + 1.6f * rainfallNoise.onSphere(surface, 1f / 22000f, 0f, 0f) + 0.2f * rainfallNoise.onSphere(surface, 1f / 5000f, 5.1f, 2.7f);
+        // The polar regions are wetter: storms track along the polar front, and the snow piles up
+        double latitude = Math.abs(Planet.latitude(worldZ));
+        float polar = (float) Math.max(0.0, Math.min(1.0, (latitude - Math.toRadians(50)) / Math.toRadians(25)));
+        regional += POLAR_WETNESS * polar * polar * (3f - 2f * polar);
+        float rain = RAINFALL_SCALE * (float) Math.pow(supply, 1.3) * capacity * Math.max(0f, regional);
+        return (float) Math.pow(Math.max(0f, Math.min(1f, rain)), 0.8);
+    }
+
+    // Brings the rainfall to span the scale
+    private static final float RAINFALL_SCALE = 0.62f;
+    // How much wetter it gets towards the poles (from 50 degrees of latitude to 75)
+    private static final float POLAR_WETNESS = 0.8f;
+
+    // The rainfall overlay's colours, driest to wettest: sand, pale green, blue, deep indigo
+    public static final float[][] RAINFALL_SPECTRUM = {
+        { 0.86f, 0.74f, 0.50f }, { 0.62f, 0.80f, 0.55f }, { 0.25f, 0.55f, 0.90f }, { 0.12f, 0.12f, 0.55f }
+    };
+
+    /** How much colder (on the temperature map's 0 to 1 scale) a chunk is for its height (see temperatureAt). */
+    public float altitudeChill(int cx, int cz) {
+        if (waterFieldSize == 0 || chunkAltitude == null) return 0f;
+        int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
+        int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
+        return Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * ALTITUDE_CHILL;
+    }
+
+    // How much colder it gets for each unit of height, on the temperature map's scale
+    public static final float ALTITUDE_CHILL = 0.00033f;
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
         return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
@@ -100,7 +193,18 @@ public class RegionalGenerationManager {
     //       REFACTORED VISUALIZATION ENGINE
     // ==========================================
 
+    /** The colours of a temperature map, coldest to hottest: deep blue through pale to red. */
+    public static final float[][] TEMPERATURE_SPECTRUM = {
+        { 0.10f, 0.20f, 0.75f }, { 0.45f, 0.75f, 0.95f }, { 1.00f, 0.80f, 0.35f }, { 0.85f, 0.10f, 0.05f }
+    };
+
     public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label) {
+        return generateHeatmap(totalRegionWidth, physicalChunkSize, factorToVisualize, label, null);
+    }
+
+    /** As generateHeatmap, in the given four colours from lowest to highest (null for the usual red to green). */
+    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label,
+                                         float[][] colours) {
         int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
         int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
         int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
@@ -111,7 +215,7 @@ public class RegionalGenerationManager {
 
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 
-        float[][] spectrum = {
+        float[][] spectrum = colours != null ? colours : new float[][] {
             {0.85f, 0.00f, 0.00f}, // Red
             {1.00f, 0.50f, 0.00f}, // Orange
             {1.00f, 0.90f, 0.00f}, // Yellow
@@ -185,6 +289,7 @@ public class RegionalGenerationManager {
         waterFieldSize = (int) Math.ceil(half / physicalChunkSize) - waterFieldMin + 1;
         waterField = new short[waterFieldSize * waterFieldSize];
         java.util.Arrays.fill(waterField, (short) -1);
+        float[] altitude = new float[waterFieldSize * waterFieldSize];
 
         int[] queue = new int[waterFieldSize * waterFieldSize];
         int head = 0, tail = 0;
@@ -192,7 +297,9 @@ public class RegionalGenerationManager {
             for (int i = 0; i < waterFieldSize; i++) {
                 float worldX = (waterFieldMin + i + 0.5f) * physicalChunkSize;
                 float worldZ = (waterFieldMin + j + 0.5f) * physicalChunkSize;
-                if (TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise) <= seaLevelHeight) {
+                float height = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
+                altitude[j * waterFieldSize + i] = height - seaLevelHeight;
+                if (height <= seaLevelHeight) {
                     waterField[j * waterFieldSize + i] = 0;
                     queue[tail++] = j * waterFieldSize + i;
                 }
@@ -207,6 +314,7 @@ public class RegionalGenerationManager {
             if (j > 0) tail = visit(cell - waterFieldSize, next, queue, tail);
             if (j < waterFieldSize - 1) tail = visit(cell + waterFieldSize, next, queue, tail);
         }
+        chunkAltitude = altitude;
     }
 
         // Bodies of water smaller than this (in chunks) are calm; waves reach full size at the upper bound

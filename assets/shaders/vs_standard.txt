@@ -11,6 +11,9 @@ out float PlanarDepth;
 
 uniform mat4 model;
 uniform mat4 mvpMatrix;
+// Posters on round walls: the board's edges curve back by bend times the square of the
+// distance across it (in the board's own units, -0.5 to 0.5), round a cylinder
+uniform float bend;
 
 // The planet's curve (see Planet): lowered by curvature times the square of the distance
 // across the ground from curveCentre, along curveDown, the projection of a step up
@@ -24,12 +27,18 @@ vec4 planetDrop(vec3 world) {
 }
 
 void main() {
-    gl_Position = mvpMatrix * vec4(position, 1.0) - planetDrop(vec3(model * vec4(position, 1.0)));
-    
+    vec3 p = position;
+    vec3 n = normal;
+    if (bend != 0.0) {
+        p.y -= bend * position.x * position.x;
+        n = normalize(vec3(2.0 * bend * position.x, 1.0, 0.0));
+    }
+    gl_Position = mvpMatrix * vec4(p, 1.0) - planetDrop(vec3(model * vec4(p, 1.0)));
+
     // Exact forward-facing depth used by water screen-space thickness calculations
-    PlanarDepth = gl_Position.w; 
-    
-    aPos = vec3(model * vec4(position, 1.0f));
-    aNormal = mat3(transpose(inverse(model))) * normal;  
-    aTexCoord = texCoord;   
+    PlanarDepth = gl_Position.w;
+
+    aPos = vec3(model * vec4(p, 1.0f));
+    aNormal = mat3(transpose(inverse(model))) * n;
+    aTexCoord = texCoord;
 }

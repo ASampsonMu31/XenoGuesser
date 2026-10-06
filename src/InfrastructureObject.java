@@ -7,6 +7,9 @@ import java.util.List;
 import java.util.Map;
 
 public class InfrastructureObject {
+
+    // How much of the snow that would lie on a road has been cleared off it
+    private static final float ROAD_SNOW_CLEARED = 0.5f;
     /** SIGN is a single roadside or garden sign; BATCH is pre-merged world-space geometry (roads, rails, houses, fences). */
     public enum Type { SIGN, BATCH }
 
@@ -18,6 +21,12 @@ public class InfrastructureObject {
     public Matrix4 leftPostMatrix;
     public Matrix4 rightPostMatrix;
     public Matrix4 frontBoardMatrix;
+    // The regional soil colour map, for drawing dirt tracks as the ground they run over
+    public static Texture soilRegions;
+    // How far a poster on a round wall bends back at its edges (see vs_standard), 0 for flat
+    private float bend;
+    // Whether it's pasted on a wall that leans or curves, and so leans or curves with it
+    public boolean shaped;
     public Matrix4 backBoardMatrix;
 
     // Extra reach beyond the object's anchor point, used for behind-camera culling
@@ -84,14 +93,28 @@ public class InfrastructureObject {
         final boolean textured;
         // See-through (window glass): left out of the solid pass and drawn afterwards
         final boolean transparent;
+        // Only drawn within this distance of the viewer (small details); 0 for always
+        float drawDistance;
+        // A dirt track's grittiness (drawn as the ground's soil with grit); 0 for anything else
+        public float trackGrit;
+        // How weathered (stained and streaked) a poor house's walls or roof are, 0 to 1
+        public float weathering;
         Model model;
 
         public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured) {
-            this(vertices, indices, material, doubleSided, paint, textured, false);
+            this(vertices, indices, material, doubleSided, paint, textured, false, "");
         }
+
+        public final String name;
 
         public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured,
                          boolean transparent) {
+            this(vertices, indices, material, doubleSided, paint, textured, transparent, "");
+        }
+
+        public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured,
+                         boolean transparent, String name) {
+            this.name = name;
             this.vertices = vertices;
             this.indices = indices;
             this.material = material;
@@ -146,7 +169,9 @@ public class InfrastructureObject {
             this.frontBoardMatrix = Matrix4.multiply(this.modelMatrix, frontTransform);
 
             Matrix4 backRot = Matrix4Transform.rotateAroundX(-90.0f);
-            Matrix4 backTransform = Matrix4.multiply(boardShift, Matrix4.multiply(backRot, boardScale));
+            // A hair behind the front, so the blank back can never show through the face
+            Matrix4 backShift = Matrix4Transform.translate(0.0f, boardCenterY, -0.08f);
+            Matrix4 backTransform = Matrix4.multiply(backShift, Matrix4.multiply(backRot, boardScale));
             this.backBoardMatrix = Matrix4.multiply(this.modelMatrix, backTransform);
         }
     }
@@ -158,7 +183,20 @@ public class InfrastructureObject {
      */
     public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
                                                       boolean banner, boolean bothSides, int[] textString) {
+        return createWallSign(position, nationId, rotationY, width, height, banner, bothSides, textString, 0f, 0f);
+    }
+
+    /**
+     * As createWallSign, for a wall that leans (its face tipped up by tiltDegrees) or curves
+     * (round a cylinder of the given radius, 0 for flat): the poster leans and curves with it.
+     */
+    public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
+                                                      boolean banner, boolean bothSides, int[] textString,
+                                                      float tiltDegrees, float curveRadius) {
         InfrastructureObject sign = new InfrastructureObject(Type.SIGN, position, nationId, rotationY, textString);
+        sign.bend = curveRadius > 0f ? width * width / (2f * curveRadius) : 0f;
+        sign.shaped = curveRadius > 0f || tiltDegrees != 0f;
+        if (tiltDegrees != 0f) sign.modelMatrix = Matrix4.multiply(sign.modelMatrix, Matrix4Transform.rotateAroundX(-tiltDegrees));
         sign.wallMounted = true;
         sign.banner = banner;
         sign.bothSides = bothSides;
@@ -216,6 +254,23 @@ public class InfrastructureObject {
         return true;
     }
 
+    // The viewer's distance squared from this batch's nearest edge, set before drawing
+    private float viewerDistanceSquared;
+
+    public void setViewerDistanceSquared(float distanceSquared) {
+        this.viewerDistanceSquared = distanceSquared;
+    }
+
+    private boolean beyond(float distance) {
+        float reach = distance + boundingRadius;
+        return viewerDistanceSquared > reach * reach;
+    }
+
+    /** Marks parts of these kinds as details, drawn only within distance. */
+    public void setDetailDistance(java.util.function.Predicate<BatchPart> isDetail, float distance) {
+        for (BatchPart part : batchParts) if (isDetail.test(part)) part.drawDistance = distance;
+    }
+
     public boolean hasTransparentParts() {
         for (BatchPart part : batchParts) if (part.transparent) return true;
         return false;
@@ -258,6 +313,9 @@ public class InfrastructureObject {
                 if (part.model == null || part.transparent) {
                     continue;
                 }
+                if (part.drawDistance > 0f && beyond(part.drawDistance)) {
+                    continue;
+                }
                 if (part.doubleSided) {
                     gl.glDisable(GL3.GL_CULL_FACE);
                 }
@@ -266,7 +324,40 @@ public class InfrastructureObject {
                     gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
                     gl.glPolygonOffset(-1.0f, -2.0f);
                 }
+                boolean track = part.trackGrit > 0f;
+                if (track) {
+                    // The ground's own soil, from the regional soil map, with grit
+                    Shader shader = part.model.shader;
+                    shader.use(gl);
+                    if (soilRegions != null) {
+                        gl.glActiveTexture(GL3.GL_TEXTURE6);
+                        soilRegions.bind(gl);
+                        shader.setInt(gl, "soilRegionMap", 6);
+                    }
+                    shader.setFloat(gl, "useSoilRegions", 1f);
+                    shader.setFloat(gl, "trackGrit", part.trackGrit);
+                    // Drawn over the ground it lies on, even where the distant ground is drawn coarsely
+                    gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
+                    gl.glPolygonOffset(-2.0f, -8.0f);
+                }
+                if (part.weathering > 0f) {
+                    part.model.shader.use(gl);
+                    part.model.shader.setFloat(gl, "weathering", part.weathering);
+                }
+                // Roads (and their paint, tracks and driveways) are kept clearer of snow than the land round them
+                boolean cleared = part.name.equals("asphalt") || part.name.equals("line") || part.name.equals("dirt") || part.name.equals("driveway");
+                if (cleared) {
+                    part.model.shader.use(gl);
+                    part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
+                }
                 part.model.render(gl, ambientLight, nightProportion);
+                if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
+                if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
+                if (track) {
+                    part.model.shader.setFloat(gl, "useSoilRegions", 0f);
+                    part.model.shader.setFloat(gl, "trackGrit", 0f);
+                    gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
+                }
                 if (part.paint) {
                     gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
                 }
@@ -357,10 +448,12 @@ public class InfrastructureObject {
                 signShader.setInt(gl, "titleShadow", titleShadow ? 1 : 0);
 
                 // --- 1. FRONT SIDE (Draws full text) ---
+                signShader.setFloat(gl, "bend", bend);
                 signShader.setInt(gl, "stringLength", this.stringLength);
                 billboardModel.setModelMatrix(this.frontBoardMatrix);
                 billboardModel.render(gl, ambientLight, nightProportion);
 
+                if (wallMounted || bothSides) signShader.setFloat(gl, "bend", 0f);
                 if (bothSides) {
                     // Sticking out into the street: the same face both ways
                     billboardModel.setModelMatrix(this.backBoardMatrix);
@@ -370,6 +463,7 @@ public class InfrastructureObject {
                 if (wallMounted) return;
 
                 // --- 2. BACK SIDE (Forces string length to 0 = Blank surface) ---
+                signShader.setFloat(gl, "bend", 0f);
                 signShader.setInt(gl, "stringLength", 0);
                 for (int i = 0; i < MAX_PICTURES; i++) signShader.setInt(gl, "pictureKind[" + i + "]", 0);
                 signShader.setInt(gl, "titleLength", 0);

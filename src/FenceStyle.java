@@ -59,7 +59,9 @@ public class FenceStyle {
         for (int n = 1; n <= numNations; n++) {
             Type type = blocTypes[typeBloc[n]];
             float roll = rand.nextFloat();
-            float fenceChance = roll < 0.2f ? 0.0f : 0.35f + rand.nextFloat() * 0.65f;
+            // How keen the nation is on fencing its houses: some never do, some nearly always,
+            // most somewhere between
+            float fenceChance = roll < 0.15f ? 0.0f : 0.08f + 0.88f * rand.nextFloat();
 
             float height;
             float thickness;

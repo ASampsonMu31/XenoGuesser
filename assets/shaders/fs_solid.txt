@@ -1,5 +1,59 @@
 #version 330 core
 
+// What the distance fades into: an even haze, a greyed version of the sky's colour (greyer
+// still under cloud), the same in every direction (see Shader.setFog)
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
+// Snow on the ground (see XenoGuesser_GLEventListener.bindSnowCover): over the whole world, a
+// texture of the climate at sea level (its temperature, and how much rain or snow falls).
+// Snow lies where it's colder than the water's freezing point, the higher the colder (so on
+// mountain tops), wherever enough falls; and while it's snowing, fresh snow settles in
+// growing patches over everywhere near or below freezing. It settles on what faces up.
+uniform sampler2D snowCover;
+uniform vec4 snowMap;        // 1 / the world's width, half its width, whether it's ready, fresh snow (0 to 1)
+uniform vec4 snowClimate;    // the freezing point, degrees below it for snow to lie thickly, degrees colder per unit up, sea level
+uniform vec3 snowColour;
+uniform float snowCleared;  // how much of the snow has been cleared off this (roads: see InfrastructureObject)
+uniform float snowToday;    // how much warmer (Celsius) today is than usual round the player
+// (an exact hash of whole-numbered cells: a sine hash loses precision far from the origin and
+// smears into stripes)
+float snowHash(ivec2 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return float(h & 16777215u) / 16777216.0;
+}
+float snowNoise(vec2 p) {
+    vec2 f = fract(p);
+    ivec2 i = ivec2(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(snowHash(i), snowHash(i + ivec2(1, 0)), f.x), mix(snowHash(i + ivec2(0, 1)), snowHash(i + ivec2(1, 1)), f.x), f.y);
+}
+float snowAt(vec3 p, vec3 n) {
+    if (snowMap.z < 0.5) return 0.0;
+    vec2 climate = texture(snowCover, (p.xz + vec2(snowMap.y)) * snowMap.x).rg;
+    float celsius = climate.r * 100.0 - 60.0 - max(0.0, p.y - snowClimate.w) * snowClimate.z;
+    float falls = clamp((climate.g - 0.05) / 0.3, 0.0, 1.0);
+    float lying = smoothstep(0.0, 1.0, (snowClimate.x - celsius) / snowClimate.y) * falls;
+    // Fresh snow: flakes dotted about, then patches, then a full covering as it piles up
+    float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
+    // How much of the surface is under snow, less on steep faces...
+    // (never quite all: there are always gaps where the surface shows through)
+    float amount = min(0.8, max(lying, snowMap.w * snowy)) * smoothstep(0.45, 0.8, n.y) * (1.0 - snowCleared);
+    if (amount <= 0.0) return 0.0;
+    // ...laid down as flakes and clumps of snow over the surface as it is (fine dots, then
+    // patches, then drifts), each either snow or not, so a light dusting is scattered flakes
+    // and a heavy fall covers all but a few gaps
+    float speckle = snowNoise(p.xz * 5.3) * 0.38 + snowNoise(p.xz * 1.1) * 0.34 + snowNoise(p.xz * 0.19) * 0.28;
+    // (spread out evenly, as the sum bunches round the middle, so the amount is the share covered)
+    speckle = smoothstep(0.22, 0.78, speckle);
+    return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
+}
+
 in vec3 aPos;
 in vec3 aNormal;
 
@@ -29,11 +83,50 @@ uniform mat4 skyRotation;
 
 const float PI = 3.14159265359;
 
+// A hash of a whole-numbered cell, exact however far from the origin
+float cellHash(ivec2 c) {
+    uvec2 q = uvec2(c) * uvec2(1664525u, 22695477u) + uvec2(1013904223u, 1u);
+    uint h = q.x ^ (q.y * 747796405u);
+    h ^= h >> 16u;
+    h *= 2246822519u;
+    h ^= h >> 13u;
+    return float(h) / 4294967295.0;
+}
+
+float cellNoise(vec2 p) {
+    vec2 f = fract(p);
+    ivec2 i = ivec2(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cellHash(i), cellHash(i + ivec2(1, 0)), f.x), mix(cellHash(i + ivec2(0, 1)), cellHash(i + ivec2(1, 1)), f.x), f.y);
+}
+
+// Poor houses' walls and roofs (0 to 1): faded, streaked dark by rain, blotched with grime
+// and with pale patches of lichen and flaking
+uniform float weathering;
+
+vec3 weather(vec3 c) {
+    if (weathering <= 0.0) return c;
+    float w = weathering;
+    c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.45 * w);
+    float across = cellNoise(vec2(aPos.x * 0.45, aPos.y * 0.03)) * cellNoise(vec2(aPos.z * 0.45 + 31.0, aPos.y * 0.03 + 17.0));
+    c *= 1.0 - 0.55 * w * smoothstep(0.18, 0.5, across);
+    float grime = smoothstep(0.45, 0.75, cellNoise(aPos.xz * 0.07 + vec2(aPos.y * 0.09, 0.0)) * 0.65
+            + cellNoise(aPos.xz * 0.33 - vec2(0.0, aPos.y * 0.3)) * 0.35);
+    c = mix(c, vec3(0.16, 0.14, 0.1), 0.6 * w * grime);
+    float lichen = smoothstep(0.62, 0.8, cellNoise(aPos.xz * 0.21 + vec2(aPos.y * 0.17, 3.0)));
+    return mix(c, vec3(0.62, 0.66, 0.5), 0.55 * w * lichen);
+}
+
 void main() {
-    // Pure material ambient without texture multiplication
-    vec3 ambient = ambientLight * material.ambient;
+    // Pure material ambient without texture multiplication (stained, on a weathered house)
+    vec3 ambient = ambientLight * weather(material.ambient);
+    vec3 surface = weather(material.diffuse);
     
     vec3 norm = normalize(aNormal);
+    // Snow lying on roofs and anything else facing up
+    float snow = snowAt(aPos, norm);
+    ambient = mix(ambient, ambientLight * min(snowColour * 1.4, vec3(1.0)), snow);
+    surface = mix(surface, min(snowColour * 1.4, vec3(1.0)), snow);
     vec3 viewDir = normalize(viewPos - aPos);
 
     vec3 totalDiffuse = vec3(0.0);
@@ -44,7 +137,7 @@ void main() {
         vec3 lightDir = normalize(light.position - aPos);  
         float diff = max(dot(norm, lightDir), 0.0);
         
-        totalDiffuse += light.diffuse * material.diffuse * diff;
+        totalDiffuse += light.diffuse * surface * diff;
         
         vec3 halfwayDir = normalize(lightDir + viewDir);  
         float spec = pow(max(dot(norm, halfwayDir), 0.0), material.shininess);
@@ -77,7 +170,7 @@ void main() {
     fogFactor = clamp(fogFactor, 0.0, 1.0); 
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
-    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
+    vec3 finalColourWithFog = mix(fogHaze(dynamicSkyColour), result, fogFactor);
 
     fragColour = vec4(finalColourWithFog, 1.0);
 }

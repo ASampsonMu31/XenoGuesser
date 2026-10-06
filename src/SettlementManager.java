@@ -89,6 +89,8 @@ public class SettlementManager {
 
     private final float urbanCellSize;
     private final float[] urbanGrid;
+    // How big a city each point of the urban grid lies in (see getCitySize)
+    private final float[] citySizeGrid;
     private final float habitabilityCellSize;
     private final float[] habitabilityGrid;
     private final List<Settlement> settlements;
@@ -120,6 +122,7 @@ public class SettlementManager {
 
         this.urbanCellSize = totalRegionWidth / URBAN_GRID_RESOLUTION;
         this.urbanGrid = new float[(URBAN_GRID_RESOLUTION + 1) * (URBAN_GRID_RESOLUTION + 1)];
+        this.citySizeGrid = new float[(URBAN_GRID_RESOLUTION + 1) * (URBAN_GRID_RESOLUTION + 1)];
         for (Settlement settlement : settlements) {
             stampSettlement(settlement);
         }
@@ -135,6 +138,14 @@ public class SettlementManager {
     /** 0 for open countryside up to 1 in the heart of a large city. */
     public float getUrbanness(float worldX, float worldZ) {
         return sampleGrid(urbanGrid, URBAN_GRID_RESOLUTION, urbanCellSize, worldX, worldZ);
+    }
+
+    /**
+     * How big a city a point is in: near 1 in the largest city on the planet, smaller for
+     * smaller towns, fading to 0 out in the country.
+     */
+    public float getCitySize(float worldX, float worldZ) {
+        return sampleGrid(citySizeGrid, URBAN_GRID_RESOLUTION, urbanCellSize, worldX, worldZ);
     }
 
     /** How suitable the land is for people to live on, 0 (sea, hot desert, high mountains) to 1. */
@@ -186,14 +197,20 @@ public class SettlementManager {
         float dx = TerrainMesh.getLayeredHeight(worldX + step, worldZ, terrainNoise) - TerrainMesh.getLayeredHeight(worldX - step, worldZ, terrainNoise);
         float dz = TerrainMesh.getLayeredHeight(worldX, worldZ + step, terrainNoise) - TerrainMesh.getLayeredHeight(worldX, worldZ - step, terrainNoise);
         float slope = (float) Math.hypot(dx, dz) / (2.0f * step);
-        float rugged = Math.max(smoothstep(0.1f, 0.4f, slope), smoothstep(MOUNTAIN_START, MOUNTAIN_FULL, height));
+        // ...and closer in, so a steep hillside counts even on a gentle range
+        float near = 60.0f;
+        float ndx = TerrainMesh.getLayeredHeight(worldX + near, worldZ, terrainNoise) - TerrainMesh.getLayeredHeight(worldX - near, worldZ, terrainNoise);
+        float ndz = TerrainMesh.getLayeredHeight(worldX, worldZ + near, terrainNoise) - TerrainMesh.getLayeredHeight(worldX, worldZ - near, terrainNoise);
+        float localSlope = (float) Math.hypot(ndx, ndz) / (2.0f * near);
+        float rugged = Math.max(Math.max(smoothstep(0.05f, 0.22f, slope), smoothstep(0.08f, 0.3f, localSlope)),
+                smoothstep(MOUNTAIN_START, MOUNTAIN_FULL, height));
 
         float waterAppeal = 0.2f + 0.5f * coast + 0.3f * moisture;
         return waterAppeal
                 * (1.0f - HEAT_PENALTY * heat)
                 * (1.0f - DESERT_PENALTY * desert)
                 * (1.0f - HIGHLAND_PENALTY * highland)
-                * (1.0f - RUGGED_PENALTY * rugged);
+                * (1.0f - RUGGED_PENALTY * rugged) * (1.0f - RUGGED_PENALTY * rugged);
     }
 
     /**
@@ -319,6 +336,8 @@ public class SettlementManager {
                 int index = j * (URBAN_GRID_RESOLUTION + 1) + i;
                 float influence = settlement.influenceAt(worldX - shift, worldZ);
                 urbanGrid[index] = 1.0f - (1.0f - urbanGrid[index]) * (1.0f - influence);
+                // How big the city is here: its size (1 the largest), fading out with its influence
+                citySizeGrid[index] = Math.max(citySizeGrid[index], settlement.radius / LARGEST_RADIUS * influence / settlement.intensity);
             }
         }
     }

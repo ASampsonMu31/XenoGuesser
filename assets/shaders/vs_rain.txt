@@ -1,0 +1,11 @@
+#version 330 core
+
+// A raindrop's streak or splash: world position, and how opaque it is there
+layout(location = 0) in vec4 position;
+uniform mat4 viewProjection;
+out float alpha;
+
+void main() {
+    alpha = position.w;
+    gl_Position = viewProjection * vec4(position.xyz, 1.0);
+}

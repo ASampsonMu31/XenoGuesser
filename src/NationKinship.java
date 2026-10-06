@@ -11,6 +11,9 @@ public final class NationKinship {
 
     private final int numNations;
     private final float[][] centres;   // [nationId] = {x, z} in [0, 1] map space
+    // Whether two nations share a land border, and their cultures (see assignCultures)
+    private final boolean[][] bordering;
+    private int[] culture;
 
     public NationKinship(NationGenerationManager nations) {
         this.numNations = nations.numNations;
@@ -25,6 +28,15 @@ public final class NationKinship {
                 sumX[id] += x;
                 sumZ[id] += z;
                 count[id]++;
+            }
+        }
+        bordering = new boolean[numNations + 1][numNations + 1];
+        for (int x = 0; x < res; x++) {
+            for (int z = 0; z + 1 < map[x].length; z++) {
+                int id = map[x][z], east = map[(x + 1) % res][z], south = map[x][z + 1];
+                if (id < 1 || id > numNations) continue;
+                if (east != id && east >= 1 && east <= numNations) bordering[id][east] = bordering[east][id] = true;
+                if (south != id && south >= 1 && south <= numNations) bordering[id][south] = bordering[south][id] = true;
             }
         }
         centres = new float[numNations + 1][];
@@ -70,6 +82,88 @@ public final class NationKinship {
             }
         }
         return result;
+    }
+
+    /**
+     * Groups the nations into {@code count} cultures, each a run of neighbouring nations: the
+     * founders are spread as far apart as they can be, and each culture grows out from its
+     * founder across shared borders, the nearest nation first, so a culture never jumps over
+     * another's land. (A nation with no land route to any founder, an island, joins whichever
+     * culture's nation lies nearest it.) Nations of a culture write alike and fly similar flags.
+     */
+    public int[] assignCultures(Random rng, int count) {
+        count = Math.max(1, Math.min(count, numNations));
+        int[] result = new int[numNations + 1];
+        java.util.Arrays.fill(result, -1);
+        float[] reached = new float[numNations + 1];
+        java.util.Arrays.fill(reached, Float.MAX_VALUE);
+        // Founders: the first at random, then each the farthest from those chosen so far
+        int[] founders = new int[count];
+        founders[0] = 1 + rng.nextInt(numNations);
+        for (int g = 1; g < count; g++) {
+            int best = 1;
+            float bestDistance = -1f;
+            for (int n = 1; n <= numNations; n++) {
+                float nearest = Float.MAX_VALUE;
+                for (int k = 0; k < g; k++) nearest = Math.min(nearest, distance(n, founders[k]));
+                if (nearest > bestDistance) {
+                    bestDistance = nearest;
+                    best = n;
+                }
+            }
+            founders[g] = best;
+        }
+        java.util.PriorityQueue<float[]> frontier = new java.util.PriorityQueue<>((a, b) -> Float.compare(a[0], b[0]));
+        for (int g = 0; g < count; g++) {
+            reached[founders[g]] = 0f;
+            frontier.add(new float[] { 0f, founders[g], g });
+        }
+        while (!frontier.isEmpty()) {
+            float[] next = frontier.poll();
+            int n = (int) next[1];
+            if (result[n] >= 0) continue;
+            result[n] = (int) next[2];
+            for (int m = 1; m <= numNations; m++) {
+                if (!bordering[n][m] || result[m] >= 0) continue;
+                float cost = next[0] + distance(n, m);
+                if (cost < reached[m]) {
+                    reached[m] = cost;
+                    frontier.add(new float[] { cost, m, next[2] });
+                }
+            }
+        }
+        // Islands: the culture of the nearest nation that has one
+        for (boolean changed = true; changed; ) {
+            changed = false;
+            for (int n = 1; n <= numNations; n++) {
+                if (result[n] >= 0) continue;
+                int nearest = -1;
+                for (int m = 1; m <= numNations; m++) {
+                    if (result[m] >= 0 && (nearest < 0 || distance(n, m) < distance(n, nearest))) nearest = m;
+                }
+                if (nearest >= 0) {
+                    result[n] = result[nearest];
+                    changed = true;
+                }
+            }
+        }
+        result[0] = 0;
+        culture = result;
+        return result.clone();
+    }
+
+    /** Which culture a nation belongs to (see assignCultures), 0 before they're assigned. */
+    public int cultureOf(int nation) {
+        return culture == null || nation < 1 || nation > numNations ? 0 : culture[nation];
+    }
+
+    /**
+     * Whether two nations are at odds: they share a land border but not a culture, so the
+     * border between them is fenced and the land along it poor.
+     */
+    public boolean hostile(int a, int b) {
+        if (a == b || a < 1 || b < 1 || a > numNations || b > numNations || !bordering[a][b]) return false;
+        return cultureOf(a) != cultureOf(b);
     }
 
     /**

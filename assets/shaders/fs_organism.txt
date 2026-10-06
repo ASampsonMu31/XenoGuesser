@@ -1,5 +1,13 @@
 #version 330 core
 
+// What the distance fades into: an even haze, a greyed version of the sky's colour (greyer
+// still under cloud), the same in every direction (see Shader.setFog)
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
 // Organisms: a glossy carapace coloured by part, with the species' pattern on its body
 
 in vec3 aPos;
@@ -24,7 +32,11 @@ uniform vec3 eyeColour;
 uniform int patternType;     // 0 bands, 1 spots, 2 stripes along the body, 3 mottling, 4 plain, 5 zigzags, 6 checks, 7 diagonals
 uniform float patternScale;
 uniform float gloss;
+// Above 0, drawn as glass this see-through: the sky reflected in it, more so at a glancing angle,
+// and anything printed on it (dark on its texture) solid
+uniform float glassAlpha;
 uniform vec3 trimColour;     // boots, gloves and fittings
+uniform float lampGlow;      // above 0: the eyes are a lamp, shining in eyeColour whatever the light
 // Anything below the water line is seen through the water
 uniform float waterLevel;
 uniform vec3 waterTint;
@@ -33,6 +45,7 @@ uniform sampler2D detailTexture;
 uniform float detailAmount;
 // People: their hair, and the flag some wear on the chest of their top
 uniform vec3 hairColour;
+uniform vec3 bagColour;
 uniform sampler2D flagTexture;
 uniform int flagOnTop;
 // Goods (produce and packets): their nation's packaging texture, which u and v point into
@@ -94,6 +107,10 @@ void main() {
             vec2 f = vec2((vUV.x - 0.16) / 0.18, (vUV.y - 0.48) / 0.26);
             if (f.x > 0.0 && f.x < 1.0 && f.y > 0.0 && f.y < 1.0) albedo = texture(flagTexture, f).rgb;   // stored bottom row first, as v runs up the body
         }
+    } else if (vPart == 18) {
+        // A shopping bag: plastic or cloth, a little creased
+        albedo = bagColour * (0.85 + 0.2 * valueNoise(vUV * vec2(6.0, 4.0)));
+        shine = 0.5;
     } else if (vPart == 15) {
         albedo = texture(productTexture, vUV).rgb;
         shine = 0.45;
@@ -165,6 +182,7 @@ void main() {
     float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0) * 0.25;
 
     vec3 colour = albedo * (ambientLight * 1.4 + sunColour * diffuse * 0.85) + sunColour * specular + rim * albedo;
+    if (lampGlow > 0.0 && vPart == 5) colour = mix(colour, eyeColour, lampGlow);
 
     float submerged = waterLevel - aPos.y;
     if (submerged > 0.0) {
@@ -179,5 +197,16 @@ void main() {
     vec3 skyColour = texture(skyTexture, vec2(theta / (2.0 * PI), asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5)).rgb;
     float fogFactor = smoothstep(0.0, 1.0, clamp((2200.0 - radialDistance) / 1200.0, 0.0, 1.0));
 
-    fragColour = vec4(mix(skyColour, colour, fogFactor), 1.0);
+    float alpha = 1.0;
+    if (glassAlpha > 0.0) {
+        vec3 bounced = transpose(mat3(skyRotation)) * reflect(-viewDir, n);
+        float bt = atan(bounced.x, bounced.z);
+        if (bt < 0.0) bt += 2.0 * PI;
+        vec3 reflected = texture(skyTexture, vec2(bt / (2.0 * PI), asin(clamp(bounced.y, -1.0, 1.0)) / PI + 0.5)).rgb;
+        float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0);
+        float ink = smoothstep(0.82, 0.45, dot(albedo, vec3(0.3, 0.59, 0.11)));
+        colour = mix(reflected * 0.9 + sunColour * specular * 2.0, albedo * (ambientLight * 1.4 + sunColour * 0.6), ink);
+        alpha = clamp(max(glassAlpha + 0.55 * fresnel + specular, ink), 0.0, 1.0);
+    }
+    fragColour = vec4(mix(fogHaze(skyColour), colour, fogFactor), alpha);
 }
