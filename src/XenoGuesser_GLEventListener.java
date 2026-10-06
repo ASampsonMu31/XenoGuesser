@@ -322,6 +322,8 @@ private static class SpeciesConfig {
       TEMPERATURE("Temperature"),
       RAINFALL("Rainfall"),
       SOIL_COLOUR("Soil colour"),
+      ROCKS("Rock frequency"),
+      ROCK_SIZE("Rock size"),
       ANIMAL_POPULATION("Animal population"),
       FLORA("Flora"),
       GRASS_ABUNDANCE("Grass abundance"),
@@ -1699,8 +1701,7 @@ private static class SpeciesConfig {
         if (System.getProperty("xenoguesser.dumpart") != null) dumpPeoplePictures();
         playerBody.initialise(gl);
         landingPod.initialise(gl);
-        Vector3 bedrock = worldRockColour();
-        rockField = new RockField(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, new float[] { bedrock.x, bedrock.y, bedrock.z });
+        rockField = rocks();
         rockField.setKeepout((x, z, r) -> landingPod.covers(x, z, r)
                 || infraManager.isRoadLocation(x, z, r + 2f) || infraManager.isBuildingLocation(x, z, r + 4f));
         rockField.initialise(gl);
@@ -3597,7 +3598,7 @@ private static class SpeciesConfig {
      * if it's still the one wanted.
      */
     // The dropdowns at the foot of the map's overlay choices, in order
-    private static final String GRASS_GROUP = "Grass", FLORA_GROUP = "Flora", FAUNA_GROUP = "Fauna";
+    private static final String ROCK_GROUP = "Rocks", GRASS_GROUP = "Grass", FLORA_GROUP = "Flora", FAUNA_GROUP = "Fauna";
 
     /**
      * The map's overlays by where they're listed: "" for those listed on their own, then the
@@ -3610,6 +3611,7 @@ private static class SpeciesConfig {
             top.add(Overlay.of(f));
         }
         groups.put("", top);
+        groups.put(ROCK_GROUP, List.of(Overlay.of(FactorName.ROCKS), Overlay.of(FactorName.ROCK_SIZE)));
         groups.put(GRASS_GROUP, List.of(Overlay.of(FactorName.GRASS_ABUNDANCE), Overlay.of(FactorName.GRASS_HEIGHT), Overlay.of(FactorName.GRASS_COLOUR)));
         List<Overlay> flora = new ArrayList<>();
         for (int s = 0; s < NUM_SPECIES; s++) flora.add(new Overlay(FactorName.FLORA, s));
@@ -3681,6 +3683,7 @@ private static class SpeciesConfig {
             case "Temperature" -> "temperature";
             case "Rainfall" -> "rainfall";
             case "Soil colour" -> "soil";
+            case "Rocks", "Rock frequency", "Rock size" -> "rocks";
             case "Wealth" -> "wealth";
             case "Nations" -> "nations";
             case "Grass abundance", GRASS_GROUP -> "grass";
@@ -3873,6 +3876,15 @@ private static class SpeciesConfig {
         } else if (factor == FactorName.RAINFALL) {
             minimap.setLegend(RegionalGenerationManager.RAINFALL_SPECTRUM, new String[] {
                     "0 mm/yr", Math.round(0.5f * RAINFALL_FULL_MM) + " mm/yr", Math.round(RAINFALL_FULL_MM) + " mm/yr" });
+        } else if (factor == FactorName.ROCK_SIZE) {
+            // The typical rock's width, in metres (a unit being ten centimetres)
+            float[] range = rockSizeRange();
+            float small = range[0] * 0.2f, large = range[1] * 0.2f;
+            minimap.setLegend(ROCK_SPECTRUM, new String[] { String.format("%.1f m", small), String.format("%.1f m", (small + large) * 0.5f),
+                    String.format("%.1f m", large) });
+        } else if (factor == FactorName.ROCKS) {
+            float perKm = rockMapPeak() * CHUNKS_PER_KM2;
+            minimap.setLegend(ROCK_SPECTRUM, new String[] { "0 /km\u00B2", countLabel(perKm * 0.5f) + " /km\u00B2", countLabel(perKm) + " /km\u00B2" });
         } else if (factorName != null && factorName.species() >= 0) {
             // How many per square kilometre (a hundred chunks by a hundred), none to the most
             int sp = factorName.species();
@@ -3970,7 +3982,8 @@ private static class SpeciesConfig {
             BufferedImage heatmap = f == FactorName.SOIL_COLOUR ? soilColourMap()
                     : regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factorFor(o), overlayLabel(o),
                     f == FactorName.TEMPERATURE ? RegionalGenerationManager.TEMPERATURE_SPECTRUM : f == FactorName.WEALTH ? WEALTH_SPECTRUM
-                    : f == FactorName.RAINFALL ? RegionalGenerationManager.RAINFALL_SPECTRUM : null);
+                    : f == FactorName.RAINFALL ? RegionalGenerationManager.RAINFALL_SPECTRUM
+                    : f == FactorName.ROCKS || f == FactorName.ROCK_SIZE ? ROCK_SPECTRUM : null);
             // (kept as it is too, a pixel a chunk, for drawing the overlay in tiles when zoomed in)
             rawOverlays.put(o, heatmap);
             return minimap.composeOverlay(heatmap);
@@ -4001,6 +4014,16 @@ private static class SpeciesConfig {
             return new RegionalFactor(1f, (cx, cz, x, z) -> organismManager.expectedPerChunk(i, x, z) / peak);
         }
         return switch (overlay.factor()) {
+            case ROCKS -> {
+                // How many rocks, none to the most anywhere (each chunk's expected count, as spawned)
+                float peak = rockMapPeak();
+                yield new RegionalFactor(1f, (cx, cz, x, z) -> rocks().expectedPerChunk(x, z) / peak);
+            }
+            case ROCK_SIZE -> {
+                // From the smallest to the largest rocks anywhere on the map
+                float[] range = rockSizeRange();
+                yield new RegionalFactor(1f, (cx, cz, x, z) -> (rocks().typicalSizeAt(x, z) - range[0]) / Math.max(1e-3f, range[1] - range[0]));
+            }
             case GRASS_ABUNDANCE -> grassAbundanceFactor;
             case GRASS_HEIGHT -> grassHeightFactor;
             case GRASS_COLOUR -> grassColourFactor;
@@ -4218,6 +4241,32 @@ private static class SpeciesConfig {
             }
             return Math.max(1e-6f, best);
         });
+    }
+
+    // The rock map's colours: white where there are none, through grey to black where there are the most
+    private static final float[][] ROCK_SPECTRUM = {
+        { 1f, 1f, 1f }, { 0.67f, 0.67f, 0.67f }, { 0.33f, 0.33f, 0.33f }, { 0f, 0f, 0f }
+    };
+
+    /** The world's rocks (made when first needed: the map may want them before the round is set up). */
+    private synchronized RockField rocks() {
+        if (rockField == null) {
+            Vector3 bedrock = worldRockColour();
+            rockField = new RockField(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, new float[] { bedrock.x, bedrock.y, bedrock.z });
+        }
+        return rockField;
+    }
+
+    /** The smallest and largest typical rock (radius) anywhere on the land the map shows. */
+    private float[] rockSizeRange() {
+        float largest = mapPeak(Integer.MIN_VALUE + 1, (x, z) -> rocks().typicalSizeAt(x, z));
+        float smallest = RockField.LARGEST_TYPICAL - mapPeak(Integer.MIN_VALUE + 2, (x, z) -> RockField.LARGEST_TYPICAL - rocks().typicalSizeAt(x, z));
+        return new float[] { smallest, largest };
+    }
+
+    /** The most rocks expected in any chunk of the land the map shows. */
+    private float rockMapPeak() {
+        return mapPeak(Integer.MIN_VALUE, (x, z) -> rocks().expectedPerChunk(x, z));
     }
 
     // A square kilometre, in chunks; and the plant and animal maps' colours, none to the most
