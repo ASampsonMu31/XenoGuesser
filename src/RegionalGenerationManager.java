@@ -21,6 +21,9 @@ public class RegionalGenerationManager {
     // Direct structural object handles replacing old functional callback lambdas
     public final RegionalFactor temperatureMap;
     public final RegionalFactor coldMap;
+    // How much rain falls, 0 driest to 1 wettest (see rainfallAt)
+    public final RegionalFactor rainfallMap;
+    private final PerlinNoise rainfallNoise;
 
     public RegionalGenerationManager(long seed, float totalRegionWidth, float seaLevelHeight) {
         this.halfRegion = totalRegionWidth / 2.0f; 
@@ -30,6 +33,8 @@ public class RegionalGenerationManager {
         // How warm it is, 0 coldest to 1 hottest (see temperatureAt)
         this.temperatureNoise = new PerlinNoise(seed * 977L + 31L);
         this.temperatureMap = new RegionalFactor(1.0f, this::temperatureAt);
+        this.rainfallNoise = new PerlinNoise(seed * 613L + 97L);
+        this.rainfallMap = new RegionalFactor(1.0f, this::rainfallAt);
 
         this.coldMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
             1.0f - this.temperatureMap.evaluate(cx, cz, worldX, worldZ)
@@ -66,13 +71,70 @@ public class RegionalGenerationManager {
             }
             if (chunkAltitude != null) {
                 // About a third of the scale colder for every thousand units up
-                temp -= Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * 0.00033f;
+                temp -= Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * ALTITUDE_CHILL;
             }
         }
         float[] surface = Planet.surface(worldX, worldZ);
         temp += 0.09f * temperatureNoise.onSphere(surface, 1f / 9000f, 0f, 0f) + 0.04f * temperatureNoise.onSphere(surface, 1f / 2500f, 7.3f, 1.9f);
         return Math.max(0.0f, Math.min(1.0f, temp));
     }
+
+    // The moisture map (wettest at the water's edge, drying out inland), which the rainfall follows
+    private RegionalFactor moistureMap;
+
+    /** Sets the moisture map the rainfall is worked out from (the map's Moisture overlay). */
+    public void setMoistureMap(RegionalFactor moisture) {
+        this.moistureMap = moisture;
+    }
+
+    /**
+     * How much rain falls at a place over a year on average, 0 driest to 1 wettest (the
+     * weather on any one day is drawn from this: see Weather). Mostly it's:
+     * <ul>
+     *   <li>moisture: rain comes from water evaporated off the sea, so it falls most where the
+     *       moisture map is high and is dry far inland;</li>
+     *   <li>and broad regional patterns (noise at the scale of countries), as the prevailing
+     *       winds and mountains make some regions wet and others dry at any latitude, like
+     *       rainy Britain or dry Sudan;</li>
+     *   <li>with a little temperature: warm air can hold more water, but it's only a nudge,
+     *       and the coldest places are drier.</li>
+     * </ul>
+     */
+    private float rainfallAt(int cx, int cz, float worldX, float worldZ) {
+        float moisture = moistureMap != null ? moistureMap.evaluate(cx, cz, worldX, worldZ) : 0.5f;
+        float warmth = temperatureMap.evaluate(cx, cz, worldX, worldZ);
+        float supply = 0.1f + 0.9f * moisture;
+        float capacity = 0.7f + 0.3f * (float) Math.sqrt(warmth);
+        float[] surface = Planet.surface(worldX, worldZ);
+        float regional = 1f + 1.6f * rainfallNoise.onSphere(surface, 1f / 22000f, 0f, 0f) + 0.2f * rainfallNoise.onSphere(surface, 1f / 5000f, 5.1f, 2.7f);
+        // The polar regions are wetter: storms track along the polar front, and the snow piles up
+        double latitude = Math.abs(Planet.latitude(worldZ));
+        float polar = (float) Math.max(0.0, Math.min(1.0, (latitude - Math.toRadians(50)) / Math.toRadians(25)));
+        regional += POLAR_WETNESS * polar * polar * (3f - 2f * polar);
+        float rain = RAINFALL_SCALE * (float) Math.pow(supply, 1.3) * capacity * Math.max(0f, regional);
+        return (float) Math.pow(Math.max(0f, Math.min(1f, rain)), 0.8);
+    }
+
+    // Brings the rainfall to span the scale
+    private static final float RAINFALL_SCALE = 0.62f;
+    // How much wetter it gets towards the poles (from 50 degrees of latitude to 75)
+    private static final float POLAR_WETNESS = 0.8f;
+
+    // The rainfall overlay's colours, driest to wettest: sand, pale green, blue, deep indigo
+    public static final float[][] RAINFALL_SPECTRUM = {
+        { 0.86f, 0.74f, 0.50f }, { 0.62f, 0.80f, 0.55f }, { 0.25f, 0.55f, 0.90f }, { 0.12f, 0.12f, 0.55f }
+    };
+
+    /** How much colder (on the temperature map's 0 to 1 scale) a chunk is for its height (see temperatureAt). */
+    public float altitudeChill(int cx, int cz) {
+        if (waterFieldSize == 0 || chunkAltitude == null) return 0f;
+        int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
+        int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
+        return Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * ALTITUDE_CHILL;
+    }
+
+    // How much colder it gets for each unit of height, on the temperature map's scale
+    public static final float ALTITUDE_CHILL = 0.00033f;
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
         return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {

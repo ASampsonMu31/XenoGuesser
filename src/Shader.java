@@ -64,6 +64,42 @@ public class Shader {
     }
   }
   
+  /** What the distance fades into, for every shader with fog (see fogHaze in those shaders). */
+  public static void setFog(GL3 gl, float r, float g, float b) {
+    synchronized (ALL) {
+      for (Shader shader : ALL) {
+        if (shader.ID == 0) continue;
+        int c = shader.location(gl, "fogColour");
+        if (c == -1) continue;
+        gl.glUseProgram(shader.ID);
+        gl.glUniform3f(c, r, g, b);
+        gl.glUniform1f(shader.location(gl, "fogReady"), 1f);
+      }
+    }
+  }
+
+  /**
+   * The lying snow (see XenoGuesser_GLEventListener.snowCover) for every shader with a
+   * snowCover uniform: its texture unit, 1 / the world's width, half the width, how much fresh
+   * snow has settled, the climate it lies in ({freezing point, degrees below it for thick snow,
+   * degrees colder per unit up, sea level}) and the snow's colour.
+   */
+  public static void setSnowCover(GL3 gl, int unit, float inverseWidth, float halfWidth, float fresh, float today, float[] climate, float[] colour) {
+    synchronized (ALL) {
+      for (Shader shader : ALL) {
+        if (shader.ID == 0) continue;
+        int c = shader.location(gl, "snowCover");
+        if (c == -1) continue;
+        gl.glUseProgram(shader.ID);
+        gl.glUniform1i(c, unit);
+        gl.glUniform4f(shader.location(gl, "snowMap"), inverseWidth, halfWidth, 1f, fresh);
+        gl.glUniform4f(shader.location(gl, "snowClimate"), climate[0], climate[1], climate[2], climate[3]);
+        gl.glUniform3f(shader.location(gl, "snowColour"), colour[0], colour[1], colour[2]);
+        gl.glUniform1f(shader.location(gl, "snowToday"), today);
+      }
+    }
+  }
+
   public int getID() {
     return ID;
   }

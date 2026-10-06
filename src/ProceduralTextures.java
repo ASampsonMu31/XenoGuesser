@@ -182,31 +182,42 @@ public final class ProceduralTextures {
         return img;
     }
 
+    // How far out the sun's disc reaches in its picture (the rest is its glow), as a fraction of the half-width
+    public static final float SUN_DISC = 0.42f;
+
     /**
-     * The sun disc, coloured as a black body at the star's temperature, with limb
-     * darkening (real stars are dimmer and redder toward their edge) and an
-     * anti-aliased rim.
+     * The sun: a dazzling disc, nearly white with a touch of the star's black-body colour and
+     * only slightly dimmer towards its edge (as real stars are), inside a soft glow of light
+     * scattered round it that fades out to the picture's edge.
      */
     public static BufferedImage sunGlow(WorldPalette palette) {
         int n = 512;
         float[] tint = palette.sunTint;
         float[] rim = WorldPalette.blackBody(Math.max(1800, palette.starTemperatureK * 0.6));
         BufferedImage img = new BufferedImage(n, n, BufferedImage.TYPE_INT_ARGB);
-        float radius = n / 2f - 1f;
+        float radius = n / 2f - 1f, discPixels = radius * SUN_DISC;
         for (int y = 0; y < n; y++) {
             for (int x = 0; x < n; x++) {
                 float dx = x + 0.5f - n / 2f, dy = y + 0.5f - n / 2f;
-                float r = (float) Math.sqrt(dx * dx + dy * dy) / radius;
-                float alpha = WorldPalette.clamp01((1f - r) * radius + 0.5f);
-                if (alpha <= 0f) { img.setRGB(x, y, 0); continue; }
+                float pixels = (float) Math.sqrt(dx * dx + dy * dy);
+                float r = pixels / discPixels;
+                // The glow: bright close to the disc, fading away to nothing at the picture's edge
+                float out = Math.max(0f, (pixels - discPixels) / (radius - discPixels));
+                float glow = out >= 1f ? 0f : 0.75f * (float) Math.pow(1f - out, 3.0);
+                float gr = 0.8f + 0.2f * tint[0], gg = 0.8f + 0.2f * tint[1], gb = 0.8f + 0.2f * tint[2];
+                float disc = WorldPalette.clamp01((1f - r) * discPixels + 0.5f);
+                if (disc <= 0f) {
+                    img.setRGB(x, y, glow <= 0f ? 0 : argb(glow, gr, gg, gb));
+                    continue;
+                }
                 float mu = (float) Math.sqrt(Math.max(0f, 1f - r * r));
-                float limb = 1f - 0.45f * (1f - mu);
-                float edge = (float) Math.pow(r, 3);
-                float cr = (1f - edge) * (0.6f + 0.4f * tint[0]) + edge * rim[0];
-                float cg = (1f - edge) * (0.6f + 0.4f * tint[1]) + edge * rim[1];
-                float cb = (1f - edge) * (0.6f + 0.4f * tint[2]) + edge * rim[2];
-                float centreBoost = 1f + 0.35f * (1f - r);
-                img.setRGB(x, y, argb(alpha, cr * limb * centreBoost, cg * limb * centreBoost, cb * limb * centreBoost));
+                float limb = 1f - 0.12f * (1f - mu);
+                float edge = (float) Math.pow(r, 10) * 0.35f;
+                float cr = (1f - edge) * (0.88f + 0.12f * tint[0]) + edge * rim[0];
+                float cg = (1f - edge) * (0.88f + 0.12f * tint[1]) + edge * rim[1];
+                float cb = (1f - edge) * (0.88f + 0.12f * tint[2]) + edge * rim[2];
+                float alpha = disc + (1f - disc) * glow;
+                img.setRGB(x, y, argb(alpha, Math.min(1f, cr * limb * 1.1f), Math.min(1f, cg * limb * 1.1f), Math.min(1f, cb * limb * 1.1f)));
             }
         }
         return img;

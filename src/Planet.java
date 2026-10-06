@@ -130,8 +130,21 @@ public final class Planet {
         double[] sun = point(declination, noonLongitude);
         double lat = latitude(z), lon = longitude(x);
         double[] up = point(lat, lon), e = east(lon), n = north(lat, lon);
-        return new float[] { (float) dot(sun, e), (float) dot(sun, up), (float) -dot(sun, n) };
+        float[] d = { (float) dot(sun, e), (float) dot(sun, up), (float) -dot(sun, n) };
+        // It's always day wherever the player is: the sun is never let below MIN_SUN_ELEVATION
+        // (held at that height in the same bearing), however far they walk
+        if (d[1] < SIN_MIN_SUN) {
+            float flat = (float) Math.sqrt(d[0] * d[0] + d[2] * d[2]);
+            if (flat < 1e-5f) { d[0] = 1f; flat = 1f; }
+            float across = (float) Math.sqrt(1.0 - SIN_MIN_SUN * SIN_MIN_SUN) / flat;
+            d = new float[] { d[0] * across, (float) SIN_MIN_SUN, d[2] * across };
+        }
+        return d;
     }
+
+    // The lowest the sun is ever seen, in degrees above the horizon
+    public static final double MIN_SUN_ELEVATION = 10.0;
+    private static final double SIN_MIN_SUN = Math.sin(Math.toRadians(MIN_SUN_ELEVATION));
 
     /** The direction in the world of the planet's north pole star (the celestial pole) seen from (x, z). */
     public static float[] celestialPole(double z) {

@@ -7,6 +7,9 @@ import java.util.List;
 import java.util.Map;
 
 public class InfrastructureObject {
+
+    // How much of the snow that would lie on a road has been cleared off it
+    private static final float ROAD_SNOW_CLEARED = 0.5f;
     /** SIGN is a single roadside or garden sign; BATCH is pre-merged world-space geometry (roads, rails, houses, fences). */
     public enum Type { SIGN, BATCH }
 
@@ -341,7 +344,14 @@ public class InfrastructureObject {
                     part.model.shader.use(gl);
                     part.model.shader.setFloat(gl, "weathering", part.weathering);
                 }
+                // Roads (and their paint, tracks and driveways) are kept clearer of snow than the land round them
+                boolean cleared = part.name.equals("asphalt") || part.name.equals("line") || part.name.equals("dirt") || part.name.equals("driveway");
+                if (cleared) {
+                    part.model.shader.use(gl);
+                    part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
+                }
                 part.model.render(gl, ambientLight, nightProportion);
+                if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
                 if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
                 if (track) {
                     part.model.shader.setFloat(gl, "useSoilRegions", 0f);

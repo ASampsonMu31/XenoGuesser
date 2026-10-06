@@ -31,9 +31,13 @@ public class Inhabitants {
 
     // People are looked after in square cells of this size around the viewer
     private static final float CELL = 200f;
-    private static final float ACTIVE_RADIUS = 750f;
+    // Neighbourhoods are peopled (and their vehicles parked) out to here: as far as vehicles are
+    // drawn, so none appear out of nowhere; people further than they're drawn are moved on less often
+    private static final float ACTIVE_RADIUS = Vehicles.DRAW_DISTANCE;
+    // Neighbourhoods filled in a frame, nearest first (so crossing into new ground never stalls one)
+    private static final int CELLS_PER_FRAME = 6;
     private static final float DRAW_DISTANCE = 850f;
-    private static final int MAX_PEOPLE = 360;
+    private static final int MAX_PEOPLE = 800;
 
     /** One nation's dress. */
     private static final class Culture {
@@ -131,7 +135,7 @@ public class Inhabitants {
     // How far someone will walk to borrow a neighbour's vehicle that nobody is using
     private static final float BORROW_REACH = 100f;
     // How many vehicles passing through (with no household nearby) are kept on the roads round the viewer
-    private static final int THROUGH_TRAFFIC = 18;
+    private static final int THROUGH_TRAFFIC = 36;
     private static final float STUCK_SECONDS = 1.5f;
     private static final float HOP_SECONDS = 0.6f;
     // Where the viewer is: someone hopelessly stuck may be quietly moved on, out of sight
@@ -296,6 +300,16 @@ public class Inhabitants {
         door.bone(1).part(OrganismMesh.PART_TRIM).resetTransform();
         door.box(0f, 0f, 0f, 1f, 1f, 1f);
         doorMesh = door.build(gl);
+        // A border's traffic lights: the pole and the housing round the lamps (bone 0, in the
+        // light's own space, a unit up), and a lamp (bone 0, a unit box)
+        OrganismMesh.Builder frame = new OrganismMesh.Builder();
+        frame.bone(0).part(OrganismMesh.PART_METAL).resetTransform();
+        frame.box(0f, 0f, 0f, 1f, 1f, 1f);
+        lightFrameMesh = frame.build(gl);
+        OrganismMesh.Builder lamp = new OrganismMesh.Builder();
+        lamp.bone(0).part(OrganismMesh.PART_EYE).resetTransform();
+        lamp.box(0f, 0f, 0f, 1f, 1f, 1f);
+        lampMesh = lamp.build(gl);
         Products products = infrastructure.products();
         for (int n : cultures.keySet()) {
             OrganismMesh[] packed = new OrganismMesh[PACKINGS];
@@ -657,6 +671,35 @@ public class Inhabitants {
         return b;
     }
 
+    // The guards in the border checks' booths near the viewer, by booth (see InfrastructureManager.borderBooths)
+    private final Map<Integer, Person> guards = new HashMap<>();
+    private final Map<Integer, Integer> guardNations = new HashMap<>();
+    private List<float[]> booths;
+
+    /** Puts a guard in each border booth near the viewer, and lets those far behind go. */
+    private void staffBooths() {
+        if (booths == null) booths = infrastructure.borderBooths();
+        for (int i = 0; i < booths.size(); i++) {
+            float[] b = booths.get(i);
+            boolean near = Math.hypot(b[0] - viewerX, b[1] - viewerZ) < ACTIVE_RADIUS;
+            if (!near) {
+                guards.remove(i);
+                continue;
+            }
+            if (guards.containsKey(i)) continue;
+            Person guard = new Person();
+            Random rand = new Random(i * 7919L + 17L);
+            dress(guard, (int) b[4], rand);
+            guard.rand = rand;
+            guard.x = b[0];
+            guard.z = b[1];
+            guard.heading = (float) Math.atan2(b[2], b[3]);
+            guard.phase = Phase.INSIDE;
+            guards.put(i, guard);
+            guardNations.put(i, (int) b[4]);
+        }
+    }
+
     private void pose(Person p, float time) {
         pose(p, time, null);
     }
@@ -781,23 +824,10 @@ public class Inhabitants {
         this.viewerX = viewerX;
         this.viewerZ = viewerZ;
         int cellX = (int) Math.floor(viewerX / CELL), cellZ = (int) Math.floor(viewerZ / CELL);
+        int reach = (int) Math.ceil(ACTIVE_RADIUS / CELL);
         if (cellX != lastCellX || cellZ != lastCellZ) {
             lastCellX = cellX;
             lastCellZ = cellZ;
-            int reach = (int) Math.ceil(ACTIVE_RADIUS / CELL);
-            int count = 0;
-            for (List<Person> list : peopleByCell.values()) count += list.size();
-            for (int dz = -reach; dz <= reach; dz++) {
-                for (int dx = -reach; dx <= reach; dx++) {
-                    long key = cellKey(cellX + dx, cellZ + dz);
-                    if (peopleByCell.containsKey(key) || dx * dx + dz * dz > reach * reach) continue;
-                    List<Vehicles.Vehicle> cars = new ArrayList<>();
-                    List<Person> people = populate(cellX + dx, cellZ + dz, MAX_PEOPLE - count, cars);
-                    count += people.size();
-                    peopleByCell.put(key, people);
-                    vehiclesByCell.put(key, cars);
-                }
-            }
             Iterator<Map.Entry<Long, List<Person>>> it = peopleByCell.entrySet().iterator();
             while (it.hasNext()) {
                 Map.Entry<Long, List<Person>> entry = it.next();
@@ -820,6 +850,29 @@ public class Inhabitants {
                     }
                 }
             }
+            // What's still to be peopled, nearest first
+            unpeopled.clear();
+            for (int dz = -reach; dz <= reach; dz++) {
+                for (int dx = -reach; dx <= reach; dx++) {
+                    if (dx * dx + dz * dz > reach * reach || peopleByCell.containsKey(cellKey(cellX + dx, cellZ + dz))) continue;
+                    unpeopled.add(new int[] { cellX + dx, cellZ + dz, dx * dx + dz * dz });
+                }
+            }
+            unpeopled.sort((a, b) -> Integer.compare(a[2], b[2]));
+        }
+        if (!unpeopled.isEmpty()) {
+            int count = 0;
+            for (List<Person> list : peopleByCell.values()) count += list.size();
+            for (int n = 0; n < CELLS_PER_FRAME && !unpeopled.isEmpty(); n++) {
+                int[] cell = unpeopled.remove(0);
+                long key = cellKey(cell[0], cell[1]);
+                if (peopleByCell.containsKey(key)) continue;
+                List<Vehicles.Vehicle> cars = new ArrayList<>();
+                List<Person> people = populate(cell[0], cell[1], MAX_PEOPLE - count, cars);
+                count += people.size();
+                peopleByCell.put(key, people);
+                vehiclesByCell.put(key, cars);
+            }
         }
         float step = Math.min(dt, 0.1f);
         // Kept only while they could be seen: once out of sight they go, wherever they were off
@@ -835,12 +888,24 @@ public class Inhabitants {
         for (List<Vehicles.Vehicle> cars : vehiclesByCell.values()) allVehicles.addAll(cars);
         allVehicles.addAll(roamingCars);
         allVehicles.addAll(throughCars);
+        // People too far off to be seen are moved on a quarter as often (by four times as much)
+        frame++;
+        float far2 = (DRAW_DISTANCE + 100f) * (DRAW_DISTANCE + 100f);
         for (List<Person> list : peopleByCell.values()) {
-            for (Person p : list) live(p, step);
+            for (Person p : list) {
+                float dx = p.x - viewerX, dz = p.z - viewerZ;
+                if (dx * dx + dz * dz > far2 && p.phase != Phase.DRIVING) {
+                    if (((frame + System.identityHashCode(p)) & 3) != 0) continue;
+                    live(p, Math.min(step * 4f, 0.25f));
+                } else {
+                    live(p, step);
+                }
+            }
         }
         for (Person p : roaming) live(p, step);
         vehicles.update(allVehicles, step, viewerX, viewerZ);
         swingDoors(step);
+        staffBooths();
     }
 
     // ------------------------------------------------------------------ doors
@@ -900,6 +965,58 @@ public class Inhabitants {
      * The open doors near enough to see: the dark of the doorway, and the door swung out
      * on its hinge in the house's door colour. The organism shader is already set up.
      */
+    private OrganismMesh lightFrameMesh, lampMesh;
+    private List<float[]> borderLights;
+    // A traffic light's pole height and thickness, its housing's size, and a lamp's size
+    private static final float LIGHT_POLE = 22f, LIGHT_POLE_HALF = 0.5f, LAMP_SIZE = 2.2f;
+
+    /**
+     * The traffic lights at the borders where the two sides drive on different sides of the
+     * road: a pole with a housing at the top, its two lamps showing through both faces (so
+     * they're seen from either way), one lit for each side's turn and neither in the pause.
+     */
+    private void renderBorderLights(GL3 gl, int bonesLocation, Frustum frustum, Vector3 viewPos) {
+        if (lightFrameMesh == null) return;
+        if (borderLights == null) borderLights = infrastructure.borderLights();
+        for (float[] l : borderLights) {
+            float dx = l[0] - viewPos.x, dz = l[1] - viewPos.z;
+            if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
+            float ground = TerrainMesh.getLayeredHeight(l[0], l[1], terrainNoise);
+            if (!frustum.intersectsSphere(l[0], ground + LIGHT_POLE * 0.5f, l[1], LIGHT_POLE)) continue;
+            boolean vertical = l[4] > 0.5f;
+            // The lamps face along the road (both ways); their row runs up or across the road
+            float heading = (float) Math.atan2(l[2], l[3]);
+            float[] base = Affine.multiply(Affine.translation(l[0], ground, l[1]), Affine.rotationY(heading));
+            float housingW = vertical ? LAMP_SIZE * 1.8f : LAMP_SIZE * 3.4f, housingH = vertical ? LAMP_SIZE * 3.4f : LAMP_SIZE * 1.8f;
+            float top = LIGHT_POLE + housingH * 0.5f;
+            shader.setFloat(gl, "lampGlow", 0f);
+            shader.setVec3(gl, "trimColour", new Vector3(0.2f, 0.2f, 0.22f));
+            // The pole, then the housing
+            System.arraycopy(Affine.multiply(base, Affine.multiply(Affine.translation(0f, LIGHT_POLE * 0.5f, 0f),
+                    Affine.scale(LIGHT_POLE_HALF * 2f, LIGHT_POLE, LIGHT_POLE_HALF * 2f))), 0, bones, 0, 16);
+            gl.glUniformMatrix4fv(bonesLocation, 1, false, bones, 0);
+            lightFrameMesh.render(gl);
+            System.arraycopy(Affine.multiply(base, Affine.multiply(Affine.translation(0f, top, 0f),
+                    Affine.scale(housingW, housingH, LAMP_SIZE * 1.4f))), 0, bones, 0, 16);
+            gl.glUniformMatrix4fv(bonesLocation, 1, false, bones, 0);
+            lightFrameMesh.render(gl);
+            int turn = infrastructure.borderTurn((int) l[5]);
+            for (int k = 0; k < 2; k++) {
+                float offset = (k == 0 ? -1f : 1f) * LAMP_SIZE * 0.85f;
+                float[] at = vertical ? Affine.translation(0f, top - offset, 0f) : Affine.translation(offset, top, 0f);
+                boolean on = turn == k + 1;
+                float[] colour = { l[6 + k * 3], l[7 + k * 3], l[8 + k * 3] };
+                shader.setFloat(gl, "lampGlow", on ? 1f : 0f);
+                shader.setVec3(gl, "eyeColour", on ? vec(colour) : new Vector3(colour[0] * 0.15f, colour[1] * 0.15f, colour[2] * 0.15f));
+                // (through the housing, showing on both faces)
+                System.arraycopy(Affine.multiply(base, Affine.multiply(at, Affine.scale(LAMP_SIZE, LAMP_SIZE, LAMP_SIZE * 1.6f))), 0, bones, 0, 16);
+                gl.glUniformMatrix4fv(bonesLocation, 1, false, bones, 0);
+                lampMesh.render(gl);
+            }
+            shader.setFloat(gl, "lampGlow", 0f);
+        }
+    }
+
     private void renderDoors(GL3 gl, int bonesLocation, Frustum frustum, Vector3 viewPos) {
         if (doorMesh == null) return;
         for (DoorState state : openDoors.values()) {
@@ -985,10 +1102,19 @@ public class Inhabitants {
                 travellers.remove(i);
             }
         }
-        trafficTimer -= dt;
-        if (trafficTimer > 0f || throughCars.size() >= THROUGH_TRAFFIC) return;
-        trafficTimer = 0.5f;
-        float[] from = infrastructure.roadPointBetween(viewerX, viewerZ, Vehicles.OUT_OF_SIGHT, Vehicles.OUT_OF_SIGHT + 300f, trafficRand);
+        // Kept up to strength: a few more each frame while short (so arriving anywhere, there's
+        // traffic on the roads at once, however long the viewer has been there)
+        for (int k = 0; k < 3 && throughCars.size() < THROUGH_TRAFFIC; k++) addThroughCar();
+    }
+
+    /**
+     * One more car passing through: normally coming from out of sight; but when well short (just
+     * arrived somewhere), anywhere on the roads round about, already part way along.
+     */
+    private void addThroughCar() {
+        boolean filling = throughCars.size() < THROUGH_TRAFFIC / 2;
+        float[] from = filling ? infrastructure.roadPointBetween(viewerX, viewerZ, 0f, Vehicles.OUT_OF_SIGHT + 300f, trafficRand)
+                : infrastructure.roadPointBetween(viewerX, viewerZ, Vehicles.OUT_OF_SIGHT, Vehicles.OUT_OF_SIGHT + 300f, trafficRand);
         if (from == null) return;
         List<InfrastructureManager.Doorway> doors = infrastructure.doorwaysNear(from[0], from[1], 1500f);
         doors.removeIf(d -> d.shop);
@@ -1003,11 +1129,18 @@ public class Inhabitants {
         Vehicles.Vehicle[] made = new Vehicles.Vehicle[1];
         Runnable[] arrive = new Runnable[1];
         arrive[0] = () -> {
-            // There: out of sight it's gone (see above), otherwise on somewhere else
-            float[] onward = outOfSight(made[0].x(), made[0].z()) ? null : farSide(new float[] { made[0].x(), made[0].z() });
-            if (onward == null || !vehicles.travel(made[0], new float[] { made[0].x(), made[0].z() }, onward, arrive[0])) {
+            // There: out of sight it's gone (see above), otherwise on somewhere else: never left
+            // standing on the road
+            float[] here = { made[0].x(), made[0].z() };
+            if (outOfSight(here[0], here[1])) {
                 arrived.add(made[0]);
+                return;
             }
+            for (int attempt = 0; attempt < 8; attempt++) {
+                float[] onward = attempt == 0 ? farSide(here) : infrastructure.roadPointBetween(here[0], here[1], 300f, 2600f, trafficRand);
+                if (onward != null && vehicles.travel(made[0], here, onward, arrive[0])) return;
+            }
+            arrived.add(made[0]);
         };
         // Across to the far side if the roads go there, or else anywhere else out of sight they do
         for (int attempt = 0; attempt < 6 && made[0] == null; attempt++) {
@@ -1025,6 +1158,7 @@ public class Inhabitants {
             made[0] = vehicles.traffic(near.nationId, near, start, end, new Random(trafficRand.nextLong()), arrive[0]);
         }
         if (made[0] == null) return;
+        if (filling) vehicles.skipAlong(made[0], trafficRand.nextFloat() * 0.6f);
         driver.phase = Phase.DRIVING;
         driver.driving = made[0];
         throughCars.add(made[0]);
@@ -1038,6 +1172,10 @@ public class Inhabitants {
         float[] to = infrastructure.roadPointBetween(tx, tz, 0f, 500f, trafficRand);
         return to != null && !outOfSight(to[0], to[1]) ? null : to;
     }
+
+    // Neighbourhoods in range still to be peopled, nearest first ({cell x, cell z, distance squared}); frames counted
+    private final List<int[]> unpeopled = new ArrayList<>();
+    private int frame;
 
     private static long cellKey(int cx, int cz) {
         return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
@@ -2062,7 +2200,8 @@ public class Inhabitants {
                 if (p.phase != Phase.WALKING && seat == null) continue;
                 float px = seat != null ? seat[0] : p.x, pz = seat != null ? seat[2] : p.z;
                 float dx = px - viewPos.x, dz = pz - viewPos.z;
-                if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
+                float drawn = seat != null ? Vehicles.DRAW_DISTANCE : DRAW_DISTANCE;
+                if (dx * dx + dz * dz > drawn * drawn) continue;
                 float ground = seat != null ? seat[1] - height * 0.5f : standingHeight(p);
                 if (!frustum.intersectsSphere(px, ground + height * 0.5f, pz, height)) continue;
                 pose(p, time, seat);
@@ -2070,10 +2209,22 @@ public class Inhabitants {
                 drawPerson(gl, p, p.home.nationId, dx * dx + dz * dz < 260f * 260f);
             }
         }
+        // The border guards, standing in their booths
+        for (Map.Entry<Integer, Person> entry : guards.entrySet()) {
+            Person g = entry.getValue();
+            float dx = g.x - viewPos.x, dz = g.z - viewPos.z;
+            if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
+            float ground = standingHeight(g);
+            if (!frustum.intersectsSphere(g.x, ground + height * 0.5f, g.z, height)) continue;
+            pose(g, time, null);
+            gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
+            drawPerson(gl, g, guardNations.get(entry.getKey()), dx * dx + dz * dz < 260f * 260f);
+        }
         shader.setFloat(gl, "gloss", 0.55f);
-        vehicles.render(gl, shader, allVehicles, frustum, viewPos.x, viewPos.z, DRAW_DISTANCE);
+        vehicles.render(gl, shader, allVehicles, frustum, viewPos.x, viewPos.z, Vehicles.DRAW_DISTANCE);
         shader.setFloat(gl, "gloss", 0.2f);
         renderDoors(gl, bonesLocation, frustum, viewPos);
+        renderBorderLights(gl, bonesLocation, frustum, viewPos);
         gl.glEnable(GL.GL_CULL_FACE);
     }
 

@@ -1,5 +1,59 @@
 #version 330 core
 
+// What the distance fades into: an even haze, a greyed version of the sky's colour (greyer
+// still under cloud), the same in every direction (see Shader.setFog)
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
+// Snow on the ground (see XenoGuesser_GLEventListener.bindSnowCover): over the whole world, a
+// texture of the climate at sea level (its temperature, and how much rain or snow falls).
+// Snow lies where it's colder than the water's freezing point, the higher the colder (so on
+// mountain tops), wherever enough falls; and while it's snowing, fresh snow settles in
+// growing patches over everywhere near or below freezing. It settles on what faces up.
+uniform sampler2D snowCover;
+uniform vec4 snowMap;        // 1 / the world's width, half its width, whether it's ready, fresh snow (0 to 1)
+uniform vec4 snowClimate;    // the freezing point, degrees below it for snow to lie thickly, degrees colder per unit up, sea level
+uniform vec3 snowColour;
+uniform float snowCleared;  // how much of the snow has been cleared off this (roads: see InfrastructureObject)
+uniform float snowToday;    // how much warmer (Celsius) today is than usual round the player
+// (an exact hash of whole-numbered cells: a sine hash loses precision far from the origin and
+// smears into stripes)
+float snowHash(ivec2 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return float(h & 16777215u) / 16777216.0;
+}
+float snowNoise(vec2 p) {
+    vec2 f = fract(p);
+    ivec2 i = ivec2(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(snowHash(i), snowHash(i + ivec2(1, 0)), f.x), mix(snowHash(i + ivec2(0, 1)), snowHash(i + ivec2(1, 1)), f.x), f.y);
+}
+float snowAt(vec3 p, vec3 n) {
+    if (snowMap.z < 0.5) return 0.0;
+    vec2 climate = texture(snowCover, (p.xz + vec2(snowMap.y)) * snowMap.x).rg;
+    float celsius = climate.r * 100.0 - 60.0 - max(0.0, p.y - snowClimate.w) * snowClimate.z;
+    float falls = clamp((climate.g - 0.05) / 0.3, 0.0, 1.0);
+    float lying = smoothstep(0.0, 1.0, (snowClimate.x - celsius) / snowClimate.y) * falls;
+    // Fresh snow: flakes dotted about, then patches, then a full covering as it piles up
+    float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
+    // How much of the surface is under snow, less on steep faces...
+    // (never quite all: there are always gaps where the surface shows through)
+    float amount = min(0.8, max(lying, snowMap.w * snowy)) * smoothstep(0.45, 0.8, n.y) * (1.0 - snowCleared);
+    if (amount <= 0.0) return 0.0;
+    // ...laid down as flakes and clumps of snow over the surface as it is (fine dots, then
+    // patches, then drifts), each either snow or not, so a light dusting is scattered flakes
+    // and a heavy fall covers all but a few gaps
+    float speckle = snowNoise(p.xz * 5.3) * 0.38 + snowNoise(p.xz * 1.1) * 0.34 + snowNoise(p.xz * 0.19) * 0.28;
+    // (spread out evenly, as the sum bunches round the middle, so the amount is the share covered)
+    speckle = smoothstep(0.22, 0.78, speckle);
+    return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
+}
+
 in vec3 aPos;
 in vec3 aNormal;
 in vec2 aTexCoord;
@@ -40,6 +94,7 @@ void main() {
     vec3 sampledColor = texture(diffuse_texture, scaledUV).rgb;
 
     vec3 texColor = sampledColor;
+    texColor = mix(texColor, snowColour, snowAt(aPos, normalize(aNormal)));
 
     // Multiplicative blending for ambient lighting
     vec3 ambient = ambientLight * material.ambient * texColor;
@@ -87,7 +142,7 @@ void main() {
     fogFactor = clamp(fogFactor, 0.0, 1.0); 
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
-    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
+    vec3 finalColourWithFog = mix(fogHaze(dynamicSkyColour), result, fogFactor);
 
     fragColour = vec4(finalColourWithFog, 1.0);
 }

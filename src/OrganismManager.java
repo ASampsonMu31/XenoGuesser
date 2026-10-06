@@ -48,6 +48,8 @@ public class OrganismManager {
         // Finding a way round things: the heading chosen, when to look again, and progress
         // over the last few seconds to tell when it is stuck
         float steerHeading = Float.NaN, steerTimer;
+        // A hop over a rock in the way: how far through it (seconds, 0 when not hopping) and how high
+        float hopTime, hopHeight;
         float progressTimer, progressX, progressZ, progressExpected;
     }
 
@@ -118,6 +120,66 @@ public class OrganismManager {
             species.add(new OrganismSpecies(seed, i, regions));
             System.out.printf("[ORGANISMS] Species %d: %s%n", i + 1, species.get(i).describe());
         }
+        // Each species' name, made as the planet's is, none the same as the planet's or another's
+        java.util.Set<String> taken = new java.util.HashSet<>();
+        taken.add(PlanetName.forSeed(seed).spelling.toLowerCase());
+        for (int i = 0; i < species.size(); i++) {
+            String name = null;
+            for (int attempt = 0; name == null || !taken.add(name.toLowerCase()); attempt++) {
+                name = PlanetName.forSeed(seed * 0x2545F4914F6CDD1DL + (i + 1) * 1000003L + attempt * 7919L).spelling;
+            }
+            speciesNames.add(name);
+        }
+    }
+
+    // Each species' name (see the constructor)
+    private final List<String> speciesNames = new ArrayList<>();
+
+    /** Species i's name. */
+    public String speciesName(int i) {
+        return i >= 0 && i < speciesNames.size() ? speciesNames.get(i) : "";
+    }
+
+    /**
+     * A picture of an individual of species i, size pixels square on a clear background:
+     * drawn by the GPU from three-quarters on, lit from the side (for the map's choices).
+     */
+    public java.awt.image.BufferedImage portrait(GL3 gl, int i, int size) {
+        java.awt.image.BufferedImage view = view(gl, i, 384, (float) Math.toRadians(-40), 0f, 0f);
+        return view == null ? null : Offscreen.cropTogether(new java.awt.image.BufferedImage[] { view }, size)[0];
+    }
+
+    /**
+     * An individual of species i, standing at (x, z) and turned to heading, seen from
+     * three-quarters on in a wide view (render pixels square, clear round it): to be cut down to
+     * the creature with Offscreen.cropTogether. Drawn where the viewer is keeps the planet's
+     * curve out of it.
+     */
+    public java.awt.image.BufferedImage view(GL3 gl, int i, int render, float heading, float x, float z) {
+        if (shader == null || i < 0 || i >= species.size()) return null;
+        OrganismSpecies s = species.get(i);
+        Creature c = create(s, x, z, new Random(seed * 131L + i));
+        c.heading = heading;
+        c.walking = 0f;
+        c.gaitPhase = 0.25f;
+        c.hopTime = 0f;
+        float ground = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+        float reach = s.reachRadius() * c.sizeScale * c.legScale;
+        // (where draw puts it, at time 0)
+        float centreY = s.locomotion == OrganismSpecies.Locomotion.FLYER ? Math.max(ground, seaLevel) + s.bodyHeight
+                : s.locomotion == OrganismSpecies.Locomotion.FLOATER ? Math.max(ground, seaLevel) + (s.bodyHeight + (float) Math.sin(c.homeX) * 2.5f) * c.sizeScale
+                : ground + s.bodyHeight * c.legScale * c.sizeScale * 0.7f;
+        Vector3 centre = new Vector3(x, centreY, z);
+        float distance = reach * 5f + 25f;
+        Vector3 eye = new Vector3(x + distance * 0.62f, centreY + distance * 0.42f, z + distance * 0.66f);
+        Matrix4 view = com.xenoguesser.math.Matrix4Transform.lookAt(eye, centre, new Vector3(0f, 1f, 0f));
+        Matrix4 projection = com.xenoguesser.math.Matrix4Transform.perspective(45f, 1f, distance * 0.02f, distance * 4f);
+        Matrix4 viewProjection = Matrix4.multiply(projection, view);
+        Frustum frustum = new Frustum();
+        frustum.update(viewProjection);
+        Vector3 sun = new Vector3(eye.x + distance * 3f, eye.y + distance * 6f, eye.z - distance * 1f);
+        return Offscreen.capture(gl, render, () -> renderCreatures(gl, viewProjection, frustum, eye, sun, new float[] { 1f, 0.97f, 0.92f },
+                new Vector3(0.55f, 0.55f, 0.6f), new Matrix4(1), null, 0f, List.of(c)));
     }
 
     public int speciesCount() {
@@ -401,7 +463,15 @@ public class OrganismManager {
                 float nz = c.z + (float) Math.cos(c.heading) * speed * pace * dt;
                 if (TerrainMesh.getLayeredHeight(nx, nz, terrainNoise) > seaLevel + 0.5f) {
                     if (collision != null) {
-                        float[] free = resolveBody(c, nx, nz);
+                        // Small rocks it simply steps over; walking into a bigger one, it hops
+                        // over it, carrying on forwards (a wall or anything too tall still stops it)
+                        float legs = legHeight(c);
+                        if (c.hopTime <= 0f && collision.blocked(nx, nz, bodyRadius(c), c, legs * STEP_OVER)
+                                && !collision.blocked(nx, nz, bodyRadius(c), c, legs * HOP_OVER)) {
+                            c.hopTime = HOP_SECONDS;
+                            c.hopHeight = legs * HOP_OVER;
+                        }
+                        float[] free = resolveBody(c, nx, nz, c.hopTime > 0f ? c.hopHeight : legs * STEP_OVER);
                         nx = free[0];
                         nz = free[1];
                     }
@@ -427,6 +497,7 @@ public class OrganismManager {
                 }
             }
         }
+        if (c.hopTime > 0f) c.hopTime = Math.max(0f, c.hopTime - dt);
         float targetWalking = resting ? 0f : 1f;
         c.walking += (targetWalking - c.walking) * Math.min(1f, dt * 3f);
         c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond * c.walking) % 1f;
@@ -453,18 +524,34 @@ public class OrganismManager {
         return Math.max(0.6f, Math.min(bodyRadius(c), c.species.halfLength() * c.sizeScale * 0.3f));
     }
 
-    /** Moves the whole body, middle, nose and tail, out of anything it has walked into. */
-    private float[] resolveBody(Creature c, float x, float z) {
+    // Rocks lower than this (times its legs' height) it steps over; those up to this it hops
+    // over, taking this long in the air
+    private static final float STEP_OVER = 0.6f, HOP_OVER = 2.4f, HOP_SECONDS = 0.7f;
+
+    /** How high its body stands above the ground on its legs. */
+    private static float legHeight(Creature c) {
+        return Math.max(1f, c.species.bodyHeight * c.legScale * c.sizeScale);
+    }
+
+    /** How high it is off the ground in a hop just now (an arc up and down). */
+    private static float hopLift(Creature c) {
+        if (c.hopTime <= 0f) return 0f;
+        float t = 1f - c.hopTime / HOP_SECONDS;
+        return c.hopHeight * 4f * t * (1f - t);
+    }
+
+    /** Moves the whole body, middle, nose and tail, out of anything it has walked into (anything lower than clearance it passes over). */
+    private float[] resolveBody(Creature c, float x, float z, float clearance) {
         float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
         float nose = noseReach(c), tail = tailReach(c), end = endRadius(c);
         for (int pass = 0; pass < 2; pass++) {
-            float[] middle = collision.resolve(x, z, bodyRadius(c), c);
+            float[] middle = collision.resolve(x, z, bodyRadius(c), c, clearance);
             x = middle[0];
             z = middle[1];
-            float[] head = collision.resolve(x + sin * nose, z + cos * nose, end, c);
+            float[] head = collision.resolve(x + sin * nose, z + cos * nose, end, c, clearance);
             x = head[0] - sin * nose;
             z = head[1] - cos * nose;
-            float[] back = collision.resolve(x - sin * tail, z - cos * tail, end, c);
+            float[] back = collision.resolve(x - sin * tail, z - cos * tail, end, c, clearance);
             x = back[0] + sin * tail;
             z = back[1] + cos * tail;
         }
@@ -473,6 +560,13 @@ public class OrganismManager {
 
     public void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
                        float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
+        List<Creature> all = new ArrayList<>(showcase);
+        for (List<Creature> list : creaturesByChunk.values()) all.addAll(list);
+        renderCreatures(gl, viewProjection, frustum, viewPos, sunPos, sunColour, ambient, skyRotation, sky, time, all);
+    }
+
+    private void renderCreatures(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
+                                 float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time, List<Creature> creatures) {
         if (shader == null) return;
         shader.use(gl);
         shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
@@ -492,10 +586,7 @@ public class OrganismManager {
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
         // Thin parts are open lathes seen from all sides
         gl.glDisable(GL.GL_CULL_FACE);
-        for (List<Creature> list : creaturesByChunk.values()) {
-            for (Creature c : list) draw(gl, c, frustum, viewPos, bonesLocation, time);
-        }
-        for (Creature c : showcase) draw(gl, c, frustum, viewPos, bonesLocation, time);
+        for (Creature c : creatures) draw(gl, c, frustum, viewPos, bonesLocation, time);
         gl.glEnable(GL.GL_CULL_FACE);
     }
 
@@ -505,7 +596,9 @@ public class OrganismManager {
         if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) return;
         float ground = TerrainMesh.getLayeredHeight(c.x, c.z, terrainNoise);
         float radius = s.reachRadius() * c.sizeScale * c.legScale;
-        if (!frustum.intersectsSphere(c.x, ground + radius * 0.3f, c.z, radius)) return;
+        // (a flyer is tested where it flies, not on the ground below)
+        float middle = s.locomotion == OrganismSpecies.Locomotion.FLYER ? Math.max(ground, seaLevel) + s.bodyHeight : ground + radius * 0.3f;
+        if (!frustum.intersectsSphere(c.x, middle, c.z, radius + (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 10f : 0f))) return;
 
         // Level the body along the slope beneath it
         float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
@@ -525,7 +618,7 @@ public class OrganismManager {
         } else {
             float bob = s.locomotion == OrganismSpecies.Locomotion.WALKER
                     ? (float) Math.abs(Math.sin(c.gaitPhase * Math.PI * 4)) * 0.03f * s.bodyHeight * c.walking : 0f;
-            height = Math.max(ground, (frontGround + backGround) * 0.5f) + (s.bodyHeight * c.legScale + bob) * c.sizeScale;
+            height = Math.max(ground, (frontGround + backGround) * 0.5f) + (s.bodyHeight * c.legScale + bob) * c.sizeScale + hopLift(c);
         }
         float[] body = Affine.multiply(Affine.translation(c.x, height, c.z),
                 Affine.multiply(Affine.rotationY(c.heading),

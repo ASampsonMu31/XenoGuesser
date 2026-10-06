@@ -389,9 +389,15 @@ public class OrganismSpecies {
         RegionalFactor climate = regions.createTemperaturePreference(rand.nextFloat(), 0.15f + rand.nextFloat() * 0.25f);
         RegionalFactor water = regions.createWaterPreference(rand.nextInt(40), 25.0f + rand.nextFloat() * 70.0f);
         RegionalFactor patches = regions.createNoiseMap(2.0e-5f + rand.nextFloat() * 3.0e-5f);
+        // Its home region: broad noise (each feature a large part of a continent across), only its
+        // highest third counting, so a species keeps to one part of the world (one that likes the
+        // cold north needn't live in the cold south too)
+        RegionalFactor home = regions.createNoiseMap(HOME_SCALE_LOW + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE);
         habitat = new RegionalFactor(1.0f, (cx, cz, wx, wz) -> {
             float suitability = climate.evaluate(cx, cz, wx, wz) * (0.35f + 0.65f * water.evaluate(cx, cz, wx, wz));
-            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f;
+            float h = home.evaluate(cx, cz, wx, wz);
+            float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
+            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * t * t * (3f - 2f * t);
         });
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
@@ -400,6 +406,10 @@ public class OrganismSpecies {
         hueCline = new PerlinNoise(seed + 9201L + index * 31L);
         morphCline = new PerlinNoise(seed + 9301L + index * 31L);
     }
+
+    // A species' home region (see the constructor): the size of the noise it's drawn from, and
+    // where on that noise it starts and is fully at home
+    public static final float HOME_SCALE_LOW = 6.0e-6f, HOME_SCALE_RANGE = 4.0e-6f, HOME_FROM = 0.5f, HOME_TO = 0.64f;
 
     private int nearestSegment(float z, int first, int last) {
         int best = first;

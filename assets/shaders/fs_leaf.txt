@@ -1,5 +1,13 @@
 #version 330 core
 
+// What the distance fades into: an even haze, a greyed version of the sky's colour (greyer
+// still under cloud), the same in every direction (see Shader.setFog)
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
 // Inputs from vertex shader
 in vec3 aPos; 
 in vec3 aNormal;
@@ -67,7 +75,7 @@ void main() {
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
     // Mix the original leaf color with the sky background based on distance
-    vec3 finalColourWithFog = mix(dynamicSkyColour, result, fogFactor);
+    vec3 finalColourWithFog = mix(fogHaze(dynamicSkyColour), result, fogFactor);
 
     fragColour = vec4(finalColourWithFog, 1.0);
 }

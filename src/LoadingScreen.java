@@ -76,6 +76,10 @@ public class LoadingScreen extends JComponent {
     private String lastLabel;
     private BufferedImage terminal;
     private String terminalKey = "";
+    // The screen's corners in the window (top left, top right, bottom right, bottom left), and the
+    // terminal drawn in its perspective onto them (redone when its text or the layout changes)
+    private float[][] screenCorners = new float[4][];
+    private BufferedImage warpedTerminal;
 
     // The spaceman: which way he faces, and dragging him round
     private float spacemanAngle = 200f;
@@ -461,6 +465,9 @@ public class LoadingScreen extends JComponent {
                 : new BufferedImage(foreground.getWidth(), foreground.getHeight(), BufferedImage.TYPE_INT_RGB);
 
         screenBox = polygon("screen.bottomLeft", "screen.bottomRight", "screen.topRight", "screen.topLeft").getBounds();
+        screenCorners = new float[][] { point(layout.getProperty("screen.topLeft", "0,0")), point(layout.getProperty("screen.topRight", "0,0")),
+                point(layout.getProperty("screen.bottomRight", "0,0")), point(layout.getProperty("screen.bottomLeft", "0,0")) };
+        warpedTerminal = null;
         layersWidth = w;
         layersHeight = h;
     }
@@ -568,16 +575,74 @@ public class LoadingScreen extends JComponent {
         int percent = Math.round(smoothedFraction * 100);
         boolean blink = (System.currentTimeMillis() / 450) % 2 == 0;
         String key = label + "|" + finishedSteps.size() + "|" + percent + "|" + Math.round(secondsLeft) + "|" + blink;
-        if (!key.equals(terminalKey)) {
+        if (!key.equals(terminalKey) || warpedTerminal == null) {
             terminal = renderTerminal(label, failed, percent, secondsLeft, blink);
             terminalKey = key;
+            warpedTerminal = warp(terminal);
         }
+        if (warpedTerminal != null) g.drawImage(warpedTerminal, screenBox.x, screenBox.y, null);
+    }
 
-        Graphics2D t = (Graphics2D) g.create();
-        t.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        int inset = Math.max(2, screenBox.width / 30);
-        t.drawImage(terminal, screenBox.x + inset, screenBox.y + inset, screenBox.width - inset * 2, screenBox.height - inset * 2, null);
-        t.dispose();
+    /**
+     * The terminal's picture laid onto the screen as the monitor is seen, in perspective: each
+     * pixel of the screen's box is taken back through the projective map from the picture's
+     * rectangle to the screen's four corners and sampled there (bilinearly), with a thin dark
+     * margin of glass left round it. Pixels outside the screen are left clear.
+     */
+    private BufferedImage warp(BufferedImage source) {
+        int w = screenBox.width, h = screenBox.height;
+        if (w <= 0 || h <= 0 || screenCorners[0] == null) return null;
+        // The map from the unit square ((0,0) top left to (1,1) bottom right) to the corners
+        float[] c0 = screenCorners[0], c1 = screenCorners[1], c2 = screenCorners[2], c3 = screenCorners[3];
+        double sx = c0[0] - c1[0] + c2[0] - c3[0], sy = c0[1] - c1[1] + c2[1] - c3[1];
+        double dx1 = c1[0] - c2[0], dx2 = c3[0] - c2[0], dy1 = c1[1] - c2[1], dy2 = c3[1] - c2[1];
+        double det = dx1 * dy2 - dx2 * dy1;
+        if (Math.abs(det) < 1e-9) return null;
+        double g7 = (sx * dy2 - dx2 * sy) / det, h8 = (dx1 * sy - sx * dy1) / det;
+        double a = c1[0] - c0[0] + g7 * c1[0], b = c3[0] - c0[0] + h8 * c3[0], cc = c0[0];
+        double d = c1[1] - c0[1] + g7 * c1[1], e = c3[1] - c0[1] + h8 * c3[1], f = c0[1];
+        // ...and its inverse, from the window back to the square
+        double i00 = e - f * h8, i01 = cc * h8 - b, i02 = b * f - cc * e;
+        double i10 = f * g7 - d, i11 = a - cc * g7, i12 = cc * d - a * f;
+        double i20 = d * h8 - e * g7, i21 = b * g7 - a * h8, i22 = a * e - b * d;
+        float margin = 1f / 30f;
+        int sw = source.getWidth(), sh = source.getHeight();
+        int[] src = source.getRGB(0, 0, sw, sh, null, 0, sw);
+        int[] out = new int[w * h];
+        int glass = 0xFF040E07;
+        for (int y = 0; y < h; y++) {
+            double py = screenBox.y + y + 0.5;
+            for (int x = 0; x < w; x++) {
+                double px = screenBox.x + x + 0.5;
+                double q = i20 * px + i21 * py + i22;
+                double u = (i00 * px + i01 * py + i02) / q, v = (i10 * px + i11 * py + i12) / q;
+                if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+                double su = (u - margin) / (1 - 2 * margin), sv = (v - margin) / (1 - 2 * margin);
+                if (su < 0 || su > 1 || sv < 0 || sv > 1) {
+                    out[y * w + x] = glass;
+                    continue;
+                }
+                out[y * w + x] = sample(src, sw, sh, (float) (su * sw - 0.5), (float) (sv * sh - 0.5));
+            }
+        }
+        BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+        image.setRGB(0, 0, w, h, out, 0, w);
+        return image;
+    }
+
+    /** The picture's colour at a point between its pixels, blended from the four round it. */
+    private static int sample(int[] src, int w, int h, float x, float y) {
+        int x0 = Math.max(0, Math.min(w - 1, (int) Math.floor(x))), y0 = Math.max(0, Math.min(h - 1, (int) Math.floor(y)));
+        int x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+        float fx = Math.max(0f, Math.min(1f, x - x0)), fy = Math.max(0f, Math.min(1f, y - y0));
+        int p00 = src[y0 * w + x0], p10 = src[y0 * w + x1], p01 = src[y1 * w + x0], p11 = src[y1 * w + x1];
+        int result = 0xFF000000;
+        for (int shift = 0; shift <= 16; shift += 8) {
+            float top = ((p00 >> shift) & 255) * (1 - fx) + ((p10 >> shift) & 255) * fx;
+            float bottom = ((p01 >> shift) & 255) * (1 - fx) + ((p11 >> shift) & 255) * fx;
+            result |= Math.round(top * (1 - fy) + bottom * fy) << shift;
+        }
+        return result;
     }
 
     private BufferedImage renderTerminal(String label, boolean failed, int percent, float secondsLeft, boolean blink) {

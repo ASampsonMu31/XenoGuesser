@@ -41,6 +41,8 @@ public class BuildingStyle {
     public int sides = 4;
     /** Top of the walls relative to the base: below 1 leans inward, above 1 flares out. */
     public float taper = 1.0f;
+    // A tower block, for the hearts of big cities (see FormVariant.tower)
+    public boolean tower;
 
     // Wall finish and its texture parameters
     public WallFinish wallFinish = WallFinish.PLAIN;
@@ -359,6 +361,8 @@ public class BuildingStyle {
      * traditional form plus its own mix of these.
      */
     public static final class FormVariant {
+        // A tower: built only in the hearts of big cities (see InfrastructureManager.chooseForm)
+        public boolean tower;
         public Footprint footprint;
         public int sides;
         public float taper;
@@ -408,8 +412,40 @@ public class BuildingStyle {
             form.overhangScale = 0.5f + rand.nextFloat();
             forms.add(form);
         }
+        // Towers for the big cities: tall plain slabs and cylinders with flat roofs, many
+        // storeys high (their own random numbers, so the ordinary forms stay as they were)
+        Random towerRand = new Random(seed + 6363L);
+        for (int t = 0; t < TOWER_FORMS; t++) {
+            FormVariant form = new FormVariant();
+            form.tower = true;
+            float shapeRoll = towerRand.nextFloat();
+            if (shapeRoll < 0.6f) {
+                form.footprint = Footprint.BOX;
+                form.sides = 4;
+            } else if (shapeRoll < 0.8f) {
+                form.footprint = Footprint.ROUND;
+                form.sides = 20;
+            } else {
+                form.footprint = Footprint.POLYGON;
+                form.sides = POLYGON_SIDES[towerRand.nextInt(POLYGON_SIDES.length)];
+            }
+            form.taper = towerRand.nextFloat() < 0.75f ? 1.0f : 0.85f + towerRand.nextFloat() * 0.1f;
+            form.roofType = RoofType.FLAT;
+            form.sizeScale = 0.85f + towerRand.nextFloat() * 0.4f;
+            form.depthRatio = form.footprint == Footprint.BOX ? 0.65f + towerRand.nextFloat() * 0.35f : 1.0f;
+            form.heightScale = TOWER_HEIGHT_LOW + towerRand.nextFloat() * (TOWER_HEIGHT_HIGH - TOWER_HEIGHT_LOW);
+            form.roofPitch = towerRand.nextFloat();
+            form.overhangScale = 0.3f + towerRand.nextFloat() * 0.4f;
+            forms.add(form);
+        }
         return forms;
     }
+
+    // How many tower forms a world has, how many times a house's height they stand, and the
+    // tallest a building's walls can be (towers much taller than anything else)
+    private static final int TOWER_FORMS = 3;
+    private static final float TOWER_HEIGHT_LOW = 4f, TOWER_HEIGHT_HIGH = 7f;
+    private static final float TALLEST_WALL = 220.0f, TALLEST_TOWER = 700.0f;
 
     /**
      * This nation's house in another form: the nation's colours, doors, windows and
@@ -418,7 +454,7 @@ public class BuildingStyle {
     public BuildingStyle withForm(FormVariant form, Random rand) {
         float newWidth = Math.max(35.0f, Math.min(150.0f, width * form.sizeScale));
         float newDepth = newWidth * form.depthRatio;
-        float newWallHeight = Math.max(18.0f, Math.min(220.0f, wallHeight * form.heightScale));
+        float newWallHeight = Math.max(18.0f, Math.min(form.tower ? TALLEST_TOWER : TALLEST_WALL, wallHeight * form.heightScale));
         float pitch = form.roofPitch;
         float newRoofHeight;
         float newOverhang;
@@ -431,6 +467,7 @@ public class BuildingStyle {
         BuildingStyle style = new BuildingStyle(form.roofType, newWidth, newDepth, newWallHeight, newRoofHeight, newOverhang,
                 Math.min(newWidth * 0.2f, doorWidth), doorHeight, signChance, wallColour, roofColour, doorColour);
         style.footprint = form.footprint;
+        style.tower = form.tower;
         style.sides = form.sides;
         style.taper = form.taper;
         style.wallFinish = wallFinish;

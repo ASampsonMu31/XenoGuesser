@@ -18,8 +18,16 @@ uniform float time;
 uniform int worldSeed;
 uniform float planetWidth;
 
+// An exact hash of the blade's place (of its coordinates' bits): a sine hash loses precision
+// far from the origin and smears into bands of alike blades
 float hash2D(vec2 p, float seedOffset) {
-    return fract(sin(dot(p + seedOffset, vec2(127.1, 311.7))) * 43758.5453123);
+    uvec2 q = floatBitsToUint(p);
+    uint h = q.x * 374761393u + q.y * 668265263u + floatBitsToUint(seedOffset) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    h = (h ^ (h >> 15u)) * 2654435769u;
+    h ^= h >> 16u;
+    return float(h & 16777215u) / 16777216.0;
 }
 
 // The planet's curve (see Planet): lowered by curvature times the square of the distance

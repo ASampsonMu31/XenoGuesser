@@ -1,5 +1,13 @@
 #version 330 core
 
+// What the distance fades into: an even haze, a greyed version of the sky's colour (greyer
+// still under cloud), the same in every direction (see Shader.setFog)
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
 in vec3 aPos;
 in vec3 aNormal;
 in vec2 aTexCoord;
@@ -171,7 +179,7 @@ void main() {
     fogFactor = clamp(fogFactor, 0.0, 1.0); 
     fogFactor = smoothstep(0.0, 1.0, fogFactor);
 
-    vec3 finalColourWithFog = mix(dynamicSkyColour, baseWaterColourWithSpecular, fogFactor);
+    vec3 finalColourWithFog = mix(fogHaze(dynamicSkyColour), baseWaterColourWithSpecular, fogFactor);
 
     // --- CRITICAL ALPHA FIX FOR DISTANT WATER ---
     // As fogFactor goes to 0.0 (maximum fog at a distance), opacity must force-climb to 1.0

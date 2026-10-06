@@ -79,6 +79,10 @@ public class RoadNetworkBuilder {
 
     private final int routingResolution;
     private final float[] cellHeight;
+    // How well off the people of each island without the main roads are (see buildIslandTracks),
+    // per routing cell; NaN elsewhere. And each nation's own wealth, which theirs is drawn from
+    private final float[] islandRichness;
+    private java.util.function.IntToDoubleFunction nationRichness = n -> 0.5;
     private final float[] cellRugged;
     private final boolean[] cellPassable;
     private final boolean[] cellHasHighway;
@@ -114,6 +118,8 @@ public class RoadNetworkBuilder {
                 this.routingResolution = (int) Math.ceil(halfRegion * 2.0f / ROUTING_CELL_SIZE);
         int cellCount = routingResolution * routingResolution;
         this.cellHeight = new float[cellCount];
+        this.islandRichness = new float[cellCount];
+        Arrays.fill(islandRichness, Float.NaN);
         this.cellRugged = new float[cellCount];
         this.cellPassable = new boolean[cellCount];
         this.cellHasHighway = new boolean[cellCount];
@@ -161,6 +167,7 @@ public class RoadNetworkBuilder {
         closeLooseEnds();
         int beforeTracks = roads.size();
         buildTracks();
+        buildIslandTracks();
         System.out.printf("[ROADS] %d highway, %d street, %d lane and %d track paths, %d dead ends generated in %d ms%n",
                 highwayCount, streetCount, laneCount, roads.size() - beforeTracks, deadEnds.size(), System.currentTimeMillis() - startTime);
         return roads;
@@ -820,18 +827,122 @@ public class RoadNetworkBuilder {
                 if (rand.nextFloat() < 0.8f) continue;
                 best = along + (rand.nextBoolean() ? 1f : -1f) * (float) Math.PI * 0.5f;
             }
-            if (growTrack(origin.x, origin.z, best, entry[0], rand)) made++;
+            if (growTrack(origin.x, origin.z, best, entry[0], rand, 8)) made++;
         }
     }
 
-    private boolean growTrack(float startX, float startZ, float heading, int originPath, Random random) {
+    // How likely an island with no roads is to have roads over it all the same
+    private static final float ISLAND_TRACK_CHANCE = 0.8f;
+    // An island's wealth is its nation's times a spread factor: e^(normal * SPREAD + SHIFT), so
+    // usually a little poorer than at home, now and then far poorer or richer. Islands at least
+    // ISLAND_TARMAC_RICHNESS well off have tarmac lanes rather than dirt tracks
+    private static final float ISLAND_WEALTH_SPREAD = 0.5f, ISLAND_WEALTH_SHIFT = -0.2f, ISLAND_TARMAC_RICHNESS = 0.65f;
+
+    // Whether two nations are at odds (their border fenced), which no dirt track crosses
+    private java.util.function.BiPredicate<Integer, Integer> hostile = (a, b) -> false;
+
+    public void setHostile(java.util.function.BiPredicate<Integer, Integer> hostile) {
+        this.hostile = hostile;
+    }
+
+    /** Each nation's wealth (0 to 1), from which its islands' wealth is drawn. */
+    public void setNationRichness(java.util.function.IntToDoubleFunction richness) {
+        this.nationRichness = richness;
+    }
+
+    /** How well off the people are at a point on an island the main roads never reached; NaN anywhere else. */
+    public float islandRichnessAt(float x, float z) {
+        int ci = (int) Math.floor((x + halfRegion) / ROUTING_CELL_SIZE), cj = (int) Math.floor((z + halfRegion) / ROUTING_CELL_SIZE);
+        if (ci < 0 || cj < 0 || ci >= routingResolution || cj >= routingResolution) return Float.NaN;
+        return islandRichness[cj * routingResolution + ci];
+    }
+
+    /**
+     * Islands that the roads never reached (no town on them, or none linked) mostly still have
+     * a few roads: each starts somewhere inland and wanders out both ways to the shore, and
+     * later ones join on to the earlier ones where they meet. Bigger islands get more. Each
+     * island has its own wealth (see ISLAND_WEALTH_SPREAD): a poor one's roads are dirt
+     * tracks, a well-off one's tarmac lanes; houses are built along them either way.
+     */
+    private void buildIslandTracks() {
+        int[] landmass = labelLandmasses();
+        int labels = 0;
+        for (int label : landmass) labels = Math.max(labels, label + 1);
+        boolean[] hasRoad = new boolean[labels];
+        for (RoadPath road : roads) {
+            for (Vector3 point : road.points) {
+                int cell = nearestPassableCell(point.x, point.z);
+                if (cell >= 0 && landmass[cell] >= 0) hasRoad[landmass[cell]] = true;
+            }
+        }
+        List<List<Integer>> cells = new ArrayList<>();
+        for (int k = 0; k < labels; k++) cells.add(new ArrayList<>());
+        for (int cell = 0; cell < landmass.length; cell++) {
+            if (landmass[cell] >= 0 && !hasRoad[landmass[cell]]) cells.get(landmass[cell]).add(cell);
+        }
+        Random rand = new Random(seed + 7171717L);
+        int made = 0;
+        float clip = Planet.clipHalfHeight() * 0.95f;
+        for (int k = 0; k < labels; k++) {
+            List<Integer> island = cells.get(k);
+            if (island.isEmpty() || rand.nextFloat() >= ISLAND_TRACK_CHANCE) continue;
+            int middle = island.get(island.size() / 2);
+            int nation = nationManager.getNationAtWorld(cellCentreX(middle % routingResolution), cellCentreZ(middle / routingResolution), totalRegionWidth);
+            float wealth = (float) (nationRichness.applyAsDouble(nation) * Math.exp(rand.nextGaussian() * ISLAND_WEALTH_SPREAD + ISLAND_WEALTH_SHIFT));
+            wealth = Math.max(0.03f, Math.min(1f, wealth));
+            // (and the shore cells round it, where its roads and houses can reach)
+            for (int c : island) {
+                int ci = c % routingResolution, cj = c / routingResolution;
+                for (int dj = -1; dj <= 1; dj++) {
+                    for (int di = -1; di <= 1; di++) {
+                        int ni = ci + di, nj = cj + dj;
+                        if (ni < 0 || nj < 0 || ni >= routingResolution || nj >= routingResolution) continue;
+                        int n = nj * routingResolution + ni;
+                        if (n == c || (!cellPassable[n] && Float.isNaN(islandRichness[n]))) islandRichness[n] = wealth;
+                    }
+                }
+            }
+            RoadPath.RoadClass roadClass = wealth >= ISLAND_TARMAC_RICHNESS ? RoadPath.RoadClass.LANE : RoadPath.RoadClass.DIRT;
+            int wanted = 1 + Math.min(4, island.size() / 8);
+            for (int t = 0, attempts = 0; t < wanted && attempts < wanted * 6; attempts++) {
+                int cell = island.get(rand.nextInt(island.size()));
+                float x = cellCentreX(cell % routingResolution) + (rand.nextFloat() - 0.5f) * ROUTING_CELL_SIZE * 0.6f;
+                float z = cellCentreZ(cell / routingResolution) + (rand.nextFloat() - 0.5f) * ROUTING_CELL_SIZE * 0.6f;
+                if (Math.abs(x) > halfRegion || Math.abs(z) > clip) continue;
+                if (TerrainMesh.getLayeredHeight(x, z, terrainNoise) <= seaLevelHeight + 2f) continue;
+                if (settlementManager.getUrbanness(x, z) > TRACK_MAX_URBANNESS) continue;
+                // Out one way, then the other from the same spot, so it crosses the island
+                float heading = rand.nextFloat() * (float) Math.PI * 2f;
+                boolean one = growIslandRoad(x, z, heading, -1, rand, roadClass);
+                boolean other = growIslandRoad(x, z, heading + (float) Math.PI, one ? roads.size() - 1 : -1, rand, roadClass);
+                if (one || other) {
+                    t++;
+                    made++;
+                }
+            }
+        }
+        System.out.printf("[ROADS] %d roads on islands the main network missed%n", made);
+    }
+
+    private boolean growIslandRoad(float startX, float startZ, float heading, int originPath, Random random, RoadPath.RoadClass roadClass) {
+        if (!growTrack(startX, startZ, heading, originPath, random, 3, roadClass)) return false;
+        roads.get(roads.size() - 1).island = true;
+        return true;
+    }
+
+    private boolean growTrack(float startX, float startZ, float heading, int originPath, Random random, int minPoints) {
+        return growTrack(startX, startZ, heading, originPath, random, minPoints, RoadPath.RoadClass.DIRT);
+    }
+
+    private boolean growTrack(float startX, float startZ, float heading, int originPath, Random random, int minPoints, RoadPath.RoadClass roadClass) {
         float length = TRACK_MIN_LENGTH + random.nextFloat() * (TRACK_MAX_LENGTH - TRACK_MIN_LENGTH);
         int steps = (int) (length / ROAD_STEP);
-        RoadPath path = new RoadPath(RoadPath.RoadClass.DIRT);
+        RoadPath path = new RoadPath(roadClass);
         path.points.add(groundPoint(startX, startZ));
         float x = startX, z = startZ;
         float drift = (random.nextFloat() - 0.5f) * 0.04f;
         float clip = Planet.clipHalfHeight() * 0.95f;
+        int startNation = nationManager.getNationAtWorld(startX, startZ, totalRegionWidth);
         for (int step = 0; step < steps; step++) {
             heading += drift + (random.nextFloat() - 0.5f) * 0.45f;
             heading = flattestHeading(x, z, heading);
@@ -841,6 +952,8 @@ public class RoadNetworkBuilder {
             if (Math.abs(nx) > halfRegion || Math.abs(nz) > clip || height <= seaLevelHeight + 0.5f) break;
             if (Math.abs(height - TerrainMesh.getLayeredHeight(x, z, terrainNoise)) > ROAD_STEP * 0.22f) break;
             if (settlementManager.getUrbanness(nx, nz) > TRACK_MAX_URBANNESS + 0.08f) break;
+            // and at a fenced border
+            if (hostile.test(startNation, nationManager.getNationAtWorld(nx, nz, totalRegionWidth))) break;
             x = nx;
             z = nz;
             // Meeting another road: on to it, and done
@@ -851,7 +964,7 @@ public class RoadNetworkBuilder {
             }
             path.points.add(groundPoint(x, z));
         }
-        if (path.points.size() < 8) return false;
+        if (path.points.size() < minPoints) return false;
         roads.add(path);
         indexPath(roads.size() - 1);
         return true;

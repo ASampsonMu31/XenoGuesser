@@ -23,6 +23,9 @@ public class RoadPath {
 
     public final RoadClass roadClass;
     public final List<Vector3> points = new ArrayList<>();
+    // A road on an island the main network never reached (see RoadNetworkBuilder.buildIslandTracks):
+    // houses are built along it even when it's a dirt track
+    public boolean island;
 
     public RoadPath(RoadClass roadClass) {
         this.roadClass = roadClass;

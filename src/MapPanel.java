@@ -87,6 +87,14 @@ public class MapPanel extends JPanel {
     private static final float ZOOM_STEP = 1.25f;
     private static final float DETAIL_SWITCH_ZOOM = 1.3f;
     private float zoom = 1.0f;
+    // Zoomed in past the whole images' detail, the map is drawn in tiles made at the detail
+    // it's seen at (see MapTiles): the plain map, the overlay chosen and each layer
+    private final MapTiles tiles = new MapTiles(this::repaint);
+    private volatile MapTiles.Renderer baseTiles, overlayTiles;
+    private volatile String overlayTileName;
+    private final java.util.Map<Layer, MapTiles.Renderer> layerTiles = new java.util.concurrent.ConcurrentHashMap<>();
+    // How many pixels across the whole detailed images are (beyond that, tiles)
+    private static final int WHOLE_IMAGE_DETAIL = 2250;
     private float viewCentreU = 0.5f;
     private float viewCentreV = 0.5f;
     
@@ -273,6 +281,11 @@ public class MapPanel extends JPanel {
         this.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
+                // Developer mode: holding P, a click anywhere on the map goes there
+                if (mainApp != null && mainApp.getIsDebugModeActive() && mainApp.isKeyHeld(java.awt.event.KeyEvent.VK_P)) {
+                    teleportToClick(e.getX(), e.getY());
+                    return;
+                }
                 // The small and medium maps are only looked at; the mouse steers the view then
                 if (!isLarge && !isFullScreenReveal) return;
                 int clickX = e.getX();
@@ -426,6 +439,15 @@ public class MapPanel extends JPanel {
         this.addMouseWheelListener(this::handleMouseWheel);
     }
 
+    /** Developer mode: sends the player to the place on the map under a click (see XenoGuesser_GLEventListener.setTelepot). */
+    private void teleportToClick(int clickX, int clickY) {
+        int localizedX = clickX - visualMapX, localizedY = clickY - visualMapY;
+        if (localizedX < 0 || localizedX >= currentMapSize || localizedY < 0 || localizedY >= mapHeight() || listener == null) return;
+        float worldX = (screenToCoreX(clickX, visualMapX) / mapImage.getWidth()) * totalRegionWidth - halfRegion;
+        float worldZ = (screenToCoreY(clickY, visualMapY) / mapImage.getHeight()) * totalRegionWidth - halfRegion;
+        listener.setTelepot(worldX, worldZ);
+    }
+
     /** Zooms the enlarged map about the cursor, keeping the point under it fixed. */
     private void handleMouseWheel(MouseWheelEvent e) {
         if (!(isLarge || isFullScreenReveal)) {
@@ -454,6 +476,14 @@ public class MapPanel extends JPanel {
         zoom = 1.0f;
         viewCentreU = 0.5f;
         viewCentreV = 0.5f;
+    }
+
+    /** Developer aid: zoomed in this far, centred on (u, v) of the map (0 to 1 across, 0 to 1 down the square). */
+    public void devZoom(float magnification, float u, float v) {
+        zoom = Math.max(1.0f, Math.min(MAX_ZOOM, magnification));
+        viewCentreU = clampCentre(u);
+        viewCentreV = clampCentreV(v);
+        repaint();
     }
 
     private float clampCentre(float centre) {
@@ -537,6 +567,40 @@ public class MapPanel extends JPanel {
      * it is), or with nothing but the plain map given null; with the nations' names written
      * over it if asked.
      */
+    // The overlay's key: its colours from lowest to highest (four, evenly spaced) and the values
+    // at its low end, middle and high end, with units; null for none
+    private volatile float[][] legendColours;
+    private volatile String[] legendLabels;
+
+    /** The key shown under the overlay's name: its colours lowest to highest, and labels for its low end, middle and high end. */
+    // A picture shown beside the overlay's name (an animal's, for its population), or null
+    private volatile java.awt.Image overlayPicture;
+
+    // The card above the map with the animal or plant whose range is shown, turning round
+    private final PreviewCard previewCard = new PreviewCard();
+
+    /** Shows an animal or plant turning round above the map (frames null: still being drawn; name null: none). */
+    public void setPreview(String name, String kind, BufferedImage[] frames, BufferedImage leaf) {
+        previewCard.show(name, kind, frames, leaf);
+        if (getParent() instanceof JLayeredPane) XenoGuesser.updateMinimapBounds((JLayeredPane) getParent(), this);
+    }
+
+    /** The card above the map with the turning animal or plant. */
+    public PreviewCard getPreviewCard() {
+        return previewCard;
+    }
+
+    public void setOverlayPicture(java.awt.Image picture) {
+        this.overlayPicture = picture;
+        repaint();
+    }
+
+    public void setLegend(float[][] colours, String[] labels) {
+        this.legendColours = colours;
+        this.legendLabels = labels;
+        repaint();
+    }
+
     public void setOverlay(BufferedImage composed, String name, boolean nationNames) {
         this.gradientImage = composed;
         this.gradientName = composed != null ? name : null;
@@ -548,8 +612,52 @@ public class MapPanel extends JPanel {
      * A chunk-resolution overlay laid over the land of the map (the sea left as it is),
      * ready to show. Slow-ish, so done in the background: it only reads the plain map.
      */
+    /** The overlay's key (see setLegend), centred on x below y: a bar of its colours, with its values and units beneath. */
+    private void drawLegend(Graphics2D g2d, int centreX, int top) {
+        float[][] colours = legendColours;
+        String[] labels = legendLabels;
+        if (colours == null || labels == null) return;
+        g2d.setFont(g2d.getFont().deriveFont(Font.PLAIN, 11f));
+        FontMetrics fm = g2d.getFontMetrics();
+        int barW = Math.min(220, currentMapSize - 40), barH = 10, pad = 8;
+        int boxW = barW + pad * 2, boxH = barH + fm.getAscent() + pad * 2 + 4;
+        int boxX = centreX - boxW / 2;
+        g2d.setColor(new Color(25, 25, 27, 195));
+        g2d.fillRoundRect(boxX, top, boxW, boxH, 10, 10);
+        int barX = boxX + pad, barY = top + pad;
+        for (int x = 0; x < barW; x++) {
+            float f = x / (float) (barW - 1);
+            int seg = Math.min(colours.length - 2, (int) (f * (colours.length - 1)));
+            float t = f * (colours.length - 1) - seg;
+            float[] a = colours[seg], b = colours[seg + 1];
+            g2d.setColor(new Color(Math.min(1f, a[0] + (b[0] - a[0]) * t), Math.min(1f, a[1] + (b[1] - a[1]) * t), Math.min(1f, a[2] + (b[2] - a[2]) * t)));
+            g2d.drawLine(barX + x, barY, barX + x, barY + barH);
+        }
+        g2d.setColor(new Color(255, 255, 255, 60));
+        g2d.drawRect(barX, barY, barW - 1, barH);
+        g2d.setColor(Color.WHITE);
+        int textY = barY + barH + 4 + fm.getAscent();
+        g2d.drawString(labels[0], barX, textY);
+        g2d.drawString(labels[1], barX + (barW - fm.stringWidth(labels[1])) / 2, textY);
+        g2d.drawString(labels[2], barX + barW - fm.stringWidth(labels[2]), textY);
+    }
+
     public BufferedImage composeOverlay(BufferedImage heatmap) {
         return composeChunkHeatmap(heatmap);
+    }
+
+    /** How to draw the plain map, and each layer, in tiles when zoomed in close. */
+    public void setTileRenderers(MapTiles.Renderer base, java.util.Map<Layer, MapTiles.Renderer> layers) {
+        this.baseTiles = base;
+        layerTiles.putAll(layers);
+        repaint();
+    }
+
+    /** How to draw the overlay now shown in tiles (null for none); a name tells overlays apart. */
+    public void setOverlayTiles(MapTiles.Renderer renderer, String name) {
+        this.overlayTiles = renderer;
+        this.overlayTileName = name;
+        repaint();
     }
 
     /** A sharper version of the plain map, used once the map is zoomed in. */
@@ -587,8 +695,9 @@ public class MapPanel extends JPanel {
     }
 
     /** Sets up the tick boxes beside the enlarged map. */
-    public void setLayerChoices(List<String> gradients, String chosen, java.util.function.Consumer<String> onGradient) {
-        layersPanel = new MapLayersPanel(this::setLayerShown, shownLayers, gradients, chosen, onGradient);
+    public void setLayerChoices(java.util.LinkedHashMap<String, List<String>> gradients, String chosen, java.util.function.Consumer<String> onGradient,
+                                java.util.function.Function<String, java.awt.Image> icons) {
+        layersPanel = new MapLayersPanel(this::setLayerShown, shownLayers, gradients, chosen, onGradient, icons);
         if (getParent() instanceof JLayeredPane) XenoGuesser.updateMinimapBounds((JLayeredPane) getParent(), this);
     }
 
@@ -900,11 +1009,19 @@ public class MapPanel extends JPanel {
             Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             drawWholeMap(g2d, mapSource, mapX, mapY);
+            tiles.beginFrame();
+            if (gradient == null) drawTiles(g2d, "base", baseTiles, mapX, mapY, WHOLE_IMAGE_DETAIL, null);
+            else if (overlayTiles != null) drawTiles(g2d, "overlay-" + overlayTileName, overlayTiles, mapX, mapY, gradient.getWidth(), null);
             for (Layer layer : Layer.values()) {
                 BufferedImage[] images = layerImages.get(layer);
                 if (images == null || !shownLayers.contains(layer)) continue;
-                drawWholeMap(g2d, zoom >= DETAIL_SWITCH_ZOOM ? images[1] : images[0], mapX, mapY);
+                BufferedImage whole = zoom >= DETAIL_SWITCH_ZOOM ? images[1] : images[0];
+                // (see-through, so the whole image only where its tile isn't ready)
+                if (!drawTiles(g2d, layer.name(), layerTiles.get(layer), mapX, mapY, images[1].getWidth(), whole)) {
+                    drawWholeMap(g2d, whole, mapX, mapY);
+                }
             }
+            tiles.endFrame();
             if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
             drawGraticule(g2d, mapX, mapY);
             if (showNationNames) drawNationNames(g2d, mapX, mapY);
@@ -934,8 +1051,10 @@ public class MapPanel extends JPanel {
 
                     int padX = 12;
                     int padY = 6;
-                    int boxW = textW + (padX * 2);
-                    int boxH = textH + (padY * 2);
+                    java.awt.Image picture = overlayPicture;
+                    int pictureSize = picture != null ? 34 : 0;
+                    int boxW = textW + (padX * 2) + (picture != null ? pictureSize + 6 : 0);
+                    int boxH = Math.max(textH + (padY * 2), pictureSize + 6);
                     
                     int boxX = mapX + (currentMapSize - boxW) / 2;
                     int boxY = mapY + 12;
@@ -947,7 +1066,14 @@ public class MapPanel extends JPanel {
                     g2d.drawRoundRect(boxX, boxY, boxW, boxH, 10, 10);
 
                     g2d.setColor(Color.WHITE);
-                    g2d.drawString(heatmapName, boxX + padX, boxY + padY + textH - 1);
+                    if (picture != null) {
+                        g2d.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                        g2d.drawImage(picture, boxX + padX - 4, boxY + (boxH - pictureSize) / 2, pictureSize, pictureSize, null);
+                    }
+                    int textX = boxX + padX + (picture != null ? pictureSize + 6 - 4 : 0);
+                    g2d.drawString(heatmapName, textX, boxY + (boxH + textH) / 2 - 2);
+                    // (only on the enlarged map: the small one is too cramped)
+                    if (isLarge || isFullScreenReveal) drawLegend(g2d, mapX + currentMapSize / 2, boxY + boxH + 6);
                 }
             }
 
@@ -1398,6 +1524,39 @@ public class MapPanel extends JPanel {
 
     public void setMainApp(XenoGuesser mainApp) {
         this.mainApp = mainApp;
+    }
+
+    /**
+     * Once the map is shown bigger than a whole image's own detail, the tiles in view drawn over
+     * it at the detail they're seen at. Where one isn't ready yet the whole image shows instead:
+     * already drawn underneath, or given as under, drawn there just for its patch. False (and
+     * nothing drawn) if the map isn't shown big enough for tiles.
+     */
+    private boolean drawTiles(Graphics2D g2d, String source, MapTiles.Renderer renderer, int mapX, int mapY, int wholeDetail,
+                              BufferedImage under) {
+        float across = zoom * currentMapSize;
+        if (renderer == null || across <= wholeDetail * 1.1f) return false;
+        int level = Math.max(1, Math.min(8, (int) Math.ceil(Math.log(across / MapTiles.SIZE) / Math.log(2))));
+        int n = 1 << level;
+        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + Planet.aspect() / zoom;
+        int tx0 = Math.max(0, (int) Math.floor(u0 * n)), tx1 = Math.min(n - 1, (int) Math.floor(u1 * n));
+        int ty0 = Math.max(0, (int) Math.floor(v0 * n)), ty1 = Math.min(n - 1, (int) Math.floor(v1 * n));
+        for (int ty = ty0; ty <= ty1; ty++) {
+            for (int tx = tx0; tx <= tx1; tx++) {
+                BufferedImage tile = tiles.get(source, renderer, level, tx, ty);
+                int x0 = mapX + (int) Math.floor(((float) tx / n - u0) * across), x1 = mapX + (int) Math.floor(((float) (tx + 1) / n - u0) * across);
+                int y0 = mapY + (int) Math.floor(((float) ty / n - v0) * across), y1 = mapY + (int) Math.floor(((float) (ty + 1) / n - v0) * across);
+                if (tile != null) {
+                    g2d.drawImage(tile, x0, y0, x1 - x0, y1 - y0, null);
+                } else if (under != null) {
+                    Shape clip = g2d.getClip();
+                    g2d.clipRect(x0, y0, x1 - x0, y1 - y0);
+                    drawWholeMap(g2d, under, mapX, mapY);
+                    g2d.setClip(clip);
+                }
+            }
+        }
+        return true;
     }
 
     /** Draws an image covering the whole map region, scaled and placed as the map is viewed. */

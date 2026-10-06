@@ -154,6 +154,13 @@ private static class SpeciesConfig {
     private int waveMapTexture;
 
     private Model skyModel;
+    // The clouds and rain
+    private Weather weather;
+    // Grass dies back from this many degrees above the water's freezing point, and is gone by
+    // this many below it
+    private static final float GRASS_FROST_START = 6f, GRASS_FROST_DEATH = 6f;
+    // The temperature (Celsius) the planet's water freezes at, so below which it snows
+    private float freezingPoint;
 
     private Shader terrainShader;
     private Renderer terrainRenderer;
@@ -245,10 +252,20 @@ private static class SpeciesConfig {
     private RegionalFactor leafColourFactor;
 
     private final boolean IS_DEBUG_MODE_ACTIVE;
-    private FactorName currentDebugFactor;
+    private Overlay currentDebugFactor;
+
+    /** One of the map's overlays: a factor, or (for the animals) one species' population. */
+    private record Overlay(FactorName factor, int species) {
+        static Overlay of(FactorName factor) {
+            return new Overlay(factor, -1);
+        }
+    }
 
 
-    private boolean isToTeleport = false;
+    private volatile boolean isToTeleport = false;
+    // Developer teleport: loading everything round the new place before play goes on
+    private boolean teleportLoading;
+    private long teleportStarted;
     private float teleportX = 0f;
     private float teleportZ = 0f;
 
@@ -302,10 +319,14 @@ private static class SpeciesConfig {
 
     /** The overlays the map can colour the land by. */
     public enum FactorName {
-      MOISTURE("Moisture"),
       TEMPERATURE("Temperature"),
+      RAINFALL("Rainfall"),
       SOIL_COLOUR("Soil colour"),
       ANIMAL_POPULATION("Animal population"),
+      FLORA("Flora"),
+      GRASS_ABUNDANCE("Grass abundance"),
+      GRASS_HEIGHT("Grass height"),
+      GRASS_COLOUR("Grass colour"),
       WEALTH("Wealth"),
       NATIONS("Nations");
 
@@ -346,7 +367,9 @@ private static class SpeciesConfig {
         if (startingMap != null) {
             for (String part : startingMap.split(",")) {
                 try {
-                    this.currentDebugFactor = FactorName.valueOf(part.trim());
+                    FactorName factor = FactorName.valueOf(part.trim());
+                    // (the animals' population is shown a species at a time: the first, to start with)
+                    this.currentDebugFactor = new Overlay(factor, factor == FactorName.ANIMAL_POPULATION || factor == FactorName.FLORA ? 0 : -1);
                 } catch (IllegalArgumentException notGradient) {
                     try {
                         startingLayers.add(MapPanel.Layer.valueOf(part.trim()));
@@ -364,6 +387,8 @@ private static class SpeciesConfig {
         this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
         
         this.regionalManager = new RegionalGenerationManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
+        this.weather = new Weather(worldSeed, seaLevelHeight);
+        this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
         this.regionalManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE);
 
         float GRASS_TEMP_MEAN = 0.4f;
@@ -374,9 +399,19 @@ private static class SpeciesConfig {
         float GRASS_VARIATION_SCALE = 1e-5f;
                 this.GRASS_BASE_ABUNDANCE = 1050f;
 
-        this.grassTemperateFactor = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
+        // Grass likes it mild, and dies back where it's cold enough for snow: from a few degrees
+        // above the water's freezing point down to several below, it thins out to almost nothing
+        // (and what's left is dry and dead, see grassColourFactor)
+        RegionalFactor mildness = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
+        this.grassTemperateFactor = new RegionalFactor(1.0f, (cx, cz, x, z) -> {
+            float celsius = -30f + 70f * regionalManager.temperatureMap.evaluate(cx, cz, x, z);
+            float t = Math.max(0f, Math.min(1f, (celsius - (freezingPoint - GRASS_FROST_DEATH)) / (GRASS_FROST_DEATH + GRASS_FROST_START)));
+            return mildness.evaluate(cx, cz, x, z) * t * t * (3f - 2f * t);
+        });
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
         this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
+        // The rainfall follows the moisture (with the temperature)
+        this.regionalManager.setMoistureMap(this.grassMoistureFactor);
         this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
         this.grassColourNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
 
@@ -539,13 +574,22 @@ private static class SpeciesConfig {
             sc.patchNoiseFactor = this.regionalManager.createNoiseMap(sc.patchNoiseScale);
             
             // Blended factor with prominent 50% unique noise allocation for explicit segregation
-            sc.abundanceFactor = new RegionalFactor.Builder()
+            RegionalFactor suited = new RegionalFactor.Builder()
                 .setWeight(6.0f)        // Drop this to 1.0f so it NEVER artificially blows up low scores
                 .setPowerCurve(6.0f)    // Crank the power curve up to 5.0 or 6.0 to make it brutal
                 .addFactor(sc.tempFactor, 0.30f)
                 .addFactor(this.grassMoistureFactor, 0.20f)
                 .addFactor(sc.patchNoiseFactor, 0.50f)
                 .build();
+            // ...and only in its home region, as the animals (see OrganismSpecies): a plant suited
+            // to the cold north needn't grow in the cold south too
+            RegionalFactor home = this.regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW
+                    + new Random(worldSeed * 613L + s).nextFloat() * OrganismSpecies.HOME_SCALE_RANGE);
+            sc.abundanceFactor = new RegionalFactor(1.0f, (cx, cz, x, z) -> {
+                float t = Math.max(0f, Math.min(1f, (home.evaluate(cx, cz, x, z) - OrganismSpecies.HOME_FROM)
+                        / (OrganismSpecies.HOME_TO - OrganismSpecies.HOME_FROM)));
+                return suited.evaluate(cx, cz, x, z) * t * t * (3f - 2f * t);
+            });
         }
 
         // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
@@ -663,17 +707,25 @@ private static class SpeciesConfig {
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) minimap.setNationLabels(labels);
             });
+            // Drawn in tiles when zoomed in close
+            java.util.Map<MapPanel.Layer, MapTiles.Renderer> layerTiles = java.util.Map.of(
+                    MapPanel.Layer.CONTOURS, maps.contourTiles(), MapPanel.Layer.ROADS, maps.roadTiles(infraManager),
+                    MapPanel.Layer.BUILDINGS, maps.buildingTiles(infraManager), MapPanel.Layer.SHOPS, maps.shopTiles(infraManager));
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (minimap != null) minimap.setTileRenderers(maps.baseTiles(), layerTiles);
+            });
             showLayer(MapPanel.Layer.CONTOURS, maps.renderContourLayer());
             showLayer(MapPanel.Layer.ROADS, maps.renderRoadLayer(infraManager));
             showLayer(MapPanel.Layer.BUILDINGS, maps.renderBuildingLayer(infraManager));
             showLayer(MapPanel.Layer.SHOPS, maps.renderShopLayer(infraManager));
 
-            // Then every overlay, in the background, so choosing one later is instant
-            for (FactorName overlay : FactorName.values()) overlayImage(overlay);
+            // Then every overlay, side by side, so choosing one later is instant (the round doesn't
+            // start until they're done: see advanceLoading)
+            allOverlays().parallelStream().forEach(this::overlayImage);
+            mapsReady = true;
             System.out.printf("[MINIMAP] Bird's-eye maps ready in %d ms%n", System.currentTimeMillis() - startTime);
         }, "birds-eye-map-renderer");
         mapThread.setDaemon(true);
-        mapThread.setPriority(Thread.MIN_PRIORITY);
         mapThread.start();
     }
 
@@ -710,6 +762,10 @@ private static class SpeciesConfig {
      * flora species at a time, then the first terrain around the spawn point, then a first
      * real frame. Returns true once the game is ready to render normally.
      */
+    // The bird's-eye map and all its overlays are done; when the loading screen began waiting for them
+    private volatile boolean mapsReady;
+    private long loadingMapsFrom;
+
     private boolean advanceLoading() {
         if (loadingStep == 0) {
             loading.begin(LoadingProgress.Stage.GPU_UPLOAD);
@@ -745,6 +801,14 @@ private static class SpeciesConfig {
             updateVisibleChunks(false);
             grassBudgetNanos = 0;
             loading.report(grassCache.size() / (float) grassChunksTotal);
+            return false;
+        }
+        // The map, its layers and every overlay are ready before the round starts
+        if (!mapsReady) {
+            if (loadingMapsFrom == 0L) {
+                loadingMapsFrom = System.currentTimeMillis();
+                loading.begin(LoadingProgress.Stage.MAPS);
+            }
             return false;
         }
         // Every rock round the landing site, near and far, is in place before the round starts
@@ -788,6 +852,7 @@ private static class SpeciesConfig {
             if (!advanceLoading()) return;
             worldReady = true;
             setBuilderThreads(false);
+            queueNextRound();
         }
 
         // The next round is built behind the results screen as soon as the guess is made, a
@@ -810,6 +875,26 @@ private static class SpeciesConfig {
                 if (minimap != null) minimap.finishRoundLoading();
             });
         }
+        if (IS_DEBUG_MODE_ACTIVE && isToTeleport && !roundLoading) {
+            isToTeleport = false;
+            moveToLocation(teleportX, teleportZ);
+            teleportLoading = true;
+            teleportStarted = System.currentTimeMillis();
+            setBuilderThreads(true);
+        }
+        if (teleportLoading) {
+            grassBudgetNanos = ROUND_LOADING_BUDGET_NANOS;
+            updateVisibleChunks(false);
+            grassBudgetNanos = 0;
+            // (given up on after a while, should something never finish)
+            if (surroundingsLoadedHere() || System.currentTimeMillis() - teleportStarted > 30_000) {
+                teleportLoading = false;
+                setBuilderThreads(false);
+                System.out.printf("[TELEPORT] Loaded round %.0f, %.0f in %d ms%n", teleportX, teleportZ, System.currentTimeMillis() - teleportStarted);
+            }
+            gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+            return;
+        }
         if (roundLoading) {
             grassBudgetNanos = ROUND_LOADING_BUDGET_NANOS;
             updateVisibleChunks(false);
@@ -819,12 +904,15 @@ private static class SpeciesConfig {
                 roundLoading = false;
                 nextRoundBuilt = true;
                 setBuilderThreads(false);
+                queueNextRound();
                 System.out.printf("[ROUND] Next round built in %d ms over %d frames%n",
                         System.currentTimeMillis() - roundLoadingStarted, roundLoadingFrames);
             }
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
             return;
         }
+
+        pumpPrefetch();
 
         if (minimap != null && minimap.isFullScreenRevealMode()) {
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
@@ -848,6 +936,7 @@ private static class SpeciesConfig {
         }
         render();
         if (!hideFirstPerson) drawHud(drawable);
+        advancePreviews(gl);
 
         // Hand over from the loading screen only once a real frame of the round exists
         if (!loading.isFinished() && ++framesRenderedSinceReady >= 2) {
@@ -1199,7 +1288,8 @@ private static class SpeciesConfig {
         timeOfDay = 0.5f;
 
         lights = new Light[1];
-        float lightSize = 275.0f; 
+        // (the sun's picture is its disc inside its glow: sized so the disc stays as big as ever)
+        float lightSize = 275.0f / ProceduralTextures.SUN_DISC; 
         
         Light l = new Light(gl, camera, true, new Vector3(0,0,0), lightSize, textures.get("sun_glow"));
         Material m = new Material();
@@ -1542,6 +1632,7 @@ private static class SpeciesConfig {
 
     private void finishInitialise() {
                 organismManager.initialise(gl);
+                drawSpeciesPortraits(gl);
         inhabitants.initialise(gl);
         // Pictures of the locals, for signs
         deletePeoplePictures();
@@ -1585,6 +1676,70 @@ private static class SpeciesConfig {
     private final java.util.Random spawnRandom = Long.getLong("xenoguesser.seed") != null
             ? new java.util.Random(Long.getLong("xenoguesser.seed")) : new java.util.Random();
 
+    /** Where a normal round's pod comes down: near a road, clear of houses, away from the poles. */
+    private float[] landingSite(java.util.Random rand) {
+        return infraManager.landingSite(rand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
+                (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise) > seaLevelHeight + 1.0f
+                        // Rounds start away from the far north and south, where the map stretches most
+                        && Math.abs(Planet.latitude(pz)) < Math.toRadians(60.0));
+    }
+
+    // ------------------------------------------------------------------ the next round, got ready ahead
+
+    // The next round's landing site, chosen as soon as this round is under way, and its
+    // surroundings (terrain shapes, trees, grass) worked out in spare time on a thread of its
+    // own, nearest first, so that moving there is mostly a matter of uploading them
+    private float[] queuedSite;
+    private final List<int[]> prefetchQueue = new ArrayList<>();
+    private final Map<String, Object[]> prefetchTerrain = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, List<FloraInstance>> prefetchFlora = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, float[]> prefetchGrass = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ExecutorService prefetcher = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "next-round-prefetch");
+        t.setDaemon(true);
+        t.setPriority(Thread.MIN_PRIORITY);
+        return t;
+    });
+    private java.util.concurrent.Future<?> prefetchJob;
+
+    /** Chooses where the next round will be and starts getting it ready (normal rounds only). */
+    private void queueNextRound() {
+        prefetchQueue.clear();
+        prefetchTerrain.clear();
+        prefetchFlora.clear();
+        prefetchGrass.clear();
+        if (System.getProperty("xenoguesser.view") != null || System.getProperty("xenoguesser.spawnat") != null) return;
+        queuedSite = landingSite(spawnRandom);
+        if (queuedSite == null) return;
+        int centreX = (int) Math.floor((queuedSite[0] + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+        int centreZ = (int) Math.floor((queuedSite[1] + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
+        int reach = VIEW_DISTANCE + PREFETCH_RINGS;
+        for (int dz = -reach; dz <= reach; dz++) {
+            for (int dx = -reach; dx <= reach; dx++) {
+                prefetchQueue.add(new int[] { centreX + dx, centreZ + dz, Math.max(Math.abs(dx), Math.abs(dz)) });
+            }
+        }
+        prefetchQueue.sort((a, b) -> Integer.compare(a[2], b[2]));
+    }
+
+    /** Hands the prefetch thread its next few chunks once it has finished the last. */
+    private void pumpPrefetch() {
+        if (prefetchQueue.isEmpty() || (prefetchJob != null && !prefetchJob.isDone())) return;
+        List<int[]> batch = new ArrayList<>(prefetchQueue.subList(0, Math.min(4, prefetchQueue.size())));
+        prefetchQueue.subList(0, batch.size()).clear();
+        prefetchJob = prefetcher.submit(() -> {
+            for (int[] c : batch) {
+                int cx = c[0], cz = c[1], ring = c[2];
+                String key = cx + "_" + cz;
+                int segments = terrainSegments(ring);
+                prefetchTerrain.put(key + "_seg" + segments,
+                        TerrainMesh.buildChunkData(segments, PHYSICAL_CHUNK_SIZE / (float) segments, cx, cz, worldNoise));
+                prefetchFlora.put(key, buildFloraChunk(cx, cz));
+                if (ring <= GRASS_VIEW_DISTANCE) prefetchGrass.put(key, buildGrassChunk(cx, cz));
+            }
+        });
+    }
+
     private void spawnPlayerAtRandomLocation() {
         java.util.Random dynamicRand = spawnRandom;
         float halfRegion = TOTAL_REGION_WIDTH / 2.0f;
@@ -1598,11 +1753,10 @@ private static class SpeciesConfig {
                 ? infraManager.randomHouseViewpoint(dynamicRand) : infraManager.randomRoadPoint(dynamicRand);
         float lookX = 0.0f, lookZ = -1.0f;
         if (System.getProperty("xenoguesser.view") == null) {
-            // A normal round: the pod has come down near a road, clear of houses and fences
-            float[] site = infraManager.landingSite(dynamicRand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
-                    (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise) > seaLevelHeight + 1.0f
-                            // Rounds start away from the far north and south, where the map stretches most
-                            && Math.abs(Planet.latitude(pz)) < Math.toRadians(60.0));
+            // A normal round: the pod has come down near a road, clear of houses and fences (where
+            // it was chosen during the last round, so its surroundings could be got ready then)
+            float[] site = queuedSite != null ? queuedSite : landingSite(dynamicRand);
+            queuedSite = null;
             if (site != null) roadSpawn = site;
         }
         if (roadSpawn != null) {
@@ -1785,6 +1939,8 @@ private static class SpeciesConfig {
         }
 
         chooseTimeOfDay(spawnX, spawnZ, dynamicRand);
+        // A new day: new clouds and weather
+        weather.newDay(dynamicRand);
         landingPod.place(spawnX, spawnZ, lookX, lookZ, (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise));
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.x(), landingPod.z(), Math.max(40f, LandingPod.REACH) + 6f);
@@ -2171,6 +2327,18 @@ private static class SpeciesConfig {
     }
 
     /** Whether every terrain, flora and building chunk in view has been built. */
+    /** Whether every chunk in view of where the player now stands has its ground, plants, buildings and grass. */
+    private boolean surroundingsLoadedHere() {
+        for (int dz = -VIEW_DISTANCE; dz <= VIEW_DISTANCE; dz++) {
+            for (int dx = -VIEW_DISTANCE; dx <= VIEW_DISTANCE; dx++) {
+                String key = (lastChunkX + dx) + "_" + (lastChunkZ + dz);
+                if (!chunkCache.containsKey(key) || !floraCache.containsKey(key) || !infraCache.containsKey(key)) return false;
+                if (Math.abs(dx) <= GRASS_VIEW_DISTANCE && Math.abs(dz) <= GRASS_VIEW_DISTANCE && !grassCache.containsKey(key)) return false;
+            }
+        }
+        return true;
+    }
+
     private boolean surroundingsBuilt() {
         int viewChunks = (VIEW_DISTANCE * 2 + 1) * (VIEW_DISTANCE * 2 + 1);
         return chunkCache.size() >= viewChunks && floraCache.size() >= viewChunks && infraCache.size() >= viewChunks;
@@ -2230,6 +2398,30 @@ private static class SpeciesConfig {
         return instances;
     }
 
+    /** A regional factor at the middles of a chunk and the eight round it (row by row, west to east, north to south). */
+    private float[] aroundChunk(RegionalFactor factor, int cx, int cz) {
+        float[] values = new float[9];
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int x = cx + dx, z = cz + dz;
+                values[(dz + 1) * 3 + dx + 1] = factor.evaluate(x, z, (x + 0.5f) * PHYSICAL_CHUNK_SIZE, (z + 0.5f) * PHYSICAL_CHUNK_SIZE);
+            }
+        }
+        return values;
+    }
+
+    /**
+     * A value at a point in a chunk (fx, fz from 0 to 1 across it), blended from the values at
+     * the middles of the chunks nearest it (see aroundChunk) by how near it is to each.
+     */
+    private static float blendAround(float[] around, float fx, float fz) {
+        float gx = fx + 0.5f, gz = fz + 0.5f;   // 0 to 2 across the middles
+        int ix = Math.min(1, (int) gx), iz = Math.min(1, (int) gz);
+        float tx = gx - ix, tz = gz - iz;
+        float a = around[iz * 3 + ix], b = around[iz * 3 + ix + 1], c = around[(iz + 1) * 3 + ix], d = around[(iz + 1) * 3 + ix + 1];
+        return (a + (b - a) * tx) * (1f - tz) + (c + (d - c) * tx) * tz;
+    }
+
     /** One chunk's grass blades, five floats each (safe to work out off the GL thread). */
     private float[] buildGrassChunk(int cx, int cz) {
         float[] chunkGrassData;
@@ -2247,6 +2439,10 @@ private static class SpeciesConfig {
                         float chunkMinX = cx * PHYSICAL_CHUNK_SIZE;
                         float chunkMinZ = cz * PHYSICAL_CHUNK_SIZE;
                         float[] slopes = slopeGrid(cx, cz);
+                        // The grass's colour and height at the middles of this chunk and those round
+                        // it, so each blade's can be blended from the nearest (no edges between chunks)
+                        float[] colourAround = aroundChunk(this.grassColourFactor, cx, cz);
+                        float[] heightAround = aroundChunk(this.grassHeightFactor, cx, cz);
 
                         for (int i = 0; i < dynamicGrassAttempts; i++) {
                             long bladeSeed = worldSeed 
@@ -2275,8 +2471,8 @@ private static class SpeciesConfig {
                             if (worldY > seaLevelHeight + 0.1f && !onSlope
                                     && !landingPod.covers(worldX, worldZ, -2f)
                                     && !infraManager.isClearedForRoad(worldX, worldZ, 11.0f, 1.5f)) {
-                                float structuralHeightBase = this.grassHeightFactor.evaluate(cx, cz, worldX, worldZ);
-                                float structuralColourBase = this.grassColourFactor.evaluate(cx, cz, worldX, worldZ);
+                                float structuralHeightBase = blendAround(heightAround, rand1, rand2);
+                                float structuralColourBase = blendAround(colourAround, rand1, rand2);
 
                                 float u1 = Math.max(0.0001f, rand3); 
                                 float u2 = rand4;
@@ -2338,7 +2534,7 @@ private static class SpeciesConfig {
     }
 
     private void updateVisibleChunks(boolean forceImmediate) {
-        boolean loadingNow = roundLoading || !worldReady;
+        boolean loadingNow = roundLoading || teleportLoading || !worldReady;
         roundChunkDeadline = System.nanoTime() + (loadingNow ? ROUND_LOADING_BUDGET_NANOS : PLAY_CHUNK_BUDGET_NANOS);
         infraManager.prepareRoadNetwork(
             PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
@@ -2373,11 +2569,17 @@ private static class SpeciesConfig {
                 building = null;
             }
             Object[] data = null;
-            if (building != null && building.isDone() && uploadsThisFrame >= (loadingNow ? LOADING_UPLOADS_PER_FRAME : 6)) {
+            Object[] ready = building == null ? prefetchTerrain.get(key + "_seg" + targetSegments) : null;
+            if ((ready != null || (building != null && building.isDone())) && uploadsThisFrame >= (loadingNow ? LOADING_UPLOADS_PER_FRAME : 6)) {
                 pending = true;
                 continue;
             }
-            if (building != null && building.isDone()) {
+            if (ready != null) {
+                // Worked out ahead, during the last round
+                prefetchTerrain.remove(key + "_seg" + targetSegments);
+                uploadsThisFrame++;
+                data = ready;
+            } else if (building != null && building.isDone()) {
                 uploadsThisFrame++;
                 try {
                     data = building.get();
@@ -2432,6 +2634,11 @@ private static class SpeciesConfig {
             {
                 String key = cx + "_" + cz;
                 if (floraCache.containsKey(key)) continue;
+                List<FloraInstance> grown = prefetchFlora.remove(key);
+                if (grown != null) {
+                    floraCache.put(key, grown);
+                    continue;
+                }
                 if (overRoundBudget(cx, cz)) {
                     pending = true;
                     continue;
@@ -2486,7 +2693,10 @@ private static class SpeciesConfig {
                     int distanceFromPlayer = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
 
                     java.util.concurrent.Future<float[]> seeding = grassInFlight.get(key);
-                    if (seeding == null && (distanceFromPlayer <= 1 || forceImmediate)) {
+                    float[] seeded = seeding == null ? prefetchGrass.remove(key) : null;
+                    if (seeded != null) {
+                        chunkGrassData = seeded;
+                    } else if (seeding == null && (distanceFromPlayer <= 1 || forceImmediate)) {
                         chunkGrassData = buildGrassChunk(cx, cz);
                     } else if (seeding == null) {
                         final int gx = cx, gz = cz;
@@ -2663,11 +2873,6 @@ private static class SpeciesConfig {
         applyLook();
 
         
-
-        if (IS_DEBUG_MODE_ACTIVE && isToTeleport) {
-            moveToLocation(teleportX, teleportZ);
-            isToTeleport = false;
-        }
 
         // Frames counted over half-second windows give the true rate; the old per-frame
         // estimate replaced any frame slower than 0.1 s with 1/60 s, so slow frames read as 60 fps
@@ -2874,6 +3079,18 @@ private static class SpeciesConfig {
         lights[0].render(gl); 
         gl.glDepthMask(true);
         gl.glDisable(GL.GL_BLEND);
+
+        // --- CLOUDS, over the sky and behind everything else ---
+        weather.update((float) deltaTime, (float) elapsedTime, camera.getPosition(), () -> rainfallAt(camera.getPosition().x, camera.getPosition().z),
+                this::surfaceHeightAt, freezingPoint - temperatureAt(camera.getPosition().x, camera.getPosition().z));
+        float[] sunTintNow = worldArt.palette().sunTint;
+        weather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, 1.0f - nightProportion, (float) elapsedTime,
+                Planet.sunDirection(camera.getPosition().x, camera.getPosition().z, sunDeclination, noonLongitude), sunTintNow, fogColour(skyColour));
+        // The fog everything fades into with distance
+        float[] fog = fogColour(skyColour);
+        Shader.setFog(gl, fog[0], fog[1], fog[2]);
+        // The snow lying on the ground, once it's been worked out
+        bindSnowCover(gl);
 
         // --- TERRAIN PASS ---
         terrainShader.use(gl);
@@ -3157,6 +3374,10 @@ private static class SpeciesConfig {
                 new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },
                 skyRotation, textures.get(skyTextureKey), maxFloraRenderDistance);
 
+        // --- RAIN, under dark clouds ---
+        weather.renderRain(gl, viewProjection, worldArt.palette().seaShallowTint(), 1.0f - nightProportion,
+                (float) (currentHeight * 0.5 / Math.tan(Math.toRadians(45.0 / 2.0))));
+
         if (hideFirstPerson) return;
 
         // --- THE PLAYER'S OWN BODY, drawn last and nearest ---
@@ -3164,6 +3385,12 @@ private static class SpeciesConfig {
             compassWanted = false;
             playerBody.useCompass();
         }
+        if (thermometerWanted) {
+            thermometerWanted = false;
+            playerBody.useThermometer();
+        }
+        Vector3 standing = camera.getPosition();
+        playerBody.setReading(temperatureAt(standing.x, standing.z));
         playerBody.update((float) deltaTime, camera.getPosition(), swimming);
         float[] deep = worldArt.palette().seaShallowTint();
         float daylightOnBody = 1.0f - nightProportion;
@@ -3209,7 +3436,8 @@ private static class SpeciesConfig {
         }
 
         if (rescaled || !hud.has("inventory")) {
-            java.util.List<HudStyle.Item> items = java.util.List.of(new HudStyle.Item("Compass", "C", HudStyle::paintCompassIcon));
+            java.util.List<HudStyle.Item> items = java.util.List.of(new HudStyle.Item("Compass", "1", HudStyle::paintCompassIcon),
+                    new HudStyle.Item("Thermometer", "2", HudStyle::paintThermometerIcon));
             int h = HudStyle.inventoryHeight(items.size());
             BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
             HudStyle.paintInventory(g[0], items);
@@ -3279,19 +3507,23 @@ private static class SpeciesConfig {
     // Layers the developer aid asks to start ticked
     private final java.util.Set<MapPanel.Layer> startingLayers = java.util.EnumSet.noneOf(MapPanel.Layer.class);
     // Gradient maps already worked out (they take a few seconds each)
-    private final Map<FactorName, BufferedImage> gradientCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<Overlay, BufferedImage> gradientCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
         if (!IS_DEBUG_MODE_ACTIVE) return;
         for (MapPanel.Layer layer : startingLayers) minimap.setLayerShown(layer, true);
-        List<String> gradients = new ArrayList<>();
-        for (FactorName f : FactorName.values()) gradients.add(f.label());
-        minimap.setLayerChoices(gradients, currentDebugFactor != null ? currentDebugFactor.label() : null, label -> {
-            FactorName chosen = null;
-            for (FactorName f : FactorName.values()) if (f.label().equals(label)) chosen = f;
+        java.util.LinkedHashMap<String, List<String>> groups = new java.util.LinkedHashMap<>();
+        for (java.util.Map.Entry<String, List<Overlay>> group : overlayGroups().entrySet()) {
+            List<String> labels = new ArrayList<>();
+            for (Overlay o : group.getValue()) labels.add(overlayLabel(o));
+            groups.put(group.getKey(), labels);
+        }
+        minimap.setLayerChoices(groups, currentDebugFactor != null ? overlayLabel(currentDebugFactor) : null, label -> {
+            Overlay chosen = null;
+            for (Overlay o : allOverlays()) if (overlayLabel(o).equals(label)) chosen = o;
             chooseGradient(chosen);
-        });
+        }, this::choiceIcon);
         if (currentDebugFactor != null) chooseGradient(currentDebugFactor);
     }
 
@@ -3301,22 +3533,302 @@ private static class SpeciesConfig {
      * once; one asked for before then is finished off in the background and shown when ready,
      * if it's still the one wanted.
      */
-    public void chooseGradient(FactorName factorName) {
+    // The dropdowns at the foot of the map's overlay choices, in order
+    private static final String GRASS_GROUP = "Grass", FLORA_GROUP = "Flora", FAUNA_GROUP = "Fauna";
+
+    /**
+     * The map's overlays by where they're listed: "" for those listed on their own, then the
+     * grass's maps, each plant species' range (trees, then shrubs), and each animal species' range.
+     */
+    private java.util.LinkedHashMap<String, List<Overlay>> overlayGroups() {
+        java.util.LinkedHashMap<String, List<Overlay>> groups = new java.util.LinkedHashMap<>();
+        List<Overlay> top = new ArrayList<>();
+        for (FactorName f : new FactorName[] { FactorName.TEMPERATURE, FactorName.RAINFALL, FactorName.SOIL_COLOUR, FactorName.WEALTH, FactorName.NATIONS }) {
+            top.add(Overlay.of(f));
+        }
+        groups.put("", top);
+        groups.put(GRASS_GROUP, List.of(Overlay.of(FactorName.GRASS_ABUNDANCE), Overlay.of(FactorName.GRASS_HEIGHT), Overlay.of(FactorName.GRASS_COLOUR)));
+        List<Overlay> flora = new ArrayList<>();
+        for (int s = 0; s < NUM_SPECIES; s++) flora.add(new Overlay(FactorName.FLORA, s));
+        groups.put(FLORA_GROUP, flora);
+        List<Overlay> fauna = new ArrayList<>();
+        for (int i = 0; i < organismManager.speciesCount(); i++) fauna.add(new Overlay(FactorName.ANIMAL_POPULATION, i));
+        groups.put(FAUNA_GROUP, fauna);
+        return groups;
+    }
+
+    /** Every overlay the map offers. */
+    private List<Overlay> allOverlays() {
+        List<Overlay> overlays = new ArrayList<>();
+        for (List<Overlay> group : overlayGroups().values()) overlays.addAll(group);
+        return overlays;
+    }
+
+    /** An overlay's name on the map: its factor's, or for a species, the species' own name. */
+    private String overlayLabel(Overlay o) {
+        if (o.species() >= 0 && o.factor() == FactorName.FLORA) return floraName(o.species());
+        return o.species() >= 0 ? organismManager.speciesName(o.species()) : o.factor().label();
+    }
+
+    // Each plant species' name (see floraName)
+    private List<String> floraNames;
+
+    /**
+     * Plant species s's name, made as the planet's and the animals' are, and the same as none of
+     * them or another plant's.
+     */
+    private synchronized String floraName(int s) {
+        if (floraNames == null) {
+            List<String> names = new ArrayList<>();
+            java.util.Set<String> taken = new java.util.HashSet<>();
+            taken.add(PlanetName.forSeed(worldSeed).spelling.toLowerCase());
+            for (int i = 0; i < organismManager.speciesCount(); i++) taken.add(organismManager.speciesName(i).toLowerCase());
+            for (int k = 0; k < NUM_SPECIES; k++) {
+                String name = null;
+                for (int attempt = 0; name == null || !taken.add(name.toLowerCase()); attempt++) {
+                    name = PlanetName.forSeed(worldSeed * 0x5851F42D4C957F2DL + (k + 1) * 2000003L + attempt * 6007L).spelling;
+                }
+                names.add(name);
+            }
+            floraNames = names;
+        }
+        return floraNames.get(s);
+    }
+
+    // The icons for the map's choices (assets/icons), by file name, and each species' picture
+    // once drawn (see drawSpeciesPortraits)
+    private final Map<String, java.awt.Image> choiceIcons = new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile java.awt.Image[] speciesPortraits;
+
+    /** The icon for one of the map's choices, by its name (a layer's or an overlay's); null if none. */
+    private java.awt.Image choiceIcon(String label) {
+        for (Overlay o : allOverlays()) {
+            if (o.species() >= 0 && overlayLabel(o).equals(label)) {
+                java.awt.Image[] portraits = o.factor() == FactorName.FLORA ? floraPortraits : speciesPortraits;
+                if (portraits != null && portraits[o.species()] != null) return portraits[o.species()];
+                return loadIcon(o.factor() == FactorName.FLORA ? "flora" : "animal");
+            }
+        }
+        String file = switch (label) {
+            case "Contours" -> "contours";
+            case "Roads" -> "roads";
+            case "Buildings" -> "buildings";
+            case "Shops" -> "shops";
+            case "None" -> "none";
+            case "Temperature" -> "temperature";
+            case "Rainfall" -> "rainfall";
+            case "Soil colour" -> "soil";
+            case "Wealth" -> "wealth";
+            case "Nations" -> "nations";
+            case "Grass abundance", GRASS_GROUP -> "grass";
+            case "Grass height" -> "grass_height";
+            case "Grass colour" -> "grass_colour";
+            case FLORA_GROUP -> "flora";
+            case FAUNA_GROUP -> "animal";
+            default -> null;
+        };
+        return file == null ? null : loadIcon(file);
+    }
+
+    private java.awt.Image loadIcon(String file) {
+        return choiceIcons.computeIfAbsent(file, f -> {
+            try {
+                return ImageIO.read(new File("assets/icons/" + f + ".png"));
+            } catch (Exception e) {
+                return new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+            }
+        });
+    }
+
+    // Each plant species' picture for the map, once drawn
+    private volatile java.awt.Image[] floraPortraits;
+    // The animal or plant to show turning beside the map: wanted, being drawn (its frames so far)
+    private volatile Overlay previewWanted;
+    private Overlay previewBuilding;
+    private BufferedImage[] previewRaw;
+    private int previewNext;
+    // The turning picture's frames (all the way round), their size, and how many drawn a frame
+    private static final int PREVIEW_FRAMES = 36, PREVIEW_SIZE = 256, PREVIEW_RENDER = 512, PREVIEWS_PER_FRAME = 4;
+
+    /**
+     * Draws, a few at a time between frames, the plants' pictures for the map's choices (once),
+     * and the frames of the chosen animal or plant turning round, handing them to the map when done.
+     */
+    private void advancePreviews(GL3 gl) {
+        if (!worldReady || roundLoading || minimap == null) return;
+        if (floraPortraits == null) {
+            java.awt.Image[] portraits = new java.awt.Image[NUM_SPECIES];
+            for (int s = 0; s < NUM_SPECIES; s++) {
+                BufferedImage view = floraView(gl, s, PREVIEW_RENDER, (float) Math.toRadians(30));
+                portraits[s] = view == null ? null : Offscreen.cropTogether(new BufferedImage[] { view }, 96)[0];
+            }
+            floraPortraits = portraits;
+            // (a plant's range already chosen gets its picture now)
+            Overlay shown = currentDebugFactor;
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (shown != null && shown.factor() == FactorName.FLORA && shown == currentDebugFactor) minimap.setOverlayPicture(portraits[shown.species()]);
+                minimap.repaint();
+            });
+        }
+        Overlay wanted = previewWanted;
+        if (wanted == null) return;
+        if (previewBuilding != wanted) {
+            previewBuilding = wanted;
+            previewRaw = new BufferedImage[PREVIEW_FRAMES];
+            previewNext = 0;
+        }
+        Vector3 here = camera.getPosition();
+        for (int k = 0; k < PREVIEWS_PER_FRAME && previewNext < PREVIEW_FRAMES; k++, previewNext++) {
+            float angle = (float) (Math.PI * 2 * previewNext / PREVIEW_FRAMES);
+            previewRaw[previewNext] = wanted.factor() == FactorName.FLORA ? floraView(gl, wanted.species(), PREVIEW_RENDER, angle)
+                    : organismManager.view(gl, wanted.species(), PREVIEW_RENDER, angle, here.x, here.z);
+            if (previewRaw[previewNext] == null) previewRaw[previewNext] = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+        }
+        if (previewNext < PREVIEW_FRAMES) return;
+        BufferedImage[] frames = Offscreen.cropTogether(previewRaw, PREVIEW_SIZE);
+        previewRaw = null;
+        previewWanted = null;
+        previewBuilding = null;
+        String name = overlayLabel(wanted);
+        String kind = wanted.factor() == FactorName.FLORA ? (wanted.species() < 4 ? "Tree" : "Shrub") : "Animal";
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            if (currentDebugFactor != null && currentDebugFactor.equals(wanted)) {
+                minimap.setPreview(name, kind, frames, wanted.factor() == FactorName.FLORA ? leafPicture(wanted.species()) : null);
+            }
+        });
+    }
+
+    /** Plant species s's leaf, in its own colours (its texture runs from the dark shade to the light). */
+    private BufferedImage leafPicture(int s) {
+        BufferedImage leaf = worldArt.leaf(speciesConfigs[s].leafTexNum);
+        if (leaf == null) return null;
+        Vector3 dark = leafDarkColour(speciesConfigs[s].healthyColor), light = leafLightColour(speciesConfigs[s].healthyColor);
+        BufferedImage coloured = new BufferedImage(leaf.getWidth(), leaf.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        for (int y = 0; y < leaf.getHeight(); y++) {
+            for (int x = 0; x < leaf.getWidth(); x++) {
+                int argb = leaf.getRGB(x, y);
+                float t = ((argb >> 16) & 0xFF) / 255f;
+                int r = Math.round((dark.x + (light.x - dark.x) * t) * 255f), g = Math.round((dark.y + (light.y - dark.y) * t) * 255f),
+                        b = Math.round((dark.z + (light.z - dark.z) * t) * 255f);
+                coloured.setRGB(x, y, (argb & 0xFF000000) | (Math.min(255, r) << 16) | (Math.min(255, g) << 8) | Math.min(255, b));
+            }
+        }
+        return coloured;
+    }
+
+    /**
+     * A plant of species s turned to angle, seen from three-quarters on in a wide view (render
+     * pixels square, clear round it); null if its model isn't made yet. Drawn just under where
+     * the viewer is (so the planet's curve leaves it be) by pointing the camera at it a moment.
+     */
+    private BufferedImage floraView(GL3 gl, int s, int render, float angle) {
+        Model branch = null, leaves = null;
+        for (int lod = 0; lod < floraBranchModelsLOD[s].length && branch == null; lod++) {
+            for (int v = 0; v < FLORA_VARIATIONS; v++) {
+                if (floraBranchModelsLOD[s][lod][v] != null && floraLeafModelsLOD[s][lod][v] != null) {
+                    branch = floraBranchModelsLOD[s][lod][v];
+                    leaves = floraLeafModelsLOD[s][lod][v];
+                    break;
+                }
+            }
+        }
+        if (branch == null) return null;
+        SpeciesConfig sc = speciesConfigs[s];
+        Vector3 eyeBefore = camera.getPosition(), frontBefore = camera.getForwardDirection();
+        Matrix4 lensBefore = camera.getPerspectiveMatrix();
+        // (framed generously, the tallest trees whole: the picture is cut down to the plant afterwards)
+        float reach = FLORA_CULL_RADIUS * (s < 4 ? 1.0f : 0.5f);
+        Vector3 base = new Vector3(eyeBefore.x, eyeBefore.y - 3000f, eyeBefore.z);
+        Matrix4 model = Matrix4.multiply(Matrix4Transform.translate(base), Matrix4Transform.rotateAroundY((float) Math.toDegrees(angle)));
+        Vector3 centre = new Vector3(base.x, base.y + reach * 0.7f, base.z);
+        float distance = reach * 3.6f;
+        Vector3 eye = new Vector3(centre.x + distance * 0.8f, centre.y + distance * 0.25f, centre.z + distance * 0.55f);
+        final Model trunk = branch, foliage = leaves;
+        BufferedImage image;
+        try {
+            camera.setPosition(eye);
+            camera.setTarget(centre);
+            camera.setPerspectiveMatrix(Matrix4Transform.perspective(40f, 1f, 1f, distance * 4f));
+            Vector3 light = new Vector3(0.62f, 0.62f, 0.66f);
+            image = Offscreen.capture(gl, render, () -> {
+                gl.glDisable(GL3.GL_CULL_FACE);
+                terrainShader.use(gl);
+                terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
+                trunk.setModelMatrix(model);
+                trunk.render(gl, light, 0f);
+                leafShader.use(gl);
+                leafShader.setVec3(gl, "u_LeafDarkColor", leafDarkColour(sc.healthyColor));
+                leafShader.setVec3(gl, "u_LeafLightColor", leafLightColour(sc.healthyColor));
+                foliage.setModelMatrix(model);
+                foliage.render(gl, light, 0f);
+                gl.glEnable(GL3.GL_CULL_FACE);
+            });
+        } finally {
+            camera.setPosition(eyeBefore);
+            camera.setTarget(Vector3.add(eyeBefore, frontBefore));
+            camera.setPerspectiveMatrix(lensBefore);
+        }
+        return image;
+    }
+
+    /** Draws each species' picture for the map (with the GL context, once its meshes are made). */
+    private void drawSpeciesPortraits(GL3 gl) {
+        java.awt.Image[] portraits = new java.awt.Image[organismManager.speciesCount()];
+        for (int i = 0; i < portraits.length; i++) portraits[i] = organismManager.portrait(gl, i, 96);
+        speciesPortraits = portraits;
+        if (minimap == null) return;
+        // (a species' overlay already chosen gets its picture now)
+        Overlay shown = currentDebugFactor;
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            if (shown != null && shown.species() >= 0 && shown.factor() == FactorName.ANIMAL_POPULATION && shown == currentDebugFactor) {
+                minimap.setOverlayPicture(portraits[shown.species()]);
+            }
+            minimap.repaint();
+        });
+    }
+
+    public void chooseGradient(Overlay factorName) {
         currentDebugFactor = factorName;
+        java.awt.Image[] portraits = factorName != null && factorName.factor() == FactorName.FLORA ? floraPortraits : speciesPortraits;
+        minimap.setOverlayPicture(factorName != null && factorName.species() >= 0 && portraits != null ? portraits[factorName.species()] : null);
+        FactorName factor = factorName == null ? null : factorName.factor();
+        // An animal's or plant's range: it's shown turning round beside the map
+        if (factorName != null && factorName.species() >= 0) {
+            boolean plant = factor == FactorName.FLORA;
+            minimap.setPreview(overlayLabel(factorName), plant ? (factorName.species() < 4 ? "Tree" : "Shrub") : "Animal", null,
+                    plant ? leafPicture(factorName.species()) : null);
+            previewWanted = factorName;
+        } else {
+            minimap.setPreview(null, null, null, null);
+            previewWanted = null;
+        }
+        // The key for the overlays measured in real units
+        if (factor == FactorName.TEMPERATURE) {
+            minimap.setLegend(RegionalGenerationManager.TEMPERATURE_SPECTRUM, new String[] {
+                    celsiusLabel(0f), celsiusLabel(0.5f), celsiusLabel(1f) });
+        } else if (factor == FactorName.RAINFALL) {
+            minimap.setLegend(RegionalGenerationManager.RAINFALL_SPECTRUM, new String[] {
+                    "0 mm/yr", Math.round(0.5f * RAINFALL_FULL_MM) + " mm/yr", Math.round(RAINFALL_FULL_MM) + " mm/yr" });
+        } else {
+            minimap.setLegend(null, null);
+        }
+        minimap.setOverlayTiles(overlayTiles(factorName), factorName == null ? null : overlayLabel(factorName));
         if (factorName == null) {
             minimap.setOverlay(null, null, false);
             return;
         }
         BufferedImage ready = gradientCache.get(factorName);
         if (ready != null) {
-            minimap.setOverlay(ready, factorName.label(), factorName == FactorName.NATIONS);
+            minimap.setOverlay(ready, overlayLabel(factorName), factor == FactorName.NATIONS);
             return;
         }
+        // (its tiles once the overlay itself is ready)
         Thread heatmapThread = new Thread(() -> {
             BufferedImage composed = overlayImage(factorName);
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (currentDebugFactor == factorName && composed != null) {
-                    minimap.setOverlay(composed, factorName.label(), factorName == FactorName.NATIONS);
+                    minimap.setOverlayTiles(overlayTiles(factorName), overlayLabel(factorName));
+                    minimap.setOverlay(composed, overlayLabel(factorName), factor == FactorName.NATIONS);
                 }
             });
         }, "gradient-map");
@@ -3357,28 +3869,42 @@ private static class SpeciesConfig {
         return image;
     }
 
+    // Each overlay as worked out, a pixel a chunk (before being laid over the land for the map)
+    private final Map<Overlay, BufferedImage> rawOverlays = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** How to draw an overlay in tiles when the map is zoomed in close; null if it can't be yet. */
+    private MapTiles.Renderer overlayTiles(Overlay factorName) {
+        BirdsEyeMaps maps = birdsEyeMaps;
+        if (factorName == null || maps == null) return null;
+        if (factorName.factor() == FactorName.NATIONS) return maps.nationTiles(nationManager);
+        BufferedImage raw = rawOverlays.get(factorName);
+        return raw == null ? null : maps.overlayTiles(raw, PHYSICAL_CHUNK_SIZE);
+    }
+
     /**
      * An overlay ready to show on the map, worked out the first time it's asked for and kept
      * (a second asker waits for the first to finish rather than doing it again).
      */
-    private BufferedImage overlayImage(FactorName factorName) {
+    private BufferedImage overlayImage(Overlay overlay) {
         if (minimap == null) return null;
-        return gradientCache.computeIfAbsent(factorName, f -> {
+        return gradientCache.computeIfAbsent(overlay, o -> {
+            FactorName f = o.factor();
             if (f == FactorName.NATIONS) {
                 // Each nation filled in its own colour, chosen to stand apart from all the others,
                 // drawn sharp enough for its borders to stay smooth when zoomed in
                 BirdsEyeMaps maps = birdsEyeMaps;
                 return maps != null ? maps.renderNationOverlay(nationManager) : null;
             }
-            if (f == FactorName.SOIL_COLOUR) return minimap.composeOverlay(soilColourMap());
-            BufferedImage heatmap = regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factorFor(f), f.toString(),
-                    f == FactorName.TEMPERATURE ? RegionalGenerationManager.TEMPERATURE_SPECTRUM : f == FactorName.WEALTH ? WEALTH_SPECTRUM : null);
+            BufferedImage heatmap = f == FactorName.SOIL_COLOUR ? soilColourMap()
+                    : regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factorFor(o), overlayLabel(o),
+                    f == FactorName.TEMPERATURE ? RegionalGenerationManager.TEMPERATURE_SPECTRUM : f == FactorName.WEALTH ? WEALTH_SPECTRUM
+                    : f == FactorName.RAINFALL ? RegionalGenerationManager.RAINFALL_SPECTRUM : null);
+            // (kept as it is too, a pixel a chunk, for drawing the overlay in tiles when zoomed in)
+            rawOverlays.put(o, heatmap);
             return minimap.composeOverlay(heatmap);
         });
     }
 
-    // The animal-life overlay, made when first asked for
-    private RegionalFactor animalOverlay;
     // The wealth overlay: how well off people are, from each nation's richness, more so in town
     private RegionalFactor wealthOverlay;
     // Its colours, poorest to richest: dull brown through to gold
@@ -3388,36 +3914,30 @@ private static class SpeciesConfig {
     // Where each regional soil colour starts and finishes blending in (from its factor's spread of values)
     private volatile float[][] soilBlendRanges;
 
-    private RegionalFactor factorFor(FactorName factorName) {
-        return switch (factorName) {
+    private RegionalFactor factorFor(Overlay overlay) {
+        // One species' range: where it lives, and how many
+        if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) return speciesConfigs[overlay.species()].abundanceFactor;
+        if (overlay.species() >= 0) return organismManager.habitat(overlay.species());
+        return switch (overlay.factor()) {
+            case GRASS_ABUNDANCE -> grassAbundanceFactor;
+            case GRASS_HEIGHT -> grassHeightFactor;
+            case GRASS_COLOUR -> grassColourFactor;
+            case FLORA -> null;
             // Wettest at the water's edge, drying out inland
-            case MOISTURE -> this.grassMoistureFactor;
             case TEMPERATURE -> regionalManager.temperatureMap;
+            case RAINFALL -> regionalManager.rainfallMap;
             case SOIL_COLOUR -> null;
             case NATIONS -> null;
             case WEALTH -> {
                 if (wealthOverlay == null) {
                     wealthOverlay = new RegionalFactor(1f, (cx, cz, x, z) -> {
                         int nation = nationManager.getNationAtWorld(x, z, TOTAL_REGION_WIDTH);
-                        return nation <= 0 ? 0f : infraManager.areaRichness(nation, settlementManager.getUrbanness(x, z));
+                        return nation <= 0 ? 0f : infraManager.areaRichness(nation, settlementManager.getUrbanness(x, z), x, z);
                     });
                 }
                 yield wealthOverlay;
             }
-            case ANIMAL_POPULATION -> {
-                if (animalOverlay == null) {
-                    // How suited each place is to the wild creatures, averaged over every species
-                    // (the people who built the towns aren't among them)
-                    animalOverlay = new RegionalFactor(1f, (cx, cz, x, z) -> {
-                        int count = organismManager.speciesCount();
-                        if (count == 0) return 0f;
-                        float sum = 0f;
-                        for (int i = 0; i < count; i++) sum += organismManager.habitat(i).evaluate(cx, cz, x, z);
-                        return sum / count;
-                    });
-                }
-                yield animalOverlay;
-            }
+            case ANIMAL_POPULATION -> null;
         };
     }
 
@@ -3439,6 +3959,178 @@ private static class SpeciesConfig {
     /** C: the player takes out the compass and looks at it for a moment. */
     public void useCompass() {
         compassWanted = true;
+    }
+
+    /** 2: the player takes out the thermometer and reads it for a moment. */
+    public void useThermometer() {
+        thermometerWanted = true;
+    }
+
+    private volatile boolean thermometerWanted;
+
+    /**
+     * What a thermometer reads at (x, z), in degrees Celsius: the place's warmth as the
+     * temperature overlay shows it (warmer towards the equator and inland in the tropics, colder
+     * up high, varying from region to region), warmer in that hemisphere's summer and colder in
+     * its winter (the more so the further from the equator), and warmest in the mid afternoon,
+     * coolest round dawn, by this round's sun.
+     */
+    /** What rain or snow lands on at a point: the ground (or a road), a roof, or a rock, whichever is highest. */
+    private float surfaceHeightAt(float x, float z) {
+        float top = groundHeightAt(x, z);
+        float roof = infraManager != null ? infraManager.roofAt(x, z) : Float.NaN;
+        if (!Float.isNaN(roof)) top = Math.max(top, roof);
+        float rock = rockField != null ? rockField.topAt(x, z, top) : Float.NaN;
+        if (!Float.isNaN(rock)) top = Math.max(top, rock);
+        return top;
+    }
+
+    // The climate for the snow over the whole world (see snowClimate): a pixel per this many to
+    // a side, its texture unit, and how many degrees below freezing it takes for snow to lie thickly
+    private static final int SNOW_COVER_SIZE = 512, SNOW_UNIT = 11;
+    private static final float SNOW_LIES_THICK = 5f;
+    private java.util.concurrent.Future<byte[]> snowCoverJob;
+    private int snowCoverTexture;
+
+    /**
+     * The climate at a place as the snow needs it, each 0 to 1 for the texture: the temperature
+     * as it would be at sea level (from -60 to 40 Celsius; the shader takes off for height), and
+     * how much rain or snow falls.
+     */
+    private float[] snowClimate(float x, float z) {
+        int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
+        float warmth = regionalManager.temperatureMap.evaluate(cx, cz, x, z) + regionalManager.altitudeChill(cx, cz);
+        float celsius = -30f + 70f * warmth;
+        return new float[] { Math.max(0f, Math.min(1f, (celsius + 60f) / 100f)), regionalManager.rainfallMap.evaluate(cx, cz, x, z) };
+    }
+
+    // How far either way the snow's climate is averaged over, in texture pixels (each a few chunks)
+    private static final int SNOW_SMOOTHING = 3;
+
+    /** Averages the snow's climate (both channels) over its neighbours, east-west then north-south, twice over. */
+    private static void smoothSnowClimate(byte[] cover) {
+        int n = SNOW_COVER_SIZE;
+        float[] a = new float[n * n * 2], b = new float[n * n * 2];
+        for (int k = 0; k < a.length; k++) a[k] = cover[k] & 0xFF;
+        for (int pass = 0; pass < 4; pass++) {
+            boolean across = pass % 2 == 0;
+            for (int j = 0; j < n; j++) {
+                for (int i = 0; i < n; i++) {
+                    for (int c = 0; c < 2; c++) {
+                        float sum = 0f;
+                        for (int d = -SNOW_SMOOTHING; d <= SNOW_SMOOTHING; d++) {
+                            // (round the world east and west; held at the edge north and south)
+                            int x = across ? Math.floorMod(i + d, n) : i, y = across ? j : Math.max(0, Math.min(n - 1, j + d));
+                            sum += a[(y * n + x) * 2 + c];
+                        }
+                        b[(j * n + i) * 2 + c] = sum / (2 * SNOW_SMOOTHING + 1);
+                    }
+                }
+            }
+            float[] t = a; a = b; b = t;
+        }
+        for (int k = 0; k < a.length; k++) cover[k] = (byte) Math.round(Math.max(0f, Math.min(255f, a[k])));
+    }
+
+    /** The colour of snow: mostly white, with something of the planet's oceans in it. */
+    private float[] snowColour() {
+        float[] ocean = worldArt.palette().seaShallowTint();
+        return new float[] { 0.45f * ocean[0] + 0.55f, 0.45f * ocean[1] + 0.55f, 0.45f * ocean[2] + 0.55f };
+    }
+
+    /** Works out the lying snow over the world in the background, then hands it to every shader. */
+    private void bindSnowCover(GL3 gl) {
+        if (snowCoverJob == null) {
+            snowCoverJob = java.util.concurrent.ForkJoinPool.commonPool().submit(() -> {
+                byte[] cover = new byte[SNOW_COVER_SIZE * SNOW_COVER_SIZE * 2];
+                java.util.stream.IntStream.range(0, SNOW_COVER_SIZE).parallel().forEach(j -> {
+                    for (int i = 0; i < SNOW_COVER_SIZE; i++) {
+                        float x = (i + 0.5f) / SNOW_COVER_SIZE * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
+                        float z = (j + 0.5f) / SNOW_COVER_SIZE * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
+                        float[] climate = snowClimate(x, z);
+                        cover[(j * SNOW_COVER_SIZE + i) * 2] = (byte) Math.round(climate[0] * 255f);
+                        cover[(j * SNOW_COVER_SIZE + i) * 2 + 1] = (byte) Math.round(climate[1] * 255f);
+                    }
+                });
+                smoothSnowClimate(cover);
+                return cover;
+            });
+        }
+        if (snowCoverTexture == 0) {
+            if (!snowCoverJob.isDone()) return;
+            byte[] cover;
+            try {
+                cover = snowCoverJob.get();
+            } catch (Exception e) {
+                return;
+            }
+            int[] id = new int[1];
+            gl.glGenTextures(1, id, 0);
+            snowCoverTexture = id[0];
+            gl.glActiveTexture(GL3.GL_TEXTURE0 + SNOW_UNIT);
+            gl.glBindTexture(GL3.GL_TEXTURE_2D, snowCoverTexture);
+            gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 1);
+            gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RG8, SNOW_COVER_SIZE, SNOW_COVER_SIZE, 0, GL3.GL_RG, GL3.GL_UNSIGNED_BYTE,
+                    java.nio.ByteBuffer.wrap(cover));
+            gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 4);
+            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
+            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+            // (round the world east and west; at the poles, the edge carries on)
+            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
+            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE);
+            gl.glActiveTexture(GL3.GL_TEXTURE0);
+        }
+        gl.glActiveTexture(GL3.GL_TEXTURE0 + SNOW_UNIT);
+        gl.glBindTexture(GL3.GL_TEXTURE_2D, snowCoverTexture);
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
+        // (every frame, so shaders made since pick it up too)
+        // (today's temperature here against the usual, so fresh snow lies all round wherever it's snowing)
+        Vector3 here = camera.getPosition();
+        float usual = snowClimate(here.x, here.z)[0] * 100f - 60f - Math.max(0f, here.y - seaLevelHeight) * 70f * RegionalGenerationManager.ALTITUDE_CHILL;
+        Shader.setSnowCover(gl, SNOW_UNIT, 1f / TOTAL_REGION_WIDTH, TOTAL_REGION_WIDTH * 0.5f, weather.freshSnow(), temperatureAt(here.x, here.z) - usual,
+                new float[] { freezingPoint, SNOW_LIES_THICK, 70f * RegionalGenerationManager.ALTITUDE_CHILL, seaLevelHeight }, snowColour());
+    }
+
+    /**
+     * The haze the distance fades into: the sky's colour greyed (as the air's haze greys
+     * everything far off), and greyer still towards the clouds' colour the cloudier it is.
+     */
+    private float[] fogColour(Vector3 sky) {
+        float grey = 0.3f * sky.x + 0.59f * sky.y + 0.11f * sky.z;
+        float[] fog = { sky.x + (grey - sky.x) * FOG_GREYING, sky.y + (grey - sky.y) * FOG_GREYING, sky.z + (grey - sky.z) * FOG_GREYING };
+        float[] cloud = weather.haze(sky, 1.0f - nightProportion);
+        for (int k = 0; k < 3; k++) fog[k] += (cloud[k] - fog[k]) * cloud[3];
+        return fog;
+    }
+
+    // How far the fog is greyed from the sky's own colour (0 not at all, 1 fully grey)
+    private static final float FOG_GREYING = 0.45f;
+
+    // The rainfall map's top (1) as rain over a year, in millimetres, for the map's key
+    private static final float RAINFALL_FULL_MM = 3000f;
+
+    /** A point on the temperature map's scale (0 to 1) in Celsius, for the map's key (see temperatureAt). */
+    private static String celsiusLabel(float warmth) {
+        return Math.round(-30f + 70f * warmth) + " \u00B0C";
+    }
+
+    /** How much rain falls at a place, 0 driest to 1 wettest (see RegionalGenerationManager.rainfallMap). */
+    private float rainfallAt(float x, float z) {
+        int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
+        return regionalManager.rainfallMap.evaluate(cx, cz, x, z);
+    }
+
+    private float temperatureAt(float x, float z) {
+        int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
+        float warmth = regionalManager.temperatureMap.evaluate(cx, cz, x, z);
+        float celsius = -30f + 70f * warmth;
+        double latitude = Planet.latitude(z);
+        double tilt = Math.toRadians(Math.max(1.0, planetAxialTiltDegrees));
+        celsius += 14f * (float) (Math.sin(sunDeclination) / Math.sin(tilt) * Math.sin(latitude));
+        double hour = Planet.longitude(x) - noonLongitude;
+        hour = Math.atan2(Math.sin(hour), Math.cos(hour));
+        celsius += 7f * (float) Math.cos(hour - 0.6);
+        return celsius;
     }
 
     /** While the settings are open the view behind them is darkened. */
@@ -3479,7 +4171,7 @@ private static class SpeciesConfig {
     }
 
     public FactorName getCurrentDebugFactor() {
-      return currentDebugFactor;
+      return currentDebugFactor == null ? null : currentDebugFactor.factor();
     }
 
     public int getTotalNationsCount() {

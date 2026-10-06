@@ -1,0 +1,13 @@
+#version 330 core
+
+// A snowflake: world position and how opaque it is; drawn as a point, smaller with distance
+layout(location = 0) in vec4 position;
+uniform mat4 viewProjection;
+uniform float flakePixels;   // the flake's size in pixels at unit distance
+out float alpha;
+
+void main() {
+    alpha = position.w;
+    gl_Position = viewProjection * vec4(position.xyz, 1.0);
+    gl_PointSize = clamp(flakePixels / max(gl_Position.w, 0.1), 1.5, 40.0);
+}

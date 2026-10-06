@@ -32,14 +32,29 @@ public final class Vehicles {
     private static final float[][] KIND_SPEED = { { 52f, 100f }, { 46f, 88f }, { 40f, 72f }, { 34f, 60f } };
     // How much taller than the kind's usual height each variation is. The first of each low kind
     // is open-topped instead: its driver sits in a hole in the top, head and shoulders out
-    private static final float[][] VARIANT_HEIGHT = { { 1f, 1.55f, 1.45f }, { 1f, 1.6f, 1.5f }, { 1f, 1f, 1.1f }, { 1f, 1.3f, 1.35f } };
+    // Every closed variation stands taller than the people in it (the tallest of them included),
+    // so only the open-topped ones are low enough to see over
+    private static final float[][] VARIANT_HEIGHT = { { 1f, 2.1f, 2.1f }, { 1f, 2.3f, 2.3f }, { 1.21f, 1.25f, 1.3f }, { 1f, 1.65f, 1.7f } };
+    // How often each variation is made: the open-topped one least, the taller ones more
+    private static final float[] VARIANT_SHARE = { 0.25f, 0.375f, 0.375f };
+
+    private static int pickVariant(Random rand) {
+        float roll = rand.nextFloat();
+        for (int v = 0; v < VARIANTS; v++) {
+            roll -= VARIANT_SHARE[v];
+            if (roll <= 0f) return v;
+        }
+        return VARIANTS - 1;
+    }
 
     private static boolean openTop(int kind, int variant) {
         return variant == 0 && kind != STILT;
     }
 
-    // Further than this from the viewer, a vehicle can't be seen (people and vehicles are drawn out to 850)
-    public static final float OUT_OF_SIGHT = 950f;
+    // Vehicles are drawn out to here, well into the distance fog
+    public static final float DRAW_DISTANCE = 1700f;
+    // Further than this from the viewer, a vehicle can't be seen
+    public static final float OUT_OF_SIGHT = DRAW_DISTANCE + 50f;
 
     // Lanes run this far out from the road's middle (as a share of its half width)
     private static final float LANE_SHARE = 0.32f;
@@ -75,6 +90,9 @@ public final class Vehicles {
         // Stuck on something: reversing for this long, then going round it to one side (-1 left,
         // 1 right) for a while; how many tries it has had
         float reversing, detour;
+        // The border check it last stopped at, and how much longer it waits there
+        int checkedAt = -1;
+        float checkWait;
         int detourSide, tries;
         // The road deck's height above the ground where it stands (slow to find), and where that was found
         float lift, liftX = Float.NaN, liftZ;
@@ -475,7 +493,7 @@ public final class Vehicles {
             if (roll <= 0f && weights[k] > 0f) { kind = k; break; }
             if (weights[k] > 0f) kind = k;
         }
-        Vehicle v = new Vehicle(kind, rand.nextInt(VARIANTS), scale, home, rand);
+        Vehicle v = new Vehicle(kind, pickVariant(rand), scale, home, rand);
         float[] spot = parkingSpot(home, v);
         v.parkedAt = home.id;
         v.slot = (int) spot[3];
@@ -598,7 +616,7 @@ public final class Vehicles {
             if (roll <= 0f && weights[k] > 0f) { kind = k; break; }
             if (weights[k] > 0f) kind = k;
         }
-        Vehicle v = new Vehicle(kind, rand.nextInt(VARIANTS), scale, near, rand);
+        Vehicle v = new Vehicle(kind, pickVariant(rand), scale, near, rand);
         v.traffic = true;
         v.slot = -1;
         return travel(v, from, to, onArrive) ? v : null;
@@ -798,6 +816,9 @@ public final class Vehicles {
         return Math.max(half * 0.2f, Math.min(wanted, half - v.width * 0.5f - 0.5f));
     }
 
+    // How near a border check a vehicle stops, and for how long (seconds)
+    private static final float BORDER_STOP_REACH = 70f, BORDER_WAIT_LOW = 3f, BORDER_WAIT_RANGE = 3f, BORDER_BRAKING = 25f;
+
     private void step(Vehicle v, List<Vehicle> all, float dt) {
         if (v.backOut != null) {
             backOut(v, dt);
@@ -872,6 +893,34 @@ public final class Vehicles {
         // circle round it for ever (at highway speed it can't turn tightly)
         if (Math.abs(turn) > 0.5f) limit = Math.min(limit, distance * 0.6f + 3f);
         if (final_ || approaching) limit = Math.min(limit, distance * 1.2f + 2f);
+        // At a border check it stops a while to be let through
+        // At a border check it draws up level with the booth and stops a while to be let through
+        float[] check = infrastructure.borderStopAhead(v.x, v.z, (float) Math.sin(v.heading), (float) Math.cos(v.heading), BORDER_STOP_REACH);
+        if (check != null && (int) check[0] != v.checkedAt) {
+            if (check[1] < 1.0f) {
+                v.checkedAt = (int) check[0];
+                v.checkWait = BORDER_WAIT_LOW + (float) Math.random() * BORDER_WAIT_RANGE;
+                v.speed = 0f;
+            } else {
+                // Slowing to stop just there
+                limit = Math.min(limit, (float) Math.sqrt(2f * BORDER_BRAKING * check[1]));
+            }
+        }
+        if (v.checkWait > 0f) {
+            v.checkWait -= dt;
+            limit = 0f;
+            v.speed = 0f;
+        }
+        // A border's traffic light that isn't its turn: it waits at the line until it is
+        float hold = infrastructure.borderHoldAhead(v.x, v.z, (float) Math.sin(v.heading), (float) Math.cos(v.heading), BORDER_STOP_REACH);
+        if (!Float.isNaN(hold)) {
+            if (hold < 1.0f) {
+                limit = 0f;
+                v.speed = 0f;
+            } else {
+                limit = Math.min(limit, (float) Math.sqrt(2f * BORDER_BRAKING * hold));
+            }
+        }
 
         float fx = (float) Math.sin(v.heading), fz = (float) Math.cos(v.heading);
         float rx = -fz, rz = fx;

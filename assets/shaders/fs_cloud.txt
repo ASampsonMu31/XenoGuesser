@@ -1,0 +1,94 @@
+#version 330 core
+
+// The cloud layer (see Weather.java, whose cloud noise this matches exactly): a flat sheet
+// high above, fixed to the world and drifting with the wind, stretched along the wind and
+// streaked across it so the clouds look fibrous. Its cover and darkness follow the rainfall.
+
+in vec2 ndc;
+out vec4 fragColour;
+
+uniform vec3 forward, right, up;
+uniform vec2 lens;          // tan of half the vertical field of view, and the aspect ratio
+uniform vec3 eye;
+uniform float cloudHeight;
+uniform vec2 wind;
+uniform float scale, drift;
+uniform float coverage, darkness, daylight;
+uniform vec3 skyColour;
+uniform vec2 dayOffset;
+uniform vec3 sunDirection;  // towards the sun
+uniform vec3 sunColour;
+uniform float shading;
+uniform vec4 haze;         // what the distance fades into: the clouds' usual colour, and how much
+
+float hash(ivec2 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h = h ^ (h >> 16u);
+    return float(h & 16777215u) / 16777216.0;
+}
+
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = p - i;
+    ivec2 c = ivec2(i);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash(c), b = hash(c + ivec2(1, 0)), d0 = hash(c + ivec2(0, 1)), d1 = hash(c + ivec2(1, 1));
+    float bottom = a + (b - a) * u.x, top = d0 + (d1 - d0) * u.x;
+    return bottom + (top - bottom) * u.y;
+}
+
+float fbm(vec2 p, int octaves) {
+    float value = 0.0, amplitude = 0.5, total = 0.0;
+    for (int i = 0; i < octaves; i++) {
+        value += amplitude * noise(p);
+        total += amplitude;
+        p = p * 2.03 + vec2(17.3, 9.1);
+        amplitude *= 0.5;
+    }
+    return value / total;
+}
+
+float cloudNoise(vec2 world) {
+    vec2 p = world / scale + wind * drift + dayOffset;
+    float a = p.x * wind.x + p.y * wind.y, b = -p.x * wind.y + p.y * wind.x;
+    vec2 q = vec2(a * 0.45, b * 1.6);
+    float w = fbm(q * 0.7 + vec2(3.1, 7.7), 3);
+    float n = fbm(q + vec2(w - 0.5) * 2.2, 5);
+    float f = fbm(vec2(a * 0.9, b * 6.0) + vec2(w * 1.5), 3);
+    return n * 0.8 + f * 0.2;
+}
+
+void main() {
+    vec3 ray = normalize(forward + ndc.x * lens.x * lens.y * right + ndc.y * lens.x * up);
+    // Towards the horizon the sheet is far off and seen edge on: it merges into the haze
+    // that the distant land fades into too
+    float horizon = smoothstep(0.0, 0.22, ray.y);
+    vec4 cloud = vec4(0.0);
+    if (ray.y > 0.005) {
+        float t = (cloudHeight - eye.y) / ray.y;
+        vec2 hit = eye.xz + ray.xz * t;
+        float n = cloudNoise(hit);
+        float threshold = 0.72 - 0.50 * coverage;
+        float cover = smoothstep(threshold, threshold + 0.18, n);
+        float thickness = smoothstep(threshold, threshold + 0.4, n);
+        float shade = shading * thickness * (0.2 + 0.8 * darkness);
+        // Lit white by day (dimmer and sky-tinted at dusk and night), grey where thick and wet
+        vec3 lit = mix(skyColour * 0.35 + vec3(0.06), vec3(0.97, 0.97, 0.99), daylight);
+        vec3 dark = lit * vec3(0.30, 0.31, 0.34);
+        vec3 colour = mix(lit, dark, shade);
+        // The sun lights each cloud on the side it shines from: where the cloud thins out
+        // towards the sun, its edge is lit bright, dark storm clouds as much as any
+        vec2 towardsSun = normalize(sunDirection.xz + vec2(1e-4));
+        float nearer = cloudNoise(hit + towardsSun * scale * 0.06);
+        float sunlitEdge = clamp((n - nearer) * 7.0, 0.0, 1.0);
+        // and looking towards the sun, light shines through the clouds, thin ones most
+        float through = pow(max(dot(ray, normalize(sunDirection)), 0.0), 6.0);
+        float glow = (0.55 * sunlitEdge + 0.8 * through * (1.0 - 0.55 * thickness)) * daylight;
+        colour = min(colour + sunColour * glow, vec3(1.0));
+        cloud = vec4(colour, cover * 0.95);
+    }
+    vec4 result = mix(haze, cloud, horizon);
+    if (result.a <= 0.002) discard;
+    fragColour = result;
+}
