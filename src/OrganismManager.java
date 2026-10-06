@@ -50,6 +50,8 @@ public class OrganismManager {
         float steerHeading = Float.NaN, steerTimer;
         // A hop over a rock in the way: how far through it (seconds, 0 when not hopping) and how high
         float hopTime, hopHeight;
+        // Drawn standing level (for a picture), not leaning with the slope it's on
+        boolean level;
         float progressTimer, progressX, progressZ, progressExpected;
     }
 
@@ -163,6 +165,7 @@ public class OrganismManager {
         c.walking = 0f;
         c.gaitPhase = 0.25f;
         c.hopTime = 0f;
+        c.level = true;
         float ground = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
         float reach = s.reachRadius() * c.sizeScale * c.legScale;
         // (where draw puts it, at time 0)
@@ -302,6 +305,26 @@ public class OrganismManager {
 
     private static long chunkKey(int cx, int cz) {
         return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
+    }
+
+    /**
+     * How many of species i would be expected in the chunk round a point were it wild (as
+     * populate works it out, sharing the ground with the other species there); towns, which
+     * none of them live in, are left out (populate keeps them out of towns itself).
+     */
+    public float expectedPerChunk(int i, float x, float z) {
+        float total = 0f, mine = 0f;
+        for (int k = 0; k < species.size(); k++) {
+            float p = species.get(k).presenceAt(x, z, chunkSize);
+            total += p;
+            if (k == i) mine = p;
+        }
+        return mine / Math.max(1f, total) * species.get(i).rarity * PEAK_PER_CHUNK;
+    }
+
+    /** The most of species i a chunk can expect (where it's at its best, alone). */
+    public float peakPerChunk(int i) {
+        return species.get(i).rarity * PEAK_PER_CHUNK;
     }
 
     private List<Creature> populate(int cx, int cz) {
@@ -605,11 +628,12 @@ public class OrganismManager {
         float front = s.halfLength() * c.sizeScale, back = s.tailLength() * c.sizeScale;
         float frontGround = TerrainMesh.getLayeredHeight(c.x + sin * front, c.z + cos * front, terrainNoise);
         float backGround = TerrainMesh.getLayeredHeight(c.x - sin * back, c.z - cos * back, terrainNoise);
+        if (c.level) frontGround = backGround = ground;
         float pitch = (float) Math.atan2(frontGround - backGround, front + back);
         float height;
         if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
             // Banked into the turn, holding its height above the land or sea below
-            pitch = 0.05f * (float) Math.sin(c.gaitPhase * Math.PI * 2);
+            pitch = c.level ? 0f : 0.05f * (float) Math.sin(c.gaitPhase * Math.PI * 2);
             height = Math.max(ground, seaLevel) + s.bodyHeight + (float) Math.sin(time * 0.4f + c.homeZ) * 8f;
         } else if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
             // Floaters drift level, bobbing gently

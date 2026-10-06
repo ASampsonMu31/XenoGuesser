@@ -585,10 +585,11 @@ private static class SpeciesConfig {
             // to the cold north needn't grow in the cold south too
             RegionalFactor home = this.regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW
                     + new Random(worldSeed * 613L + s).nextFloat() * OrganismSpecies.HOME_SCALE_RANGE);
+            float homeStrength = OrganismSpecies.homeStrength(new Random(worldSeed * 1993L + s));
             sc.abundanceFactor = new RegionalFactor(1.0f, (cx, cz, x, z) -> {
                 float t = Math.max(0f, Math.min(1f, (home.evaluate(cx, cz, x, z) - OrganismSpecies.HOME_FROM)
                         / (OrganismSpecies.HOME_TO - OrganismSpecies.HOME_FROM)));
-                return suited.evaluate(cx, cz, x, z) * t * t * (3f - 2f * t);
+                return suited.evaluate(cx, cz, x, z) * (1f - homeStrength + homeStrength * t * t * (3f - 2f * t));
             });
         }
 
@@ -3737,7 +3738,8 @@ private static class SpeciesConfig {
         Vector3 eyeBefore = camera.getPosition(), frontBefore = camera.getForwardDirection();
         Matrix4 lensBefore = camera.getPerspectiveMatrix();
         // (framed generously, the tallest trees whole: the picture is cut down to the plant afterwards)
-        float reach = FLORA_CULL_RADIUS * (s < 4 ? 1.0f : 0.5f);
+        // (shrubs are much smaller than trees, so framed closer: otherwise they come out tiny and blurred)
+        float reach = FLORA_CULL_RADIUS * (s < 4 ? 1.0f : 0.2f);
         Vector3 base = new Vector3(eyeBefore.x, eyeBefore.y - 3000f, eyeBefore.z);
         Matrix4 model = Matrix4.multiply(Matrix4Transform.translate(base), Matrix4Transform.rotateAroundY((float) Math.toDegrees(angle)));
         Vector3 centre = new Vector3(base.x, base.y + reach * 0.7f, base.z);
@@ -3809,6 +3811,14 @@ private static class SpeciesConfig {
         } else if (factor == FactorName.RAINFALL) {
             minimap.setLegend(RegionalGenerationManager.RAINFALL_SPECTRUM, new String[] {
                     "0 mm/yr", Math.round(0.5f * RAINFALL_FULL_MM) + " mm/yr", Math.round(RAINFALL_FULL_MM) + " mm/yr" });
+        } else if (factorName != null && factorName.species() >= 0) {
+            // How many per square kilometre (a hundred chunks by a hundred), none to the most
+            int sp = factorName.species();
+            float peak = factor == FactorName.FLORA ? speciesConfigs[sp].baseAbundance * mapPeak(-1 - sp, (x, z) -> speciesConfigs[sp].abundanceFactor
+                    .evaluate((int) Math.floor(x / PHYSICAL_CHUNK_SIZE), (int) Math.floor(z / PHYSICAL_CHUNK_SIZE), x, z))
+                    : animalMapPeak(sp);
+            float perKm = peak * CHUNKS_PER_KM2;
+            minimap.setLegend(RANGE_SPECTRUM, new String[] { "0 /km²", countLabel(perKm * 0.5f) + " /km²", countLabel(perKm) + " /km²" });
         } else {
             minimap.setLegend(null, null);
         }
@@ -3915,9 +3925,19 @@ private static class SpeciesConfig {
     private volatile float[][] soilBlendRanges;
 
     private RegionalFactor factorFor(Overlay overlay) {
-        // One species' range: where it lives, and how many
-        if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) return speciesConfigs[overlay.species()].abundanceFactor;
-        if (overlay.species() >= 0) return organismManager.habitat(overlay.species());
+        // One species' range: how many there are, from none to the most anywhere (as they're
+        // spawned: a plant's count is its abundance times its base; an animal's, see expectedPerChunk)
+        if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
+            RegionalFactor abundance = speciesConfigs[overlay.species()].abundanceFactor;
+            float peak = mapPeak(-1 - overlay.species(), (x, z) -> abundance.evaluate((int) Math.floor(x / PHYSICAL_CHUNK_SIZE),
+                    (int) Math.floor(z / PHYSICAL_CHUNK_SIZE), x, z));
+            return new RegionalFactor(1f, (cx, cz, x, z) -> abundance.evaluate(cx, cz, x, z) / peak);
+        }
+        if (overlay.species() >= 0) {
+            int i = overlay.species();
+            float peak = animalMapPeak(i);
+            return new RegionalFactor(1f, (cx, cz, x, z) -> organismManager.expectedPerChunk(i, x, z) / peak);
+        }
         return switch (overlay.factor()) {
             case GRASS_ABUNDANCE -> grassAbundanceFactor;
             case GRASS_HEIGHT -> grassHeightFactor;
@@ -4108,6 +4128,49 @@ private static class SpeciesConfig {
 
     // The rainfall map's top (1) as rain over a year, in millimetres, for the map's key
     private static final float RAINFALL_FULL_MM = 3000f;
+
+    // The most of each animal species expected in a chunk anywhere on the planet (see animalMapPeak)
+    private final Map<Integer, Float> animalPeaks = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The most of animal species i expected in any chunk, found by looking all over the land:
+     * its map runs from none to this, so green on its key is somewhere on its map.
+     */
+    private float animalMapPeak(int i) {
+        return mapPeak(i, (x, z) -> organismManager.expectedPerChunk(i, x, z));
+    }
+
+    /** The highest a value reaches anywhere on the land the map shows (kept under key, once worked out). */
+    private float mapPeak(int key, java.util.function.BiFunction<Float, Float, Float> value) {
+        return animalPeaks.computeIfAbsent(key, k -> {
+            float best = 0f;
+            int n = 300;
+            for (int a = 0; a < n; a++) {
+                for (int b = 0; b < n; b++) {
+                    float x = (a + 0.5f) / n * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
+                    // (over the part of the planet the map shows, not the polar caps beyond it)
+                    float z = ((b + 0.5f) / n * 2f - 1f) * Planet.clipHalfHeight();
+                    if (TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight) continue;
+                    best = Math.max(best, value.apply(x, z));
+                }
+            }
+            return Math.max(1e-6f, best);
+        });
+    }
+
+    // A square kilometre, in chunks; and the plant and animal maps' colours, none to the most
+    private static final float CHUNKS_PER_KM2 = 100f * 100f;
+    private static final float[][] RANGE_SPECTRUM = {
+        { 0.85f, 0.00f, 0.00f }, { 1.00f, 0.50f, 0.00f }, { 1.00f, 0.90f, 0.00f }, { 0.00f, 0.70f, 0.10f }
+    };
+
+    /** A count for the map's key, rounded sensibly (thousands as k). */
+    private static String countLabel(float n) {
+        if (n >= 10000f) return Math.round(n / 1000f) + "k";
+        if (n >= 1000f) return String.format("%.1fk", n / 1000f);
+        if (n >= 10f) return String.valueOf(Math.round(n));
+        return String.format("%.1f", n);
+    }
 
     /** A point on the temperature map's scale (0 to 1) in Celsius, for the map's key (see temperatureAt). */
     private static String celsiusLabel(float warmth) {

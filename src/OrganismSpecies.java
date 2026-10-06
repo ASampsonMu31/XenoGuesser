@@ -392,12 +392,14 @@ public class OrganismSpecies {
         // Its home region: broad noise (each feature a large part of a continent across), only its
         // highest third counting, so a species keeps to one part of the world (one that likes the
         // cold north needn't live in the cold south too)
+        homeStrength = homeStrength(new Random(seed * 1949L + index));
         RegionalFactor home = regions.createNoiseMap(HOME_SCALE_LOW + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE);
         habitat = new RegionalFactor(1.0f, (cx, cz, wx, wz) -> {
             float suitability = climate.evaluate(cx, cz, wx, wz) * (0.35f + 0.65f * water.evaluate(cx, cz, wx, wz));
             float h = home.evaluate(cx, cz, wx, wz);
             float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
-            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * t * t * (3f - 2f * t);
+            float local = 1f - homeStrength + homeStrength * t * t * (3f - 2f * t);
+            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * local;
         });
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
@@ -409,6 +411,18 @@ public class OrganismSpecies {
 
     // A species' home region (see the constructor): the size of the noise it's drawn from, and
     // where on that noise it starts and is fully at home
+    // How much this species keeps to its home region: 1 only there, 0 anywhere it suits
+    private float homeStrength;
+
+    /**
+     * How strongly a species keeps to its home region: some only there, most mainly there but
+     * found further afield too, and some anywhere that suits them.
+     */
+    public static float homeStrength(Random rand) {
+        float roll = rand.nextFloat();
+        return roll < 0.35f ? 1f : roll < 0.75f ? 0.4f + 0.3f * rand.nextFloat() : 0.1f * rand.nextFloat();
+    }
+
     public static final float HOME_SCALE_LOW = 6.0e-6f, HOME_SCALE_RANGE = 4.0e-6f, HOME_FROM = 0.5f, HOME_TO = 0.64f;
 
     private int nearestSegment(float z, int first, int last) {

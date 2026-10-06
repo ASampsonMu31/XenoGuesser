@@ -23,7 +23,7 @@ public class LandingPod {
     private static final float HULL_BASE = 14f, HULL_TOP = 58f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
     // The hatch platform's floor, and where the stairs leave it
     private static final float PLATFORM_HEIGHT = 17f, PLATFORM_FRONT = 27f;
-    private static final float STAIR_WIDTH = 11f, STAIR_RUN = 5f, STAIR_LENGTH = 20f;
+    private static final float STAIR_WIDTH = 17f, STAIR_RUN = 5f, STAIR_LENGTH = 20f;
     private static final int STEPS = 4;
     // Where the player starts: on the third step down
     public static final float SPAWN_DISTANCE = PLATFORM_FRONT + STAIR_RUN * 2.5f;
@@ -122,15 +122,20 @@ public class LandingPod {
             float sxp = side * (STAIR_WIDTH * 0.5f + 0.4f);
             // Stringer under the treads, and a handrail on posts
             strut(b, OrganismMesh.PART_METAL, new float[] { sxp, PLATFORM_HEIGHT - 0.5f, 0f }, new float[] { sxp, 0f, STAIR_LENGTH + 1f }, 0.55f, 0.55f);
-            strut(b, OrganismMesh.PART_METAL, new float[] { sxp, PLATFORM_HEIGHT + 9f, -0.5f }, new float[] { sxp, 9f, STAIR_LENGTH }, 0.35f, 0.35f);
-            for (float along : new float[] { 0f, STAIR_LENGTH * 0.5f, STAIR_LENGTH }) {
+            // (tall enough to be seen from the stairs, so it's clear what's in the way)
+            strut(b, OrganismMesh.PART_METAL, new float[] { sxp, PLATFORM_HEIGHT + RAIL_HEIGHT, -0.5f }, new float[] { sxp, RAIL_HEIGHT, STAIR_LENGTH }, 0.45f, 0.45f);
+            strut(b, OrganismMesh.PART_METAL, new float[] { sxp, PLATFORM_HEIGHT + RAIL_HEIGHT * 0.5f, -0.5f }, new float[] { sxp, RAIL_HEIGHT * 0.5f, STAIR_LENGTH }, 0.3f, 0.3f);
+            for (float along : new float[] { 0f, STAIR_LENGTH * 0.25f, STAIR_LENGTH * 0.5f, STAIR_LENGTH * 0.75f, STAIR_LENGTH }) {
                 float base = PLATFORM_HEIGHT * (1f - along / (STAIR_LENGTH + 1f));
-                strut(b, OrganismMesh.PART_METAL, new float[] { sxp, base, along }, new float[] { sxp, base + 9f, along }, 0.3f, 0.3f);
+                strut(b, OrganismMesh.PART_METAL, new float[] { sxp, base, along }, new float[] { sxp, base + RAIL_HEIGHT, along }, 0.35f, 0.35f);
             }
         }
         b.resetTransform();
         return b;
     }
+
+    // How high the stairs' handrails stand above the treads
+    private static final float RAIL_HEIGHT = 17f;
 
     private static float hullHeightAt(float t) {
         if (t < 0.8f) return HULL_BASE + (HULL_TOP - 9f - HULL_BASE) * (t / 0.8f);

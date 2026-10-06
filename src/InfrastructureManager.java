@@ -1570,7 +1570,7 @@ public class InfrastructureManager {
                 }
                 if (signRand.nextDouble() < buildingStyles.get(house.nationId).signChance) {
                     InfrastructureObject sign = createHouseSign(house, signRand);
-                    if (sign != null && inKeepClear(sign.position.x, sign.position.z)) sign = null;
+                    if (sign != null && (inKeepClear(sign.position.x, sign.position.z) || nearBorderCheck(sign))) sign = null;
                     if (sign != null) {
                         objects.add(sign);
                         recordSignPosts(sign);
@@ -1594,7 +1594,7 @@ public class InfrastructureManager {
                 }
                 appendRoadSegment(batch, segment);
                 InfrastructureObject sign = tryCreateRoadsideSign(segment, signRand, signPositions);
-                if (sign != null && inKeepClear(sign.position.x, sign.position.z)) sign = null;
+                if (sign != null && (inKeepClear(sign.position.x, sign.position.z) || nearBorderCheck(sign))) sign = null;
                 if (sign != null) {
                     objects.add(sign);
                     recordSignPosts(sign);
@@ -4360,7 +4360,7 @@ public class InfrastructureManager {
     private static final String BOOTH_PART = "booth_variant";
     // The booth's half width, wall and roof heights; and how far round its middle the border
     // fence is pushed back to leave it room
-    private static final float BOOTH_HALF = 10f, BOOTH_WALL = 13f, BOOTH_ROOF = 34f, BOOTH_ROOM = 19f;
+    private static final float BOOTH_HALF = 10f, BOOTH_WALL = 9f, BOOTH_ROOF = 34f, BOOTH_ROOM = 19f;
 
     // How far either side of a border crossing the road is made straight
     private static final float STRAIGHT_REACH = 75f;
@@ -4593,6 +4593,11 @@ public class InfrastructureManager {
             return new float[] { c[0] + dx / d * BOOTH_ROOM, c[1] + dz / d * BOOTH_ROOM };
         }
         return p;
+    }
+
+    /** Whether a sign would stand at a border crossing (its booths, lights and gates). */
+    private boolean nearBorderCheck(InfrastructureObject sign) {
+        return borderCheckAt(sign.position.x, sign.position.z, CROSS_HALF + 35f) >= 0;
     }
 
     /** Which border check a point on the road is within reach of, by its number, or -1. */
