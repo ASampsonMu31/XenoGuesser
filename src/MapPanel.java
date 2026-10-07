@@ -83,7 +83,7 @@ public class MapPanel extends JPanel {
     private MapLayersPanel layersPanel;
 
     // Scroll-wheel zoom of the enlarged map: magnification and the visible centre in 0..1 map space
-    private static final float MAX_ZOOM = 8.0f;
+    private static final float MAX_ZOOM = 16.0f;
     private static final float ZOOM_STEP = 1.25f;
     private static final float DETAIL_SWITCH_ZOOM = 1.3f;
     private float zoom = 1.0f;
@@ -116,13 +116,14 @@ public class MapPanel extends JPanel {
 
     private volatile boolean isGuessed = false;
     // The next round's answer, waiting for the results to close
-    private int[] pendingGoal;
-    private int goalX; 
-    private int goalY; 
+    // (in map pixels, fractional: exactly where, however far the map is zoomed)
+    private float[] pendingGoal;
+    private float goalX;
+    private float goalY;
 
     private boolean hasPin = false;
-    private int pinX; 
-    private int pinY; 
+    private float pinX;
+    private float pinY;
 
     private int btnX;
     private int btnY;
@@ -447,8 +448,8 @@ public class MapPanel extends JPanel {
                 setCursor(java.awt.Cursor.getDefaultCursor());
                 // A click without a drag places the marker (before the guess)
                 if (click && !isGuessed && (isLarge || isFullScreenReveal)) {
-                    pinX = (int) screenToCoreX(e.getX(), visualMapX);
-                    pinY = (int) screenToCoreY(e.getY(), visualMapY);
+                    pinX = screenToCoreX(e.getX(), visualMapX);
+                    pinY = screenToCoreY(e.getY(), visualMapY);
                     hasPin = true;
                     repaint();
                 }
@@ -576,7 +577,7 @@ public class MapPanel extends JPanel {
         if (!text.isEmpty()) {
             boolean existingFound = false;
             for (MapNote note : savedNotes) {
-                if (note.coreX == goalX && note.coreY == goalY) {
+                if (note.coreX == Math.round(goalX) && note.coreY == Math.round(goalY)) {
                     note.text = text;
                     note.isExpanded = false;
                     existingFound = true;
@@ -586,7 +587,7 @@ public class MapPanel extends JPanel {
             }
             
             if (!existingFound) {
-                savedNotes.add(new MapNote(goalX, goalY, text));
+                savedNotes.add(new MapNote(Math.round(goalX), Math.round(goalY), text));
                 System.out.println("Note Stored: " + text);
             }
         }
@@ -901,10 +902,10 @@ public class MapPanel extends JPanel {
      * rather than moving the answer flag on screen and giving the next round away.
      */
     public synchronized void setPlayerSpawnLocation(float spawnX, float spawnZ) {
-        int x = (int) (((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth());
-        int y = (int) (((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight());
+        float x = ((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth();
+        float y = ((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight();
         if (isGuessed) {
-            pendingGoal = new int[] { x, y };
+            pendingGoal = new float[] { x, y };
         } else {
             goalX = x;
             goalY = y;
@@ -1328,8 +1329,11 @@ public class MapPanel extends JPanel {
                     g2d.drawString(endText, btnX + (btnWidth - fm.stringWidth(endText)) / 2, btnY + (btnHeight + fm.getAscent()) / 2 - 2);
                 }
 
+                // How the guess was paid: its points as productivity, and the salary plus half of them as cash
+                if (currentPhase != RevealPhase.SHOW_PLAYER_PIN) drawReckoning(g2d, mapX, mapY);
+
                 if (shouldDrawScoreText) {
-                    String pointsStr = String.format("$%,d", currentDisplayScore);
+                    String pointsStr = String.format("%,d", currentDisplayScore);
                     float baseBubbleFontSize = currentMapSize * 0.15f; 
                     float dynamicFontSize = baseBubbleFontSize * currentScoreScale;
                     
@@ -1496,7 +1500,7 @@ public class MapPanel extends JPanel {
     private void bankScore() {
         if (scoreBanked) return;
         scoreBanked = true;
-        if (gameHUD != null) gameHUD.addScore(targetRoundScore);
+        if (gameHUD != null) gameHUD.addRound(targetRoundScore);
     }
 
     /**
@@ -1709,6 +1713,35 @@ public class MapPanel extends JPanel {
             }
         }
         if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
+    }
+
+    /**
+     * Under the top of the results' map: the guess's points going to productivity, and the cash
+     * it earns worked out (the monthly salary plus half the points).
+     */
+    private void drawReckoning(Graphics2D g2d, int mapX, int mapY) {
+        int points = targetRoundScore, cash = GameHUD.cashFor(points);
+        String[] lines = {
+            String.format("Productivity: +%,d", points),
+            String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
+        };
+        Font font = HudStyle.font(Font.BOLD, 15f);
+        g2d.setFont(font);
+        FontMetrics fm = g2d.getFontMetrics();
+        int w = 0;
+        for (String line : lines) w = Math.max(w, fm.stringWidth(line));
+        int padX = 14, padY = 9, lineH = fm.getHeight();
+        int boxW = w + padX * 2, boxH = lineH * lines.length + padY * 2;
+        int x = mapX + (currentMapSize - boxW) / 2, y = mapY + 12;
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillRoundRect(x, y, boxW, boxH, 12, 12);
+        g2d.setColor(new Color(255, 255, 255, 50));
+        g2d.drawRoundRect(x, y, boxW, boxH, 12, 12);
+        Color[] colours = { new Color(150, 220, 255), new Color(120, 230, 140) };
+        for (int i = 0; i < lines.length; i++) {
+            g2d.setColor(colours[i]);
+            g2d.drawString(lines[i], x + padX, y + padY + fm.getAscent() + i * lineH);
+        }
     }
 
     // The height of one glyph in a nation-name image, in its pixels

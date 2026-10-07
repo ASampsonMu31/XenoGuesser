@@ -41,10 +41,11 @@ public class ShopPanel extends JPanel {
 
     // What things cost: each card's price is drawn at random from a normal distribution round a
     // mean (to the nearest $5, never below the lowest). The mean starts at FIRST_MEAN after the
-    // first round and goes up by MEAN_PER_ROUND each round after. The spread is set so that
+    // first round and is multiplied by PRICE_GROWTH each round after, everything's prices rising
+    // by the same share (so after round 12, 1.3 to the 11th, about 18 times). The spread is set so that
     // WITHIN_SHARE of prices fall within WITHIN_FRACTION of the mean either side (90% within
     // 30%: a standard deviation of 0.3 / 1.645 of the mean), so it grows with the mean
-    private static final float FIRST_MEAN = 100f, MEAN_PER_ROUND = 50f;
+    private static final float FIRST_MEAN = 100f, PRICE_GROWTH = 1.4f;
     private static final float WITHIN_FRACTION = 0.3f;
     // (1.645 standard deviations either side of the mean hold 90% of a normal distribution)
     private static final float WITHIN_SHARE_DEVIATIONS = 1.645f;
@@ -61,7 +62,9 @@ public class ShopPanel extends JPanel {
 
     private final GameHUD hud;
     private List<Card> cards = List.of();
-    private int selected = -1, hovered = -1;
+    private int hovered = -1;
+    // Which cards have been bought
+    private boolean[] bought = new boolean[0];
     private Runnable onLeave;
     // Once a choice is made: waiting for the next round, with a spinner
     private boolean leaving;
@@ -72,7 +75,8 @@ public class ShopPanel extends JPanel {
 
     // Where things are, as last laid out
     private final List<Rectangle> cardBounds = new ArrayList<>();
-    private final Rectangle buyButton = new Rectangle(), skipButton = new Rectangle();
+    private final List<Rectangle> cardButtons = new ArrayList<>();
+    private final Rectangle nextButton = new Rectangle();
 
     public ShopPanel(GameHUD hud) {
         this.hud = hud;
@@ -99,15 +103,13 @@ public class ShopPanel extends JPanel {
             @Override
             public void mousePressed(MouseEvent e) {
                 if (leaving || e.getButton() != MouseEvent.BUTTON1) return;
-                int card = cardAt(e.getX(), e.getY());
-                if (card >= 0) {
-                    selected = selected == card ? -1 : card;
-                    repaint();
-                } else if (buyButton.contains(e.getPoint()) && canBuy()) {
-                    buySelected();
-                } else if (skipButton.contains(e.getPoint())) {
-                    buyNothing();
+                for (int i = 0; i < cardButtons.size(); i++) {
+                    if (cardButtons.get(i).contains(e.getPoint()) && canBuy(i)) {
+                        buy(i);
+                        return;
+                    }
                 }
+                if (nextButton.contains(e.getPoint())) nextRound();
             }
         };
         addMouseListener(mouse);
@@ -117,8 +119,8 @@ public class ShopPanel extends JPanel {
     /** Opens the shop with these cards; onLeave is told once the player has chosen (bought or not). */
     public void open(List<Card> offers, Runnable onLeave) {
         this.cards = List.copyOf(offers);
+        this.bought = new boolean[cards.size()];
         this.onLeave = onLeave;
-        this.selected = -1;
         this.hovered = -1;
         this.leaving = false;
         this.dealtAt = System.currentTimeMillis();
@@ -152,22 +154,29 @@ public class ShopPanel extends JPanel {
         return isVisible();
     }
 
-    private boolean canBuy() {
-        return !leaving && selected >= 0 && hud.getScore() >= cards.get(selected).price();
+    /** Whether everything on offer is free (the shop before the first round, where only one may be taken). */
+    private boolean free() {
+        return cards.stream().allMatch(c -> c.price() == 0);
     }
 
-    private void buySelected() {
-        Card card = cards.get(selected);
+    /** Whether card i can be bought now: not yet bought, affordable, and (where it's free) nothing else taken. */
+    private boolean canBuy(int i) {
+        if (leaving || bought[i] || hud.getCash() < cards.get(i).price()) return false;
+        if (free()) for (boolean b : bought) if (b) return false;
+        return true;
+    }
+
+    private void buy(int i) {
+        Card card = cards.get(i);
         hud.spend(card.price());
         card.onBuy().run();
-        leave();
+        bought[i] = true;
+        repaint();
     }
 
-    /** Leaves without buying anything. */
-    public void buyNothing() {
-        if (leaving) return;
-        selected = -1;
-        leave();
+    /** On to the next round, with whatever's been bought. */
+    public void nextRound() {
+        if (!leaving) leave();
     }
 
     private void leave() {
@@ -223,22 +232,31 @@ public class ShopPanel extends JPanel {
 
             // The cards, dealt in from below one after another
             cardBounds.clear();
+            cardButtons.clear();
             long now = System.currentTimeMillis();
             boolean moving = leaving;
             for (int i = 0; i < count; i++) {
                 float t = Math.max(0f, Math.min(1f, (now - dealtAt - i * 110L) / 480f));
                 if (t < 1f) moving = true;
                 float ease = 1f - (1f - t) * (1f - t) * (1f - t);
-                int lift = i == selected ? Math.round(cardH * 0.05f) : i == hovered && !leaving ? Math.round(cardH * 0.018f) : 0;
+                int lift = bought[i] ? Math.round(cardH * 0.05f) : i == hovered && !leaving ? Math.round(cardH * 0.018f) : 0;
                 int x = rowX + i * (cardW + gap);
                 int y = top - lift + Math.round((1f - ease) * h * 0.35f);
                 cardBounds.add(new Rectangle(x, y, cardW, cardH));
                 java.awt.Composite before = g.getComposite();
-                // (once the choice is made, the cards not taken fade back)
-                float alpha = ease * (leaving && i != selected ? 0.35f : 1f);
+                // (once the shop's left, the cards not bought fade back)
+                float alpha = ease * (leaving && !bought[i] ? 0.35f : 1f);
                 g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
-                drawCard(g, cards.get(i), x, y, cardW, cardH, i == selected, i == hovered && !leaving,
-                        hud.getScore() >= cards.get(i).price());
+                drawCard(g, cards.get(i), x, y, cardW, cardH, bought[i], i == hovered && !leaving);
+                // Its own buy button at its foot, the price on it
+                int cbw = Math.round(cardW * 0.72f), cbh = Math.max(34, Math.round(cardH * 0.095f));
+                Rectangle button = new Rectangle(x + (cardW - cbw) / 2, y + cardH - cbh - Math.round(cardH * 0.04f), cbw, cbh);
+                cardButtons.add(button);
+                Card card = cards.get(i);
+                String label = bought[i] ? (card.price() == 0 ? "Taken" : "Bought")
+                        : card.price() == 0 ? "Take" : String.format("Buy  $%,d", card.price());
+                boolean can = canBuy(i);
+                drawButton(g, button, label, bought[i] ? new Color(30, 90, 120) : can ? BUY : DISABLED, can || bought[i]);
                 g.setComposite(before);
             }
 
@@ -246,28 +264,12 @@ public class ShopPanel extends JPanel {
             int buttonsY = top + cardH + Math.max(28, Math.round(h * 0.05f));
             int bh = Math.max(40, Math.round(h * 0.052f)), bw = Math.max(200, Math.round(cardW * 0.9f));
             if (leaving) {
-                buyButton.setBounds(0, 0, 0, 0);
-                skipButton.setBounds(0, 0, 0, 0);
+                nextButton.setBounds(0, 0, 0, 0);
                 int lw = Math.round(bw * 1.3f);
                 drawLoading(g, (w - lw) / 2, buttonsY, lw, bh, now);
-            } else if (count == 0) {
-                buyButton.setBounds(0, 0, 0, 0);
-                skipButton.setBounds((w - bw) / 2, buttonsY, bw, bh);
-                drawButton(g, skipButton, "Continue", HudStyle.GLASS_SOLID, true);
             } else {
-                int buttonGap = 24;
-                buyButton.setBounds(w / 2 - buttonGap / 2 - bw, buttonsY, bw, bh);
-                skipButton.setBounds(w / 2 + buttonGap / 2, buttonsY, bw, bh);
-                String buyText = selected < 0 ? "Buy" : cards.get(selected).price() == 0 ? "Take it" : String.format("Buy for $%,d", cards.get(selected).price());
-                drawButton(g, buyButton, buyText, canBuy() ? BUY : DISABLED, canBuy());
-                // (in the shop where everything's free, nothing's bought)
-                boolean free = cards.stream().allMatch(c -> c.price() == 0);
-                drawButton(g, skipButton, free ? "Take nothing" : "Buy nothing", HudStyle.GLASS_SOLID, true);
-                if (selected >= 0 && !canBuy()) {
-                    String note = "Not enough money";
-                    float noteW = HudStyle.labelWidth(g, note, 11f);
-                    HudStyle.label(g, note, buyButton.x + (bw - noteW) / 2f, buttonsY + bh + 22, 11f, HudStyle.GOLD);
-                }
+                nextButton.setBounds((w - bw) / 2, buttonsY, bw, bh);
+                drawButton(g, nextButton, "Next round", HudStyle.GLASS_SOLID, true);
             }
             // The message, until it's been said (or the shop's left)
             if (message != null && message.isDone()) message = null;
@@ -286,9 +288,9 @@ public class ShopPanel extends JPanel {
     /**
      * A card, as the HUD's panels are drawn: dark glass with cut corners, a cyan edge and an
      * accent bar; the name at the top, the picture enlarged in its slot, what it does beneath
-     * and the price at the foot. Chosen, it's edged and glowing in the accent colour.
+     * and its buy button at the foot. Bought, it's edged and glowing in the accent colour.
      */
-    private static void drawCard(Graphics2D g, Card card, int x, int y, int w, int h, boolean chosen, boolean hovered, boolean affordable) {
+    private static void drawCard(Graphics2D g, Card card, int x, int y, int w, int h, boolean chosen, boolean hovered) {
         Graphics2D c = (Graphics2D) g.create();
         try {
             c.translate(x, y);
@@ -356,13 +358,10 @@ public class ShopPanel extends JPanel {
                 card.painter().paint(c, cx - pictureSize / 2, cy - pictureSize / 2, pictureSize);
             }
 
-            // The price at the foot, in gold (dimmed if it can't be afforded)
-            String price = card.price() == 0 ? "FREE" : String.format("$%,d", card.price());
+            // Room kept at the foot for the card's buy button (which shows the price)
             c.setFont(HudStyle.font(Font.BOLD, h * 0.055f));
             fm = c.getFontMetrics();
             float priceY = h - h * 0.06f;
-            c.setColor(affordable ? HudStyle.GOLD : HudStyle.DIM);
-            c.drawString(price, (w - fm.stringWidth(price)) / 2f, priceY);
 
             // What it does, wrapped to fit between the picture and the price
             float descTop = sy + slot + h * 0.035f, descBottom = priceY - fm.getAscent() - h * 0.025f;
@@ -435,7 +434,7 @@ public class ShopPanel extends JPanel {
         // (the shop before the first round gives everything away)
         if (round < 1) return 0;
         int rounds = Math.max(0, round - 1);
-        float mean = factor * (FIRST_MEAN + MEAN_PER_ROUND * rounds), spread = mean * WITHIN_FRACTION / WITHIN_SHARE_DEVIATIONS;
+        float mean = factor * FIRST_MEAN * (float) Math.pow(PRICE_GROWTH, rounds), spread = mean * WITHIN_FRACTION / WITHIN_SHARE_DEVIATIONS;
         float price = mean + (float) rand.nextGaussian() * spread;
         return Math.max(LOWEST_PRICE, 5 * Math.round(price / 5f));
     }

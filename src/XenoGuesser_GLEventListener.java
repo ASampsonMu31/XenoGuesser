@@ -617,8 +617,9 @@ private static class SpeciesConfig {
         this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, TOTAL_REGION_WIDTH, worldNoise);
         System.out.println("[INHABITANTS] " + inhabitants.describe());
                 this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
-        this.soilVariantAFactor = this.regionalManager.createNoiseMap(1.4e-5f);
-                this.soilVariantBFactor = this.regionalManager.createNoiseMap(2.1e-5f);
+        // (low frequencies: the soil's colour drifts over many kilometres)
+        this.soilVariantAFactor = this.regionalManager.createNoiseMap(0.7e-5f);
+        this.soilVariantBFactor = this.regionalManager.createNoiseMap(1.05e-5f);
         this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
         collision.addSource(infraManager::obstaclesNear);
         collision.addSource(landingPod::obstaclesNear);
@@ -916,6 +917,7 @@ private static class SpeciesConfig {
             worldReady = true;
             setBuilderThreads(false);
             queueNextRound();
+            rainSound.start();
             Thread scale = new Thread(() -> playerBody.setAltimeterTop(roundUp(highestGround()[2])), "altimeter-scale");
             // April's message: the planet's ocean cover worked out and its sentence said, well before it's needed
             Thread ocean = new Thread(() -> {
@@ -930,6 +932,11 @@ private static class SpeciesConfig {
             scale.setDaemon(true);
             scale.start();
         }
+
+        // The weather's heard only while the world's in view: checked first, before a frame given
+        // to building the next round (behind the results) returns early
+        rainSound.setAudible(!worldHidden && !menuOpen && minimap != null && !minimap.isFullScreenRevealMode()
+                && !roundLoading && !teleportLoading);
 
         // The next round is built behind the results screen as soon as the guess is made, a
         // slice per frame. Next Round then starts it at once if it's ready; if not, its button
@@ -1171,8 +1178,8 @@ private static class SpeciesConfig {
             }
         }
         // Noise values bunch around the middle, so thresholds come from their actual spread:
-        // each variant takes over roughly the top third of its factor, blending in gradually
-        float[] rangeA = percentiles(fa, 0.55f, 0.72f), rangeB = percentiles(fb, 0.55f, 0.72f);
+        // each variant fades in over a wide band of its factor, so the change is gradual
+        float[] rangeA = percentiles(fa, 0.3f, 0.85f), rangeB = percentiles(fb, 0.3f, 0.85f);
         soilBlendRanges = new float[][] { rangeA, rangeB };
         for (int py = 0; py < n; py++) {
             for (int px = 0; px < n; px++) {
@@ -2548,8 +2555,10 @@ private static class SpeciesConfig {
                             if (worldY > seaLevelHeight + 0.1f && !onSlope
                                     && !landingPod.covers(worldX, worldZ, -2f)
                                     && !infraManager.isClearedForRoad(worldX, worldZ, 11.0f, 1.5f)) {
-                                float structuralHeightBase = blendAround(heightAround, rand1, rand2);
-                                float structuralColourBase = blendAround(colourAround, rand1, rand2);
+                                // (each stretched over the whole range there is on the planet, so the
+                                // shortest and tallest, the driest and lushest, are all seen)
+                                float structuralHeightBase = grassShare(grassHeightSpan(), blendAround(heightAround, rand1, rand2));
+                                float structuralColourBase = grassShare(grassColourSpan(), blendAround(colourAround, rand1, rand2));
 
                                 float u1 = Math.max(0.0001f, rand3); 
                                 float u2 = rand4;
@@ -2562,10 +2571,9 @@ private static class SpeciesConfig {
                                 float colourJitter = standardNormalColour * colourStandardDeviation;
                                 float finalColourPhenotype = Math.max(0.0f, Math.min(1.0f, structuralColourBase + colourJitter));
 
-                                float climateHeightTarget = 0.4f + structuralHeightBase * (1.7f - 0.4f);
-                                float heightStandardDeviation = 0.2f; 
-                                float heightJitter = standardNormalHeight * heightStandardDeviation;
-                                float finalBladeHeight = Math.max(0.25f, Math.min(2.4f, climateHeightTarget + heightJitter));
+                                float climateHeightTarget = bladeHeight(structuralHeightBase);
+                                float heightJitter = standardNormalHeight * 0.12f * climateHeightTarget;
+                                float finalBladeHeight = Math.max(bladeHeight(0f) * 0.6f, climateHeightTarget + heightJitter);
 
                                 rawChunkBuffer[writeIdx++] = worldX;
                                 rawChunkBuffer[writeIdx++] = worldY;
@@ -3159,6 +3167,7 @@ private static class SpeciesConfig {
         gl.glDisable(GL.GL_BLEND);
 
         // --- CLOUDS, over the sky and behind everything else ---
+        rainSound.setRain(weather.snowing() ? 0f : weather.intensity());
         weather.update((float) deltaTime, (float) elapsedTime, camera.getPosition(), () -> rainfallAt(camera.getPosition().x, camera.getPosition().z),
                 this::surfaceHeightAt, freezingPoint - temperatureAt(camera.getPosition().x, camera.getPosition().z));
         float[] sunTintNow = worldArt.palette().sunTint;
@@ -3456,6 +3465,9 @@ private static class SpeciesConfig {
         weather.renderRain(gl, viewProjection, worldArt.palette().seaShallowTint(), 1.0f - nightProportion,
                 (float) (currentHeight * 0.5 / Math.tan(Math.toRadians(45.0 / 2.0))));
 
+        // What's in front of what through the magnifying glass, before the body's drawn over it
+        captureLensDepth(gl);
+
         if (hideFirstPerson) return;
 
         // --- THE PLAYER'S OWN BODY, drawn last and nearest ---
@@ -3568,7 +3580,6 @@ private static class SpeciesConfig {
         }
 
         drawLensFinds(scale);
-        drawMessage();
 
         hud.setDim(menuOpen ? 0.45f : 0f);
         hud.draw(gl, screenWidth, screenHeight);
@@ -4178,7 +4189,10 @@ private static class SpeciesConfig {
      * (1, its last). The grass colour map is the grass's own colour instead.
      */
     private RegionalFactor factorFor(Overlay overlay) {
-        if (overlay.factor() == FactorName.GRASS_COLOUR) return grassColourFactor;
+        if (overlay.factor() == FactorName.GRASS_COLOUR) {
+            float[] span = grassColourSpan();
+            return new RegionalFactor(1f, (cx, cz, x, z) -> grassShare(span, grassColourFactor.evaluate(cx, cz, x, z)));
+        }
         java.util.function.BiFunction<Float, Float, Float> measure = heatmapMeasure(overlay);
         if (measure == null) return null;
         float[] range = heatmapRange(overlay);
@@ -4208,7 +4222,7 @@ private static class SpeciesConfig {
             case ROCK_SIZE -> (x, z) -> rocks().typicalSizeAt(x, z) * 2f / PlayerBody.METRE;
             case GRASS_ABUNDANCE -> (x, z) -> factorAt(grassAbundanceFactor, x, z);
             // (as the blades are given their heights, see the grass's gathering)
-            case GRASS_HEIGHT -> (x, z) -> (0.4f + factorAt(grassHeightFactor, x, z) * (1.7f - 0.4f)) * GRASS_BLADE_HEIGHT / PlayerBody.METRE * 100f;
+            case GRASS_HEIGHT -> (x, z) -> bladeHeight(grassShare(grassHeightSpan(), factorAt(grassHeightFactor, x, z))) * GRASS_BLADE_HEIGHT / PlayerBody.METRE * 100f;
             case TEMPERATURE -> (x, z) -> -30f + 70f * factorAt(regionalManager.temperatureMap, x, z);
             case RAINFALL -> (x, z) -> factorAt(regionalManager.rainfallMap, x, z) * RAINFALL_FULL_MM;
             case WEALTH -> {
@@ -4271,6 +4285,49 @@ private static class SpeciesConfig {
 
     // A grass blade's height in world units, before each blade's own height scales it
     private static final float GRASS_BLADE_HEIGHT = 4.8f;
+    // The grass's height where it grows shortest and tallest, in metres (before each blade's own variation)
+    private static final float GRASS_SHORTEST = 0.025f, GRASS_TALLEST = 1.0f;
+    // The lowest and highest the grass's height and colour factors reach on the land, once worked out
+    private volatile float[] grassHeightSpan, grassColourSpan;
+
+    /** A grass blade's height (as the blade's scale, see GRASS_BLADE_HEIGHT) where its height share is share (0 shortest, 1 tallest). */
+    private static float bladeHeight(float share) {
+        return (GRASS_SHORTEST + (GRASS_TALLEST - GRASS_SHORTEST) * share) * PlayerBody.METRE / GRASS_BLADE_HEIGHT;
+    }
+
+    /** Where a value sits in a span, 0 to 1. */
+    private static float grassShare(float[] span, float value) {
+        return Math.max(0f, Math.min(1f, (value - span[0]) / Math.max(1e-4f, span[1] - span[0])));
+    }
+
+    private float[] grassHeightSpan() {
+        float[] span = grassHeightSpan;
+        if (span == null) grassHeightSpan = span = landSpan(grassHeightFactor);
+        return span;
+    }
+
+    private float[] grassColourSpan() {
+        float[] span = grassColourSpan;
+        if (span == null) grassColourSpan = span = landSpan(grassColourFactor);
+        return span;
+    }
+
+    /** The lowest and highest a factor reaches on the land the map shows, sampled across it. */
+    private float[] landSpan(RegionalFactor factor) {
+        float lowest = Float.MAX_VALUE, highest = -Float.MAX_VALUE;
+        int n = 240;
+        for (int a = 0; a < n; a++) {
+            for (int b = 0; b < n / 2; b++) {
+                float x = (a + 0.5f) / n * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
+                float z = ((b + 0.5f) / (n / 2) * 2f - 1f) * Planet.clipHalfHeight();
+                if (TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight) continue;
+                float v = factorAt(factor, x, z);
+                lowest = Math.min(lowest, v);
+                highest = Math.max(highest, v);
+            }
+        }
+        return lowest > highest ? new float[] { 0f, 1f } : new float[] { lowest, highest };
+    }
     // Points round each plant model {x, y, z, ...} (species, then variation), as generated
     private float[][][] floraOutlines;
     // The scene's last view-projection (column major), for finding what's seen through the magnifying glass
@@ -4348,10 +4405,21 @@ private static class SpeciesConfig {
 
     // The least share of the magnifying glass's lens something must fill (as a circle round
     // what's seen of it, on screen) to be made out and named: far things, too small in it, aren't
-    private static final float IDENTIFY_SHARE = 0.1f;
+    private static final float IDENTIFY_SHARE = 0.05f;
     // At most this many named at once, nearest first
     private static final int MOST_IDENTIFIED = 6;
     private String lensSignature = "";
+    // Something seen through the lens stays named (where it is now) for this many frames after
+    // last passing the test, so it doesn't flicker as the view moves; and when each last passed
+    private static final int LENS_HOLD_FRAMES = 8;
+    private final Map<Object, Integer> lensLastSeen = new java.util.IdentityHashMap<>();
+    private int lensFrame;
+
+    /** One plant or animal considered through the lens: its name, something that stays the same for it, and points round it. */
+    @FunctionalInterface
+    private interface LensCandidate {
+        void consider(String name, Object key, float[] points);
+    }
 
     /**
      * While the identification kit's magnifying glass is held up: each animal and (non grass)
@@ -4380,7 +4448,8 @@ private static class SpeciesConfig {
         List<float[]> boxes = new ArrayList<>();
         List<String> names = new ArrayList<>();
         // (its name, where it stands, and points round it in the world {x, y, z, ...})
-        java.util.function.BiConsumer<String, float[]> consider = (name, points) -> {
+        lensFrame++;
+        LensCandidate consider = (name, key, points) -> {
             float dx = points[0] - eye.x, dz = points[2] - eye.z;
             if (dx * dx + dz * dz > 2500f * 2500f) return;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
@@ -4406,20 +4475,26 @@ private static class SpeciesConfig {
             maxX = Math.min(screenWidth - 1f, maxX);
             maxY = Math.min(screenHeight - 1f, maxY);
             if (maxX - minX < 2f || maxY - minY < 2f) return;
-            // Seen as a circle round it: how much of the lens it fills
+            // Seen as a circle round it: how much of the lens it fills, counting only the share of it
+            // in the lens that nothing nearer hides (anything at all: buildings, trees, the land)
             float cx = (minX + maxX) * 0.5f, cy = (minY + maxY) * 0.5f;
             float r = (float) Math.hypot(maxX - minX, maxY - minY) * 0.5f;
-            if (circleOverlap(cx - centre[0], cy - centre[1], r, lensR) < IDENTIFY_SHARE * Math.PI * lensR * lensR) return;
-            // ...and not hidden behind the land
+            float needed = IDENTIFY_SHARE * (float) Math.PI * lensR * lensR;
+            float overlap = circleOverlap(cx - centre[0], cy - centre[1], r, lensR);
             float mx = sumX / n, my = sumY / n, mz = sumZ / n;
-            for (int i = 1; i < 16; i++) {
+            boolean passes = overlap >= needed && overlap * unhiddenShare(vp, points, centre, lensR, curvature, eye) >= needed;
+            // ...and not hidden behind the land
+            for (int i = 1; i < 16 && passes; i++) {
                 float t = i / 16f;
-                if (TerrainMesh.getLayeredHeight(eye.x + (mx - eye.x) * t, eye.z + (mz - eye.z) * t, worldNoise) > eye.y + (my - eye.y) * t + 1f) return;
+                if (TerrainMesh.getLayeredHeight(eye.x + (mx - eye.x) * t, eye.z + (mz - eye.z) * t, worldNoise) > eye.y + (my - eye.y) * t + 1f) passes = false;
             }
+            if (passes) lensLastSeen.put(key, lensFrame);
+            Integer last = lensLastSeen.get(key);
+            if (last == null || lensFrame - last > LENS_HOLD_FRAMES) return;
             boxes.add(new float[] { (float) Math.hypot(mx - eye.x, mz - eye.z), minX, minY, maxX, maxY });
             names.add(name);
         };
-        organismManager.forEachOutline((s, x, z, points) -> consider.accept(organismManager.speciesName(s), points));
+        organismManager.forEachOutline((s, x, z, points) -> consider.consider(organismManager.speciesName(s), points, points));
         if (floraCache != null && floraOutlines != null) {
             for (List<FloraInstance> trees : floraCache.values()) {
                 if (trees == null) continue;
@@ -4438,10 +4513,12 @@ private static class SpeciesConfig {
                         world[k + 1] = tree.pos.y + y * tree.scale;
                         world[k + 2] = tree.pos.z + (-sn * x + c * z) * tree.scale;
                     }
-                    consider.accept(floraName(tree.speciesIndex), world);
+                    consider.consider(floraName(tree.speciesIndex), tree, world);
                 }
             }
         }
+        // (forgetting what's not been seen for a while)
+        lensLastSeen.values().removeIf(last -> lensFrame - last > LENS_HOLD_FRAMES);
         // The nearest few
         Integer[] order = new Integer[boxes.size()];
         for (int i = 0; i < order.length; i++) order[i] = i;
@@ -4507,6 +4584,92 @@ private static class SpeciesConfig {
         hud.put("lens", image, ox, oy);
     }
 
+    // The scene's depth over the magnifying glass's lens, read each frame while it's held up (in
+    // the scene's own pixels, rows from the bottom), where that patch is, and the planes then
+    private float[] lensDepth;
+    private int lensDepthX, lensDepthY, lensDepthW, lensDepthH;
+    private float lensDepthNear;
+    private java.nio.FloatBuffer lensDepthBuffer;
+
+    /** Reads the scene's depth over the lens (the body isn't drawn yet), or forgets it if the glass isn't held up. */
+    private void captureLensDepth(GL3 gl) {
+        float[] lens = playerBody.lensView();
+        float[] vp = lastSceneViewProjection;
+        if (lens == null || vp == null || screenWidth <= 0) {
+            lensDepth = null;
+            return;
+        }
+        float[] centre = project(vp, lens[0], lens[1], lens[2]);
+        if (centre == null) {
+            lensDepth = null;
+            return;
+        }
+        float toScene = currentWidth / (float) screenWidth;
+        // (generously round the lens: it's taken from last frame's pose)
+        int radius = Math.round(currentHeight * 0.4f);
+        int cx = Math.round(centre[0] * toScene), cy = currentHeight - Math.round(centre[1] * currentHeight / (float) screenHeight);
+        int x0 = Math.max(0, cx - radius), y0 = Math.max(0, cy - radius);
+        int w = Math.min(currentWidth, cx + radius) - x0, h = Math.min(currentHeight, cy + radius) - y0;
+        if (w <= 0 || h <= 0) {
+            lensDepth = null;
+            return;
+        }
+        if (lensDepthBuffer == null || lensDepthBuffer.capacity() < w * h) lensDepthBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(w * h);
+        lensDepthBuffer.clear();
+        gl.glPixelStorei(GL3.GL_PACK_ALIGNMENT, 4);
+        gl.glReadPixels(x0, y0, w, h, GL3.GL_DEPTH_COMPONENT, GL3.GL_FLOAT, lensDepthBuffer);
+        float[] depth = lensDepth != null && lensDepth.length == w * h ? lensDepth : new float[w * h];
+        lensDepthBuffer.get(depth, 0, w * h);
+        lensDepth = depth;
+        lensDepthX = x0;
+        lensDepthY = y0;
+        lensDepthW = w;
+        lensDepthH = h;
+        lensDepthNear = currentNearPlane;
+    }
+
+    /**
+     * Of something's points that fall within the lens, the share nothing nearer hides: each
+     * point's distance from the eyes against the scene's depth there, allowing for the thing's
+     * own size (so its far side isn't counted as hidden by its near side). 1 if the depth isn't known.
+     */
+    private float unhiddenShare(float[] vp, float[] points, float[] lensCentre, float lensR, float curvature, Vector3 eye) {
+        float[] depth = lensDepth;
+        if (depth == null) return 1f;
+        // How big it is: its points' spread
+        float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+        for (int k = 0; k < points.length; k += 3) {
+            minX = Math.min(minX, points[k]);
+            maxX = Math.max(maxX, points[k]);
+            minY = Math.min(minY, points[k + 1]);
+            maxY = Math.max(maxY, points[k + 1]);
+            minZ = Math.min(minZ, points[k + 2]);
+            maxZ = Math.max(maxZ, points[k + 2]);
+        }
+        float size = (float) Math.sqrt((maxX - minX) * (maxX - minX) + (maxY - minY) * (maxY - minY) + (maxZ - minZ) * (maxZ - minZ));
+        float near = lensDepthNear, far = FAR_PLANE;
+        float toSceneX = currentWidth / (float) screenWidth, toSceneY = currentHeight / (float) screenHeight;
+        int inLens = 0, unhidden = 0;
+        for (int k = 0; k < points.length; k += 3) {
+            float px = points[k], py = points[k + 1], pz = points[k + 2];
+            float ex = px - eye.x, ez = pz - eye.z;
+            py -= curvature * (ex * ex + ez * ez);
+            float w = vp[3] * px + vp[7] * py + vp[11] * pz + vp[15];
+            if (w <= 0.01f) continue;
+            float sx = ((vp[0] * px + vp[4] * py + vp[8] * pz + vp[12]) / w + 1f) * 0.5f * screenWidth;
+            float sy = (1f - (vp[1] * px + vp[5] * py + vp[9] * pz + vp[13]) / w) * 0.5f * screenHeight;
+            if (Math.hypot(sx - lensCentre[0], sy - lensCentre[1]) > lensR) continue;
+            int rx = Math.round(sx * toSceneX) - lensDepthX, ry = currentHeight - 1 - Math.round(sy * toSceneY) - lensDepthY;
+            if (rx < 0 || ry < 0 || rx >= lensDepthW || ry >= lensDepthH) continue;
+            inLens++;
+            // The scene's depth there, as a distance ahead of the eyes (as w is)
+            float ndc = depth[ry * lensDepthW + rx] * 2f - 1f;
+            float sceneDistance = 2f * near * far / (far + near - ndc * (far - near));
+            if (sceneDistance >= w - size * 0.5f - 2f) unhidden++;
+        }
+        return inLens == 0 ? 0f : unhidden / (float) inLens;
+    }
+
     /** Where a point in the world lands on the screen, in its pixels from the top left; null if it's behind the eyes. */
     private float[] project(float[] vp, float x, float y, float z) {
         float cx = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
@@ -4530,10 +4693,9 @@ private static class SpeciesConfig {
     // ------------------------------------------------------------------ messages from Xenocorp in play
 
     // The share of the planet's whole surface under the sea (percent), and April's sentence
-    // saying it, once worked out; the message playing over the view (null for none)
+    // saying it, once worked out
     private volatile double aprilPercent = Double.NaN;
     private final java.util.concurrent.CompletableFuture<PlanetVoice.Speech> aprilSpeech = new java.util.concurrent.CompletableFuture<>();
-    private volatile MessageTicker hudMessage;
 
     /**
      * How much of the planet's whole surface (to the poles, beyond the map) is ocean, in
@@ -4553,44 +4715,33 @@ private static class SpeciesConfig {
         return 100.0 * sea / n;
     }
 
-    /** April's message from Xenocorp, saying how much of the planet is ocean: started playing over the view. */
-    public void startAprilMessage() {
+    /** April's message from Xenocorp, saying how much of the planet is ocean: handed to show once it's ready to play. */
+    public void startAprilMessage(java.util.function.Consumer<TransmissionMessage> show) {
         Thread start = new Thread(() -> {
             // (the ocean's worked out a few rounds before this; should it somehow not be yet, it's waited for)
             PlanetVoice.Speech said = aprilSpeech.join();
             TransmissionMessage message = TransmissionMessage.load(TransmissionMessage.APRIL,
                     String.format(java.util.Locale.ROOT, "%.3f%%", aprilPercent), java.util.concurrent.CompletableFuture.completedFuture(said));
-            if (message != null) hudMessage = new MessageTicker(message);
+            if (message != null) show.accept(message);
         }, "april-message");
         start.setDaemon(true);
         start.start();
     }
 
-    /** Stops any message playing over the view (the game's over). */
-    public void stopMessage() {
-        MessageTicker playing = hudMessage;
-        hudMessage = null;
-        if (playing != null) playing.stop();
+    // The sound of the weather where the player is; and whether something covers the world (the shop before the first round)
+    private final RainSound rainSound = new RainSound();
+    // (hidden to begin with: the world is made behind the cockpit, and isn't heard until it's entered)
+    private volatile boolean worldHidden = true;
+
+    public void setWorldHidden(boolean hidden) {
+        worldHidden = hidden;
     }
 
-    /** The message playing over the view, its words scrolling along the bottom, until it's been said. */
-    private void drawMessage() {
-        MessageTicker playing = hudMessage;
-        if (playing != null && playing.isDone()) {
-            hudMessage = null;
-            playing = null;
-        }
-        if (playing == null) {
-            hud.setVisible("message", false);
-            return;
-        }
-        int stripH = Math.max(44, screenHeight / 20);
-        BufferedImage image = new BufferedImage(Math.max(1, screenWidth), stripH, BufferedImage.TYPE_INT_ARGB);
-        java.awt.Graphics2D g = image.createGraphics();
-        playing.draw(g, screenWidth, 0, stripH);
-        g.dispose();
-        hud.put("message", image, 0, screenHeight - stripH);
+    /** Stops the weather's sound (the game's over). */
+    public void stopSounds() {
+        rainSound.stop();
     }
+
 
     /** C: the player takes out the compass and looks at it for a moment. */
     public void useCompass() {

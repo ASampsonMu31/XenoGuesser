@@ -111,6 +111,7 @@ PlanetVoice.class
 NationScripts.class
 Renderer.class
 OrganismManager$UrbannessLookup.class
+RainSound.class
 Products$Shape.class
 MapPanel$MapNote.class
 BuildingStyle$WallVariant.class
@@ -144,6 +145,7 @@ RoadPath$DeadEnd.class
 OrganismSpecies.class
 OrganismSpecies$Wing.class
 OrganismMesh$Builder.class
+MessageStrip.class
 SettingsMenu$1.class
 MaterialConstants.class
 Collision$Sink.class
@@ -166,6 +168,7 @@ InsideSphere.class
 FlagDesigner$Layout.class
 OrganismSpecies$Morph.class
 XenoGuesser.class
+XenoGuesser_GLEventListener$LensCandidate.class
 BuildingStyle.class
 XenoGuesser_GLEventListener$1.class
 MapLayersPanel$Row$1.class

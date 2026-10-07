@@ -39,7 +39,6 @@ public class BirdsEyeMaps {
     private static final float TRACK_STROKE = 0.8f;
 
     private static final Color BUILDING_LAND = new Color(44, 48, 52);
-    private static final float MIN_BUILDING_PIXELS = 2.5f;
 
     private final int outputResolution;
     private final int detailResolution;
@@ -379,7 +378,7 @@ public class BirdsEyeMaps {
         BufferedImage canvas = newLayer();
         Graphics2D g = createGraphics(canvas);
         // One colour for every building, so the map shows where people live rather than hinting at nations
-        infrastructure.forEachBuilding(buildingDrawer(g, BUILDING_COLOUR, MIN_BUILDING_PIXELS));
+        infrastructure.forEachBuilding(buildingDrawer(g, BUILDING_COLOUR));
         g.dispose();
         return finishLayer(canvas);
     }
@@ -398,7 +397,7 @@ public class BirdsEyeMaps {
         Graphics2D z = createGraphics(zones);
         z.setColor(Color.WHITE);
         float glow = Math.max(4f, 120f * pixelsPerUnit);
-        infrastructure.forEachShop((x, zz, rotationY, width, depth, nationId) -> {
+        infrastructure.forEachShop((x, zz, rotationY, width, depth, nationId, outline) -> {
             float px = worldToPixel((float) Planet.wrapX(x)), pz = worldToPixel(zz);
             z.fill(new Ellipse2D.Float(px - glow, pz - glow, glow * 2, glow * 2));
         });
@@ -410,26 +409,35 @@ public class BirdsEyeMaps {
                 if (a > 0) canvas.setRGB(x, y, (zone & 0xFFFFFF) | ((COMMERCIAL_ZONE.getAlpha() * a / 255) << 24));
             }
         }
-        infrastructure.forEachShop(buildingDrawer(g, SHOP_COLOUR, MIN_BUILDING_PIXELS + 1f));
+        infrastructure.forEachShop(buildingDrawer(g, SHOP_COLOUR));
         g.dispose();
         return finishLayer(canvas);
     }
 
-    /** Draws each building visited as its footprint, at least minimumPixels across. */
-    private InfrastructureManager.BuildingVisitor buildingDrawer(Graphics2D g, Color colour, float minimumPixels) {
+    /** Draws each building visited in the shape and size of its footprint. */
+    private InfrastructureManager.BuildingVisitor buildingDrawer(Graphics2D g, Color colour) {
         float pixelsPerUnit = detailResolution / totalRegionWidth;
         AffineTransform identity = g.getTransform();
-        return (x, z, rotationY, width, depth, nationId) -> {
-            float pixelWidth = Math.max(minimumPixels, width * pixelsPerUnit);
-            float pixelDepth = Math.max(minimumPixels, depth * pixelsPerUnit);
+        return (x, z, rotationY, width, depth, nationId, outline) -> {
             g.setTransform(identity);
             // Anything built past the map's join is drawn where it is on the planet
             g.translate(worldToPixel((float) Planet.wrapX(x)), worldToPixel(z));
             // Local +X maps to world (cos, -sin), i.e. a clockwise turn on the map
             g.rotate(-Math.toRadians(rotationY));
+            // (in its own units: its true size on the chart)
+            g.scale(pixelsPerUnit, pixelsPerUnit);
             g.setColor(colour);
-            g.fill(new Rectangle2D.Float(-pixelWidth * 0.5f, -pixelDepth * 0.5f, pixelWidth, pixelDepth));
+            g.fill(shape(outline));
         };
+    }
+
+    /** A footprint's outline (points in its own x and z) as a shape to fill. */
+    private static Path2D.Float shape(float[][] outline) {
+        Path2D.Float path = new Path2D.Float();
+        path.moveTo(outline[0][0], outline[0][1]);
+        for (int i = 1; i < outline.length; i++) path.lineTo(outline[i][0], outline[i][1]);
+        path.closePath();
+        return path;
     }
 
     private BufferedImage newLayer() {
@@ -790,25 +798,22 @@ public class BirdsEyeMaps {
         };
     }
 
-    /** Buildings (or shops) to scale, each at least a few pixels across. */
+    /** Buildings (or shops) to scale, in their own shapes. */
     private MapTiles.Renderer footprintTiles(java.util.function.BiConsumer<InfrastructureManager, InfrastructureManager.BuildingVisitor> each,
-                                             InfrastructureManager infrastructure, Color colour, float minimumDetailPixels) {
+                                             InfrastructureManager infrastructure, Color colour) {
         return (level, tx, ty, size) -> {
             BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = tileGraphics(tile, level, tx, ty, size);
             AffineTransform base = g.getTransform();
             float[] bounds = tileBounds(level, tx, ty, 120f);
-            float minimum = minimumDetailPixels * totalRegionWidth / detailResolution
-                    * (float) Math.pow(tileMagnification(level, size), 0.4) / tileMagnification(level, size);
             g.setColor(colour);
-            each.accept(infrastructure, (x, z, rotationY, width, depth, nationId) -> {
+            each.accept(infrastructure, (x, z, rotationY, width, depth, nationId, outline) -> {
                 float wx = (float) Planet.wrapX(x);
                 if (wx < bounds[0] || wx > bounds[2] || z < bounds[1] || z > bounds[3]) return;
                 g.setTransform(base);
                 g.translate(wx, z);
                 g.rotate(-Math.toRadians(rotationY));
-                float pw = Math.max(minimum, width), pd = Math.max(minimum, depth);
-                g.fill(new Rectangle2D.Float(-pw * 0.5f, -pd * 0.5f, pw, pd));
+                g.fill(shape(outline));
             });
             g.dispose();
             return tile;
@@ -816,11 +821,11 @@ public class BirdsEyeMaps {
     }
 
     public MapTiles.Renderer buildingTiles(InfrastructureManager infrastructure) {
-        return footprintTiles(InfrastructureManager::forEachBuilding, infrastructure, BUILDING_COLOUR, MIN_BUILDING_PIXELS);
+        return footprintTiles(InfrastructureManager::forEachBuilding, infrastructure, BUILDING_COLOUR);
     }
 
     public MapTiles.Renderer shopTiles(InfrastructureManager infrastructure) {
-        MapTiles.Renderer shops = footprintTiles(InfrastructureManager::forEachShop, infrastructure, SHOP_COLOUR, MIN_BUILDING_PIXELS + 1f);
+        MapTiles.Renderer shops = footprintTiles(InfrastructureManager::forEachShop, infrastructure, SHOP_COLOUR);
         return (level, tx, ty, size) -> {
             // The districts' glow under the shops
             BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
@@ -828,7 +833,7 @@ public class BirdsEyeMaps {
             float[] bounds = tileBounds(level, tx, ty, 200f);
             g.setColor(COMMERCIAL_ZONE);
             java.awt.geom.Area zones = new java.awt.geom.Area();
-            infrastructure.forEachShop((x, z, rotationY, width, depth, nationId) -> {
+            infrastructure.forEachShop((x, z, rotationY, width, depth, nationId, outline) -> {
                 float wx = (float) Planet.wrapX(x);
                 if (wx < bounds[0] || wx > bounds[2] || z < bounds[1] || z > bounds[3]) return;
                 zones.add(new java.awt.geom.Area(new Ellipse2D.Float(wx - 120f, z - 120f, 240f, 240f)));

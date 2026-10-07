@@ -289,7 +289,8 @@ public class InfrastructureManager {
 
     @FunctionalInterface
     public interface BuildingVisitor {
-        void visit(float x, float z, float rotationY, float width, float depth, int nationId);
+        /** A footprint: where its middle is, how it's turned, its size, and its outline round its middle in its own x and z. */
+        void visit(float x, float z, float rotationY, float width, float depth, int nationId, float[][] outline);
     }
 
     public InfrastructureManager(long seed, int numNations, NationGenerationManager nationManager,
@@ -907,19 +908,23 @@ public class InfrastructureManager {
     public void forEachShop(BuildingVisitor visitor) {
         for (Shop shop : shops) {
             House house = shop.house;
-            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId);
+            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId,
+                    footprint(styleOf(house), house.width, house.depth, 0f, 0f));
         }
     }
 
-    /** Visits every building footprint in the region; extensions are visited as their own rectangle. */
+    /** Visits every building footprint in the region, in its own shape (box, round or many-sided); extensions are visited as their own rectangle. */
     public void forEachBuilding(BuildingVisitor visitor) {
         for (House house : houses) {
-            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId);
+            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId,
+                    footprint(styleOf(house), house.width, house.depth, 0f, 0f));
             if (house.extensionSide != 0) {
                 float[] centre = localToWorld(house.x, house.z, house.rotationY,
                         house.extensionSide * (house.width + house.extensionWidth) * 0.5f,
                         (house.extensionDepth - house.depth) * 0.5f);
-                visitor.visit(centre[0], centre[1], house.rotationY, house.extensionWidth, house.extensionDepth, house.nationId);
+                float hw = house.extensionWidth * 0.5f, hd = house.extensionDepth * 0.5f;
+                visitor.visit(centre[0], centre[1], house.rotationY, house.extensionWidth, house.extensionDepth, house.nationId,
+                        new float[][] { { -hw, hd }, { hw, hd }, { hw, -hd }, { -hw, -hd } });
             }
         }
     }

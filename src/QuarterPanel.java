@@ -12,7 +12,7 @@ import java.awt.geom.Point2D;
 
 /**
  * Between a quarter's last results and the shop: whether the quarter's productivity target
- * was met (the money had at least reached it), drawn as the HUD's panels are. One button
+ * was met (the points from every guess so far had at least reached it), drawn as the HUD's panels are. One button
  * goes on: to the shop, or back to the menu should the quarter have been failed or the year won.
  */
 public class QuarterPanel extends JPanel {
@@ -38,7 +38,7 @@ public class QuarterPanel extends JPanel {
         });
     }
 
-    /** Shows how quarter (from 0) went: the money there was against its target; won if it was the last quarter, passed. */
+    /** Shows how quarter (from 0) went: the productivity against its target; won if it was the last quarter, passed. */
     public void show(int quarter, int money, int target, boolean won, Runnable onContinue) {
         this.quarter = quarter;
         this.money = money;
@@ -84,7 +84,7 @@ public class QuarterPanel extends JPanel {
             g.setColor(passed ? new Color(110, 225, 130) : new Color(245, 105, 90));
             g.drawString(result, px + (pw - fm.stringWidth(result)) / 2f, py + 120);
 
-            String detail = String.format("$%,d of the $%,d productivity target", money, target);
+            String detail = String.format("%,d of the %,d productivity target", money, target);
             g.setFont(HudStyle.font(Font.PLAIN, 20f));
             fm = g.getFontMetrics();
             g.setColor(HudStyle.VALUE);

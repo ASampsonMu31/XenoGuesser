@@ -124,9 +124,9 @@ public final class HudStyle {
 
     // ------------------------------------------------------------------ Score panel
 
-    public static final int SCORE_W = 470, SCORE_H = 84;
-    /** Where the round's points fly to at the end of the results, relative to the panel. */
-    public static final int SCORE_TARGET_X = 250, SCORE_TARGET_Y = 50;
+    public static final int SCORE_W = 530, SCORE_H = 84;
+    /** Where the round's points fly to at the end of the results (the productivity), relative to the panel. */
+    public static final int SCORE_TARGET_X = 240, SCORE_TARGET_Y = 50;
     /** Gap between the HUD panels and the edges of the screen. */
     public static final int HUD_MARGIN = 18;
     // Each quarter's colour: light blue, green, yellow, pink
@@ -137,10 +137,10 @@ public final class HudStyle {
 
     /**
      * The round counter (the quarter's three months as rounded tabs: this one in the quarter's
-     * colour, those gone by in it greyed, those to come dim), the money, and the quarter's
-     * target (green once reached).
+     * colour, those gone by in it greyed, those to come dim), the productivity against the
+     * quarter's target (green once reached), and the cash.
      */
-    public static void paintScorePanel(Graphics2D g, int quarter, int month, int score, int target, Color body) {
+    public static void paintScorePanel(Graphics2D g, int quarter, int month, int productivity, int target, int cash, Color body) {
         panel(g, 0, 0, SCORE_W, SCORE_H, body);
         Color colour = QUARTER_COLOURS[quarter];
         label(g, "Quarter " + (quarter + 1), 20, 28, 11f, LABEL);
@@ -164,13 +164,23 @@ public final class HudStyle {
         // Dividers
         g.setColor(new Color(120, 205, 235, 70));
         g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
-        g.fill(new java.awt.geom.Rectangle2D.Float(336, 18, 1f, SCORE_H - 36));
-        // Score, in dollars (spent in the shop), smaller should it grow too wide
-        label(g, "Score", 184, 28, 11f, LABEL);
-        money(g, score, 184, 336 - 184 - 12, VALUE);
-        // The quarter's target
-        label(g, "Target", 352, 28, 11f, LABEL);
-        money(g, target, 352, SCORE_W - 352 - 14, score >= target ? new Color(110, 225, 130) : GOLD);
+        g.fill(new java.awt.geom.Rectangle2D.Float(392, 18, 1f, SCORE_H - 36));
+        // Productivity over the quarter's target (the points large, green once the target's reached)
+        label(g, "Productivity", 184, 28, 11f, LABEL);
+        String points = String.format("%,d", productivity), of = String.format(" / %,d", target);
+        float size = 30f;
+        while (size > 14f && g.getFontMetrics(font(Font.BOLD, size)).stringWidth(points)
+                + g.getFontMetrics(font(Font.PLAIN, size * 0.5f)).stringWidth(of) > 392 - 184 - 12) size -= 1f;
+        g.setFont(font(Font.BOLD, size));
+        g.setColor(productivity >= target ? new Color(110, 225, 130) : VALUE);
+        g.drawString(points, 184, 64);
+        float pw = g.getFontMetrics().stringWidth(points);
+        g.setFont(font(Font.PLAIN, size * 0.5f));
+        g.setColor(GOLD);
+        g.drawString(of, 186 + pw, 64);
+        // Cash, in dollars (spent in the shop), smaller should it grow too wide
+        label(g, "Cash", 408, 28, 11f, LABEL);
+        money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
     }
 
     /** A colour faded halfway towards grey and a little darker, for months gone by. */
