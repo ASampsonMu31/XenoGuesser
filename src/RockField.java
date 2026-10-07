@@ -85,12 +85,17 @@ public class RockField {
     }
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_rock.txt", "assets/shaders/fs_rock.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rock.txt", GamePaths.HOME + "assets/shaders/fs_rock.txt");
     }
 
     // ------------------------------------------------------------------ regional character
 
     /** 0..1: how rocky the land is here. */
+    /** How many rocks a chunk round a point is expected to have (as they're spawned, before any on water or roads are dropped). */
+    public float expectedPerChunk(float x, float z) {
+        return rockinessAt(x, z) * MAX_PER_CHUNK;
+    }
+
     private float rockinessAt(float x, float z) {
         float n = abundance.onSphere(Planet.surface(x, z), 0.00011f, 0f, 0f);
         float base = smooth(-0.25f, 0.55f, n);
@@ -101,9 +106,13 @@ public class RockField {
     }
 
     /** Typical rock radius here, from pebbles to boulders. */
-    private float typicalSizeAt(float x, float z) {
+    // The smallest and largest typical rock (radius) a region can have
+    public static final float SMALLEST_TYPICAL = 1.5f, LARGEST_TYPICAL = 11f;
+
+    /** How big the rocks are round a point: their typical radius (most are smaller, a few bigger). */
+    public float typicalSizeAt(float x, float z) {
         float n = 0.5f + 0.5f * size.onSphere(Planet.surface(x, z), 0.00008f, 3.1f, -1.7f);
-        return 1.5f + 9.5f * n * n;
+        return SMALLEST_TYPICAL + (LARGEST_TYPICAL - SMALLEST_TYPICAL) * n * n;
     }
 
     /** The colour of the stone here: this world's bedrock, shifted in hue and shade across regions. */

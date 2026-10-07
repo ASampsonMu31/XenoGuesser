@@ -1,0 +1,95 @@
+You have one new message from Xenocorp: Employee 119, we would like to congratulate you for your unprecedented luck, our records indicate that you remain operational. This outcome was not anticipated. As you are aware, magnetic interference causes landing zones to be entirely random. Ocean coverage on this planet has been measured at {planet}. Statistically speaking, you should be dead. Xenocorp: Finding Our Place in the Universe.
+end	25815
+1380	0
+2454	9
+3139	13
+4684	30
+6809	40
+7269	49
+8035	54
+8188	57
+8392	63
+8647	68
+8801	71
+9567	84
+9720	88
+9873	92
+10026	97
+10741	111
+10946	117
+11150	121
+11558	129
+12069	138
+12273	143
+12427	147
+12784	154
+13798	167
+14025	172
+14422	180
+14593	184
+14820	188
+16114	201
+16218	204
+16374	208
+16478	212
+16738	219
+17206	228
+17882	241
+18246	248
+18610	256
+18922	262
+19078	265
+19286	268
+19753	277
+20817	346
+21491	360
+21940	370
+22108	374
+22332	381
+22557	384
+23481	390
+24127	400
+24524	408
+24723	412
+25021	418
+25170	421
+25269	425
+slot	451314	285	41
+say	ˈəʊʃən kˈʌvəɹɪdʒ ˌɒn ðɪs plˈanɪt hɐzbɪn mˈɛʒəd at
+weights	6 9 3 4 7 4 5 6 2
+word	zero	zˈiəɹəʊ
+word	one	wˌɒn
+word	two	tˈuː
+word	three	θɹˈiː
+word	four	fˈɔː
+word	five	fˈaɪv
+word	six	sˈɪks
+word	seven	sˈɛvən
+word	eight	ˈeɪt
+word	nine	nˈaɪn
+word	ten	tˈɛn
+word	eleven	ɪlˈɛvən
+word	twelve	twˈɛlv
+word	thirteen	θˈɜːtiːn
+word	fourteen	fˈɔːtiːn
+word	fifteen	fˈɪftiːn
+word	sixteen	sˈɪkstiːn
+word	seventeen	sˈɛvəntˌiːn
+word	eighteen	ˈeɪtiːn
+word	nineteen	nˈaɪntiːn
+word	twenty	twˈɛnti
+word	thirty	θˈɜːti
+word	forty	fˈɔːti
+word	fifty	fˈɪfti
+word	sixty	sˈɪksti
+word	seventy	sˈɛvənti
+word	eighty	ˈeɪti
+word	ninety	nˈaɪnti
+word	hundred	hˈʌndɹɪd
+word	point	pˈɔɪnt
+word	percent	pəsˈɛnt
+rate	22050
+level	1.0988640090955086	1.0324914739350362
+highpass	0.9840099093443461 -1.9680198186886921 0.9840099093443461	1.0 -1.9677641193439779 0.9682755180334074
+presence	0.3290305763268968 0.0 -0.3290305763268968	1.0 -0.8216526322209786 0.3419388473462064	0.15
+hiss	0.01727107052420624	0.3618257234867445 0.0 -0.723651446973489 0.0 0.3618257234867445	1.0 -1.270653204745009 0.2293570509358594 -0.07631671741720014 0.18386757539048942

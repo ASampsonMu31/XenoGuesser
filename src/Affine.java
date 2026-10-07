@@ -32,6 +32,17 @@ public final class Affine {
         return m;
     }
 
+    /** Rotation about +Z by the given angle in radians (+X turns towards +Y). */
+    public static float[] rotationZ(float radians) {
+        float[] m = identity();
+        float c = (float) Math.cos(radians), s = (float) Math.sin(radians);
+        m[0] = c;
+        m[1] = s;
+        m[4] = -s;
+        m[5] = c;
+        return m;
+    }
+
     /** Rotation about +X by the given angle in radians (+Z turns towards -Y). */
     public static float[] rotationX(float radians) {
         float[] m = identity();

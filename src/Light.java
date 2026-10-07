@@ -37,7 +37,7 @@ public class Light {
 
     modelMatrix = new Matrix4(1);
 
-    shader = new Shader(gl, "assets/shaders/vs_light_01.txt", "assets/shaders/fs_light_01.txt");
+    shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_light_01.txt", GamePaths.HOME + "assets/shaders/fs_light_01.txt");
     
     // Using TwoTriangles quad to completely eliminate polar pinching artifacting
     mesh = new Mesh(gl, TwoTriangles.vertices, TwoTriangles.indices);

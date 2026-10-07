@@ -41,8 +41,8 @@ import java.util.Random;
  */
 public class GlyphGenerator implements AutoCloseable {
 
-    public static final String MODEL = "models/stroke_glyph_generator.pt";
-    public static final String STYLES = "models/stroke_glyph_styles.json";
+    public static final String MODEL = GamePaths.HOME + "models/stroke_glyph_generator.pt";
+    public static final String STYLES = GamePaths.HOME + "models/stroke_glyph_styles.json";
     // Glyph images are this many pixels square
     private static final int SIZE = 64;
 

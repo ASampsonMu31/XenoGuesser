@@ -26,10 +26,14 @@ import javax.sound.sampled.SourceDataLine;
 public class TransmissionMessage {
 
     // Each message is a recording (.wav) and its transcript with word timings (.txt)
-    public static final String SINGLEPLAYER = "assets/audio/xenocorp_singleplayer";
-    public static final String MULTIPLAYER = "assets/audio/xenocorp_multiplayer";
+    public static final String SINGLEPLAYER = GamePaths.HOME + "assets/audio/xenocorp_singleplayer";
+    public static final String MULTIPLAYER = GamePaths.HOME + "assets/audio/xenocorp_multiplayer";
+    // Played in the shop before the first round: the free gift, and that everything after is to be paid for
+    public static final String GIFT = GamePaths.HOME + "assets/audio/xenocorp_gift";
+    // Played as April begins: surprise that the employee's alive, given how much of the planet is ocean
+    public static final String APRIL = GamePaths.HOME + "assets/audio/xenocorp_april";
     // The planet sentence said with a stock name, unprocessed, for when the world's own isn't ready
-    public static final String FALLBACK_AUDIO = "assets/audio/planet_fallback.wav";
+    public static final String FALLBACK_AUDIO = GamePaths.HOME + "assets/audio/planet_fallback.wav";
     public static final String FALLBACK_NAME = "Groonia";
 
     // Where the planet's name goes in the transcript
@@ -74,7 +78,10 @@ public class TransmissionMessage {
     private final List<long[]> baseWords;
     private final long baseEnd;
     private final int slotFrame, slotChar;
-    private final PlanetName planet;
+    // What goes in the slot (the planet's name, or whatever else the message says there), and
+    // whether a stock recording stands in for it should it not be said in time
+    private final String slotName;
+    private final boolean stockFallback;
     private final CompletableFuture<PlanetVoice.Speech> speech;
     private volatile byte[] sentence;
     private volatile boolean settled;
@@ -87,14 +94,16 @@ public class TransmissionMessage {
     private volatile boolean running;
 
     private TransmissionMessage(String transcript, List<long[]> words, long end, AudioFormat format, byte[] pcm,
-                                Map<String, String[]> extra, PlanetName planet, CompletableFuture<PlanetVoice.Speech> speech) {
+                                Map<String, String[]> extra, String slotName, boolean stockFallback,
+                                CompletableFuture<PlanetVoice.Speech> speech) {
         this.baseTranscript = transcript;
         this.baseWords = words;
         this.baseEnd = end;
         this.format = format;
         this.pcm = pcm;
         this.extra = extra;
-        this.planet = planet;
+        this.slotName = slotName;
+        this.stockFallback = stockFallback;
         this.speech = speech;
         String[] slot = extra.get("slot");
         slotFrame = slot != null ? Integer.parseInt(slot[1]) : -1;
@@ -105,7 +114,8 @@ public class TransmissionMessage {
             set(transcript, words, end);
         } else {
             // Until it's settled, laid out as if the stock name: the name itself is off to the right, unseen
-            arrange(FALLBACK_NAME, fallbackSpeech(), false);
+            if (stockFallback) arrange(FALLBACK_NAME, fallbackSpeech(), false);
+            else arrange(slotName, null, false);
         }
     }
 
@@ -130,7 +140,74 @@ public class TransmissionMessage {
             }
             prepare(seed);
             return new TransmissionMessage(transcript, words, end, format, pcm, readExtra(name + ".txt"),
-                    PlanetName.forSeed(seed), preparing.get(seed));
+                    PlanetName.forSeed(seed).spelling, true, preparing.get(seed));
+        } catch (Exception e) {
+            System.err.println("Message unavailable: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Loads a message whose slot says something other than the planet's name: slotName shown in
+     * the transcript, speech (being said by the time it's needed, see sentenceWith) heard there;
+     * should it not be ready, that stretch is left silent. Null if the message is unavailable.
+     */
+    public static TransmissionMessage load(String name, String slotName, CompletableFuture<PlanetVoice.Speech> speech) {
+        try {
+            List<String> lines = Files.readAllLines(new File(name + ".txt").toPath(), StandardCharsets.UTF_8);
+            String transcript = lines.get(0);
+            long end = Long.parseLong(lines.get(1).split("\t")[1]);
+            List<long[]> words = new ArrayList<>();
+            for (String line : lines.subList(2, lines.size())) {
+                String[] parts = line.split("\t");
+                if (parts.length >= 2 && Character.isDigit(parts[0].charAt(0))) {
+                    words.add(new long[] { Long.parseLong(parts[0].trim()), Long.parseLong(parts[1].trim()) });
+                }
+            }
+            AudioFormat format;
+            byte[] pcm;
+            try (AudioInputStream in = AudioSystem.getAudioInputStream(new File(name + ".wav"))) {
+                format = in.getFormat();
+                pcm = in.readAllBytes();
+            }
+            return new TransmissionMessage(transcript, words, end, format, pcm, readExtra(name + ".txt"), slotName, false, speech);
+        } catch (Exception e) {
+            System.err.println("Message unavailable: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * The phonemes for a message's slot sentence with a percentage in it (to three decimal
+     * places, e.g. "seventy one point two eight four percent"), from the words' sounds stored with
+     * the message; null if they're unavailable.
+     */
+    public static String sentenceWithPercent(String name, double percent) {
+        try {
+            Map<String, String[]> extra = readExtra(name + ".txt");
+            Map<String, String> sounds = new HashMap<>();
+            for (String line : Files.readAllLines(new File(name + ".txt").toPath(), StandardCharsets.UTF_8)) {
+                String[] parts = line.split("\t");
+                if (parts.length == 3 && parts[0].equals("word")) sounds.put(parts[1], parts[2]);
+            }
+            String[] ones = { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven",
+                    "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen" };
+            String[] tens = { "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety" };
+            String digits = String.format(java.util.Locale.ROOT, "%.3f", percent);
+            int whole = Integer.parseInt(digits.substring(0, digits.indexOf('.')));
+            List<String> said = new ArrayList<>();
+            if (whole >= 100) said.addAll(List.of("one", "hundred"));
+            else if (whole < 20) said.add(ones[whole]);
+            else {
+                said.add(tens[whole / 10]);
+                if (whole % 10 != 0) said.add(ones[whole % 10]);
+            }
+            said.add("point");
+            for (char c : digits.substring(digits.indexOf('.') + 1).toCharArray()) said.add(ones[c - '0']);
+            said.add("percent");
+            StringBuilder phonemes = new StringBuilder(extra.get("say")[1]);
+            for (String word : said) phonemes.append(' ').append(sounds.get(word));
+            return phonemes.append('.').toString();
         } catch (Exception e) {
             System.err.println("Message unavailable: " + e.getMessage());
             return null;
@@ -170,8 +247,9 @@ public class TransmissionMessage {
     public synchronized void settleName() {
         if (settled) return;
         PlanetVoice.Speech said = speech != null ? speech.getNow(null) : null;
-        if (said != null) arrange(planet.spelling, said, true);
-        else arrange(FALLBACK_NAME, fallbackSpeech(), true);
+        if (said != null) arrange(slotName, said, true);
+        else if (stockFallback) arrange(FALLBACK_NAME, fallbackSpeech(), true);
+        else arrange(slotName, null, true);
     }
 
     public boolean nameSettled() {
@@ -435,6 +513,6 @@ public class TransmissionMessage {
         byte[] bytes = all.toByteArray();
         AudioSystem.write(new AudioInputStream(new java.io.ByteArrayInputStream(bytes), message.format, bytes.length / message.format.getFrameSize()),
                 javax.sound.sampled.AudioFileFormat.Type.WAVE, new File(args[2]));
-        System.out.println(message.planet + "\n" + message.transcript);
+        System.out.println(message.slotName + "\n" + message.transcript);
     }
 }

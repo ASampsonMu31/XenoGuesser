@@ -27,7 +27,7 @@ public class HudOverlay {
     private float dim;
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_hud.txt", "assets/shaders/fs_hud.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_hud.txt", GamePaths.HOME + "assets/shaders/fs_hud.txt");
         gl.glGenVertexArrays(1, vao, 0);
         gl.glBindVertexArray(vao[0]);
         gl.glGenBuffers(1, vbo, 0);

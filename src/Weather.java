@@ -53,7 +53,7 @@ public class Weather {
     private final float seaLevel;
     // Today's weather: where in the cloud noise today's clouds are taken from, and how much
     // wetter or drier than usual today is (see newDay)
-    private float dayOffsetX, dayOffsetZ, dayWetness;
+    private float dayOffsetX, dayOffsetZ, dayWetness, streak = 1f;
 
     // How much of the sky is clouded (0 to 1) and how dark the clouds are, eased towards the
     // rainfall where the player is
@@ -102,6 +102,9 @@ public class Weather {
         dayOffsetX = rand.nextFloat() * 5000f;
         dayOffsetZ = rand.nextFloat() * 5000f;
         dayWetness = (float) rand.nextGaussian() * DAY_TO_DAY;
+        // How streaked along the wind today's clouds are: some days long fibrous streaks, some
+        // days rounder heaps with hardly any direction to them
+        streak = (float) Math.pow(rand.nextFloat(), 0.7);
         coverage = -1f;
         intensity = 0f;
         freshSnow = 0f;
@@ -144,11 +147,11 @@ public class Weather {
         float pz = worldZ / CLOUD_SCALE + windZ * time * CLOUD_DRIFT + dayOffsetZ;
         // Along the wind and across it: stretched along, streaked across
         float a = px * windX + pz * windZ, b = -px * windZ + pz * windX;
-        float qx = a * 0.45f, qy = b * 1.6f;
+        float qx = a * (1f + (0.45f - 1f) * streak), qy = b * (1f + (1.6f - 1f) * streak);
         float w = fbm(qx * 0.7f + 3.1f, qy * 0.7f + 7.7f, 3);
         float n = fbm(qx + (w - 0.5f) * 2.2f, qy + (w - 0.5f) * 2.2f, 5);
         float f = fbm(a * 0.9f + w * 1.5f, b * 6.0f + w * 1.5f, 3);
-        return n * 0.8f + f * 0.2f;
+        return n * (1f - 0.2f * streak) + f * 0.2f * streak;
     }
 
     private static float smoothstep(float edge0, float edge1, float x) {
@@ -315,9 +318,9 @@ public class Weather {
 
     private void ensureGl(GL3 gl) {
         if (cloudShader != null) return;
-        cloudShader = new Shader(gl, "assets/shaders/vs_cloud.txt", "assets/shaders/fs_cloud.txt").flat();
-        rainShader = new Shader(gl, "assets/shaders/vs_rain.txt", "assets/shaders/fs_rain.txt").flat();
-        snowShader = new Shader(gl, "assets/shaders/vs_snow.txt", "assets/shaders/fs_snow.txt").flat();
+        cloudShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_cloud.txt", GamePaths.HOME + "assets/shaders/fs_cloud.txt").flat();
+        rainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rain.txt", GamePaths.HOME + "assets/shaders/fs_rain.txt").flat();
+        snowShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_snow.txt", GamePaths.HOME + "assets/shaders/fs_snow.txt").flat();
         int[] ids = new int[2];
         gl.glGenVertexArrays(2, ids, 0);
         emptyVao = ids[0];
@@ -370,6 +373,7 @@ public class Weather {
         cloudShader.setFloat(gl, "daylight", daylight);
         cloudShader.setFloat(gl, "skyColour", skyColour.x, skyColour.y, skyColour.z);
         cloudShader.setFloat(gl, "dayOffset", dayOffsetX, dayOffsetZ);
+        cloudShader.setFloat(gl, "streak", streak);
         cloudShader.setFloat(gl, "sunDirection", sunDirection[0], sunDirection[1], sunDirection[2]);
         cloudShader.setFloat(gl, "sunColour", 0.8f + 0.2f * sunTint[0], 0.8f + 0.2f * sunTint[1], 0.8f + 0.2f * sunTint[2]);
         cloudShader.setFloat(gl, "shading", CLOUD_SHADING);

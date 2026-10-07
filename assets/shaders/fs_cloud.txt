@@ -16,6 +16,7 @@ uniform float scale, drift;
 uniform float coverage, darkness, daylight;
 uniform vec3 skyColour;
 uniform vec2 dayOffset;
+uniform float streak;       // how streaked along the wind today's clouds are (0 none, 1 most)
 uniform vec3 sunDirection;  // towards the sun
 uniform vec3 sunColour;
 uniform float shading;
@@ -52,11 +53,11 @@ float fbm(vec2 p, int octaves) {
 float cloudNoise(vec2 world) {
     vec2 p = world / scale + wind * drift + dayOffset;
     float a = p.x * wind.x + p.y * wind.y, b = -p.x * wind.y + p.y * wind.x;
-    vec2 q = vec2(a * 0.45, b * 1.6);
+    vec2 q = vec2(a * mix(1.0, 0.45, streak), b * mix(1.0, 1.6, streak));
     float w = fbm(q * 0.7 + vec2(3.1, 7.7), 3);
     float n = fbm(q + vec2(w - 0.5) * 2.2, 5);
     float f = fbm(vec2(a * 0.9, b * 6.0) + vec2(w * 1.5), 3);
-    return n * 0.8 + f * 0.2;
+    return n * (1.0 - 0.2 * streak) + f * 0.2 * streak;
 }
 
 void main() {

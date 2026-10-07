@@ -1,0 +1,32 @@
+# The descriptions written on the shop's cards, one per line:   Name = description
+# The name is the card's own (as on the map's list). Lines starting with # are ignored, and
+# the file is read afresh each time the shop opens, so changes show without a restart.
+# In the Flora and Fauna lines, {name} is replaced by the plant's or animal's name.
+
+# Items
+Compass = A brass pocket compass. Its needle swings to the planet's north, pulling harder near the equator.
+Thermometer = A glass thermometer. Read the air's warmth wherever you stand.
+Altimeter = A blue pocket altimeter. Its needle shows how high above the sea you stand, in metres.
+Identification kit = A magnifying glass and a naturalist's handbook. Hold the glass up to name the plants and animals seen through it.
+
+# Map markings (drawn over the map)
+Contours = Lines of equal height across the land, showing hills, valleys and mountains.
+Roads = Every road on the planet, from highways to dirt tracks.
+Buildings = Where the planet's buildings stand, from lone farms to the hearts of cities.
+Shops = Where the inhabitants go shopping.
+
+# Heatmaps (colouring the land, under the markings)
+Temperature = How warm each region is, from frozen wastes to sweltering tropics.
+Rainfall = How much rain falls on each region in a year.
+Soil colour = The colour of the bare ground in each region.
+Wealth = How rich or poor each region's people are.
+Nations = The borders of the planet's nations, with their names written in their own scripts.
+Rock frequency = How many rocks lie about each region.
+Rock size = How big the rocks are in each region.
+Grass abundance = How thickly the grass grows in each region.
+Grass height = How tall the grass grows in each region.
+Grass colour = The colour of the grass in each region.
+
+# Each plant and animal species' heatmap
+Flora = Where the {name} grows, and how thickly.
+Fauna = Where the {name} roams, and how many there are.

@@ -83,10 +83,36 @@ public class TerrainMesh {
         float rawNoise5 = noise.onSphere(surface, f5, 0f, 0f);
         float roughnessLayer = (1.0f - Math.abs(rawNoise5)) * a5;
 
-        return baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
+        float height = baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
+        return flattenLowlands(height, surface, continent, noise);
     }
 
     private static final float CONTINENT_HEIGHT = 480.0f;
+
+    // Ground above this height is squashed down outside the mountain belts (well above any
+    // sea level, so the coasts are untouched), and by how much at most (what's left of each unit)
+    private static final float PLAINS_FROM = 130f, PLAINS_KEEP = 0.12f;
+
+    /**
+     * Not all high ground is mountains: broad regions (noise at the scale of a large country)
+     * are mountain belts, as they are; elsewhere ground above PLAINS_FROM is pressed down into
+     * plateaus and rolling plains, deserts and grasslands, keeping a little of its shape. Only
+     * inland (out at sea, the islands and volcanic atolls keep their peaks), and only above
+     * PLAINS_FROM, so the coastlines and sea level stay as they were.
+     */
+    private static float flattenLowlands(float height, float[] surface, float continent, PerlinNoise noise) {
+        if (height <= PLAINS_FROM) return height;
+        float inland = smooth((continent - 0.0f) / 0.3f);
+        if (inland <= 0f) return height;
+        float belt = smooth((noise.onSphere(surface, 1f / 18000f, 61.3f, -27.9f) - 0.05f) / 0.35f);
+        float keep = 1f - inland * (1f - belt) * (1f - PLAINS_KEEP);
+        return PLAINS_FROM + (height - PLAINS_FROM) * keep;
+    }
+
+    private static float smooth(float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        return t * t * (3f - 2f * t);
+    }
 
     // A piece of land (or of sea cut into it): {middle (unit vector), long axis, short axis, long
     // and short half-sizes (as sines of the angle), taper (how much narrower its far end is than

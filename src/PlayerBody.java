@@ -24,9 +24,14 @@ public class PlayerBody {
     private static final int COMPASS = 14, NEEDLE = 15;                 // carried in the left hand
     private static final int THERMOMETER = 16, MERCURY = 17;            // carried in the right hand
     // The right hand's fingers (index to little: their first then second joints) and thumb,
-    // which curl round the thermometer to hold it
+    // which curl round the thermometer to hold it; the left hand's are the same bones
+    // LEFT_DIGITS on (they keep their resting curve, as yet nothing has them grip)
     private static final int FINGER_BASE = 18, FINGER_TIP = 22, THUMB_BASE = 26, THUMB_TIP = 27;
-    private static final int BONES = 28;
+    private static final int LEFT_DIGITS = 10;
+    // The altimeter and its needle (in the right palm); the identification kit's magnifying
+    // glass (in the left fist) and book (open on the right palm)
+    private static final int ALTIMETER = 38, ALTIMETER_NEEDLE = 39, MAGNIFIER = 40, BOOK = 41;
+    private static final int BONES = 42;
     private static final float[] FINGER_LENGTHS = { 0.72f, 0.8f, 0.76f, 0.6f };   // index to little finger
     // How tightly each digit of the right hand curls round the thermometer when it's held up:
     // 0 left in its resting curve, 1 curled right in (both joints), in between partly.
@@ -42,6 +47,8 @@ public class PlayerBody {
     private static final float NECK_DROP = 3.3f, HIP_DROP = 10.0f, SHOULDER_DROP = 3.9f;
     private static final float SHOULDER_SPAN = 2.5f, HIP_SPAN = 1.1f;
     private static final float EYE_HEIGHT = 20f;
+    // How many world units make a metre: the game's measure for everything shown in metres
+    public static final float METRE = 10f;
     private static final float STRIDE = 14f;
     private static final float SWIM_TILT = (float) Math.toRadians(80);
     private static final float SWIM_SHOULDER_LIFT = 2.4f;
@@ -57,6 +64,43 @@ public class PlayerBody {
     // Held a little left of and below the middle of the view, at this distance from the eyes
     private static final float COMPASS_REACH = 5.0f;
     private static final float COMPASS_BELOW = (float) Math.toRadians(14), COMPASS_LEFT = (float) Math.toRadians(13);
+
+    // The altimeter: a blue case, thicker than the compass's, with a printed dial (0 at the
+    // bottom left, the top of its scale at the bottom right, sweeping round over the top) and
+    // a single red pointer
+    private static final float ALTIMETER_RADIUS = 0.5f, ALTIMETER_DEPTH = 0.3f, ALTIMETER_BEZEL = 0.4f;
+    private static final float DIAL_SWEEP = (float) Math.toRadians(270);
+    // The identification kit's book: open, across the palm (its spine along the hand), its far
+    // edge towards the fingers; held lower and further right than the altimeter
+    private static final float BOOK_WIDTH = 2.1f, BOOK_DEPTH = 1.5f, BOOK_ON_PALM = 1.0f;
+    // How far the book sits up off the palm (clear of the fingers' curl)
+    private static final float BOOK_LIFT = 0.35f;
+    private static final float BOOK_BELOW = (float) Math.toRadians(12), BOOK_RIGHT = (float) Math.toRadians(25), BOOK_REACH = 6.6f;
+    // The magnifying glass: a wooden handle, a brass collar, ring and the lens, held up in the
+    // middle of the view at this distance, gripped this far up the handle, the handle slanting
+    // up from the bottom left to the lens by this much from upright
+    private static final float LENS_RADIUS = 0.85f, HANDLE_LENGTH = 1.5f, HANDLE_RADIUS = 0.11f, COLLAR = 0.15f;
+    private static final float LENS_Z = HANDLE_LENGTH + COLLAR + LENS_RADIUS;
+    private static final float MAGNIFIER_REACH = 4.4f, MAGNIFIER_GRIP = 0.95f;
+    private static final float HANDLE_SLANT = (float) Math.toRadians(22.5);
+    // The left fist round the handle: how far in front of the palm the handle runs (less is
+    // tighter in the palm), how far along the hand from the wrist, and how tightly each digit
+    // curls round it (0 its resting curve, 1 right in; first finger, middle, ring, little, thumb)
+    private static final float MAGNIFIER_GRIP_OUT = 0.3f, MAGNIFIER_GRIP_ALONG = 1.2f;
+    // How far the left hand is turned about the handle, from facing the eyes squarely, so its
+    // fingers point away from the eyes (the glass and the grip on it stay where they are)
+    private static final float WRIST_TURN = (float) Math.toRadians(65);
+    private static final float[] MAGNIFIER_FIST = { 0.8f, 0.9f, 0.8f, 0.75f, 1.7f };
+    // How long the kit stays out once taken out
+    private static final float KIT_HOLD = 6f;
+    // The magnifying glass in the left glove's frame: across the fist (the glove's +x is up the
+    // handle, the thumb's side), facing as the palm does
+    private static final float[] MAGNIFIER_IN_HAND;
+    // The print on the altimeter's dial and the book's pages, side by side in one texture
+    // (the dial on the left half, the pages' spread across the top of the right)
+    private static final int PRINT_W = 2048, PRINT_H = 1024, SPREAD_H = 712;
+    // How far up the print the spread reaches down to, in texture coordinates
+    private static final float SPREAD_V = 1f - SPREAD_H / (float) PRINT_H;
 
     // The thermometer: a glass rod (up its own +Z, its front to +Y) with its scale printed on
     // it, a red bulb at the bottom and the red column running up the front of the rod
@@ -77,6 +121,11 @@ public class PlayerBody {
     // The thermometer in the glove's frame: held across the hand (the glove's -x is up it), facing as the palm does
     private static final float[] THERMOMETER_IN_HAND = Affine.frame(new float[] { GRIP_UP, GRIP_OUT, GRIP_ALONG },
             new float[] { -1f, 0f, 0f }, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f);
+
+    static {
+        MAGNIFIER_IN_HAND = Affine.frame(new float[] { -MAGNIFIER_GRIP, MAGNIFIER_GRIP_OUT, MAGNIFIER_GRIP_ALONG },
+                new float[] { 1f, 0f, 0f }, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f);
+    }
 
     /**
      * The suit's loose fabric: soft rings of folds bunching along each section, twisting a
@@ -106,10 +155,23 @@ public class PlayerBody {
     private float reading = 15f, shown = 15f;
     private Texture scale;
     private float needleAngle, needleSpin;
+    // The altimeter: time since taken out (negative when put away), the height it reads and
+    // its needle easing to it (metres), and the top of its scale
+    private float altimeterTime = -1f;
+    private float altitude, shownAltitude, altimeterTop = 1000f;
+    // The identification kit: time since taken out, the pictures in its book, and the
+    // magnifying glass's lens as last posed {x, y, z, radius} in the world
+    private float kitTime = -1f;
+    private java.util.List<java.awt.Image> bookPictures = java.util.List.of();
+    private float[] lens;
+    // The dial's and the pages' print, drawn again when what's on it changes
+    private Texture print;
+    private boolean printDirty = true;
+    private long printSeed;
     private final java.util.Random needleKick = new java.util.Random();
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_organism.txt", "assets/shaders/fs_organism.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         // In first person the eyes are inside the helmet, so it is left off
         mesh = buildMesh(false).build(gl);
         glass = buildGlass().build(gl);
@@ -132,6 +194,10 @@ public class PlayerBody {
         OrganismMesh.Builder b = new OrganismMesh.Builder();
         b.bone(THERMOMETER).transform(Affine.translation(0f, 0f, TUBE_START)).part(OrganismMesh.PART_PRODUCT);
         b.lathe(32, 8, puck(ROD_RADIUS, TUBE_END - TUBE_START));
+        // The magnifying glass's lens, facing along the glass's +y
+        b.bone(MAGNIFIER).transform(Affine.multiply(Affine.translation(0f, -0.03f, LENS_Z), Affine.rotationX((float) -Math.PI / 2)))
+                .part(OrganismMesh.PART_EYE);
+        b.lathe(40, 8, puck(LENS_RADIUS, 0.06f));
         b.resetTransform();
         return b;
     }
@@ -161,7 +227,7 @@ public class PlayerBody {
             b.bone(FOREARM + side).resetTransform();
             OrganismParts.legSegment(b, FOREARM_LENGTH, 0.72f, 0.62f, 0);
             joint(b, 0.8f);
-            glove(b, GLOVE + side, side == LEFT ? 1f : -1f, side != LEFT);
+            glove(b, GLOVE + side, side == LEFT ? LEFT_DIGITS : 0);
             b.bone(THIGH + side).resetTransform();
             OrganismParts.legSegment(b, THIGH_LENGTH, 1.15f, 0.95f, 0);
             joint(b, 1.3f);
@@ -208,6 +274,9 @@ public class PlayerBody {
             b.bone(MERCURY).part(OrganismMesh.PART_NEEDLE_NORTH);
             b.lathe(12, 4, puck(COLUMN_RADIUS, 1f));
             b.resetTransform();
+            buildAltimeter(b);
+            buildBook(b);
+            buildMagnifier(b);
         }
         if (helmet) {
             // A round helmet with a dark visor, and a collar ring where it seals to the suit
@@ -256,6 +325,78 @@ public class PlayerBody {
         };
     }
 
+    /** The altimeter: a thick blue case and bezel, the printed dial inside, and its pointer on its own bone. */
+    private static void buildAltimeter(OrganismMesh.Builder b) {
+        b.bone(ALTIMETER).resetTransform().part(OrganismMesh.PART_ENAMEL);
+        b.lathe(32, 12, puck(ALTIMETER_RADIUS, ALTIMETER_DEPTH));
+        b.lathe(40, 2, (t, out) -> {
+            out[0] = 0f;
+            out[1] = 0f;
+            out[2] = ALTIMETER_DEPTH * 0.7f + t * (ALTIMETER_BEZEL - ALTIMETER_DEPTH * 0.7f);
+            out[3] = ALTIMETER_RADIUS * 0.97f;
+            out[4] = ALTIMETER_RADIUS * 0.97f;
+        });
+        float dial = ALTIMETER_RADIUS * 0.88f;
+        b.transform(Affine.translation(0f, 0f, ALTIMETER_DEPTH + CARD_GAP)).part(OrganismMesh.PART_PRINT);
+        int first = b.vertexCount();
+        b.lathe(48, 12, puck(dial, CARD_THICKNESS));
+        // The print laid flat across the dial's face (the left half of the print)
+        for (int k = first; k < b.vertexCount(); k++) {
+            float[] uv = b.uv(k);
+            float t = uv[1];
+            float r = t < 0.25f ? t / 0.25f : t < 0.75f ? 1f : (1f - t) / 0.25f;
+            double angle = uv[0] * Math.PI * 2;
+            b.setUV(k, 0.25f + 0.25f * r * (float) Math.cos(angle), 0.5f + 0.5f * r * (float) Math.sin(angle));
+        }
+        b.resetTransform();
+        b.bone(ALTIMETER_NEEDLE).part(OrganismMesh.PART_NEEDLE_NORTH);
+        b.lathe(8, 6, (t, out) -> needleHalf(t, ALTIMETER_RADIUS * 0.74f, out));
+        b.transform(Affine.rotationX((float) -Math.PI / 2)).part(OrganismMesh.PART_BRASS);
+        b.lathe(10, 8, puck(0.06f, 0.04f));
+        b.resetTransform();
+    }
+
+    /**
+     * The identification kit's book, lying open: a brown hardback cover, a rounded spine, and
+     * the two pages rising a little from the spine, printed with the right half of the print.
+     */
+    private static void buildBook(OrganismMesh.Builder b) {
+        b.bone(BOOK).resetTransform().part(OrganismMesh.PART_LEATHER);
+        b.box(0f, 0f, 0.04f, BOOK_WIDTH + 0.14f, BOOK_DEPTH + 0.12f, 0.08f);
+        b.box(0f, 0f, 0.07f, 0.14f, BOOK_DEPTH + 0.12f, 0.12f);
+        for (int side = -1; side <= 1; side += 2) {
+            b.transform(Affine.multiply(Affine.translation(side * BOOK_WIDTH * 0.25f, 0f, 0.09f), Affine.rotationY(-side * 0.08f)))
+                    .part(OrganismMesh.PART_PRINT);
+            int first = b.vertexCount();
+            b.box(0f, 0f, 0.06f, BOOK_WIDTH * 0.48f, BOOK_DEPTH, 0.12f);
+            float u0 = side < 0 ? 0.5f : 0.75f;
+            for (int k = first; k < b.vertexCount(); k++) {
+                float[] uv = b.uv(k);
+                b.setUV(k, u0 + uv[0] * 0.25f, SPREAD_V + uv[1] * (1f - SPREAD_V));
+            }
+        }
+        b.resetTransform();
+    }
+
+    /** The magnifying glass, up its own +z from the handle's end: the handle, a brass collar and the brass ring round the lens. */
+    private static void buildMagnifier(OrganismMesh.Builder b) {
+        b.bone(MAGNIFIER).resetTransform().part(OrganismMesh.PART_LEATHER);
+        b.lathe(14, 6, puck(HANDLE_RADIUS, HANDLE_LENGTH));
+        b.transform(Affine.translation(0f, 0f, HANDLE_LENGTH)).part(OrganismMesh.PART_BRASS);
+        b.lathe(14, 4, puck(HANDLE_RADIUS * 0.85f, COLLAR + 0.04f));
+        // The ring: swept round a circle in the part's YZ plane, turned to stand across the glass's +y
+        b.transform(Affine.multiply(Affine.translation(0f, 0f, LENS_Z), Affine.rotationZ((float) Math.PI / 2)));
+        b.lathe(10, 64, (t, out) -> {
+            double a = t * Math.PI * 2;
+            out[0] = 0f;
+            out[1] = (float) Math.sin(a) * (LENS_RADIUS + 0.04f);
+            out[2] = (float) Math.cos(a) * (LENS_RADIUS + 0.04f);
+            out[3] = 0.07f;
+            out[4] = 0.09f;
+        });
+        b.resetTransform();
+    }
+
     /** Half the compass needle, from the pivot out to a point at z = length (negative for the south half). */
     private static void needleHalf(float t, float length, float[] out) {
         out[0] = 0f;
@@ -265,8 +406,71 @@ public class PlayerBody {
         out[4] = 0.022f * (1f - 0.5f * t);
     }
 
+    /** Take the altimeter out (into the right hand, so anything else there is put away), or keep it out a little longer. */
+    public void useAltimeter() {
+        thermometerTime = -1f;
+        kitTime = -1f;
+        if (altimeterTime < 0f) {
+            altimeterTime = 0f;
+            // Fresh out of the pocket the needle swings up from 0
+            shownAltitude = 0f;
+        } else if (altimeterTime > COMPASS_RAISE) altimeterTime = COMPASS_RAISE;
+    }
+
+    /** Take the identification kit out (in both hands, so everything else is put away), or keep it out a little longer. */
+    public void useKit() {
+        compassTime = -1f;
+        thermometerTime = -1f;
+        altimeterTime = -1f;
+        if (kitTime < 0f) kitTime = 0f;
+        else if (kitTime > COMPASS_RAISE) kitTime = COMPASS_RAISE;
+    }
+
+    /** What the altimeter reads where the player stands: metres above the sea. */
+    public void setAltitude(float metres) {
+        altitude = metres;
+    }
+
+    /** The top of the altimeter's scale, in metres (a round number, over the highest ground there is). */
+    public void setAltimeterTop(float metres) {
+        if (metres != altimeterTop) printDirty = true;
+        altimeterTop = metres;
+    }
+
+    /** The pictures of the world's plants and animals in the identification kit's book. */
+    public void setBookPictures(java.util.List<java.awt.Image> pictures, long seed) {
+        bookPictures = java.util.List.copyOf(pictures);
+        printSeed = seed;
+        printDirty = true;
+    }
+
+    /** The magnifying glass's lens {x, y, z, radius} in the world, while it's held up to look through; else null. */
+    public float[] lensView() {
+        return kitBlend() > 0.97f ? lens : null;
+    }
+
+    /** How far an item is raised, 0 put away to 1 held up to look at, time after it was taken out and held for hold. */
+    private static float raised(float time, float hold) {
+        if (time < 0f) return 0f;
+        float t;
+        if (time < COMPASS_RAISE) t = time / COMPASS_RAISE;
+        else if (time < COMPASS_RAISE + hold) t = 1f;
+        else t = 1f - (time - COMPASS_RAISE - hold) / COMPASS_RAISE;
+        t = Math.max(0f, Math.min(1f, t));
+        return t * t * (3f - 2f * t);
+    }
+
+    private float altimeterBlend() {
+        return raised(altimeterTime, COMPASS_HOLD * 1.5f);
+    }
+
+    private float kitBlend() {
+        return raised(kitTime, KIT_HOLD);
+    }
+
     /** C: take the compass out, or keep it out a little longer if it already is. */
     public void useCompass() {
+        kitTime = -1f;
         if (compassTime < 0f || compassTime > COMPASS_RAISE + COMPASS_HOLD) {
             if (compassTime < 0f) {
                 // Freshly out of the pocket the needle swings before it settles
@@ -281,6 +485,8 @@ public class PlayerBody {
 
     /** 2: take the thermometer out, or keep it out a little longer if it already is. */
     public void useThermometer() {
+        altimeterTime = -1f;
+        kitTime = -1f;
         if (thermometerTime < 0f) {
             thermometerTime = 0f;
             // Fresh out of the pocket it starts from 0 and creeps up or down to the reading
@@ -377,44 +583,28 @@ public class PlayerBody {
     }
 
     /**
-     * A gloved hand along its bone's +Z from the wrist, palm facing +Y, the thumb towards
-     * +X times thumbSide: a cuff, a flat palm, four fingers curling gently up and a thumb.
+     * A gloved hand along its bone's +Z from the wrist, palm facing +Y: a cuff, a flat palm,
+     * and four fingers and a thumb, each in two parts on its own bones (the right hand's
+     * digits, or digits on from them for the left), placed and curled by poseFingers.
      */
-    private static void glove(OrganismMesh.Builder b, int bone, float thumbSide, boolean jointed) {
+    private static void glove(OrganismMesh.Builder b, int bone, int digits) {
         b.bone(bone);
         b.transform(Affine.translation(0f, 0f, 0.3f));
         OrganismParts.shell(b, OrganismMesh.PART_TRIM, 0.75f, 0.92f, 0.8f, 0.3f, 0, 0f, 1f);
         b.transform(Affine.translation(0f, 0f, PALM_START + PALM_LENGTH * 0.5f));
         OrganismParts.shell(b, OrganismMesh.PART_TRIM, PALM_LENGTH, 1.0f, 0.38f, 0.25f, 0, 0f, 0.95f);
-        if (jointed) {
-            // Each finger and the thumb in two parts, each on its own bone from its joint, so they can curl
-            for (int f = 0; f < 4; f++) {
-                float first = FINGER_LENGTHS[f] * 0.58f, second = FINGER_LENGTHS[f] * 0.5f;
-                b.bone(FINGER_BASE + f).transform(Affine.translation(0f, 0f, first * 0.5f));
-                OrganismParts.shell(b, OrganismMesh.PART_TRIM, first, 0.21f, 0.2f, 0.35f, 0, 0f, 0.95f);
-                b.bone(FINGER_TIP + f).transform(Affine.translation(0f, 0f, second * 0.5f));
-                OrganismParts.shell(b, OrganismMesh.PART_TRIM, second, 0.2f, 0.19f, 0.35f, 0, 0f, 0.85f);
-            }
-            b.bone(THUMB_BASE).transform(Affine.translation(0f, 0f, 0.2f));
-            OrganismParts.shell(b, OrganismMesh.PART_TRIM, 0.4f, 0.25f, 0.23f, 0.35f, 0, 0f, 0.95f);
-            b.bone(THUMB_TIP).transform(Affine.translation(0f, 0f, 0.17f));
-            OrganismParts.shell(b, OrganismMesh.PART_TRIM, 0.34f, 0.23f, 0.21f, 0.35f, 0, 0f, 0.85f);
-            b.resetTransform();
-            return;
-        }
-        float[] lengths = FINGER_LENGTHS;
+        // Each finger and the thumb in two parts, each on its own bone from its joint, so they can curl
         for (int f = 0; f < 4; f++) {
-            float x = thumbSide * (0.34f - f * 0.225f);
-            float[] place = Affine.multiply(Affine.translation(x, 0.02f, PALM_START + PALM_LENGTH - 0.12f),
-                    Affine.multiply(Affine.rotationX(-0.32f), Affine.translation(0f, 0f, lengths[f] * 0.5f)));
-            b.transform(place);
-            OrganismParts.shell(b, OrganismMesh.PART_TRIM, lengths[f], 0.21f, 0.2f, 0.35f, 0, 0f, 0.85f);
+            float first = FINGER_LENGTHS[f] * 0.58f, second = FINGER_LENGTHS[f] * 0.5f;
+            b.bone(FINGER_BASE + digits + f).transform(Affine.translation(0f, 0f, first * 0.5f));
+            OrganismParts.shell(b, OrganismMesh.PART_TRIM, first, 0.21f, 0.2f, 0.35f, 0, 0f, 0.95f);
+            b.bone(FINGER_TIP + digits + f).transform(Affine.translation(0f, 0f, second * 0.5f));
+            OrganismParts.shell(b, OrganismMesh.PART_TRIM, second, 0.2f, 0.19f, 0.35f, 0, 0f, 0.85f);
         }
-        float[] thumb = Affine.multiply(Affine.translation(thumbSide * 0.42f, 0.04f, PALM_START + 0.3f),
-                Affine.multiply(Affine.rotationY(thumbSide * 0.75f),
-                        Affine.multiply(Affine.rotationX(-0.25f), Affine.translation(0f, 0f, 0.32f))));
-        b.transform(thumb);
-        OrganismParts.shell(b, OrganismMesh.PART_TRIM, 0.64f, 0.25f, 0.23f, 0.35f, 0, 0f, 0.85f);
+        b.bone(THUMB_BASE + digits).transform(Affine.translation(0f, 0f, 0.2f));
+        OrganismParts.shell(b, OrganismMesh.PART_TRIM, 0.4f, 0.25f, 0.23f, 0.35f, 0, 0f, 0.95f);
+        b.bone(THUMB_TIP + digits).transform(Affine.translation(0f, 0f, 0.17f));
+        OrganismParts.shell(b, OrganismMesh.PART_TRIM, 0.34f, 0.23f, 0.21f, 0.35f, 0, 0f, 0.85f);
         b.resetTransform();
     }
 
@@ -423,6 +613,7 @@ public class PlayerBody {
     }
 
     public void dispose(GL3 gl) {
+        if (print != null) print.destroy(gl);
         if (mesh != null) mesh.dispose(gl);
         if (glass != null) glass.dispose(gl);
     }
@@ -450,6 +641,15 @@ public class PlayerBody {
         }
         // The column creeps to the reading rather than jumping
         shown += (reading - shown) * Math.min(1f, dt * 1.5f);
+        if (altimeterTime >= 0f) {
+            altimeterTime += dt;
+            if (altimeterTime > 2f * COMPASS_RAISE + COMPASS_HOLD * 1.5f) altimeterTime = -1f;
+        }
+        shownAltitude += (altitude - shownAltitude) * Math.min(1f, dt * 2f);
+        if (kitTime >= 0f) {
+            kitTime += dt;
+            if (kitTime > 2f * COMPASS_RAISE + KIT_HOLD) kitTime = -1f;
+        }
         if (compassTime >= 0f) {
             compassTime += dt;
             if (compassTime > 2f * COMPASS_RAISE + COMPASS_HOLD) compassTime = -1f;
@@ -524,8 +724,14 @@ public class PlayerBody {
             scale.bind(gl);
             shader.setInt(gl, "productTexture", 5);
         }
+        if (printDirty) refreshPrint(gl);
+        if (print != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE6);
+            print.bind(gl);
+            shader.setInt(gl, "printTexture", 6);
+        }
         mesh.render(gl);
-        if (glass != null && thermometerBlend() > 0.01f) {
+        if (glass != null && (thermometerBlend() > 0.01f || kitBlend() > 0.01f)) {
             // The tube: part see-through, part reflecting the sky, like the windows
             gl.glEnable(GL.GL_BLEND);
             gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
@@ -576,6 +782,53 @@ public class PlayerBody {
             if (Affine.length(Affine.subtract(compassAt, leftShoulder)) < (UPPER_ARM_LENGTH + FOREARM_LENGTH) * 0.95f) break;
         }
 
+        // Where the right palm holds the altimeter (as the left does the compass, mirrored), or
+        // the kit's book, lower and further right
+        float alt = altimeterBlend(), kit = kitBlend();
+        float rightPalm = Math.max(alt, kit);
+        boolean book = kit > alt;
+        float rightDown = Math.max((float) Math.toRadians(-69), Math.min((float) Math.toRadians(72),
+                pitch - (book ? BOOK_BELOW : COMPASS_BELOW)));
+        float highRight = Math.max(0f, (float) Math.sin(rightDown));
+        float rightLift = 1.6f * highRight * rightPalm;
+        float rightAngle = -(book ? BOOK_RIGHT : COMPASS_LEFT);
+        float[] rightShoulderLifted = { -SHOULDER_SPAN, -SHOULDER_DROP + rightLift, back };
+        float rightReach = book ? BOOK_REACH : COMPASS_REACH;
+        float[] rightAt = palmPoint(rightReach, rightDown, rightAngle);
+        for (float reach = rightReach; reach > 2.4f; reach -= 0.1f) {
+            rightAt = palmPoint(reach, rightDown, rightAngle);
+            if (Affine.length(Affine.subtract(rightAt, rightShoulderLifted)) < (UPPER_ARM_LENGTH + FOREARM_LENGTH) * 0.95f) break;
+        }
+
+        // Where the magnifying glass is held: its lens straight ahead in the middle of the view,
+        // facing the eyes, its handle slanting down to the bottom left, the left fist round the
+        // back of the handle, palm to the eyes, as the right hand is round the thermometer (mirrored)
+        float magnifierElevation = Math.max((float) Math.toRadians(-60), Math.min((float) Math.toRadians(60), pitch));
+        float[] lensCentre = { 0f, MAGNIFIER_REACH * (float) Math.sin(magnifierElevation), MAGNIFIER_REACH * (float) Math.cos(magnifierElevation) };
+        float[] lensFace = Affine.normalise(new float[] { -lensCentre[0], -lensCentre[1], -lensCentre[2] });
+        float[] lensUp = Affine.normalise(Affine.subtract(new float[] { 0f, 1f, 0f }, scaled(lensFace, lensFace[1])));
+        // (the view's right, across the lens's face)
+        float[] viewRight = Affine.normalise(Affine.cross(lensUp, lensFace));
+        float[] handle = Affine.normalise(new float[] {
+            lensUp[0] * (float) Math.cos(HANDLE_SLANT) + viewRight[0] * (float) Math.sin(HANDLE_SLANT),
+            lensUp[1] * (float) Math.cos(HANDLE_SLANT) + viewRight[1] * (float) Math.sin(HANDLE_SLANT),
+            lensUp[2] * (float) Math.cos(HANDLE_SLANT) + viewRight[2] * (float) Math.sin(HANDLE_SLANT)
+        });
+        float[] magnifierGrip = Affine.subtract(lensCentre, scaled(handle, LENS_Z - MAGNIFIER_GRIP));
+        // The hand turned about the handle by WRIST_TURN: the fingers' way across it tips away
+        // from the eyes, and the palm round with it
+        float[] square = Affine.normalise(Affine.cross(handle, lensFace));
+        float turnCos = (float) Math.cos(WRIST_TURN), turnSin = (float) Math.sin(WRIST_TURN);
+        float[] magnifierAcross = Affine.normalise(new float[] {
+            square[0] * turnCos - lensFace[0] * turnSin, square[1] * turnCos - lensFace[1] * turnSin, square[2] * turnCos - lensFace[2] * turnSin });
+        float[] magnifierPalm = Affine.normalise(new float[] {
+            lensFace[0] * turnCos + square[0] * turnSin, lensFace[1] * turnCos + square[1] * turnSin, lensFace[2] * turnCos + square[2] * turnSin });
+        float[] magnifierWrist = {
+            magnifierGrip[0] - magnifierAcross[0] * MAGNIFIER_GRIP_ALONG - magnifierPalm[0] * MAGNIFIER_GRIP_OUT,
+            magnifierGrip[1] - magnifierAcross[1] * MAGNIFIER_GRIP_ALONG - magnifierPalm[1] * MAGNIFIER_GRIP_OUT,
+            magnifierGrip[2] - magnifierAcross[2] * MAGNIFIER_GRIP_ALONG - magnifierPalm[2] * MAGNIFIER_GRIP_OUT
+        };
+
         // Where the thermometer is held: upright, to the right of the view and facing the eyes
         float thermo = thermometerBlend();
         float elevation = Math.max((float) Math.toRadians(-60), Math.min((float) Math.toRadians(60), pitch - THERMOMETER_BELOW));
@@ -609,7 +862,7 @@ public class PlayerBody {
             float stroke = strokePhase + side * (float) Math.PI;
 
             // Arms: swinging opposite the legs when walking, a front crawl when swimming
-            float[] shoulder = { sign * SHOULDER_SPAN, -SHOULDER_DROP + (side == LEFT ? shoulderLift : 0f), back };
+            float[] shoulder = { sign * SHOULDER_SPAN, -SHOULDER_DROP + (side == LEFT ? shoulderLift : rightLift), back };
             float swing = -(float) Math.sin(phase) * walking;
             float[] walkHand = { shoulder[0] + sign * 0.5f, shoulder[1] - 6.1f + 0.4f * Math.abs(swing), shoulder[2] + swing * 2.0f + 0.3f };
             // Front crawl, in the tilted body's space (+Y ahead, +Z down into the water): the
@@ -629,24 +882,29 @@ public class PlayerBody {
             // The palm faces the glove frame's +Y: standing and walking it faces in towards the
             // thigh with the thumb forward; swimming it faces down into the water, thumb inwards
             float[] palm = lerp(new float[] { -sign, 0f, 0f }, new float[] { 0f, 0f, 1f }, s);
-            boolean holding = side == LEFT && held > 0f;
-            // Holding the compass the wrist bends so the hand points level, ahead and in
+            // Something on the palm: the compass in the left, the altimeter or the book in the right
+            float palmHeld = side == LEFT ? held : rightPalm;
+            float[] palmAt = side == LEFT ? compassAt : rightAt;
+            boolean holding = palmHeld > 0f;
+            // Holding something on the palm the wrist bends so the hand points level, ahead and in
             float[] handAlong = null;
+            float alongBlend = 0f;
             if (holding) {
-                // Held out palm up and level, the compass resting on the glove (it's tipped
+                // Held out palm up and level, the thing resting on the glove (it's tipped
                 // towards the eyes afterwards, see COMPASS_TIP)
-                float[] toShoulder = Affine.subtract(compassAt, shoulder);
+                float[] toShoulder = Affine.subtract(palmAt, shoulder);
                 float[] reach = Affine.normalise(new float[] { toShoulder[0], 0f, toShoulder[2] });
                 handAlong = reach;
                 float[] palmUp = { 0f, 1f, 0f };
                 float[] wrist = {
-                    compassAt[0] - reach[0] * COMPASS_ON_PALM - palmUp[0] * PALM_TOP,
-                    compassAt[1] - reach[1] * COMPASS_ON_PALM - palmUp[1] * PALM_TOP,
-                    compassAt[2] - reach[2] * COMPASS_ON_PALM - palmUp[2] * PALM_TOP
+                    palmAt[0] - reach[0] * COMPASS_ON_PALM - palmUp[0] * PALM_TOP,
+                    palmAt[1] - reach[1] * COMPASS_ON_PALM - palmUp[1] * PALM_TOP,
+                    palmAt[2] - reach[2] * COMPASS_ON_PALM - palmUp[2] * PALM_TOP
                 };
-                hand = lerp(hand, wrist, held);
-                bend = lerp(bend, new float[] { 0.6f, -1f, 0f }, held);
-                palm = lerp(palm, palmUp, held);
+                hand = lerp(hand, wrist, palmHeld);
+                bend = lerp(bend, new float[] { 0.6f * sign, -1f, 0f }, palmHeld);
+                palm = lerp(palm, palmUp, palmHeld);
+                alongBlend = palmHeld;
             }
             if (side == 0 && thermo > 0f) {
                 // Holding the thermometer up: palm to the eyes, the hand across it
@@ -654,23 +912,33 @@ public class PlayerBody {
                 bend = lerp(bend, new float[] { -1f, -1f, 0f }, thermo);
                 palm = lerp(palm, face, thermo);
                 handAlong = across;
+                alongBlend = thermo;
+            }
+            if (side == LEFT && kit > 0f) {
+                // Holding the magnifying glass up: the fist round its handle, palm to the eyes
+                hand = lerp(hand, magnifierWrist, kit);
+                bend = lerp(bend, new float[] { 1f, -1f, 0f }, kit);
+                palm = lerp(palm, magnifierPalm, kit);
+                handAlong = magnifierAcross;
+                alongBlend = kit;
             }
             float[] elbow = Affine.middleJoint(shoulder, hand, UPPER_ARM_LENGTH, FOREARM_LENGTH, bend);
             limb(body, shoulder, elbow, UPPER_ARM_LENGTH, UPPER_ARM + side);
             limb(body, elbow, hand, FOREARM_LENGTH, FOREARM + side);
             float[] along = Affine.normalise(Affine.subtract(hand, elbow));
-            if (handAlong != null) along = Affine.normalise(lerp(along, handAlong, side == 0 ? thermo : held));
+            if (handAlong != null) along = Affine.normalise(lerp(along, handAlong, alongBlend));
             float[] gloveFrame = Affine.frame(hand, along, palm, 1f, 1f, 1f);
             if (holding) {
                 // Tip the level hand towards the eyes about the body's left-to-right axis (its
                 // far side rising), pivoting at the wrist, a little more the higher it's held
-                float tipAngle = (COMPASS_TIP + COMPASS_TIP_HIGH * high) * held;
+                float tipAngle = (COMPASS_TIP + COMPASS_TIP_HIGH * (side == LEFT ? high : highRight)) * palmHeld;
                 gloveFrame = Affine.multiply(Affine.translation(hand[0], hand[1], hand[2]), Affine.multiply(Affine.rotationX(-tipAngle),
                         Affine.multiply(Affine.translation(-hand[0], -hand[1], -hand[2]), gloveFrame)));
             }
             Affine.multiply(body, gloveFrame, bones, (GLOVE + side) * 16);
+            // (the right curls round the thermometer, the left into a fist round the magnifying glass)
+            poseFingers(body, gloveFrame, side == 0 ? thermo : kit, side, side == 0 ? THERMOMETER_GRIP : MAGNIFIER_FIST);
             if (side == 0) {
-                poseFingers(body, gloveFrame, thermo);
                 if (thermo > 0.01f) {
                     // In the hand, coming up with it
                     float[] frame = Affine.multiply(gloveFrame, THERMOMETER_IN_HAND);
@@ -684,7 +952,15 @@ public class PlayerBody {
                     java.util.Arrays.fill(bones, THERMOMETER * 16, (MERCURY + 1) * 16, 0f);
                 }
             }
-            if (side == LEFT) poseCompass(body, gloveFrame, held);
+            if (side == 0) {
+                poseOnPalm(body, gloveFrame, alt, ALTIMETER, COMPASS_ON_PALM, 0f);
+                poseAltimeterNeedle(body, gloveFrame, alt);
+                poseOnPalm(body, gloveFrame, kit, BOOK, BOOK_ON_PALM, BOOK_LIFT);
+            }
+            if (side == LEFT) {
+                poseCompass(body, gloveFrame, held);
+                poseMagnifier(body, gloveFrame, kit);
+            }
 
             // Legs: stepping when walking, a flutter kick when swimming
             float[] hip = { sign * HIP_SPAN, pelvis[1], back };
@@ -705,11 +981,234 @@ public class PlayerBody {
 
     /** A point at reach from the eyes, at elevation (radians) and a little to the left of the view. */
     private static float[] compassPoint(float reach, float elevation) {
+        return palmPoint(reach, elevation, COMPASS_LEFT);
+    }
+
+    /** A point at reach from the eyes, at elevation (radians), and aside (radians, to the left; negative to the right). */
+    private static float[] palmPoint(float reach, float elevation, float aside) {
         return new float[] {
-            reach * (float) Math.sin(COMPASS_LEFT),
+            reach * (float) Math.sin(aside),
             reach * (float) Math.sin(elevation),
-            reach * (float) Math.cos(elevation) * (float) Math.cos(COMPASS_LEFT)
+            reach * (float) Math.cos(elevation) * (float) Math.cos(aside)
         };
+    }
+
+    /** Sets something flat on the glove's palm (as the compass, see poseCompass), this far along the hand and lifted this far off it; put away, it shrinks to nothing. */
+    private void poseOnPalm(float[] body, float[] glove, float held, int bone, float onPalm, float lift) {
+        if (held <= 0.01f) {
+            java.util.Arrays.fill(bones, bone * 16, (bone + 1) * 16, 0f);
+            return;
+        }
+        float[] forearm = { glove[8], glove[9], glove[10] };
+        float[] face = { glove[4], glove[5], glove[6] };
+        float[] centre = {
+            glove[12] + forearm[0] * onPalm + face[0] * (PALM_TOP + lift),
+            glove[13] + forearm[1] * onPalm + face[1] * (PALM_TOP + lift),
+            glove[14] + forearm[2] * onPalm + face[2] * (PALM_TOP + lift)
+        };
+        Affine.multiply(body, Affine.frame(centre, face, forearm, 1f, 1f, 1f), bones, bone * 16);
+    }
+
+    /**
+     * The altimeter's pointer, on the dial's face: from 0 at the bottom left, round over the
+     * top, to the top of its scale at the bottom right (seen with the fingers at the top).
+     */
+    private void poseAltimeterNeedle(float[] body, float[] glove, float held) {
+        if (held <= 0.01f) {
+            java.util.Arrays.fill(bones, ALTIMETER_NEEDLE * 16, (ALTIMETER_NEEDLE + 1) * 16, 0f);
+            return;
+        }
+        float[] forearm = Affine.normalise(new float[] { glove[8], glove[9], glove[10] });
+        float[] face = Affine.normalise(new float[] { glove[4], glove[5], glove[6] });
+        // The dial's own right, as it's seen with the fingers at its top
+        float[] right = Affine.cross(forearm, face);
+        float lift = PALM_TOP + ALTIMETER_DEPTH + CARD_GAP + CARD_THICKNESS + 0.015f;
+        float[] pivot = {
+            glove[12] + forearm[0] * COMPASS_ON_PALM + face[0] * lift,
+            glove[13] + forearm[1] * COMPASS_ON_PALM + face[1] * lift,
+            glove[14] + forearm[2] * COMPASS_ON_PALM + face[2] * lift
+        };
+        float share = Math.max(-0.02f, Math.min(1.02f, shownAltitude / Math.max(1f, altimeterTop)));
+        float angle = -DIAL_SWEEP * 0.5f + DIAL_SWEEP * share;
+        float c = (float) Math.cos(angle), s = (float) Math.sin(angle);
+        float[] pointing = { forearm[0] * c + right[0] * s, forearm[1] * c + right[1] * s, forearm[2] * c + right[2] * s };
+        Affine.multiply(body, Affine.frame(pivot, pointing, face, 1f, 1f, 1f), bones, ALTIMETER_NEEDLE * 16);
+    }
+
+    /** The magnifying glass in the left fist, and where its lens is in the world; put away, it shrinks to nothing. */
+    private void poseMagnifier(float[] body, float[] glove, float held) {
+        if (held <= 0.01f) {
+            java.util.Arrays.fill(bones, MAGNIFIER * 16, (MAGNIFIER + 1) * 16, 0f);
+            lens = null;
+            return;
+        }
+        // (turned back about its handle as far as the hand is turned, so the lens still faces the eyes)
+        float[] frame = Affine.multiply(glove, Affine.multiply(MAGNIFIER_IN_HAND, Affine.rotationZ(-WRIST_TURN)));
+        Affine.multiply(body, frame, bones, MAGNIFIER * 16);
+        float[] world = new float[16];
+        System.arraycopy(bones, MAGNIFIER * 16, world, 0, 16);
+        float[] centre = Affine.transformPoint(world, 0f, 0f, LENS_Z);
+        lens = new float[] { centre[0], centre[1], centre[2], LENS_RADIUS };
+    }
+
+    // ------------------------------------------------------------------ the dial's and the pages' print
+
+    /** Draws the print afresh (the altimeter's scale or the book's pictures have changed). */
+    private void refreshPrint(GL3 gl) {
+        printDirty = false;
+        try {
+            java.io.File file = java.io.File.createTempFile("player_print", ".png");
+            file.deleteOnExit();
+            javax.imageio.ImageIO.write(printImage(altimeterTop, bookPictures, printSeed), "png", file);
+            if (print != null) print.destroy(gl);
+            print = TextureLibrary.loadTextureWrap(gl, file.getPath());
+        } catch (java.io.IOException e) {
+            System.err.println("Altimeter and book print unavailable: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The print: on the left half the altimeter's dial (seen with its top at the top: cream,
+     * with ticks and numbers in metres from 0 at the bottom left round to top at the bottom
+     * right); across the top of the right half the book's two pages (pictures of the world's
+     * plants and animals among lines of scrawled writing no one could read).
+     */
+    static java.awt.image.BufferedImage printImage(float top, java.util.List<java.awt.Image> pictures, long seed) {
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(PRINT_W, PRINT_H, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+        g.setRenderingHint(java.awt.RenderingHints.KEY_TEXT_ANTIALIASING, java.awt.RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        drawDial(g, top);
+        g.translate(PRINT_H, 0);
+        drawPages(g, pictures, seed);
+        g.dispose();
+        return image;
+    }
+
+    private static void drawDial(java.awt.Graphics2D g, float top) {
+        int size = PRINT_H;
+        float cx = size * 0.5f, cy = size * 0.5f;
+        g.setColor(new java.awt.Color(240, 236, 222));
+        g.fillRect(0, 0, size, size);
+        java.awt.Color ink = new java.awt.Color(24, 26, 34);
+        // A ring round the scale
+        g.setColor(ink);
+        g.setStroke(new java.awt.BasicStroke(8f));
+        float ring = size * 0.47f;
+        g.draw(new java.awt.geom.Arc2D.Float(cx - ring, cy - ring, ring * 2, ring * 2, 90f - 135f, 270f, java.awt.geom.Arc2D.OPEN));
+        // Numbers every step, ticks between: the smallest step of 10, 20, 25 or 50 metres (or
+        // those times a power of ten) that goes into the top exactly, at most 13 numbers
+        double step = top;
+        search:
+        for (double power = 1; power <= top; power *= 10) {
+            for (double k : new double[] { 10, 20, 25, 50 }) {
+                double candidate = k * power;
+                double count = top / candidate;
+                if (Math.abs(count - Math.round(count)) < 1e-6 && count <= 13) {
+                    step = candidate;
+                    break search;
+                }
+            }
+        }
+        int labels = (int) Math.round(top / step);
+        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, labels > 8 ? 62 : 76);
+        g.setFont(font);
+        java.awt.FontMetrics fm = g.getFontMetrics();
+        int ticks = labels * 5;
+        for (int i = 0; i <= ticks; i++) {
+            double a = -DIAL_SWEEP * 0.5 + DIAL_SWEEP * i / (double) ticks;
+            float sx = (float) Math.sin(a), cyDir = (float) -Math.cos(a);
+            boolean major = i % 5 == 0;
+            float r0 = ring - (major ? 70f : 36f), r1 = ring;
+            g.setStroke(new java.awt.BasicStroke(major ? 10f : 5f));
+            g.draw(new java.awt.geom.Line2D.Float(cx + sx * r0, cy + cyDir * r0, cx + sx * r1, cy + cyDir * r1));
+            if (major) {
+                double value = step * (i / 5);
+                String label = value >= 10000 ? String.format("%.0fk", value / 1000) : value % 1 == 0 ? String.valueOf((long) value) : String.valueOf(value);
+                float rl = ring - 135f;
+                float lx = cx + sx * rl, ly = cy + cyDir * rl;
+                g.drawString(label, lx - fm.stringWidth(label) * 0.5f, ly + fm.getAscent() * 0.38f);
+            }
+        }
+        g.setFont(new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, 54));
+        fm = g.getFontMetrics();
+        g.drawString("ALTITUDE", cx - fm.stringWidth("ALTITUDE") * 0.5f, cy + size * 0.2f);
+        g.setFont(new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 64));
+        fm = g.getFontMetrics();
+        g.drawString("m", cx - fm.stringWidth("m") * 0.5f, cy + size * 0.3f);
+    }
+
+    /** The book's open spread, PRINT_H wide (the right half of the print) and SPREAD_H tall, from the top. */
+    private static void drawPages(java.awt.Graphics2D g, java.util.List<java.awt.Image> pictures, long seed) {
+        int w = PRINT_W - PRINT_H, h = SPREAD_H;
+        java.util.Random rand = new java.util.Random(seed * 31L + 7L);
+        for (int page = 0; page < 2; page++) {
+            int x0 = page * w / 2;
+            // Old paper, a little darker towards the spine
+            g.setPaint(new java.awt.GradientPaint(x0 + (page == 0 ? w / 2f : 0f), 0, new java.awt.Color(208, 192, 156),
+                    x0 + (page == 0 ? w * 0.38f : w * 0.12f), 0, new java.awt.Color(236, 226, 198)));
+            g.fillRect(x0, 0, w / 2, h);
+            // Two pictures on each page, the rest scrawl
+            int margin = 44;
+            int pw = w / 2 - margin * 2;
+            float y = margin + 10;
+            // A heading
+            scrawl(g, rand, x0 + margin + pw * 0.2f, y + 20, pw * 0.6f, 9f, new java.awt.Color(70, 36, 18));
+            y += 60;
+            for (int k = 0; k < 2; k++) {
+                int index = page * 2 + k;
+                java.awt.Image picture = index < pictures.size() ? pictures.get(index) : null;
+                int box = 200;
+                boolean left = k == 0;
+                float px = left ? x0 + margin : x0 + margin + pw - box;
+                if (picture != null) {
+                    g.setColor(new java.awt.Color(226, 214, 182));
+                    g.fillRect(Math.round(px), Math.round(y), box, box);
+                    g.drawImage(picture, Math.round(px) + 8, Math.round(y) + 8, box - 16, box - 16, null);
+                    g.setColor(new java.awt.Color(90, 60, 36));
+                    g.setStroke(new java.awt.BasicStroke(3f));
+                    g.drawRect(Math.round(px), Math.round(y), box, box);
+                }
+                // Writing beside the picture, then under it
+                float tx = left ? px + box + 26 : x0 + margin, tw = pw - box - 26;
+                for (int line = 0; line < 5; line++) {
+                    scrawl(g, rand, tx, y + 30 + line * 36, tw * (line == 4 ? 0.6f : 0.95f), 7f, new java.awt.Color(48, 32, 24));
+                }
+                y += box + 30;
+            }
+            while (y < h - margin) {
+                scrawl(g, rand, x0 + margin, y, pw * (0.7f + 0.3f * rand.nextFloat()), 7f, new java.awt.Color(48, 32, 24));
+                y += 36;
+            }
+            // The spine's shadow
+            g.setPaint(new java.awt.GradientPaint(x0 + (page == 0 ? w / 2f - 30 : 0f), 0, new java.awt.Color(0, 0, 0, page == 0 ? 0 : 70),
+                    x0 + (page == 0 ? w / 2f : 30f), 0, new java.awt.Color(0, 0, 0, page == 0 ? 70 : 0)));
+            g.fillRect(x0 + (page == 0 ? w / 2 - 30 : 0), 0, 30, h);
+        }
+    }
+
+    /** A line of joined-up scribble, from (x, y) and width long, its loops about height tall. */
+    private static void scrawl(java.awt.Graphics2D g, java.util.Random rand, float x, float y, float width, float height, java.awt.Color ink) {
+        g.setColor(ink);
+        g.setStroke(new java.awt.BasicStroke(3.2f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+        java.awt.geom.Path2D path = new java.awt.geom.Path2D.Float();
+        float cx = x;
+        path.moveTo(cx, y);
+        while (cx < x + width) {
+            // A word: a run of loops, then a gap
+            int letters = 2 + rand.nextInt(6);
+            for (int i = 0; i < letters && cx < x + width; i++) {
+                float tall = height * (rand.nextFloat() < 0.2f ? 2.4f : 1f);
+                float wide = 7f + rand.nextFloat() * 8f;
+                path.curveTo(cx + wide * 0.2f, y - tall * 2f, cx + wide * 0.9f, y - tall * 2f, cx + wide * 0.5f, y);
+                path.curveTo(cx + wide * 0.4f, y + height * 0.6f, cx + wide * 1.1f, y + height * 0.3f, cx + wide, y);
+                cx += wide;
+            }
+            cx += 14f + rand.nextFloat() * 10f;
+            path.moveTo(cx, y);
+        }
+        g.draw(path);
     }
 
     /**
@@ -749,34 +1248,35 @@ public class PlayerBody {
     }
 
     /**
-     * The right hand's fingers and thumb, from the glove's frame: their gentle resting curve,
-     * or (as grip goes from 0 to 1) curled round to hold the thermometer, the fingers in towards
-     * the palm and the thumb across to meet them.
+     * A hand's fingers and thumb, from the glove's frame: their gentle resting curve, or (as
+     * grip goes from 0 to 1) curled round to hold the thermometer, the fingers in towards the
+     * palm and the thumb across to meet them.
      */
-    private void poseFingers(float[] body, float[] glove, float grip) {
-        float thumbSide = -1f;
+    private void poseFingers(float[] body, float[] glove, float grip, int side, float[] curls) {
+        float thumbSide = side == LEFT ? 1f : -1f;
+        int digits = side == LEFT ? LEFT_DIGITS : 0;
         for (int f = 0; f < 4; f++) {
             float x = thumbSide * (0.34f - f * 0.225f);
             float first = FINGER_LENGTHS[f] * 0.58f;
             // Curled as tightly as THERMOMETER_GRIP says (as the hand comes up, grip goes 0 to 1),
             // all slanting down a little as they wrap round (the glove's +x is down the thermometer)
-            float curl = THERMOMETER_GRIP[f] * grip;
+            float curl = curls[f] * grip;
             float bendFirst = 0.32f + 1.5f * curl, bendSecond = 1.65f * curl;
             float[] knuckle = Affine.multiply(glove, Affine.multiply(Affine.translation(x, 0.02f, PALM_START + PALM_LENGTH - 0.12f),
-                    Affine.multiply(Affine.rotationY((0.22f + 0.06f * f) * grip), Affine.rotationX(-bendFirst))));
-            Affine.multiply(body, knuckle, bones, (FINGER_BASE + f) * 16);
+                    Affine.multiply(Affine.rotationY(-thumbSide * (0.22f + 0.06f * f) * grip), Affine.rotationX(-bendFirst))));
+            Affine.multiply(body, knuckle, bones, (FINGER_BASE + digits + f) * 16);
             float[] middle = Affine.multiply(knuckle, Affine.multiply(Affine.translation(0f, 0f, first * 0.92f), Affine.rotationX(-bendSecond)));
-            Affine.multiply(body, middle, bones, (FINGER_TIP + f) * 16);
+            Affine.multiply(body, middle, bones, (FINGER_TIP + digits + f) * 16);
         }
         // The thumb, curled across to meet the fingers as tightly as THERMOMETER_GRIP says
-        float thumbCurl = THERMOMETER_GRIP[4] * grip;
+        float thumbCurl = curls[4] * grip;
         float swing = thumbSide * (0.75f - 0.45f * thumbCurl);
         float[] thumb = Affine.multiply(glove, Affine.multiply(Affine.translation(thumbSide * 0.42f, 0.04f, PALM_START + 0.3f),
                 Affine.multiply(Affine.rotationY(swing), Affine.rotationX(-0.25f - 0.75f * thumbCurl))));
-        Affine.multiply(body, thumb, bones, THUMB_BASE * 16);
+        Affine.multiply(body, thumb, bones, (THUMB_BASE + digits) * 16);
         // (its joint folds the opposite way to the fingers', bending the tip in onto the glass)
         float[] thumbTip = Affine.multiply(thumb, Affine.multiply(Affine.translation(0f, 0f, 0.37f), Affine.rotationX(0.7f * thumbCurl)));
-        Affine.multiply(body, thumbTip, bones, THUMB_TIP * 16);
+        Affine.multiply(body, thumbTip, bones, (THUMB_TIP + digits) * 16);
     }
 
     private static float[] scaled(float[] v, float k) {

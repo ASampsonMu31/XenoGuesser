@@ -50,6 +50,11 @@ public class OrganismManager {
         float steerHeading = Float.NaN, steerTimer;
         // A hop over a rock in the way: how far through it (seconds, 0 when not hopping) and how high
         float hopTime, hopHeight;
+        // Drawn standing level (for a picture), not leaning with the slope it's on
+        boolean level;
+        // Points round its body as last drawn (see forEachOutline), and which drawing that was
+        float[] outline;
+        int outlineDrawing;
         float progressTimer, progressX, progressZ, progressExpected;
     }
 
@@ -163,6 +168,7 @@ public class OrganismManager {
         c.walking = 0f;
         c.gaitPhase = 0.25f;
         c.hopTime = 0f;
+        c.level = true;
         float ground = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
         float reach = s.reachRadius() * c.sizeScale * c.legScale;
         // (where draw puts it, at time 0)
@@ -192,7 +198,7 @@ public class OrganismManager {
     }
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_organism.txt", "assets/shaders/fs_organism.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         for (OrganismSpecies s : species) {
             s.buildMeshes(gl);
         }
@@ -204,8 +210,12 @@ public class OrganismManager {
         }
     }
 
-    /** Forgets every creature, e.g. when the viewer jumps to a new round. */
+    // Changed every round, so each round's creatures are drawn afresh (from the same ranges)
+    private long roundSalt;
+
+    /** Forgets every creature, e.g. when the viewer jumps to a new round; the next round's are a fresh draw. */
     public void clear() {
+        roundSalt = new Random().nextLong();
         creaturesByChunk.clear();
         showcase.clear();
         lastCentreX = lastCentreZ = Integer.MIN_VALUE;
@@ -304,9 +314,29 @@ public class OrganismManager {
         return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
     }
 
+    /**
+     * How many of species i would be expected in the chunk round a point were it wild (as
+     * populate works it out, sharing the ground with the other species there); towns, which
+     * none of them live in, are left out (populate keeps them out of towns itself).
+     */
+    public float expectedPerChunk(int i, float x, float z) {
+        float total = 0f, mine = 0f;
+        for (int k = 0; k < species.size(); k++) {
+            float p = species.get(k).presenceAt(x, z, chunkSize);
+            total += p;
+            if (k == i) mine = p;
+        }
+        return mine / Math.max(1f, total) * species.get(i).rarity * PEAK_PER_CHUNK;
+    }
+
+    /** The most of species i a chunk can expect (where it's at its best, alone). */
+    public float peakPerChunk(int i) {
+        return species.get(i).rarity * PEAK_PER_CHUNK;
+    }
+
     private List<Creature> populate(int cx, int cz) {
         List<Creature> list = new ArrayList<>();
-        Random rand = new Random(seed ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
+        Random rand = new Random(seed ^ roundSalt ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
         float centreX = (cx + 0.5f) * chunkSize, centreZ = (cz + 0.5f) * chunkSize;
         float[] presences = new float[species.size()];
         float total = 0f;
@@ -586,8 +616,35 @@ public class OrganismManager {
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
         // Thin parts are open lathes seen from all sides
         gl.glDisable(GL.GL_CULL_FACE);
+        drawing++;
         for (Creature c : creatures) draw(gl, c, frustum, viewPos, bonesLocation, time);
         gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    /** A creature's outline as drawn: its species, where it stands, and points round its body in the world {x, y, z, ...}. */
+    @FunctionalInterface
+    public interface CreatureOutline {
+        void at(int species, float x, float z, float[] points);
+    }
+
+    // Whether each creature's outline is worked out as it's drawn (while something wants them)
+    private boolean keepOutlines;
+    // Counts each drawing of the creatures, so an outline left from an earlier one is told apart
+    private int drawing;
+
+    public void setKeepOutlines(boolean keep) {
+        keepOutlines = keep;
+    }
+
+    /** Every creature drawn last time (while outlines are kept), with its outline as drawn. */
+    public void forEachOutline(CreatureOutline visit) {
+        java.util.List<List<Creature>> lists = new ArrayList<>(creaturesByChunk.values());
+        lists.add(showcase);
+        for (List<Creature> list : lists) {
+            for (Creature c : list) {
+                if (c.outline != null && c.outlineDrawing == drawing) visit.at(species.indexOf(c.species), c.x, c.z, c.outline);
+            }
+        }
     }
 
     private void draw(GL3 gl, Creature c, Frustum frustum, Vector3 viewPos, int bonesLocation, float time) {
@@ -605,11 +662,12 @@ public class OrganismManager {
         float front = s.halfLength() * c.sizeScale, back = s.tailLength() * c.sizeScale;
         float frontGround = TerrainMesh.getLayeredHeight(c.x + sin * front, c.z + cos * front, terrainNoise);
         float backGround = TerrainMesh.getLayeredHeight(c.x - sin * back, c.z - cos * back, terrainNoise);
+        if (c.level) frontGround = backGround = ground;
         float pitch = (float) Math.atan2(frontGround - backGround, front + back);
         float height;
         if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
             // Banked into the turn, holding its height above the land or sea below
-            pitch = 0.05f * (float) Math.sin(c.gaitPhase * Math.PI * 2);
+            pitch = c.level ? 0f : 0.05f * (float) Math.sin(c.gaitPhase * Math.PI * 2);
             height = Math.max(ground, seaLevel) + s.bodyHeight + (float) Math.sin(time * 0.4f + c.homeZ) * 8f;
         } else if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
             // Floaters drift level, bobbing gently
@@ -625,6 +683,18 @@ public class OrganismManager {
                         Affine.multiply(Affine.rotationX(-pitch), Affine.scale(c.sizeScale, c.sizeScale, c.sizeScale))));
 
         s.pose(body, c.legScale, c.gaitPhase, c.walking, time + c.homeX * 0.01f, bones);
+        if (keepOutlines) {
+            float[] local = s.outline(c.morph);
+            if (c.outline == null || c.outline.length != local.length / 4 * 3) c.outline = new float[local.length / 4 * 3];
+            for (int k = 0, o = 0; k < local.length; k += 4, o += 3) {
+                int m = (int) local[k + 3] * 16;
+                float x = local[k], y = local[k + 1], z = local[k + 2];
+                c.outline[o] = bones[m] * x + bones[m + 4] * y + bones[m + 8] * z + bones[m + 12];
+                c.outline[o + 1] = bones[m + 1] * x + bones[m + 5] * y + bones[m + 9] * z + bones[m + 13];
+                c.outline[o + 2] = bones[m + 2] * x + bones[m + 6] * y + bones[m + 10] * z + bones[m + 14];
+            }
+            c.outlineDrawing = drawing;
+        }
         gl.glUniformMatrix4fv(bonesLocation, s.boneCount, false, bones, 0);
         shader.setVec3(gl, "baseColour", vec(c.baseColour));
         shader.setVec3(gl, "accentColour", vec(c.accentColour));

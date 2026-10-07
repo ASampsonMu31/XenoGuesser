@@ -108,6 +108,12 @@ public class InfrastructureManager {
     private final Map<Long, List<RoadSegment>> roadSegmentsByChunk = new HashMap<>();
     private final List<House> houses = new ArrayList<>();
     private final Map<Integer, FlagDesigner.Spec> flags;
+
+    /** A nation's flag as a picture (FlagDesigner.WIDTH by HEIGHT), or null if it has none. */
+    public java.awt.image.BufferedImage flagImage(int nation) {
+        FlagDesigner.Spec spec = flags.get(nation);
+        return spec == null ? null : FlagDesigner.render(spec);
+    }
     // Each nation's writing, and the goods in its shops
     private NationScripts scripts;
     private Products products;
@@ -283,7 +289,8 @@ public class InfrastructureManager {
 
     @FunctionalInterface
     public interface BuildingVisitor {
-        void visit(float x, float z, float rotationY, float width, float depth, int nationId);
+        /** A footprint: where its middle is, how it's turned, its size, and its outline round its middle in its own x and z. */
+        void visit(float x, float z, float rotationY, float width, float depth, int nationId, float[][] outline);
     }
 
     public InfrastructureManager(long seed, int numNations, NationGenerationManager nationManager,
@@ -901,19 +908,23 @@ public class InfrastructureManager {
     public void forEachShop(BuildingVisitor visitor) {
         for (Shop shop : shops) {
             House house = shop.house;
-            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId);
+            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId,
+                    footprint(styleOf(house), house.width, house.depth, 0f, 0f));
         }
     }
 
-    /** Visits every building footprint in the region; extensions are visited as their own rectangle. */
+    /** Visits every building footprint in the region, in its own shape (box, round or many-sided); extensions are visited as their own rectangle. */
     public void forEachBuilding(BuildingVisitor visitor) {
         for (House house : houses) {
-            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId);
+            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId,
+                    footprint(styleOf(house), house.width, house.depth, 0f, 0f));
             if (house.extensionSide != 0) {
                 float[] centre = localToWorld(house.x, house.z, house.rotationY,
                         house.extensionSide * (house.width + house.extensionWidth) * 0.5f,
                         (house.extensionDepth - house.depth) * 0.5f);
-                visitor.visit(centre[0], centre[1], house.rotationY, house.extensionWidth, house.extensionDepth, house.nationId);
+                float hw = house.extensionWidth * 0.5f, hd = house.extensionDepth * 0.5f;
+                visitor.visit(centre[0], centre[1], house.rotationY, house.extensionWidth, house.extensionDepth, house.nationId,
+                        new float[][] { { -hw, hd }, { hw, hd }, { hw, -hd }, { -hw, -hd } });
             }
         }
     }
@@ -1570,7 +1581,7 @@ public class InfrastructureManager {
                 }
                 if (signRand.nextDouble() < buildingStyles.get(house.nationId).signChance) {
                     InfrastructureObject sign = createHouseSign(house, signRand);
-                    if (sign != null && inKeepClear(sign.position.x, sign.position.z)) sign = null;
+                    if (sign != null && (inKeepClear(sign.position.x, sign.position.z) || nearBorderCheck(sign))) sign = null;
                     if (sign != null) {
                         objects.add(sign);
                         recordSignPosts(sign);
@@ -1594,7 +1605,7 @@ public class InfrastructureManager {
                 }
                 appendRoadSegment(batch, segment);
                 InfrastructureObject sign = tryCreateRoadsideSign(segment, signRand, signPositions);
-                if (sign != null && inKeepClear(sign.position.x, sign.position.z)) sign = null;
+                if (sign != null && (inKeepClear(sign.position.x, sign.position.z) || nearBorderCheck(sign))) sign = null;
                 if (sign != null) {
                     objects.add(sign);
                     recordSignPosts(sign);
@@ -2028,10 +2039,13 @@ public class InfrastructureManager {
     private void appendDeckUnderside(NationBatch batch, float[][] left, float[][] right) {
         MeshBuilder slab = null;
         for (int i = 0; i + 1 < left.length; i++) {
-            float drop = Math.min(left[i][1] - TerrainMesh.getLayeredHeight(left[i][0], left[i][2], terrainNoise),
+            float drop = Math.max(left[i][1] - TerrainMesh.getLayeredHeight(left[i][0], left[i][2], terrainNoise),
                     right[i][1] - TerrainMesh.getLayeredHeight(right[i][0], right[i][2], terrainNoise));
-            float dropNext = Math.min(left[i + 1][1] - TerrainMesh.getLayeredHeight(left[i + 1][0], left[i + 1][2], terrainNoise),
+            float dropNext = Math.max(left[i + 1][1] - TerrainMesh.getLayeredHeight(left[i + 1][0], left[i + 1][2], terrainNoise),
                     right[i + 1][1] - TerrainMesh.getLayeredHeight(right[i + 1][0], right[i + 1][2], terrainNoise));
+            // (wherever either edge stands on pillars: on a hillside the downhill edge does, and
+            // the road's underside shows between them; where the uphill edge is in the hill, the
+            // slab there is hidden in it)
             if (Math.max(drop, dropNext) < PILLAR_DROP * 0.5f) continue;
             if (slab == null) slab = batch.builder("roadwall");
             int a = slab.addVertex(left[i][0], left[i][1] - 1.6f, left[i][2], 0f, -1f, 0f, 0f, 0f);
@@ -4360,7 +4374,7 @@ public class InfrastructureManager {
     private static final String BOOTH_PART = "booth_variant";
     // The booth's half width, wall and roof heights; and how far round its middle the border
     // fence is pushed back to leave it room
-    private static final float BOOTH_HALF = 10f, BOOTH_WALL = 13f, BOOTH_ROOF = 34f, BOOTH_ROOM = 19f;
+    private static final float BOOTH_HALF = 10f, BOOTH_WALL = 9f, BOOTH_ROOF = 34f, BOOTH_ROOM = 19f;
 
     // How far either side of a border crossing the road is made straight
     private static final float STRAIGHT_REACH = 75f;
@@ -4593,6 +4607,11 @@ public class InfrastructureManager {
             return new float[] { c[0] + dx / d * BOOTH_ROOM, c[1] + dz / d * BOOTH_ROOM };
         }
         return p;
+    }
+
+    /** Whether a sign would stand at a border crossing (its booths, lights and gates). */
+    private boolean nearBorderCheck(InfrastructureObject sign) {
+        return borderCheckAt(sign.position.x, sign.position.z, CROSS_HALF + 35f) >= 0;
     }
 
     /** Which border check a point on the road is within reach of, by its number, or -1. */

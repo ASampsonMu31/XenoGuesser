@@ -16,6 +16,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\FlagDesigner.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Flora.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Frustum.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameHUD.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GamePaths.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameSettings.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GlyphGenerator.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GuardRailStyle.java
@@ -39,6 +40,8 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Material.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MaterialConstants.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Mesh.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MeshBuilder.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MessageStrip.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MessageTicker.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Model.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MyKeyboardInput.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\NationGenerationManager.java
@@ -58,6 +61,8 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlayerBody.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PreviewCard.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ProceduralTextures.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Products.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\QuarterPanel.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RainSound.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalFactor.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalGenerationManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Renderer.java
@@ -70,6 +75,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RunFiles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SettingsMenu.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SettlementManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Shader.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ShopPanel.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SignMap.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SoftwareRenderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Sphere.java
@@ -80,6 +86,8 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TransmissionMessage.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TwoTriangles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Vehicles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Weather.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WindowResizer.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WindowTitleBar.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WorldArtGenerator.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WorldPalette.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\XenoGuesser.java

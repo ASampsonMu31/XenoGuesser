@@ -68,6 +68,8 @@ public class OrganismSpecies {
         boolean crest;
         boolean tailClub;
         OrganismMesh mesh;
+        // A few hundred of its mesh's points {x, y, z, bone} in turn, to find its outline as posed
+        float[] outline;
     }
 
     public final Locomotion locomotion;
@@ -392,12 +394,14 @@ public class OrganismSpecies {
         // Its home region: broad noise (each feature a large part of a continent across), only its
         // highest third counting, so a species keeps to one part of the world (one that likes the
         // cold north needn't live in the cold south too)
+        homeStrength = homeStrength(new Random(seed * 1949L + index));
         RegionalFactor home = regions.createNoiseMap(HOME_SCALE_LOW + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE);
         habitat = new RegionalFactor(1.0f, (cx, cz, wx, wz) -> {
             float suitability = climate.evaluate(cx, cz, wx, wz) * (0.35f + 0.65f * water.evaluate(cx, cz, wx, wz));
             float h = home.evaluate(cx, cz, wx, wz);
             float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
-            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * t * t * (3f - 2f * t);
+            float local = 1f - homeStrength + homeStrength * t * t * (3f - 2f * t);
+            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * local;
         });
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
@@ -409,6 +413,18 @@ public class OrganismSpecies {
 
     // A species' home region (see the constructor): the size of the noise it's drawn from, and
     // where on that noise it starts and is fully at home
+    // How much this species keeps to its home region: 1 only there, 0 anywhere it suits
+    private float homeStrength;
+
+    /**
+     * How strongly a species keeps to its home region: some only there, most mainly there but
+     * found further afield too, and some anywhere that suits them.
+     */
+    public static float homeStrength(Random rand) {
+        float roll = rand.nextFloat();
+        return roll < 0.35f ? 1f : roll < 0.75f ? 0.4f + 0.3f * rand.nextFloat() : 0.1f * rand.nextFloat();
+    }
+
     public static final float HOME_SCALE_LOW = 6.0e-6f, HOME_SCALE_RANGE = 4.0e-6f, HOME_FROM = 0.5f, HOME_TO = 0.64f;
 
     private int nearestSegment(float z, int first, int last) {
@@ -440,8 +456,22 @@ public class OrganismSpecies {
 
     public void buildMeshes(GL3 gl) {
         for (Morph morph : morphs) {
-            morph.mesh = buildMesh(morph).build(gl);
+            OrganismMesh.Builder builder = buildMesh(morph);
+            morph.mesh = builder.build(gl);
+            float[] vertices = builder.vertices();
+            int count = vertices.length / OrganismMesh.STRIDE, every = Math.max(1, count / 400);
+            float[] outline = new float[(count + every - 1) / every * 4];
+            for (int v = 0, k = 0; v < count; v += every, k += 4) {
+                System.arraycopy(vertices, v * OrganismMesh.STRIDE, outline, k, 3);
+                outline[k + 3] = vertices[v * OrganismMesh.STRIDE + 8];
+            }
+            morph.outline = outline;
         }
+    }
+
+    /** Points of a morph's mesh {x, y, z, bone} in turn, in its bones' own spaces. */
+    public float[] outline(int morph) {
+        return morphs[morph].outline;
     }
 
     public OrganismMesh mesh(int morph) {

@@ -83,7 +83,7 @@ public class MapPanel extends JPanel {
     private MapLayersPanel layersPanel;
 
     // Scroll-wheel zoom of the enlarged map: magnification and the visible centre in 0..1 map space
-    private static final float MAX_ZOOM = 8.0f;
+    private static final float MAX_ZOOM = 16.0f;
     private static final float ZOOM_STEP = 1.25f;
     private static final float DETAIL_SWITCH_ZOOM = 1.3f;
     private float zoom = 1.0f;
@@ -116,13 +116,14 @@ public class MapPanel extends JPanel {
 
     private volatile boolean isGuessed = false;
     // The next round's answer, waiting for the results to close
-    private int[] pendingGoal;
-    private int goalX; 
-    private int goalY; 
+    // (in map pixels, fractional: exactly where, however far the map is zoomed)
+    private float[] pendingGoal;
+    private float goalX;
+    private float goalY;
 
     private boolean hasPin = false;
-    private int pinX; 
-    private int pinY; 
+    private float pinX;
+    private float pinY;
 
     private int btnX;
     private int btnY;
@@ -174,11 +175,13 @@ public class MapPanel extends JPanel {
     
     private float lineProgress = 0.0f; 
 
-        private boolean nextRoundRequested = false;
-    // While the next round is being built the button turns pale, says Loading and shows a spinner
+    private boolean nextRoundRequested = false;
+    // Once the player has left the shop, until the next round is ready
     private boolean roundLoading = false;
-    private long roundLoadingStart;
-    private javax.swing.Timer spinnerTimer;
+    // Whether the round's points have gone onto the score (as they fly there, or on going to the shop)
+    private boolean scoreBanked;
+    // Opens the shop (from the results' button)
+    private Runnable onProceedToShop;
 
     private GameHUD gameHUD;
     private XenoGuesser mainApp;
@@ -387,13 +390,11 @@ public class MapPanel extends JPanel {
                         if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                                                         boolean resultsReady = currentPhase != RevealPhase.SHOW_PLAYER_PIN;
                             if (resultsReady && !roundLoading) {
-                                startRoundLoading();
+                                proceedToShop();
                             }
                             return;  
                         }
                     }
-
-                    if (isGuessed) return;
 
                     int mapLeft = visualMapX;
                     int mapTop = visualMapY;
@@ -401,15 +402,15 @@ public class MapPanel extends JPanel {
                     int mapBottom = mapTop + mapHeight();
 
                     if (clickX >= mapLeft && clickX < mapRight && clickY >= mapTop && clickY < mapBottom) {
-                        int localizedX = clickX - visualMapX;
-                        int localizedY = clickY - visualMapY;
-                        float scaleToCore = (float) mapImage.getWidth() / currentMapSize;
-                        
-                        pinX = (int) screenToCoreX(clickX, visualMapX);
-                        pinY = (int) screenToCoreY(clickY, visualMapY);
-                        hasPin = true;
-                        repaint(); 
+                        // A press on the map: dragged, it moves the view about (zoomed in); let
+                        // go without dragging, it places the marker (see mouseReleased)
+                        dragFrom = new Point(clickX, clickY);
+                        dragFromU = viewCentreU;
+                        dragFromV = viewCentreV;
+                        dragging = false;
+                        return;
                     }
+                    if (isGuessed) return;
                     else if (isLarge && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                         if (hasPin) {
                             startRevealSequence();
@@ -437,7 +438,47 @@ public class MapPanel extends JPanel {
         });
 
         this.addMouseWheelListener(this::handleMouseWheel);
+        this.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                if (dragFrom == null || e.getButton() != MouseEvent.BUTTON1) return;
+                boolean click = !dragging;
+                dragFrom = null;
+                dragging = false;
+                setCursor(java.awt.Cursor.getDefaultCursor());
+                // A click without a drag places the marker (before the guess)
+                if (click && !isGuessed && (isLarge || isFullScreenReveal)) {
+                    pinX = screenToCoreX(e.getX(), visualMapX);
+                    pinY = screenToCoreY(e.getY(), visualMapY);
+                    hasPin = true;
+                    repaint();
+                }
+            }
+        });
+        this.addMouseMotionListener(new MouseAdapter() {
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (dragFrom == null || !(isLarge || isFullScreenReveal)) return;
+                int dx = e.getX() - dragFrom.x, dy = e.getY() - dragFrom.y;
+                if (!dragging && dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
+                dragging = true;
+                if (zoom <= 1.0f) return;
+                // The point grabbed stays under the pointer, at the same zoom
+                setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
+                float across = currentMapSize * zoom;
+                viewCentreU = clampCentre(dragFromU - dx / across);
+                viewCentreV = clampCentreV(dragFromV - dy / across);
+                repaint();
+            }
+        });
     }
+
+    // Dragging the enlarged map: where the press was and the view's centre then, and whether
+    // it has moved far enough (in pixels) to count as a drag rather than a click
+    private Point dragFrom;
+    private float dragFromU, dragFromV;
+    private boolean dragging;
+    private static final int DRAG_THRESHOLD = 5;
 
     /** Developer mode: sends the player to the place on the map under a click (see XenoGuesser_GLEventListener.setTelepot). */
     private void teleportToClick(int clickX, int clickY) {
@@ -536,7 +577,7 @@ public class MapPanel extends JPanel {
         if (!text.isEmpty()) {
             boolean existingFound = false;
             for (MapNote note : savedNotes) {
-                if (note.coreX == goalX && note.coreY == goalY) {
+                if (note.coreX == Math.round(goalX) && note.coreY == Math.round(goalY)) {
                     note.text = text;
                     note.isExpanded = false;
                     existingFound = true;
@@ -546,7 +587,7 @@ public class MapPanel extends JPanel {
             }
             
             if (!existingFound) {
-                savedNotes.add(new MapNote(goalX, goalY, text));
+                savedNotes.add(new MapNote(Math.round(goalX), Math.round(goalY), text));
                 System.out.println("Note Stored: " + text);
             }
         }
@@ -682,26 +723,35 @@ public class MapPanel extends JPanel {
         return shownLayers.contains(layer);
     }
 
-    /** Where the nations' names are written: each {name as an image, worldX, worldZ, area, whether it's the main one}. */
+    /** Where the nations' names are written: each {name as an image, worldX, worldZ, area, whether it's the main one, flag (or null)}. */
     public void setNationLabels(List<Object[]> labels) {
         List<Object[]> placed = new ArrayList<>();
         for (Object[] label : labels) {
             float u = ((Float) label[1] + halfRegion) / totalRegionWidth;
             float v = ((Float) label[2] + halfRegion) / totalRegionWidth;
-            placed.add(new Object[] { label[0], u, v, label[4] });
+            placed.add(new Object[] { label[0], u, v, label[4], label.length > 5 ? label[5] : null });
         }
         this.nationLabels = placed;
         repaint();
     }
 
-    /** Sets up the tick boxes beside the enlarged map. */
-    public void setLayerChoices(java.util.LinkedHashMap<String, List<String>> gradients, String chosen, java.util.function.Consumer<String> onGradient,
-                                java.util.function.Function<String, java.awt.Image> icons) {
-        layersPanel = new MapLayersPanel(this::setLayerShown, shownLayers, gradients, chosen, onGradient, icons);
+    /**
+     * Sets up (or sets up afresh) the tick boxes beside the enlarged map, listing these layers
+     * and overlays; with none of either, there are none.
+     */
+    public void setLayerChoices(List<Layer> layers, java.util.LinkedHashMap<String, List<String>> gradients, String chosen,
+                                java.util.function.Consumer<String> onGradient, java.util.function.Function<String, java.awt.Image> icons) {
+        if (layersPanel != null && layersPanel.getParent() != null) {
+            java.awt.Container parent = layersPanel.getParent();
+            parent.remove(layersPanel);
+            parent.repaint();
+        }
+        boolean any = !layers.isEmpty() || gradients.values().stream().anyMatch(g -> !g.isEmpty());
+        layersPanel = any ? new MapLayersPanel(this::setLayerShown, layers, shownLayers, gradients, chosen, onGradient, icons) : null;
         if (getParent() instanceof JLayeredPane) XenoGuesser.updateMinimapBounds((JLayeredPane) getParent(), this);
     }
 
-    /** The tick-box panel, shown beside the map while it's enlarged; null until set up. */
+    /** The tick-box panel, shown beside the map while it's enlarged; null if there's nothing to list. */
     public MapLayersPanel getLayersPanel() {
         return layersPanel;
     }
@@ -760,6 +810,7 @@ public class MapPanel extends JPanel {
         this.shouldDrawScoreText = false;
         this.currentScoreScale = 1.0f;
         this.slamProgress = 0.0f;
+        this.scoreBanked = false;
 
 
         if (getParent() != null) {
@@ -829,9 +880,7 @@ public class MapPanel extends JPanel {
                     currentScoreScale = 0.0f;
                     shouldDrawScoreText = false; 
                     
-                    if (this.gameHUD != null) {
-                        this.gameHUD.addScore(targetRoundScore);
-                    }
+                    bankScore();
                     revealTimer.stop(); 
                 } else {
                     slamProgress = t;
@@ -853,10 +902,10 @@ public class MapPanel extends JPanel {
      * rather than moving the answer flag on screen and giving the next round away.
      */
     public synchronized void setPlayerSpawnLocation(float spawnX, float spawnZ) {
-        int x = (int) (((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth());
-        int y = (int) (((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight());
+        float x = ((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth();
+        float y = ((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight();
         if (isGuessed) {
-            pendingGoal = new int[] { x, y };
+            pendingGoal = new float[] { x, y };
         } else {
             goalX = x;
             goalY = y;
@@ -999,7 +1048,9 @@ public class MapPanel extends JPanel {
             g2d.fill(rightFrame);
 
             // The land and sea, plain or coloured by the gradient map chosen; then whatever's ticked
-            BufferedImage gradient = this.gradientImage;
+            // (the results show just the land and sea)
+            boolean plain = isFullScreenReveal;
+            BufferedImage gradient = plain ? null : this.gradientImage;
             BufferedImage mapSource = gradient != null ? gradient : mapImage;
             if (gradient == null && zoom >= DETAIL_SWITCH_ZOOM && baseMapDetail != null) {
                 mapSource = baseMapDetail;
@@ -1014,7 +1065,7 @@ public class MapPanel extends JPanel {
             else if (overlayTiles != null) drawTiles(g2d, "overlay-" + overlayTileName, overlayTiles, mapX, mapY, gradient.getWidth(), null);
             for (Layer layer : Layer.values()) {
                 BufferedImage[] images = layerImages.get(layer);
-                if (images == null || !shownLayers.contains(layer)) continue;
+                if (images == null || !shownLayers.contains(layer) || plain) continue;
                 BufferedImage whole = zoom >= DETAIL_SWITCH_ZOOM ? images[1] : images[0];
                 // (see-through, so the whole image only where its tile isn't ready)
                 if (!drawTiles(g2d, layer.name(), layerTiles.get(layer), mapX, mapY, images[1].getWidth(), whole)) {
@@ -1024,7 +1075,7 @@ public class MapPanel extends JPanel {
             tiles.endFrame();
             if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
             drawGraticule(g2d, mapX, mapY);
-            if (showNationNames) drawNationNames(g2d, mapX, mapY);
+            if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
             g2d.setClip(frameClip);
 
             if (zoom > 1.01f) {
@@ -1041,7 +1092,7 @@ public class MapPanel extends JPanel {
                 g2d.drawString(zoomLabel, zoomX + 6, zoomY + zoomFm.getAscent() + 3);
             }
 
-            String heatmapName = this.gradientName;
+            String heatmapName = plain ? null : this.gradientName;
             if (heatmapName != null) {
                 {
                     g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 13f));
@@ -1263,10 +1314,7 @@ public class MapPanel extends JPanel {
                         g2d.drawString(noteBtnText, noteBtnX + (noteBtnWidth - noteStrW) / 2, noteBtnY + (noteBtnHeight + noteStrH) / 2 - 2);
                     }
 
-                                        // Paler while the next round loads
-                    Color nextColour = !resultsReady ? btnDisabledGrey
-                            : roundLoading ? blend(btnNextRoundBlue, Color.WHITE, 0.45f) : btnNextRoundBlue;
-                    g2d.setColor(nextColour);
+                    g2d.setColor(resultsReady ? btnNextRoundBlue : btnDisabledGrey);
                     g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
 
                     g2d.setColor(new Color(255, 255, 255, resultsReady ? 60 : 30));
@@ -1277,24 +1325,12 @@ public class MapPanel extends JPanel {
                     g2d.setColor(btnTextWhite);
                     g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 20f));
                     FontMetrics fm = g2d.getFontMetrics();
-                                        String endText = roundLoading ? "Loading" : "Next Round";
-                    int stringWidth = fm.stringWidth(endText);
-                    int stringHeight = fm.getAscent();
-                    int spinnerSize = roundLoading ? Math.round(btnHeight * 0.45f) : 0;
-                    int spinnerGap = roundLoading ? 12 : 0;
-                    int textX = btnX + (btnWidth - stringWidth + spinnerSize + spinnerGap) / 2;
-                    int textY = btnY + (btnHeight + stringHeight) / 2 - 2;
-                    g2d.drawString(endText, textX, textY);
-                    if (roundLoading) {
-                        // A half-circle outline turning round, to show work is going on
-                        int spinnerX = textX - spinnerGap - spinnerSize;
-                        int spinnerY = btnY + (btnHeight - spinnerSize) / 2;
-                        int angle = (int) (((System.currentTimeMillis() - roundLoadingStart) * 0.4) % 360);
-                        g2d.setStroke(new BasicStroke(3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                        g2d.drawArc(spinnerX, spinnerY, spinnerSize, spinnerSize, -angle, 180);
-                        g2d.setStroke(originalStroke);
-                    }
+                    String endText = proceedLabel != null ? proceedLabel.get() : "Proceed to Shop";
+                    g2d.drawString(endText, btnX + (btnWidth - fm.stringWidth(endText)) / 2, btnY + (btnHeight + fm.getAscent()) / 2 - 2);
                 }
+
+                // How the guess was paid: its points as productivity, and the salary plus half of them as cash
+                if (currentPhase != RevealPhase.SHOW_PLAYER_PIN) drawReckoning(g2d, mapX, mapY);
 
                 if (shouldDrawScoreText) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
@@ -1381,6 +1417,28 @@ public class MapPanel extends JPanel {
     }
 
     /** M: enlarges the small map, or shrinks the large one. */
+    /**
+     * Resizes the map for the space the window now has (it's laid out again whenever the window
+     * changes size, or goes between fullscreen and windowed): the enlarged map and the results'
+     * map are sized from it; the small map stays as it is.
+     */
+    public void fitToWindow(int width, int height) {
+        int size;
+        if (isFullScreenReveal) {
+            int tall = Math.min(750, Math.max(300, height - 240));
+            size = Math.min(Math.max(300, width - 80), Math.round(tall / Planet.aspect()));
+        } else if (isLarge) {
+            size = Math.min((int) (height * 0.60f / Planet.aspect()), (int) (width * 0.55f));
+        } else {
+            return;
+        }
+        if (size == currentMapSize || size <= 0) return;
+        currentMapSize = size;
+        updateGeometryLayouts();
+        repaint();
+        if (onSizeChanged != null) onSizeChanged.run();
+    }
+
     public void toggleSize() {
         setMapSize(mapSize == MapSize.SMALL ? MapSize.LARGE : MapSize.SMALL);
     }
@@ -1415,15 +1473,43 @@ public class MapPanel extends JPanel {
         if (onSizeChanged != null) onSizeChanged.run();
     }
 
-        /** Shows the button's loading state, then asks for the next round once that has been painted. */
-    private void startRoundLoading() {
-        roundLoading = true;
-        roundLoadingStart = System.currentTimeMillis();
-        if (spinnerTimer == null) {
-            spinnerTimer = new javax.swing.Timer(30, e -> repaint());
+    // What the results' button says (it can lead to the quarter's end rather than the shop)
+    private java.util.function.Supplier<String> proceedLabel;
+
+    public void setProceedLabel(java.util.function.Supplier<String> label) {
+        this.proceedLabel = label;
+    }
+
+    /** What opens the shop when the results' button is pressed. */
+    public void setOnProceedToShop(Runnable onProceedToShop) {
+        this.onProceedToShop = onProceedToShop;
+    }
+
+    /** The results' button: the round's points go onto the score at once (should they still be flying there) and the shop opens. */
+    private void proceedToShop() {
+        if (!scoreBanked) {
+            if (revealTimer != null) revealTimer.stop();
+            currentDisplayScore = targetRoundScore;
+            shouldDrawScoreText = false;
+            bankScore();
+            repaint();
         }
-        spinnerTimer.start();
-        repaint();
+        if (onProceedToShop != null) onProceedToShop.run();
+    }
+
+    private void bankScore() {
+        if (scoreBanked) return;
+        scoreBanked = true;
+        if (gameHUD != null) gameHUD.addRound(targetRoundScore);
+    }
+
+    /**
+     * Asks for the next round (the shop has been left), once the shop has had a moment to show
+     * it's waiting; the results close once it's ready.
+     */
+    public void requestNextRound() {
+        if (roundLoading) return;
+        roundLoading = true;
         javax.swing.Timer delay = new javax.swing.Timer(80, e -> nextRoundRequested = true);
         delay.setRepeats(false);
         delay.start();
@@ -1432,7 +1518,6 @@ public class MapPanel extends JPanel {
     /** Called once the next round's surroundings are built: closes the results and starts the round. */
     public void finishRoundLoading() {
         roundLoading = false;
-        if (spinnerTimer != null) spinnerTimer.stop();
         if (gameHUD != null) {
             gameHUD.advanceRound();
         }
@@ -1447,9 +1532,9 @@ public class MapPanel extends JPanel {
         startRevealSequence();
     }
 
-    /** Developer aid: Next Round, as if pressed. */
-    public void devNextRound() {
-        if (isGuessed && !roundLoading) startRoundLoading();
+    /** Developer aid: Proceed to Shop, as if pressed. */
+    public void devProceedToShop() {
+        if (isFullScreenReveal && currentPhase != RevealPhase.SHOW_PLAYER_PIN && !roundLoading) proceedToShop();
     }
 
     // Set when a guess is made, so the next round starts being built straight away
@@ -1464,12 +1549,6 @@ public class MapPanel extends JPanel {
 
     public boolean isNextRoundRequested() {
         return nextRoundRequested;
-    }
-
-        private static Color blend(Color from, Color to, float t) {
-        return new Color(Math.round(from.getRed() + (to.getRed() - from.getRed()) * t),
-                Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * t),
-                Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * t));
     }
 
     public void clearNextRoundRequest() {
@@ -1601,10 +1680,30 @@ public class MapPanel extends JPanel {
                 int pad0 = 6;
                 x = Math.max(mapX + pad0, Math.min(mapX + currentMapSize - w - pad0, x));
                 y = Math.max(mapY + pad0, Math.min(mapY + mapHeight() - h - pad0, y));
+                int pad = Math.max(3, Math.round(glyph * 0.3f));
+                // The nation's flag over its main name (under it, should it not fit above); beside
+                // it instead where the name's written downwards (taller than it's wide)
+                BufferedImage flag = main ? (BufferedImage) label[4] : null;
+                int flagH = Math.round(glyph * 1.7f), flagW = flag == null ? 0 : Math.round(flagH * flag.getWidth() / (float) flag.getHeight());
+                int flagX, flagY;
+                if (h > w) {
+                    flagX = x - pad - 4 - flagW;
+                    if (flagX < mapX + 2) flagX = x + w + pad + 4;
+                    flagY = y + (h - flagH) / 2;
+                } else {
+                    flagX = x + (w - flagW) / 2;
+                    flagY = y - pad - 4 - flagH;
+                    if (flagY < mapY + 2) flagY = y + h + pad + 4;
+                }
                 Rectangle box = new Rectangle(x - 5, y - 5, w + 10, h + 10);
+                if (flag != null) box.add(new Rectangle(flagX - 2, flagY - 2, flagW + 4, flagH + 4));
                 if (!main && taken.stream().anyMatch(box::intersects)) continue;
                 taken.add(box);
-                int pad = Math.max(3, Math.round(glyph * 0.3f));
+                if (flag != null) {
+                    g2d.drawImage(flag, flagX, flagY, flagW, flagH, null);
+                    g2d.setColor(new Color(30, 30, 34, 200));
+                    g2d.drawRect(flagX, flagY, flagW - 1, flagH - 1);
+                }
                 Object oldAntialias = g2d.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
                 g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 g2d.setColor(new Color(40, 40, 44, 150));
@@ -1614,6 +1713,35 @@ public class MapPanel extends JPanel {
             }
         }
         if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
+    }
+
+    /**
+     * Under the top of the results' map: the guess's points going to productivity, and the cash
+     * it earns worked out (the monthly salary plus half the points).
+     */
+    private void drawReckoning(Graphics2D g2d, int mapX, int mapY) {
+        int points = targetRoundScore, cash = GameHUD.cashFor(points);
+        String[] lines = {
+            String.format("Productivity: +%,d", points),
+            String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
+        };
+        Font font = HudStyle.font(Font.BOLD, 15f);
+        g2d.setFont(font);
+        FontMetrics fm = g2d.getFontMetrics();
+        int w = 0;
+        for (String line : lines) w = Math.max(w, fm.stringWidth(line));
+        int padX = 14, padY = 9, lineH = fm.getHeight();
+        int boxW = w + padX * 2, boxH = lineH * lines.length + padY * 2;
+        int x = mapX + (currentMapSize - boxW) / 2, y = mapY + 12;
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillRoundRect(x, y, boxW, boxH, 12, 12);
+        g2d.setColor(new Color(255, 255, 255, 50));
+        g2d.drawRoundRect(x, y, boxW, boxH, 12, 12);
+        Color[] colours = { new Color(150, 220, 255), new Color(120, 230, 140) };
+        for (int i = 0; i < lines.length; i++) {
+            g2d.setColor(colours[i]);
+            g2d.drawString(lines[i], x + padX, y + padY + fm.getAscent() + i * lineH);
+        }
     }
 
     // The height of one glyph in a nation-name image, in its pixels

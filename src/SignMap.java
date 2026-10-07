@@ -93,7 +93,7 @@ public final class SignMap {
         // Buildings
         g.setColor(building);
         AffineTransform base = g.getTransform();
-        infrastructure.forEachBuilding((x, z, rotationY, w, d, nationId) -> {
+        infrastructure.forEachBuilding((x, z, rotationY, w, d, nationId, outline) -> {
             if (x < left - margin || x > right + margin || z < top - margin || z > bottom + margin) return;
             g.setTransform(base);
             g.transform(toMap);

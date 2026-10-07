@@ -18,7 +18,7 @@ import java.util.zip.GZIPInputStream;
  */
 public final class PlanetName {
 
-    public static final String DICTIONARY = "assets/text/words.txt.gz";
+    public static final String DICTIONARY = GamePaths.HOME + "assets/text/words.txt.gz";
 
     public final String spelling;
     public final String phonemes;

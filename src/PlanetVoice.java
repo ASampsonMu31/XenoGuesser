@@ -19,7 +19,7 @@ import java.util.Map;
  */
 public final class PlanetVoice {
 
-    public static final String MODEL = "assets/audio/voice/bryce.onnx";
+    public static final String MODEL = GamePaths.HOME + "assets/audio/voice/bryce.onnx";
     public static final String CONFIG = MODEL + ".json";
 
     // As the message's recording was made: quicker than the voice's usual pace, a little less varied

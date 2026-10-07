@@ -284,7 +284,7 @@ public class Inhabitants {
     }
 
     public void initialise(GL3 gl) {
-        shader = new Shader(gl, "assets/shaders/vs_organism.txt", "assets/shaders/fs_organism.txt");
+        shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         for (int m = 0; m < meshes.length; m++) {
             meshes[m] = buildMesh((m & 4) != 0, (m & 2) != 0, (m & 1) != 0).build(gl);
         }
