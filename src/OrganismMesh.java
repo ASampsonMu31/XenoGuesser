@@ -44,6 +44,11 @@ public class OrganismMesh {
     public static final int PART_TOP = 17;
     // A shopping bag, in its own colour
     public static final int PART_BAG = 18;
+    // The player's things: printed from the print texture (u, v already point into it), blue
+    // enamel (the altimeter's case), and brown leather and wood (the book, the magnifying glass's handle)
+    public static final int PART_PRINT = 19;
+    public static final int PART_ENAMEL = 20;
+    public static final int PART_LEATHER = 21;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];

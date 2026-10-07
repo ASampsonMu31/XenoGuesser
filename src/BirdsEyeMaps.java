@@ -70,17 +70,19 @@ public class BirdsEyeMaps {
     // Each layer is drawn on a transparent canvas, to lie over the plain map (or a gradient
     // map) along with any of the others
 
-    private static final Color CONTOUR_LINE = new Color(255, 255, 255, 170);
-    private static final Color INDEX_CONTOUR_LINE = new Color(255, 255, 255, 225);
-    private static final int CONTOUR_LEVELS = 8;
+    // The contours' colours: the lowest yellow, through orange, to the map's highest red
+    private static final Color LOWEST_CONTOUR = new Color(255, 230, 40), HIGHEST_CONTOUR = new Color(215, 20, 10);
+    // A contour every this many metres of height above the sea, every so many of them heavier
+    private static final float CONTOUR_METRES = 10f;
+    private static final int INDEX_EVERY = 5;
     // Contours are traced on a grid this many detail pixels apart
     private static final int CONTOUR_STEP = 2;
 
     /**
-     * Elevation as solid white contour lines, no colours: levels spaced on a square-root scale of
-     * height above the sea, so the lowlands get lines close together in height and the
-     * mountains don't turn to a tangle, every fourth line a little heavier. Traced over
-     * heights smoothed a little so each line runs clean. Returns {overview, detail}.
+     * Elevation as contour lines: one every CONTOUR_METRES of height above the sea, coloured
+     * from yellow (the lowest) to red (the highest on the map), every INDEX_EVERY'th a little
+     * heavier. Traced over heights smoothed a
+     * little so each line runs clean. Returns {overview, detail}.
      */
     public BufferedImage[] renderContourLayer() {
         int n = detailResolution;
@@ -94,16 +96,15 @@ public class BirdsEyeMaps {
         float[] value = new float[g * g];
         for (int y = 0; y < g; y++) {
             for (int x = 0; x < g; x++) {
-                float above = heights[(y * CONTOUR_STEP) * n + x * CONTOUR_STEP] - seaLevelHeight;
-                value[y * g + x] = above <= 0f ? -1f : (float) Math.sqrt(above / rise) * CONTOUR_LEVELS;
+                value[y * g + x] = contourValue(heights[(y * CONTOUR_STEP) * n + x * CONTOUR_STEP]);
             }
         }
         BufferedImage canvas = newLayer();
         Graphics2D g2 = createGraphics(canvas);
         float scale = CONTOUR_STEP;
-        for (int level = 1; level < CONTOUR_LEVELS; level++) {
-            boolean index = level % 4 == 0;
-            g2.setColor(index ? INDEX_CONTOUR_LINE : CONTOUR_LINE);
+        for (int level = 1; level <= contourLevels(rise); level++) {
+            boolean index = level % INDEX_EVERY == 0;
+            g2.setColor(contourColour(level, contourLevels(rise), index));
             g2.setStroke(new BasicStroke(index ? 2.2f : 1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             for (Path2D.Float line : traceLevel(value, g, level)) {
                 line.transform(AffineTransform.getScaleInstance(scale, scale));
@@ -212,12 +213,13 @@ public class BirdsEyeMaps {
     /**
      * Where each nation's names go on the map: the middle of each separate stretch of its
      * land (or the nearest point of it to the middle, for a ring-shaped one), the largest
-     * marked as where its main name goes, the rest (its islands) getting small ones. Each is
-     * {nationId, worldX, worldZ, area in world units squared, 1 for the main name or 0}.
+     * marked as where its main name goes, the rest (its islands) getting small ones. Every
+     * nation with any land on the map gets its main name, however little of it shows (a sliver
+     * at the chart's top or bottom edge included). Each is {nationId, worldX, worldZ, area in
+     * world units squared, 1 for the main name or 0}.
      */
     // The smallest island (in territory cells, each a few hundred units across) given its own small name
     private static final int MIN_NAMED_ISLAND_CELLS = 12;
-    private static final int MIN_NAMED_NATION_CELLS = 5;
 
     public List<float[]> nationLabelPlaces(NationGenerationManager nations) {
         int res = nations.nationMap.length;
@@ -229,10 +231,16 @@ public class BirdsEyeMaps {
         boolean[] land = new boolean[res * res];
         for (int cy = 0; cy < res; cy++) {
             float worldZ = (cy + 0.5f) * cellSize - totalRegionWidth * 0.5f;
-            if (Math.abs(worldZ) > Planet.clipHalfHeight() * 0.94f) continue;
+            if (Math.abs(worldZ) > Planet.clipHalfHeight()) continue;
+            // (land if any of the cell is, so a nation showing only a sliver still counts)
+            int py0 = cy * n / res, py1 = Math.max(py0 + 1, (cy + 1) * n / res);
             for (int cx = 0; cx < res; cx++) {
-                int px = Math.min(n - 1, (int) ((cx + 0.5f) / res * n)), py = Math.min(n - 1, (int) ((cy + 0.5f) / res * n));
-                land[cy * res + cx] = heights[py * n + px] > seaLevelHeight;
+                int px0 = cx * n / res, px1 = Math.max(px0 + 1, (cx + 1) * n / res);
+                boolean any = false;
+                for (int py = py0; py < py1 && py < n && !any; py++) {
+                    for (int px = px0; px < px1 && px < n && !any; px++) any = heights[py * n + px] > seaLevelHeight;
+                }
+                land[cy * res + cx] = any;
             }
         }
         int[] depth = new int[res * res];
@@ -318,11 +326,6 @@ public class BirdsEyeMaps {
             if (best == null || best[3] < count) biggest.put(id, piece);
         }
         for (float[] b : biggest.values()) {
-            // A nation with no more than a few specks of land isn't named: there'd be nothing to see under its name
-            if (b[3] < MIN_NAMED_NATION_CELLS) {
-                pieces.remove(b);
-                continue;
-            }
             b[4] = 1f;
             if (!pieces.contains(b)) pieces.add(b);
         }
@@ -663,6 +666,25 @@ public class BirdsEyeMaps {
         };
     }
 
+    /** A height as contour levels: the k'th contour is at value k; the sea below the first. */
+    private float contourValue(float height) {
+        float above = height - seaLevelHeight;
+        return above <= 0f ? -1f : above / (CONTOUR_METRES * PlayerBody.METRE);
+    }
+
+    /** A contour's colour: yellow for the first, red for the highest of all (levels), the heavier ones a little more solid. */
+    private static Color contourColour(int level, int levels, boolean index) {
+        float t = levels <= 1 ? 0f : (level - 1) / (float) (levels - 1);
+        return new Color(Math.round(LOWEST_CONTOUR.getRed() + (HIGHEST_CONTOUR.getRed() - LOWEST_CONTOUR.getRed()) * t),
+                Math.round(LOWEST_CONTOUR.getGreen() + (HIGHEST_CONTOUR.getGreen() - LOWEST_CONTOUR.getGreen()) * t),
+                Math.round(LOWEST_CONTOUR.getBlue() + (HIGHEST_CONTOUR.getBlue() - LOWEST_CONTOUR.getBlue()) * t), index ? 240 : 200);
+    }
+
+    /** How many contours there are up to this height above the sea. */
+    private static int contourLevels(float rise) {
+        return (int) Math.floor(rise / (CONTOUR_METRES * PlayerBody.METRE));
+    }
+
     /** The contour lines, traced from the tile's own heights (the same levels as the whole map's). */
     public MapTiles.Renderer contourTiles() {
         return (level, tx, ty, size) -> {
@@ -675,18 +697,21 @@ public class BirdsEyeMaps {
                 rise = highest - seaLevelHeight;
                 contourRise = rise;
             }
+            int mapLevels = contourLevels(rise);
             float[] value = new float[w * w];
+            float tileHighest = seaLevelHeight;
             for (int i = 0; i < value.length; i++) {
-                float above = heights[i] - seaLevelHeight;
-                value[i] = above <= 0f ? -1f : (float) Math.sqrt(above / rise) * CONTOUR_LEVELS;
+                value[i] = contourValue(heights[i]);
+                tileHighest = Math.max(tileHighest, heights[i]);
             }
+            rise = Math.min(rise, tileHighest - seaLevelHeight);
             BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g2 = createGraphics(tile);
             g2.translate(-0.5f, -0.5f);
             float thicken = (float) Math.pow(tileMagnification(level, size), 0.35);
-            for (int lv = 1; lv < CONTOUR_LEVELS; lv++) {
-                boolean index = lv % 4 == 0;
-                g2.setColor(index ? INDEX_CONTOUR_LINE : CONTOUR_LINE);
+            for (int lv = 1; lv <= contourLevels(rise); lv++) {
+                boolean index = lv % INDEX_EVERY == 0;
+                g2.setColor(contourColour(lv, mapLevels, index));
                 g2.setStroke(new BasicStroke((index ? 2.2f : 1.5f) * thicken, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 for (Path2D.Float line : traceLevel(value, w, lv)) g2.draw(line);
             }

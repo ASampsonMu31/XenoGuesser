@@ -10,6 +10,10 @@ public class Flora {
     public static class FloraBundle {
         public Mesh branchMesh;
         public Mesh leafMesh;
+        // How tall the plant is and how far it spreads from its trunk (before it's scaled where it's
+        // placed), and a few hundred of its points {x, y, z, ...} to find its outline
+        public float height, spread;
+        public float[] outline;
         
         public FloraBundle(Mesh branchMesh, Mesh leafMesh) {
             this.branchMesh = branchMesh;
@@ -41,7 +45,23 @@ public class Flora {
         Mesh bMesh = new Mesh(gl, toFloatArray(branchVerts), toIntArray(branchInds));
         Mesh lMesh = new Mesh(gl, toFloatArray(leafVerts), toIntArray(leafInds));
         
-        return new FloraBundle(bMesh, lMesh);
+        FloraBundle bundle = new FloraBundle(bMesh, lMesh);
+        List<Float> points = new ArrayList<>();
+        int total = (branchVerts.size() + leafVerts.size()) / 8, every = Math.max(1, total / 500);
+        int n = 0;
+        for (List<Float> verts : List.of(branchVerts, leafVerts)) {
+            for (int i = 0; i + 2 < verts.size(); i += 8, n++) {
+                bundle.height = Math.max(bundle.height, verts.get(i + 1));
+                bundle.spread = Math.max(bundle.spread, (float) Math.hypot(verts.get(i), verts.get(i + 2)));
+                if (n % every == 0) {
+                    points.add(verts.get(i));
+                    points.add(verts.get(i + 1));
+                    points.add(verts.get(i + 2));
+                }
+            }
+        }
+        bundle.outline = toFloatArray(points);
+        return bundle;
     }
 
     private static void buildBranch(

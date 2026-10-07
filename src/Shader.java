@@ -44,6 +44,13 @@ public class Shader {
   // Every shader made, so the planet's curve can be handed to all of them at once
   private static final java.util.List<Shader> ALL = new java.util.ArrayList<>();
 
+  /** Forgets every shader made so far (their GL context has gone, e.g. back at the main menu). */
+  public static void forgetAll() {
+    synchronized (ALL) {
+      ALL.clear();
+    }
+  }
+
   /**
    * The world is a sphere (see Planet): every shader drawing the world lowers each vertex by
    * curvature times the square of its distance across the ground from centre, along down

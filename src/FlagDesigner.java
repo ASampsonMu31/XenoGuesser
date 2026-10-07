@@ -266,17 +266,12 @@ public final class FlagDesigner {
         }
         Map<Integer, Spec> flags = new HashMap<>();
         List<Spec> made = new ArrayList<>();
+        List<float[]> drawn = new ArrayList<>();
         for (int n = 1; n <= nations; n++) {
             Random own = new Random(seed * 131L + n * 7919L);
             Spec spec = new Spec();
             spec.layout = own.nextFloat() < 0.75f ? groupLayout[layoutGroup[n]] : families[own.nextInt(families.length)];
-            spec.stripes = switch (spec.layout) {
-                case HORIZONTAL -> 2 + own.nextInt(4);
-                case VERTICAL -> 2 + own.nextInt(2);
-                case HOIST_TRIANGLE -> 1 + own.nextInt(3);
-                case PALE -> 3;
-                default -> 0;
-            };
+            spec.stripes = stripesFor(spec.layout, own);
             List<float[]> tradition = groupPalette.get(paletteGroup[n]);
             int colourCount = Math.max(2, Math.min(4, spec.stripes + 1));
             List<float[]> pool = new ArrayList<>(tradition);
@@ -299,13 +294,67 @@ public final class FlagDesigner {
             spec.emblemPoints = 4 + own.nextInt(5);
             spec.emblemAtHoist = own.nextFloat() < 0.4f;
 
-            // Not a copy of Earth, nor of a neighbour
+            // Not a copy of Earth, nor of another nation's (by description or as drawn: a
+            // culture's flags may be alike, but never the same); should small changes not do,
+            // a layout of its own
             int guard = 0;
-            while ((resemblesEarth(spec) || copiesAny(spec, made)) && guard++ < 40) mutate(spec, own);
+            while (resemblesEarth(spec) || copiesAny(spec, made) || looksLikeAny(spec, drawn)) {
+                if (++guard > 400) break;
+                if (guard % 25 == 0) {
+                    spec.layout = families[own.nextInt(families.length)];
+                    spec.stripes = stripesFor(spec.layout, own);
+                    while (spec.colours.size() < Math.max(2, spec.stripes)) spec.colours.add(spec.colours.get(spec.colours.size() % 2).clone());
+                }
+                mutate(spec, own);
+            }
             made.add(spec);
+            drawn.add(thumbnail(spec));
             flags.put(n, spec);
         }
         return flags;
+    }
+
+    private static int stripesFor(Layout layout, Random rng) {
+        return switch (layout) {
+            case HORIZONTAL -> 2 + rng.nextInt(4);
+            case VERTICAL -> 2 + rng.nextInt(2);
+            case HOIST_TRIANGLE -> 1 + rng.nextInt(3);
+            case PALE -> 3;
+            default -> 0;
+        };
+    }
+
+    // A flag drawn small, for telling at a glance whether two look the same: so many across and down
+    private static final int THUMB_W = 24, THUMB_H = 16;
+    // How different two flags must look, on average over their thumbnails (each colour 0 to 1)
+    private static final float LOOKS_DIFFERENT = 0.1f;
+
+    /** A flag as drawn, shrunk to THUMB_W by THUMB_H, as red, green, blue for each spot in turn. */
+    private static float[] thumbnail(Spec spec) {
+        BufferedImage image = render(spec);
+        float[] out = new float[THUMB_W * THUMB_H * 3];
+        for (int y = 0; y < THUMB_H; y++) {
+            for (int x = 0; x < THUMB_W; x++) {
+                int rgb = image.getRGB((x * 2 + 1) * image.getWidth() / (THUMB_W * 2), (y * 2 + 1) * image.getHeight() / (THUMB_H * 2));
+                int i = (y * THUMB_W + x) * 3;
+                out[i] = ((rgb >> 16) & 0xFF) / 255f;
+                out[i + 1] = ((rgb >> 8) & 0xFF) / 255f;
+                out[i + 2] = (rgb & 0xFF) / 255f;
+            }
+        }
+        return out;
+    }
+
+    /** Whether a flag, as drawn, would look the same as any of these thumbnails. */
+    private static boolean looksLikeAny(Spec spec, List<float[]> drawn) {
+        if (drawn.isEmpty()) return false;
+        float[] mine = thumbnail(spec);
+        for (float[] other : drawn) {
+            float difference = 0f;
+            for (int i = 0; i < mine.length; i++) difference += Math.abs(mine[i] - other[i]);
+            if (difference / mine.length < LOOKS_DIFFERENT) return true;
+        }
+        return false;
     }
 
     private static boolean copiesAny(Spec spec, List<Spec> others) {

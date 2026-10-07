@@ -52,6 +52,9 @@ public class OrganismManager {
         float hopTime, hopHeight;
         // Drawn standing level (for a picture), not leaning with the slope it's on
         boolean level;
+        // Points round its body as last drawn (see forEachOutline), and which drawing that was
+        float[] outline;
+        int outlineDrawing;
         float progressTimer, progressX, progressZ, progressExpected;
     }
 
@@ -207,8 +210,12 @@ public class OrganismManager {
         }
     }
 
-    /** Forgets every creature, e.g. when the viewer jumps to a new round. */
+    // Changed every round, so each round's creatures are drawn afresh (from the same ranges)
+    private long roundSalt;
+
+    /** Forgets every creature, e.g. when the viewer jumps to a new round; the next round's are a fresh draw. */
     public void clear() {
+        roundSalt = new Random().nextLong();
         creaturesByChunk.clear();
         showcase.clear();
         lastCentreX = lastCentreZ = Integer.MIN_VALUE;
@@ -329,7 +336,7 @@ public class OrganismManager {
 
     private List<Creature> populate(int cx, int cz) {
         List<Creature> list = new ArrayList<>();
-        Random rand = new Random(seed ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
+        Random rand = new Random(seed ^ roundSalt ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
         float centreX = (cx + 0.5f) * chunkSize, centreZ = (cz + 0.5f) * chunkSize;
         float[] presences = new float[species.size()];
         float total = 0f;
@@ -609,8 +616,35 @@ public class OrganismManager {
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
         // Thin parts are open lathes seen from all sides
         gl.glDisable(GL.GL_CULL_FACE);
+        drawing++;
         for (Creature c : creatures) draw(gl, c, frustum, viewPos, bonesLocation, time);
         gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    /** A creature's outline as drawn: its species, where it stands, and points round its body in the world {x, y, z, ...}. */
+    @FunctionalInterface
+    public interface CreatureOutline {
+        void at(int species, float x, float z, float[] points);
+    }
+
+    // Whether each creature's outline is worked out as it's drawn (while something wants them)
+    private boolean keepOutlines;
+    // Counts each drawing of the creatures, so an outline left from an earlier one is told apart
+    private int drawing;
+
+    public void setKeepOutlines(boolean keep) {
+        keepOutlines = keep;
+    }
+
+    /** Every creature drawn last time (while outlines are kept), with its outline as drawn. */
+    public void forEachOutline(CreatureOutline visit) {
+        java.util.List<List<Creature>> lists = new ArrayList<>(creaturesByChunk.values());
+        lists.add(showcase);
+        for (List<Creature> list : lists) {
+            for (Creature c : list) {
+                if (c.outline != null && c.outlineDrawing == drawing) visit.at(species.indexOf(c.species), c.x, c.z, c.outline);
+            }
+        }
     }
 
     private void draw(GL3 gl, Creature c, Frustum frustum, Vector3 viewPos, int bonesLocation, float time) {
@@ -649,6 +683,18 @@ public class OrganismManager {
                         Affine.multiply(Affine.rotationX(-pitch), Affine.scale(c.sizeScale, c.sizeScale, c.sizeScale))));
 
         s.pose(body, c.legScale, c.gaitPhase, c.walking, time + c.homeX * 0.01f, bones);
+        if (keepOutlines) {
+            float[] local = s.outline(c.morph);
+            if (c.outline == null || c.outline.length != local.length / 4 * 3) c.outline = new float[local.length / 4 * 3];
+            for (int k = 0, o = 0; k < local.length; k += 4, o += 3) {
+                int m = (int) local[k + 3] * 16;
+                float x = local[k], y = local[k + 1], z = local[k + 2];
+                c.outline[o] = bones[m] * x + bones[m + 4] * y + bones[m + 8] * z + bones[m + 12];
+                c.outline[o + 1] = bones[m + 1] * x + bones[m + 5] * y + bones[m + 9] * z + bones[m + 13];
+                c.outline[o + 2] = bones[m + 2] * x + bones[m + 6] * y + bones[m + 10] * z + bones[m + 14];
+            }
+            c.outlineDrawing = drawing;
+        }
         gl.glUniformMatrix4fv(bonesLocation, s.boneCount, false, bones, 0);
         shader.setVec3(gl, "baseColour", vec(c.baseColour));
         shader.setVec3(gl, "accentColour", vec(c.accentColour));

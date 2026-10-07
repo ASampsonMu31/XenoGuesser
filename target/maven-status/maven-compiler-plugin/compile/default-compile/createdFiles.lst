@@ -1,5 +1,7 @@
 InfrastructureManager$1.class
 Affine.class
+QuarterPanel.class
+QuarterPanel$1.class
 com\xenoguesser\math\Vector2.class
 XenoGuesser_GLEventListener$Overlay.class
 InfrastructureManager$NationBatch.class
@@ -54,10 +56,12 @@ ArchitectureTextures.class
 GameHUD.class
 Camera$Movement.class
 XenoGuesser_GLEventListener$FloraInstance.class
+ShopPanel$Card.class
 WorldArtGenerator.class
 FenceStyle$SecurityType.class
 XenoGuesser$5.class
 Sphere.class
+ShopPanel.class
 TwoTriangles.class
 LoadingScreen$1.class
 OrganismSpecies$Tentacle.class
@@ -98,6 +102,7 @@ XenoGuesser_GLEventListener$FactorName.class
 MapColours.class
 OrganismParts.class
 Shader.class
+MapPanel$5.class
 OrganismManager.class
 BirdsEyeMaps.class
 BuildingMeshes.class
@@ -130,6 +135,7 @@ BuildingStyle$RoofFinish.class
 WindowResizer$1.class
 GlyphGenerator$Look.class
 ProceduralTextures$LeafShape.class
+MapPanel$4.class
 XenoGuesser$3.class
 SettlementManager.class
 OrganismParts$FootType.class
@@ -142,6 +148,7 @@ SettingsMenu$1.class
 MaterialConstants.class
 Collision$Sink.class
 LoadingProgress.class
+MessageTicker.class
 InfrastructureManager.class
 RegionalFactor$Sampler.class
 Offscreen.class
@@ -178,6 +185,7 @@ RoadLineStyle$Placement.class
 InfrastructureObject$Type.class
 FenceStyle$Type.class
 Collision$Body.class
+OrganismManager$CreatureOutline.class
 LoadingArt$Light.class
 com\xenoguesser\math\Vector4.class
 MapTiles$Renderer.class
@@ -188,6 +196,7 @@ Weather$Ground.class
 BuildingMeshes$1.class
 HudOverlay$Element.class
 RoadPath.class
+ShopPanel$1.class
 InfrastructureObject$BatchPart.class
 com\xenoguesser\math\Vector3.class
 RegionalGenerationManager.class

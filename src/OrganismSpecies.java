@@ -68,6 +68,8 @@ public class OrganismSpecies {
         boolean crest;
         boolean tailClub;
         OrganismMesh mesh;
+        // A few hundred of its mesh's points {x, y, z, bone} in turn, to find its outline as posed
+        float[] outline;
     }
 
     public final Locomotion locomotion;
@@ -454,8 +456,22 @@ public class OrganismSpecies {
 
     public void buildMeshes(GL3 gl) {
         for (Morph morph : morphs) {
-            morph.mesh = buildMesh(morph).build(gl);
+            OrganismMesh.Builder builder = buildMesh(morph);
+            morph.mesh = builder.build(gl);
+            float[] vertices = builder.vertices();
+            int count = vertices.length / OrganismMesh.STRIDE, every = Math.max(1, count / 400);
+            float[] outline = new float[(count + every - 1) / every * 4];
+            for (int v = 0, k = 0; v < count; v += every, k += 4) {
+                System.arraycopy(vertices, v * OrganismMesh.STRIDE, outline, k, 3);
+                outline[k + 3] = vertices[v * OrganismMesh.STRIDE + 8];
+            }
+            morph.outline = outline;
         }
+    }
+
+    /** Points of a morph's mesh {x, y, z, bone} in turn, in its bones' own spaces. */
+    public float[] outline(int morph) {
+        return morphs[morph].outline;
     }
 
     public OrganismMesh mesh(int morph) {

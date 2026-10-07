@@ -224,7 +224,7 @@ private static class SpeciesConfig {
 
     // The HUD drawn over the 3D view, and what each picture last showed
     private final HudOverlay hud = new HudOverlay();
-    private int hudScoreVersion = -1, hudFps = -1;
+    private int hudScoreVersion = -1, hudFps = -1, hudItemsVersion = -1;
     private float hudScale = -1f;
     private MapPanel.MapSize hudMapSize;
     private volatile boolean menuOpen;
@@ -372,9 +372,11 @@ private static class SpeciesConfig {
                     FactorName factor = FactorName.valueOf(part.trim());
                     // (the animals' population is shown a species at a time: the first, to start with)
                     this.currentDebugFactor = new Overlay(factor, factor == FactorName.ANIMAL_POPULATION || factor == FactorName.FLORA ? 0 : -1);
+                    ownedOverlays.add(currentDebugFactor);
                 } catch (IllegalArgumentException notGradient) {
                     try {
                         startingLayers.add(MapPanel.Layer.valueOf(part.trim()));
+                        ownedLayers.add(MapPanel.Layer.valueOf(part.trim()));
                     } catch (IllegalArgumentException notLayer) {
                         System.err.println("Unknown map: " + part);
                     }
@@ -701,11 +703,14 @@ private static class SpeciesConfig {
 
             
 
-            // The nations' names, in their own writing, where their largest land is
+            // The nations' names, in their own writing, where their largest land is, with their flags
             List<Object[]> labels = new ArrayList<>();
+            Map<Integer, BufferedImage> flags = new HashMap<>();
             for (float[] place : maps.nationLabelPlaces(nationManager)) {
-                BufferedImage name = nationNameImage((int) place[0]);
-                if (name != null) labels.add(new Object[] { name, place[1], place[2], place[3], place[4] > 0.5f });
+                int nation = (int) place[0];
+                BufferedImage name = nationNameImage(nation);
+                BufferedImage flag = flags.computeIfAbsent(nation, infraManager::flagImage);
+                if (name != null) labels.add(new Object[] { name, place[1], place[2], place[3], place[4] > 0.5f, flag });
             }
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) minimap.setNationLabels(labels);
@@ -911,6 +916,19 @@ private static class SpeciesConfig {
             worldReady = true;
             setBuilderThreads(false);
             queueNextRound();
+            Thread scale = new Thread(() -> playerBody.setAltimeterTop(roundUp(highestGround()[2])), "altimeter-scale");
+            // April's message: the planet's ocean cover worked out and its sentence said, well before it's needed
+            Thread ocean = new Thread(() -> {
+                double percent = oceanPercent();
+                aprilPercent = percent;
+                String phonemes = TransmissionMessage.sentenceWithPercent(TransmissionMessage.APRIL, percent);
+                aprilSpeech.complete(phonemes == null ? null : PlanetVoice.say(phonemes));
+            }, "ocean-cover");
+            ocean.setDaemon(true);
+            ocean.setPriority(Thread.MIN_PRIORITY);
+            ocean.start();
+            scale.setDaemon(true);
+            scale.start();
         }
 
         // The next round is built behind the results screen as soon as the guess is made, a
@@ -1485,6 +1503,7 @@ private static class SpeciesConfig {
         
         // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
         floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
+        floraOutlines = new float[NUM_SPECIES][FLORA_VARIATIONS][];
         floraLeafModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
         
         leafShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_leaf.txt");
@@ -1533,6 +1552,7 @@ private static class SpeciesConfig {
                         bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
                     );
                     
+                    floraOutlines[s][i] = fBundle.outline;
                     floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Matrix4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Matrix4(1), leafShader, leafMat, terrainRenderer, lights, camera);
                 }
@@ -1611,10 +1631,10 @@ private static class SpeciesConfig {
         float[] grassVertices = {
             -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
              0.8f, 0.0f,  0.0f,  1.0f, 0.0f,
-             0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
+             0.8f, GRASS_BLADE_HEIGHT,  0.0f,  1.0f, 1.0f,
             -0.8f, 0.0f,  0.0f,  0.0f, 0.0f,
-             0.8f, 4.8f,  0.0f,  1.0f, 1.0f,
-            -0.8f, 4.8f,  0.0f,  0.0f, 1.0f
+             0.8f, GRASS_BLADE_HEIGHT,  0.0f,  1.0f, 1.0f,
+            -0.8f, GRASS_BLADE_HEIGHT,  0.0f,  0.0f, 1.0f
         };
 
         int[] tempBuffers = new int[2];
@@ -3041,7 +3061,7 @@ private static class SpeciesConfig {
         float sunElevation = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, sunDir[1]))));
         nightProportion = Math.max(0f, Math.min(1f, (18f - sunElevation) / 24f));
 
-        float dayR = 0.40f, dayG = 0.38f, dayB = 0.35f; 
+        float dayR = DAY_AMBIENT[0], dayG = DAY_AMBIENT[1], dayB = DAY_AMBIENT[2];
         float nightR = 0.08f, nightG = 0.08f, nightB = 0.12f; 
         
         float currentR = dayR + nightProportion * (nightR - dayR);
@@ -3080,6 +3100,7 @@ private static class SpeciesConfig {
         frustum.update(viewProjection);
         // The ground curves away with the planet
         float[] vp = viewProjection.toFloatArrayForGLSL();
+        lastSceneViewProjection = vp;
         Vector3 eye = camera.getPosition();
         Shader.setPlanetCurve(gl, eye.x, eye.z, Planet.curvature(eye.z), new float[] { vp[4], vp[5], vp[6], vp[7] });
         depthPrePassShader.use(gl);
@@ -3446,8 +3467,19 @@ private static class SpeciesConfig {
             thermometerWanted = false;
             playerBody.useThermometer();
         }
+        if (altimeterWanted) {
+            altimeterWanted = false;
+            playerBody.useAltimeter();
+        }
+        if (kitWanted) {
+            kitWanted = false;
+            playerBody.useKit();
+        }
         Vector3 standing = camera.getPosition();
         playerBody.setReading(temperatureAt(standing.x, standing.z));
+        // The altimeter reads the height of the ground underfoot (or the road) above the sea, in
+        // metres: not the rock or roof stood on, so it agrees with the map
+        playerBody.setAltitude((groundHeightAt(standing.x, standing.z) - seaLevelHeight) / PlayerBody.METRE);
         playerBody.update((float) deltaTime, camera.getPosition(), swimming);
         float[] deep = worldArt.palette().seaShallowTint();
         float daylightOnBody = 1.0f - nightProportion;
@@ -3492,18 +3524,20 @@ private static class SpeciesConfig {
             hudFps = -1;
         }
 
-        if (rescaled || !hud.has("inventory")) {
-            java.util.List<HudStyle.Item> items = java.util.List.of(new HudStyle.Item("Compass", "1", HudStyle::paintCompassIcon),
-                    new HudStyle.Item("Thermometer", "2", HudStyle::paintThermometerIcon));
-            int h = HudStyle.inventoryHeight(items.size());
+        // The inventory: only what the player has bought, and nothing at all until they've bought something
+        java.util.List<HudStyle.Item> items = inventoryItems();
+        if (rescaled || itemsVersion != hudItemsVersion || !hud.has("inventory")) {
+            hudItemsVersion = itemsVersion;
+            int h = HudStyle.inventoryHeight(Math.max(1, items.size()));
             BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
             HudStyle.paintInventory(g[0], items);
             g[0].dispose();
             hud.put("inventory", image, margin, 0);
         }
+        hud.setVisible("inventory", !items.isEmpty());
         // (kept at the bottom however the window is resized)
         if (hud.has("inventory")) {
-            int h = Math.round(HudStyle.inventoryHeight(2) * scale);
+            int h = Math.round(HudStyle.inventoryHeight(Math.max(1, items.size())) * scale);
             hud.move("inventory", margin, screenHeight - h - margin);
         }
 
@@ -3532,6 +3566,9 @@ private static class SpeciesConfig {
             hud.move("mapHint", Math.round((map.x + map.width - 12) * scale) - hud.width("mapHint"),
                     Math.round((map.y - 8) * scale) - Math.round(HudStyle.HINT_H * scale));
         }
+
+        drawLensFinds(scale);
+        drawMessage();
 
         hud.setDim(menuOpen ? 0.45f : 0f);
         hud.draw(gl, screenWidth, screenHeight);
@@ -3575,20 +3612,133 @@ private static class SpeciesConfig {
 
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
-        if (!IS_DEBUG_MODE_ACTIVE) return;
+        // Developer aid: -Dxenoguesser.unlockall starts with every map and item
+        if (Boolean.getBoolean("xenoguesser.unlockall")) {
+            ownedItems.addAll(List.of(ITEMS));
+            ownedLayers.addAll(List.of(MapPanel.Layer.values()));
+            ownedOverlays.addAll(allOverlays());
+        }
         for (MapPanel.Layer layer : startingLayers) minimap.setLayerShown(layer, true);
+        refreshMapChoices();
+        if (currentDebugFactor != null) chooseGradient(currentDebugFactor);
+    }
+
+    // ------------------------------------------------------------------ what the player has bought
+
+    // The things the player can carry, in the order offered; and what they have (bought in the
+    // shop, nothing to begin with): items in the order bought, the map's layers and overlays
+    private static final String COMPASS = "Compass", THERMOMETER = "Thermometer", ALTIMETER = "Altimeter", KIT = "Identification kit";
+    private static final String[] ITEMS = { COMPASS, THERMOMETER, ALTIMETER, KIT };
+
+    /** How an item's icon is drawn. */
+    private static HudStyle.IconPainter itemIcon(String item) {
+        return switch (item) {
+            case COMPASS -> HudStyle::paintCompassIcon;
+            case THERMOMETER -> HudStyle::paintThermometerIcon;
+            case ALTIMETER -> HudStyle::paintAltimeterIcon;
+            default -> HudStyle::paintKitIcon;
+        };
+    }
+    private final List<String> ownedItems = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final java.util.Set<MapPanel.Layer> ownedLayers = java.util.Collections.synchronizedSet(java.util.EnumSet.noneOf(MapPanel.Layer.class));
+    private final java.util.Set<Overlay> ownedOverlays = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+    // Bumped when an item is bought, so the inventory is drawn again
+    private volatile int itemsVersion;
+
+    /** Lists, beside the enlarged map, the layers and overlays the player has. */
+    private void refreshMapChoices() {
+        if (minimap == null) return;
+        List<MapPanel.Layer> layers = new ArrayList<>();
+        for (MapPanel.Layer layer : MapPanel.Layer.values()) if (ownedLayers.contains(layer)) layers.add(layer);
         java.util.LinkedHashMap<String, List<String>> groups = new java.util.LinkedHashMap<>();
         for (java.util.Map.Entry<String, List<Overlay>> group : overlayGroups().entrySet()) {
             List<String> labels = new ArrayList<>();
-            for (Overlay o : group.getValue()) labels.add(overlayLabel(o));
+            for (Overlay o : group.getValue()) if (ownedOverlays.contains(o)) labels.add(overlayLabel(o));
             groups.put(group.getKey(), labels);
         }
-        minimap.setLayerChoices(groups, currentDebugFactor != null ? overlayLabel(currentDebugFactor) : null, label -> {
+        Overlay shown = currentDebugFactor;
+        minimap.setLayerChoices(layers, groups, shown != null && ownedOverlays.contains(shown) ? overlayLabel(shown) : null, label -> {
             Overlay chosen = null;
             for (Overlay o : allOverlays()) if (overlayLabel(o).equals(label)) chosen = o;
             chooseGradient(chosen);
         }, this::choiceIcon);
-        if (currentDebugFactor != null) chooseGradient(currentDebugFactor);
+    }
+
+    /**
+     * Three things for the shop after this round (counting from 1), shuffled from everything
+     * not yet bought (each item there ShopPanel.ITEM_COPIES times, though never dealt twice at
+     * once), each with its price (drawn at random, see ShopPanel.price) and what buying it does.
+     */
+    public List<ShopPanel.Card> shopOffers(int round) {
+        java.util.Map<String, String> descriptions = ShopPanel.loadDescriptions();
+        java.util.Random rand = new java.util.Random();
+        List<ShopPanel.Card> deck = new ArrayList<>();
+        for (String item : ITEMS) {
+            if (ownedItems.contains(item)) continue;
+            HudStyle.IconPainter painter = itemIcon(item);
+            ShopPanel.Card card = new ShopPanel.Card(item, "Item", null, painter, describe(descriptions, item, item),
+                    ShopPanel.price(round, ShopPanel.ITEM_PRICE_FACTOR, rand), () -> {
+                ownedItems.add(item);
+                itemsVersion++;
+            });
+            for (int copy = 0; copy < ShopPanel.ITEM_COPIES; copy++) deck.add(card);
+        }
+        for (MapPanel.Layer layer : MapPanel.Layer.values()) {
+            if (ownedLayers.contains(layer)) continue;
+            deck.add(new ShopPanel.Card(layer.label, "Map marking", choiceIcon(layer.label), null, describe(descriptions, layer.label, layer.label),
+                    ShopPanel.price(round, 1f, rand), () -> {
+                ownedLayers.add(layer);
+                // (shown straight away)
+                minimap.setLayerShown(layer, true);
+                refreshMapChoices();
+            }));
+        }
+        for (List<Overlay> group : overlayGroups().values()) {
+            for (Overlay o : group) {
+                if (ownedOverlays.contains(o)) continue;
+                String name = overlayLabel(o);
+                boolean plant = o.factor() == FactorName.FLORA, animal = o.factor() == FactorName.ANIMAL_POPULATION;
+                String key = plant ? "Flora" : animal ? "Fauna" : name;
+                String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : "Heatmap";
+                deck.add(new ShopPanel.Card(name, kind, choiceIcon(name), null, describe(descriptions, key, name),
+                        ShopPanel.price(round, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR : 1f, rand), () -> {
+                    ownedOverlays.add(o);
+                    refreshMapChoices();
+                }));
+            }
+        }
+        java.util.Collections.shuffle(deck, rand);
+        List<ShopPanel.Card> dealt = new ArrayList<>();
+        for (ShopPanel.Card card : deck) {
+            if (dealt.size() < 3 && !dealt.contains(card)) dealt.add(card);
+        }
+        return dealt;
+    }
+
+    /** A card's description from the file, by key, with {name} filled in; a plain one if the file has none. */
+    private static String describe(java.util.Map<String, String> descriptions, String key, String name) {
+        String text = descriptions.get(key);
+        return text != null ? text.replace("{name}", name) : "A map of the planet: " + name + ".";
+    }
+
+    /** The items the player has, in the order bought (the first used with 1, the next with 2, and so on). */
+    private List<HudStyle.Item> inventoryItems() {
+        List<HudStyle.Item> items = new ArrayList<>();
+        for (String item : ownedItems) {
+            items.add(new HudStyle.Item(item, String.valueOf(items.size() + 1), itemIcon(item)));
+        }
+        return items;
+    }
+
+    /** A number key: takes out the item in that place in the inventory, if the player has one there (0 for the first). */
+    public void useItem(int index) {
+        if (index < 0 || index >= ownedItems.size()) return;
+        switch (ownedItems.get(index)) {
+            case COMPASS -> useCompass();
+            case THERMOMETER -> useThermometer();
+            case ALTIMETER -> altimeterWanted = true;
+            default -> kitWanted = true;
+        }
     }
 
     /**
@@ -3729,6 +3879,7 @@ private static class SpeciesConfig {
                 portraits[s] = view == null ? null : Offscreen.cropTogether(new BufferedImage[] { view }, 96)[0];
             }
             floraPortraits = portraits;
+            giveBookPictures();
             // (a plant's range already chosen gets its picture now)
             Overlay shown = currentDebugFactor;
             javax.swing.SwingUtilities.invokeLater(() -> {
@@ -3751,7 +3902,9 @@ private static class SpeciesConfig {
             if (previewRaw[previewNext] == null) previewRaw[previewNext] = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
         }
         if (previewNext < PREVIEW_FRAMES) return;
-        BufferedImage[] frames = Offscreen.cropTogether(previewRaw, PREVIEW_SIZE);
+        BufferedImage[] cropped = Offscreen.cropTogether(previewRaw, PREVIEW_SIZE);
+        // (shrubs shown half as tall as trees, standing on the same ground)
+        BufferedImage[] frames = wanted.factor() == FactorName.FLORA && wanted.species() >= 4 ? shrunkToGround(cropped, 0.5f) : cropped;
         previewRaw = null;
         previewWanted = null;
         previewBuilding = null;
@@ -3762,6 +3915,21 @@ private static class SpeciesConfig {
                 minimap.setPreview(name, kind, frames, wanted.factor() == FactorName.FLORA ? leafPicture(wanted.species()) : null);
             }
         });
+    }
+
+    /** Each picture drawn smaller by scale, in a picture of the same size, at the middle of its foot. */
+    private static BufferedImage[] shrunkToGround(BufferedImage[] frames, float scale) {
+        BufferedImage[] out = new BufferedImage[frames.length];
+        for (int i = 0; i < frames.length; i++) {
+            int w = frames[i].getWidth(), h = frames[i].getHeight();
+            int sw = Math.round(w * scale), sh = Math.round(h * scale);
+            out[i] = new BufferedImage(w, h, BufferedImage.TYPE_INT_ARGB);
+            java.awt.Graphics2D g = out[i].createGraphics();
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            g.drawImage(frames[i], (w - sw) / 2, h - sh, sw, sh, null);
+            g.dispose();
+        }
+        return out;
     }
 
     /** Plant species s's leaf, in its own colours (its texture runs from the dark shade to the light). */
@@ -3843,6 +4011,7 @@ private static class SpeciesConfig {
         java.awt.Image[] portraits = new java.awt.Image[organismManager.speciesCount()];
         for (int i = 0; i < portraits.length; i++) portraits[i] = organismManager.portrait(gl, i, 96);
         speciesPortraits = portraits;
+        giveBookPictures();
         if (minimap == null) return;
         // (a species' overlay already chosen gets its picture now)
         Overlay shown = currentDebugFactor;
@@ -3869,30 +4038,17 @@ private static class SpeciesConfig {
             minimap.setPreview(null, null, null, null);
             previewWanted = null;
         }
-        // The key for the overlays measured in real units
-        if (factor == FactorName.TEMPERATURE) {
-            minimap.setLegend(RegionalGenerationManager.TEMPERATURE_SPECTRUM, new String[] {
-                    celsiusLabel(0f), celsiusLabel(0.5f), celsiusLabel(1f) });
-        } else if (factor == FactorName.RAINFALL) {
-            minimap.setLegend(RegionalGenerationManager.RAINFALL_SPECTRUM, new String[] {
-                    "0 mm/yr", Math.round(0.5f * RAINFALL_FULL_MM) + " mm/yr", Math.round(RAINFALL_FULL_MM) + " mm/yr" });
-        } else if (factor == FactorName.ROCK_SIZE) {
-            // The typical rock's width, in metres (a unit being ten centimetres)
-            float[] range = rockSizeRange();
-            float small = range[0] * 0.2f, large = range[1] * 0.2f;
-            minimap.setLegend(ROCK_SPECTRUM, new String[] { String.format("%.1f m", small), String.format("%.1f m", (small + large) * 0.5f),
-                    String.format("%.1f m", large) });
-        } else if (factor == FactorName.ROCKS) {
-            float perKm = rockMapPeak() * CHUNKS_PER_KM2;
-            minimap.setLegend(ROCK_SPECTRUM, new String[] { "0 /km\u00B2", countLabel(perKm * 0.5f) + " /km\u00B2", countLabel(perKm) + " /km\u00B2" });
-        } else if (factorName != null && factorName.species() >= 0) {
-            // How many per square kilometre (a hundred chunks by a hundred), none to the most
-            int sp = factorName.species();
-            float peak = factor == FactorName.FLORA ? speciesConfigs[sp].baseAbundance * mapPeak(-1 - sp, (x, z) -> speciesConfigs[sp].abundanceFactor
-                    .evaluate((int) Math.floor(x / PHYSICAL_CHUNK_SIZE), (int) Math.floor(z / PHYSICAL_CHUNK_SIZE), x, z))
-                    : animalMapPeak(sp);
-            float perKm = peak * CHUNKS_PER_KM2;
-            minimap.setLegend(RANGE_SPECTRUM, new String[] { "0 /km²", countLabel(perKm * 0.5f) + " /km²", countLabel(perKm) + " /km²" });
+        // The key: the heatmap's colours from its lowest value anywhere on the land to its highest,
+        // in real units where it has them
+        if (factor == FactorName.GRASS_COLOUR) {
+            minimap.setLegend(grassColourSpectrum(), new String[] { "Dry", "", "Lush" });
+        } else if (factorName != null && heatmapMeasure(factorName) != null) {
+            float[] range = heatmapRange(factorName);
+            String[] labels = factor == FactorName.GRASS_ABUNDANCE ? new String[] { "Sparsest", "", "Thickest" }
+                    : factor == FactorName.WEALTH ? new String[] { "Poorest", "", "Richest" }
+                    : new String[] { heatmapLabel(factorName, range[0]), heatmapLabel(factorName, (range[0] + range[1]) * 0.5f),
+                            heatmapLabel(factorName, range[1]) };
+            minimap.setLegend(spectrumFor(factorName), labels);
         } else {
             minimap.setLegend(null, null);
         }
@@ -3980,14 +4136,31 @@ private static class SpeciesConfig {
                 return maps != null ? maps.renderNationOverlay(nationManager) : null;
             }
             BufferedImage heatmap = f == FactorName.SOIL_COLOUR ? soilColourMap()
-                    : regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factorFor(o), overlayLabel(o),
-                    f == FactorName.TEMPERATURE ? RegionalGenerationManager.TEMPERATURE_SPECTRUM : f == FactorName.WEALTH ? WEALTH_SPECTRUM
-                    : f == FactorName.RAINFALL ? RegionalGenerationManager.RAINFALL_SPECTRUM
-                    : f == FactorName.ROCKS || f == FactorName.ROCK_SIZE ? ROCK_SPECTRUM : null);
+                    : regionalManager.generateHeatmap(TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE, factorFor(o), overlayLabel(o), spectrumFor(o));
             // (kept as it is too, a pixel a chunk, for drawing the overlay in tiles when zoomed in)
             rawOverlays.put(o, heatmap);
             return minimap.composeOverlay(heatmap);
         });
+    }
+
+    // The light in the shade by day (darkening towards night)
+    private static final float[] DAY_AMBIENT = { 0.40f, 0.38f, 0.35f };
+
+    /**
+     * The grass colour map's colours: the grass's own as it looks by day, from its colour where
+     * it grows worst to where it grows best (as the grass shader mixes and lights them, see
+     * fs_grass_instanced).
+     */
+    private float[][] grassColourSpectrum() {
+        WorldPalette palette = worldArt != null ? worldArt.palette() : new WorldPalette(worldSeed);
+        float[][] spectrum = new float[4][3];
+        for (int k = 0; k < 4; k++) {
+            for (int c = 0; c < 3; c++) {
+                float light = Math.min(1.5f, 3f * DAY_AMBIENT[c]);
+                spectrum[k][c] = Math.min(1f, (palette.grassDry[c] + (palette.grassLush[c] - palette.grassDry[c]) * k / 3f) * light);
+            }
+        }
+        return spectrum;
     }
 
     // The wealth overlay: how well off people are, from each nation's richness, more so in town
@@ -3999,40 +4172,45 @@ private static class SpeciesConfig {
     // Where each regional soil colour starts and finishes blending in (from its factor's spread of values)
     private volatile float[][] soilBlendRanges;
 
+    /**
+     * What a heatmap colours the land by, 0 to 1: its measure (see heatmapMeasure) from the
+     * lowest it is anywhere on the land the map shows (0, the key's first colour) to the highest
+     * (1, its last). The grass colour map is the grass's own colour instead.
+     */
     private RegionalFactor factorFor(Overlay overlay) {
-        // One species' range: how many there are, from none to the most anywhere (as they're
-        // spawned: a plant's count is its abundance times its base; an animal's, see expectedPerChunk)
+        if (overlay.factor() == FactorName.GRASS_COLOUR) return grassColourFactor;
+        java.util.function.BiFunction<Float, Float, Float> measure = heatmapMeasure(overlay);
+        if (measure == null) return null;
+        float[] range = heatmapRange(overlay);
+        float span = Math.max(1e-6f, range[1] - range[0]);
+        return new RegionalFactor(1f, (cx, cz, x, z) -> Math.max(0f, Math.min(1f, (measure.apply(x, z) - range[0]) / span)));
+    }
+
+    /**
+     * What a heatmap measures at a place, in the units its key gives: a plant's or animal's
+     * count in the chunk there (as they're spawned: a plant's is its abundance times its base;
+     * an animal's, see expectedPerChunk), the rocks' (count and typical width in metres), the
+     * grass's height in centimetres, degrees Celsius, millimetres of rain a year; or for the
+     * grass's abundance and wealth, their own 0 to 1. Null for the maps not on a scale.
+     */
+    private java.util.function.BiFunction<Float, Float, Float> heatmapMeasure(Overlay overlay) {
         if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
-            RegionalFactor abundance = speciesConfigs[overlay.species()].abundanceFactor;
-            float peak = mapPeak(-1 - overlay.species(), (x, z) -> abundance.evaluate((int) Math.floor(x / PHYSICAL_CHUNK_SIZE),
-                    (int) Math.floor(z / PHYSICAL_CHUNK_SIZE), x, z));
-            return new RegionalFactor(1f, (cx, cz, x, z) -> abundance.evaluate(cx, cz, x, z) / peak);
+            SpeciesConfig config = speciesConfigs[overlay.species()];
+            return (x, z) -> factorAt(config.abundanceFactor, x, z) * config.baseAbundance;
         }
         if (overlay.species() >= 0) {
             int i = overlay.species();
-            float peak = animalMapPeak(i);
-            return new RegionalFactor(1f, (cx, cz, x, z) -> organismManager.expectedPerChunk(i, x, z) / peak);
+            return (x, z) -> organismManager.expectedPerChunk(i, x, z);
         }
         return switch (overlay.factor()) {
-            case ROCKS -> {
-                // How many rocks, none to the most anywhere (each chunk's expected count, as spawned)
-                float peak = rockMapPeak();
-                yield new RegionalFactor(1f, (cx, cz, x, z) -> rocks().expectedPerChunk(x, z) / peak);
-            }
-            case ROCK_SIZE -> {
-                // From the smallest to the largest rocks anywhere on the map
-                float[] range = rockSizeRange();
-                yield new RegionalFactor(1f, (cx, cz, x, z) -> (rocks().typicalSizeAt(x, z) - range[0]) / Math.max(1e-3f, range[1] - range[0]));
-            }
-            case GRASS_ABUNDANCE -> grassAbundanceFactor;
-            case GRASS_HEIGHT -> grassHeightFactor;
-            case GRASS_COLOUR -> grassColourFactor;
-            case FLORA -> null;
-            // Wettest at the water's edge, drying out inland
-            case TEMPERATURE -> regionalManager.temperatureMap;
-            case RAINFALL -> regionalManager.rainfallMap;
-            case SOIL_COLOUR -> null;
-            case NATIONS -> null;
+            case ROCKS -> (x, z) -> rocks().expectedPerChunk(x, z);
+            // (a unit being ten centimetres, and the size a radius)
+            case ROCK_SIZE -> (x, z) -> rocks().typicalSizeAt(x, z) * 2f / PlayerBody.METRE;
+            case GRASS_ABUNDANCE -> (x, z) -> factorAt(grassAbundanceFactor, x, z);
+            // (as the blades are given their heights, see the grass's gathering)
+            case GRASS_HEIGHT -> (x, z) -> (0.4f + factorAt(grassHeightFactor, x, z) * (1.7f - 0.4f)) * GRASS_BLADE_HEIGHT / PlayerBody.METRE * 100f;
+            case TEMPERATURE -> (x, z) -> -30f + 70f * factorAt(regionalManager.temperatureMap, x, z);
+            case RAINFALL -> (x, z) -> factorAt(regionalManager.rainfallMap, x, z) * RAINFALL_FULL_MM;
             case WEALTH -> {
                 if (wealthOverlay == null) {
                     wealthOverlay = new RegionalFactor(1f, (cx, cz, x, z) -> {
@@ -4040,9 +4218,39 @@ private static class SpeciesConfig {
                         return nation <= 0 ? 0f : infraManager.areaRichness(nation, settlementManager.getUrbanness(x, z), x, z);
                     });
                 }
-                yield wealthOverlay;
+                RegionalFactor wealth = wealthOverlay;
+                yield (x, z) -> factorAt(wealth, x, z);
             }
-            case ANIMAL_POPULATION -> null;
+            default -> null;
+        };
+    }
+
+    private float factorAt(RegionalFactor factor, float x, float z) {
+        return factor.evaluate((int) Math.floor(x / PHYSICAL_CHUNK_SIZE), (int) Math.floor(z / PHYSICAL_CHUNK_SIZE), x, z);
+    }
+
+    /** A value of a heatmap's measure for its key, with its units. */
+    private String heatmapLabel(Overlay overlay, float value) {
+        if (overlay.species() >= 0) return countLabel(value * chunksPerKm2()) + " /km\u00B2";
+        return switch (overlay.factor()) {
+            case ROCKS -> countLabel(value * chunksPerKm2()) + " /km\u00B2";
+            case ROCK_SIZE -> String.format("%.1f m", value);
+            case GRASS_HEIGHT -> Math.round(value) + " cm";
+            case TEMPERATURE -> Math.round(value) + " \u00B0C";
+            case RAINFALL -> Math.round(value) + " mm/yr";
+            default -> String.format("%.2f", value);
+        };
+    }
+
+    /** A heatmap's colours, lowest to highest. */
+    private float[][] spectrumFor(Overlay overlay) {
+        return switch (overlay.factor()) {
+            case TEMPERATURE -> RegionalGenerationManager.TEMPERATURE_SPECTRUM;
+            case RAINFALL -> RegionalGenerationManager.RAINFALL_SPECTRUM;
+            case WEALTH -> WEALTH_SPECTRUM;
+            case ROCKS, ROCK_SIZE -> ROCK_SPECTRUM;
+            case GRASS_COLOUR -> grassColourSpectrum();
+            default -> RANGE_SPECTRUM;
         };
     }
 
@@ -4061,6 +4269,329 @@ private static class SpeciesConfig {
         lookPitch = 0f;
     }
 
+    // A grass blade's height in world units, before each blade's own height scales it
+    private static final float GRASS_BLADE_HEIGHT = 4.8f;
+    // Points round each plant model {x, y, z, ...} (species, then variation), as generated
+    private float[][][] floraOutlines;
+    // The scene's last view-projection (column major), for finding what's seen through the magnifying glass
+    private float[] lastSceneViewProjection;
+    private boolean bookPicturesGiven;
+
+    /**
+     * The highest ground on the map: {x, z, metres above the sea}. Found on a coarse grid, then
+     * climbed to the top of the hill there in finer and finer steps.
+     */
+    private float[] highestGround() {
+        // A fine grid first, keeping the highest few dozen spots (each a likely different hill)...
+        int n = 1400, keep = 40;
+        float cellX = TOTAL_REGION_WIDTH / n, cellZ = 2f * Planet.clipHalfHeight() / (n / 2);
+        java.util.PriorityQueue<float[]> tops = new java.util.PriorityQueue<>((p, q) -> Float.compare(p[2], q[2]));
+        for (int a = 0; a < n; a++) {
+            for (int b = 0; b < n / 2; b++) {
+                float x = (a + 0.5f) * cellX - TOTAL_REGION_WIDTH * 0.5f;
+                float z = (b + 0.5f) * cellZ - Planet.clipHalfHeight();
+                float h = TerrainMesh.getLayeredHeight(x, z, worldNoise);
+                if (tops.size() < keep) tops.add(new float[] { x, z, h });
+                else if (h > tops.peek()[2]) {
+                    tops.poll();
+                    tops.add(new float[] { x, z, h });
+                }
+            }
+        }
+        // ...then each climbed to the top of its hill, in finer and finer steps
+        float[] best = { 0f, 0f, -Float.MAX_VALUE };
+        for (float[] top : tops) {
+            float x0 = top[0], z0 = top[1], h0 = top[2];
+            for (float step = Math.max(cellX, cellZ); step > 0.5f; step *= 0.5f) {
+                boolean moved = true;
+                while (moved) {
+                    moved = false;
+                    for (int k = 0; k < 16; k++) {
+                        double a = k * Math.PI / 8;
+                        float x = x0 + (float) Math.cos(a) * step, z = z0 + (float) Math.sin(a) * step;
+                        if (Math.abs(z) > Planet.clipHalfHeight()) continue;
+                        float h = TerrainMesh.getLayeredHeight(x, z, worldNoise);
+                        if (h > h0) {
+                            h0 = h;
+                            x0 = x;
+                            z0 = z;
+                            moved = true;
+                        }
+                    }
+                }
+            }
+            if (h0 > best[2]) best = new float[] { x0, z0, h0 };
+        }
+        return new float[] { best[0], best[1], Math.max(0f, best[2] - seaLevelHeight) / PlayerBody.METRE };
+    }
+
+    /** The altimeter's top: the next multiple of 10 metres at or above x (128 gives 130, 109 gives 110). */
+    private static float roundUp(float x) {
+        return Math.max(10f, (float) Math.ceil(x / 10f - 1e-6) * 10f);
+    }
+
+    /** Once both are drawn, two of the animals' and two of the plants' pictures for the identification kit's book. */
+    private void giveBookPictures() {
+        java.awt.Image[] animals = speciesPortraits, plants = floraPortraits;
+        if (bookPicturesGiven || animals == null || plants == null) return;
+        bookPicturesGiven = true;
+        java.util.Random rand = new java.util.Random(worldSeed * 977L + 3L);
+        List<java.awt.Image> pictures = new ArrayList<>();
+        for (java.awt.Image[] kind : new java.awt.Image[][] { animals, plants }) {
+            List<java.awt.Image> some = new ArrayList<>();
+            for (java.awt.Image picture : kind) if (picture != null) some.add(picture);
+            java.util.Collections.shuffle(some, rand);
+            for (int i = 0; i < 2; i++) pictures.add(i < some.size() ? some.get(i) : null);
+        }
+        playerBody.setBookPictures(pictures, worldSeed);
+    }
+
+    // The least share of the magnifying glass's lens something must fill (as a circle round
+    // what's seen of it, on screen) to be made out and named: far things, too small in it, aren't
+    private static final float IDENTIFY_SHARE = 0.1f;
+    // At most this many named at once, nearest first
+    private static final int MOST_IDENTIFIED = 6;
+    private String lensSignature = "";
+
+    /**
+     * While the identification kit's magnifying glass is held up: each animal and (non grass)
+     * plant seen through it, big enough in it to make out, boxed (round what's seen of it on
+     * the screen) and named on the HUD.
+     */
+    private void drawLensFinds(float scale) {
+        float[] lens = playerBody.lensView();
+        float[] vp = lastSceneViewProjection;
+        organismManager.setKeepOutlines(lens != null);
+        if (lens == null || vp == null) {
+            hud.setVisible("lens", false);
+            lensSignature = "";
+            return;
+        }
+        Vector3 eye = camera.getPosition();
+        float[] centre = project(vp, lens[0], lens[1], lens[2]);
+        Vector3 forward = camera.getForwardDirection();
+        float[] right = Affine.normalise(Affine.cross(new float[] { forward.x, forward.y, forward.z }, new float[] { 0f, 1f, 0f }));
+        float[] edge = project(vp, lens[0] + right[0] * lens[3], lens[1] + right[1] * lens[3], lens[2] + right[2] * lens[3]);
+        if (centre == null || edge == null) return;
+        float lensR = (float) Math.hypot(edge[0] - centre[0], edge[1] - centre[1]);
+        float curvature = Planet.curvature(eye.z);
+
+        // Every candidate: {distance, left, top, right, bottom} on screen, and its name
+        List<float[]> boxes = new ArrayList<>();
+        List<String> names = new ArrayList<>();
+        // (its name, where it stands, and points round it in the world {x, y, z, ...})
+        java.util.function.BiConsumer<String, float[]> consider = (name, points) -> {
+            float dx = points[0] - eye.x, dz = points[2] - eye.z;
+            if (dx * dx + dz * dz > 2500f * 2500f) return;
+            float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
+            float sumX = 0f, sumY = 0f, sumZ = 0f;
+            int n = points.length / 3;
+            for (int k = 0; k < points.length; k += 3) {
+                float px = points[k], py = points[k + 1], pz = points[k + 2];
+                float ex = px - eye.x, ez = pz - eye.z;
+                // (lowered with the planet's curve, as the scene draws it)
+                float[] p = project(vp, px, py - curvature * (ex * ex + ez * ez), pz);
+                if (p == null) return;
+                minX = Math.min(minX, p[0]);
+                maxX = Math.max(maxX, p[0]);
+                minY = Math.min(minY, p[1]);
+                maxY = Math.max(maxY, p[1]);
+                sumX += px;
+                sumY += py;
+                sumZ += pz;
+            }
+            // Only what's on the screen
+            minX = Math.max(0f, minX);
+            minY = Math.max(0f, minY);
+            maxX = Math.min(screenWidth - 1f, maxX);
+            maxY = Math.min(screenHeight - 1f, maxY);
+            if (maxX - minX < 2f || maxY - minY < 2f) return;
+            // Seen as a circle round it: how much of the lens it fills
+            float cx = (minX + maxX) * 0.5f, cy = (minY + maxY) * 0.5f;
+            float r = (float) Math.hypot(maxX - minX, maxY - minY) * 0.5f;
+            if (circleOverlap(cx - centre[0], cy - centre[1], r, lensR) < IDENTIFY_SHARE * Math.PI * lensR * lensR) return;
+            // ...and not hidden behind the land
+            float mx = sumX / n, my = sumY / n, mz = sumZ / n;
+            for (int i = 1; i < 16; i++) {
+                float t = i / 16f;
+                if (TerrainMesh.getLayeredHeight(eye.x + (mx - eye.x) * t, eye.z + (mz - eye.z) * t, worldNoise) > eye.y + (my - eye.y) * t + 1f) return;
+            }
+            boxes.add(new float[] { (float) Math.hypot(mx - eye.x, mz - eye.z), minX, minY, maxX, maxY });
+            names.add(name);
+        };
+        organismManager.forEachOutline((s, x, z, points) -> consider.accept(organismManager.speciesName(s), points));
+        if (floraCache != null && floraOutlines != null) {
+            for (List<FloraInstance> trees : floraCache.values()) {
+                if (trees == null) continue;
+                for (FloraInstance tree : trees) {
+                    float tx = tree.pos.x - eye.x, tz = tree.pos.z - eye.z;
+                    if (tx * tx + tz * tz > 2500f * 2500f) continue;
+                    float[] local = floraOutlines[tree.speciesIndex][tree.modelIndex];
+                    if (local == null) continue;
+                    // Placed as it's drawn: turned, scaled and stood where it grows (see cacheFloraInstance)
+                    double a = Math.toRadians(tree.rotationY);
+                    float c = (float) Math.cos(a), sn = (float) Math.sin(a);
+                    float[] world = new float[local.length];
+                    for (int k = 0; k < local.length; k += 3) {
+                        float x = local[k], y = local[k + 1], z = local[k + 2];
+                        world[k] = tree.pos.x + (c * x + sn * z) * tree.scale;
+                        world[k + 1] = tree.pos.y + y * tree.scale;
+                        world[k + 2] = tree.pos.z + (-sn * x + c * z) * tree.scale;
+                    }
+                    consider.accept(floraName(tree.speciesIndex), world);
+                }
+            }
+        }
+        // The nearest few
+        Integer[] order = new Integer[boxes.size()];
+        for (int i = 0; i < order.length; i++) order[i] = i;
+        java.util.Arrays.sort(order, (a, b) -> Float.compare(boxes.get(a)[0], boxes.get(b)[0]));
+        int count = Math.min(MOST_IDENTIFIED, order.length);
+
+        StringBuilder signature = new StringBuilder();
+        for (int k = 0; k < count; k++) {
+            float[] b = boxes.get(order[k]);
+            signature.append('|').append(names.get(order[k])).append(Math.round(b[1])).append(',').append(Math.round(b[2]))
+                    .append(',').append(Math.round(b[3])).append(',').append(Math.round(b[4]));
+        }
+        if (signature.toString().equals(lensSignature)) {
+            hud.setVisible("lens", count > 0);
+            return;
+        }
+        lensSignature = signature.toString();
+        if (count == 0) {
+            hud.setVisible("lens", false);
+            return;
+        }
+        // Each box with its name: on a tab just above the box, or inside its top should there be
+        // no room above (so the whole of both is always on the screen)
+        java.awt.Font font = HudStyle.font(java.awt.Font.BOLD, 14f * scale);
+        java.awt.FontMetrics fm = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB).createGraphics().getFontMetrics(font);
+        float th = fm.getAscent() + 6 * scale;
+        float[][] tabs = new float[count][];
+        float left = Float.MAX_VALUE, top = Float.MAX_VALUE, rightEdge = 0f, bottom = 0f;
+        for (int k = 0; k < count; k++) {
+            float[] b = boxes.get(order[k]);
+            float tw = fm.stringWidth(names.get(order[k])) + 10 * scale;
+            float tx = Math.min(b[1], screenWidth - tw), ty = b[2] - th - 2 * scale;
+            if (ty < 0f) ty = b[2] + 2 * scale;
+            tabs[k] = new float[] { Math.max(0f, tx), ty, tw };
+            left = Math.min(left, Math.min(b[1], tabs[k][0]));
+            top = Math.min(top, Math.min(b[2], ty));
+            rightEdge = Math.max(rightEdge, Math.max(b[3], tabs[k][0] + tw));
+            bottom = Math.max(bottom, b[4]);
+        }
+        int ox = (int) Math.floor(left) - 4, oy = (int) Math.floor(top) - 4;
+        int w = (int) Math.ceil(rightEdge) - ox + 5, h = (int) Math.ceil(bottom) - oy + 5;
+        BufferedImage image = new BufferedImage(Math.max(1, w), Math.max(1, h), BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        HudStyle.smooth(g);
+        g.translate(-ox, -oy);
+        g.setFont(font);
+        for (int k = 0; k < count; k++) {
+            float[] b = boxes.get(order[k]);
+            java.awt.geom.Rectangle2D.Float box = new java.awt.geom.Rectangle2D.Float(b[1], b[2], b[3] - b[1], b[4] - b[2]);
+            g.setStroke(new java.awt.BasicStroke(4f * scale));
+            g.setColor(new java.awt.Color(0, 0, 0, 150));
+            g.draw(box);
+            g.setStroke(new java.awt.BasicStroke(2f * scale));
+            g.setColor(HudStyle.ACCENT);
+            g.draw(box);
+            float[] tab = tabs[k];
+            g.setColor(new java.awt.Color(10, 14, 22, 205));
+            g.fill(new java.awt.geom.RoundRectangle2D.Float(tab[0], tab[1], tab[2], th, 6 * scale, 6 * scale));
+            g.setColor(HudStyle.VALUE);
+            g.drawString(names.get(order[k]), tab[0] + 5 * scale, tab[1] + th - 4 * scale);
+        }
+        g.dispose();
+        hud.put("lens", image, ox, oy);
+    }
+
+    /** Where a point in the world lands on the screen, in its pixels from the top left; null if it's behind the eyes. */
+    private float[] project(float[] vp, float x, float y, float z) {
+        float cx = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
+        float cy = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
+        float w = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+        if (w <= 0.01f) return null;
+        return new float[] { (cx / w + 1f) * 0.5f * screenWidth, (1f - cy / w) * 0.5f * screenHeight };
+    }
+
+    /** The area two circles share: one of radius r with its middle (dx, dy) from the other's, of radius big. */
+    private static float circleOverlap(float dx, float dy, float r, float big) {
+        double d = Math.hypot(dx, dy);
+        if (d >= r + big) return 0f;
+        if (d <= Math.abs(big - r)) return (float) (Math.PI * Math.min(r, big) * Math.min(r, big));
+        double a = r * r * Math.acos((d * d + r * r - big * big) / (2 * d * r));
+        double b = big * big * Math.acos((d * d + big * big - r * r) / (2 * d * big));
+        double c = 0.5 * Math.sqrt((-d + r + big) * (d + r - big) * (d - r + big) * (d + r + big));
+        return (float) (a + b - c);
+    }
+
+    // ------------------------------------------------------------------ messages from Xenocorp in play
+
+    // The share of the planet's whole surface under the sea (percent), and April's sentence
+    // saying it, once worked out; the message playing over the view (null for none)
+    private volatile double aprilPercent = Double.NaN;
+    private final java.util.concurrent.CompletableFuture<PlanetVoice.Speech> aprilSpeech = new java.util.concurrent.CompletableFuture<>();
+    private volatile MessageTicker hudMessage;
+
+    /**
+     * How much of the planet's whole surface (to the poles, beyond the map) is ocean, in
+     * percent: two million points spread evenly over the sphere, each land or sea.
+     */
+    private double oceanPercent() {
+        int n = 2_000_000;
+        double golden = Math.PI * (3 - Math.sqrt(5));
+        double limit = Math.toRadians(89.99);
+        long sea = java.util.stream.IntStream.range(0, n).parallel().filter(i -> {
+            double y = 1 - 2 * (i + 0.5) / n;
+            double latitude = Math.max(-limit, Math.min(limit, Math.asin(y)));
+            double longitude = (golden * i) % (2 * Math.PI) - Math.PI;
+            float x = (float) Planet.chartX(longitude), z = (float) Planet.chartZ(latitude);
+            return TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight;
+        }).count();
+        return 100.0 * sea / n;
+    }
+
+    /** April's message from Xenocorp, saying how much of the planet is ocean: started playing over the view. */
+    public void startAprilMessage() {
+        Thread start = new Thread(() -> {
+            // (the ocean's worked out a few rounds before this; should it somehow not be yet, it's waited for)
+            PlanetVoice.Speech said = aprilSpeech.join();
+            TransmissionMessage message = TransmissionMessage.load(TransmissionMessage.APRIL,
+                    String.format(java.util.Locale.ROOT, "%.3f%%", aprilPercent), java.util.concurrent.CompletableFuture.completedFuture(said));
+            if (message != null) hudMessage = new MessageTicker(message);
+        }, "april-message");
+        start.setDaemon(true);
+        start.start();
+    }
+
+    /** Stops any message playing over the view (the game's over). */
+    public void stopMessage() {
+        MessageTicker playing = hudMessage;
+        hudMessage = null;
+        if (playing != null) playing.stop();
+    }
+
+    /** The message playing over the view, its words scrolling along the bottom, until it's been said. */
+    private void drawMessage() {
+        MessageTicker playing = hudMessage;
+        if (playing != null && playing.isDone()) {
+            hudMessage = null;
+            playing = null;
+        }
+        if (playing == null) {
+            hud.setVisible("message", false);
+            return;
+        }
+        int stripH = Math.max(44, screenHeight / 20);
+        BufferedImage image = new BufferedImage(Math.max(1, screenWidth), stripH, BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        playing.draw(g, screenWidth, 0, stripH);
+        g.dispose();
+        hud.put("message", image, 0, screenHeight - stripH);
+    }
+
     /** C: the player takes out the compass and looks at it for a moment. */
     public void useCompass() {
         compassWanted = true;
@@ -4071,7 +4602,7 @@ private static class SpeciesConfig {
         thermometerWanted = true;
     }
 
-    private volatile boolean thermometerWanted;
+    private volatile boolean thermometerWanted, altimeterWanted, kitWanted;
 
     /**
      * What a thermometer reads at (x, z), in degrees Celsius: the place's warmth as the
@@ -4214,21 +4745,18 @@ private static class SpeciesConfig {
     // The rainfall map's top (1) as rain over a year, in millimetres, for the map's key
     private static final float RAINFALL_FULL_MM = 3000f;
 
-    // The most of each animal species expected in a chunk anywhere on the planet (see animalMapPeak)
-    private final Map<Integer, Float> animalPeaks = new java.util.concurrent.ConcurrentHashMap<>();
+    // Each heatmap's lowest and highest values on the land (see heatmapRange)
+    private final Map<Overlay, float[]> heatmapRanges = new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
-     * The most of animal species i expected in any chunk, found by looking all over the land:
-     * its map runs from none to this, so green on its key is somewhere on its map.
+     * A heatmap's lowest and highest values anywhere on the land the map shows, found by
+     * looking all over it (kept, once worked out): its map runs from the one to the other, so
+     * both ends of its key are somewhere on its map.
      */
-    private float animalMapPeak(int i) {
-        return mapPeak(i, (x, z) -> organismManager.expectedPerChunk(i, x, z));
-    }
-
-    /** The highest a value reaches anywhere on the land the map shows (kept under key, once worked out). */
-    private float mapPeak(int key, java.util.function.BiFunction<Float, Float, Float> value) {
-        return animalPeaks.computeIfAbsent(key, k -> {
-            float best = 0f;
+    private float[] heatmapRange(Overlay overlay) {
+        return heatmapRanges.computeIfAbsent(overlay, o -> {
+            java.util.function.BiFunction<Float, Float, Float> measure = heatmapMeasure(o);
+            float lowest = Float.MAX_VALUE, highest = -Float.MAX_VALUE;
             int n = 300;
             for (int a = 0; a < n; a++) {
                 for (int b = 0; b < n; b++) {
@@ -4236,10 +4764,12 @@ private static class SpeciesConfig {
                     // (over the part of the planet the map shows, not the polar caps beyond it)
                     float z = ((b + 0.5f) / n * 2f - 1f) * Planet.clipHalfHeight();
                     if (TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight) continue;
-                    best = Math.max(best, value.apply(x, z));
+                    float v = measure.apply(x, z);
+                    lowest = Math.min(lowest, v);
+                    highest = Math.max(highest, v);
                 }
             }
-            return Math.max(1e-6f, best);
+            return lowest > highest ? new float[] { 0f, 1f } : new float[] { lowest, highest };
         });
     }
 
@@ -4257,20 +4787,13 @@ private static class SpeciesConfig {
         return rockField;
     }
 
-    /** The smallest and largest typical rock (radius) anywhere on the land the map shows. */
-    private float[] rockSizeRange() {
-        float largest = mapPeak(Integer.MIN_VALUE + 1, (x, z) -> rocks().typicalSizeAt(x, z));
-        float smallest = RockField.LARGEST_TYPICAL - mapPeak(Integer.MIN_VALUE + 2, (x, z) -> RockField.LARGEST_TYPICAL - rocks().typicalSizeAt(x, z));
-        return new float[] { smallest, largest };
+    /** How many chunks make a square kilometre (a metre being PlayerBody.METRE world units). */
+    private float chunksPerKm2() {
+        float across = 1000f * PlayerBody.METRE / PHYSICAL_CHUNK_SIZE;
+        return across * across;
     }
 
-    /** The most rocks expected in any chunk of the land the map shows. */
-    private float rockMapPeak() {
-        return mapPeak(Integer.MIN_VALUE, (x, z) -> rocks().expectedPerChunk(x, z));
-    }
-
-    // A square kilometre, in chunks; and the plant and animal maps' colours, none to the most
-    private static final float CHUNKS_PER_KM2 = 100f * 100f;
+    // The plant and animal maps' colours, none to the most
     private static final float[][] RANGE_SPECTRUM = {
         { 0.85f, 0.00f, 0.00f }, { 1.00f, 0.50f, 0.00f }, { 1.00f, 0.90f, 0.00f }, { 0.00f, 0.70f, 0.10f }
     };
@@ -4281,11 +4804,6 @@ private static class SpeciesConfig {
         if (n >= 1000f) return String.format("%.1fk", n / 1000f);
         if (n >= 10f) return String.valueOf(Math.round(n));
         return String.format("%.1f", n);
-    }
-
-    /** A point on the temperature map's scale (0 to 1) in Celsius, for the map's key (see temperatureAt). */
-    private static String celsiusLabel(float warmth) {
-        return Math.round(-30f + 70f * warmth) + " \u00B0C";
     }
 
     /** How much rain falls at a place, 0 driest to 1 wettest (see RegionalGenerationManager.rainfallMap). */

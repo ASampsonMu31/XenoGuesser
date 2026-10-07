@@ -108,6 +108,12 @@ public class InfrastructureManager {
     private final Map<Long, List<RoadSegment>> roadSegmentsByChunk = new HashMap<>();
     private final List<House> houses = new ArrayList<>();
     private final Map<Integer, FlagDesigner.Spec> flags;
+
+    /** A nation's flag as a picture (FlagDesigner.WIDTH by HEIGHT), or null if it has none. */
+    public java.awt.image.BufferedImage flagImage(int nation) {
+        FlagDesigner.Spec spec = flags.get(nation);
+        return spec == null ? null : FlagDesigner.render(spec);
+    }
     // Each nation's writing, and the goods in its shops
     private NationScripts scripts;
     private Products products;

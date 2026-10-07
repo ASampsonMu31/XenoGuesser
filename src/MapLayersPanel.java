@@ -24,8 +24,8 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
- * Beside the enlarged map: tick boxes for what's drawn over the land and sea (contours,
- * roads, buildings, shops), and a choice of at most one overlay to colour the land with, each
+ * Beside the enlarged map: tick boxes for the markings drawn over the land and sea (contours,
+ * roads, buildings, shops), and a choice of at most one heatmap to colour the land with under them, each
  * row with its own icon. Nothing here takes the keyboard, so walking keys keep working.
  */
 public class MapLayersPanel extends JPanel {
@@ -74,7 +74,11 @@ public class MapLayersPanel extends JPanel {
     private String chosenOverlay;
 
     /**
+     * Only what the player has (bought in the shop) is listed: a heading with nothing under it
+     * is left out, and so is the overlays' None while there are no overlays.
+     *
      * @param onLayer told whenever a layer is ticked or unticked
+     * @param layers the layers to list
      * @param overlays the overlays on offer, by name, in groups: those under "" listed on their
      *                 own, then each other group in a dropdown headed with the group's name
      * @param chosen the overlay chosen to begin with, or null
@@ -82,7 +86,7 @@ public class MapLayersPanel extends JPanel {
      * @param icons each row's icon, by its layer's, overlay's or dropdown's name (looked up as
      *              it's drawn, so a picture made later turns up; null for none)
      */
-    public MapLayersPanel(BiConsumer<MapPanel.Layer, Boolean> onLayer, java.util.Set<MapPanel.Layer> ticked,
+    public MapLayersPanel(BiConsumer<MapPanel.Layer, Boolean> onLayer, List<MapPanel.Layer> layers, java.util.Set<MapPanel.Layer> ticked,
                           java.util.LinkedHashMap<String, List<String>> overlays, String chosen, Consumer<String> onOverlay,
                           Function<String, Image> icons) {
         this.icons = icons;
@@ -93,8 +97,8 @@ public class MapLayersPanel extends JPanel {
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
         list.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        heading("SHOW ON MAP");
-        for (MapPanel.Layer layer : MapPanel.Layer.values()) {
+        if (!layers.isEmpty()) heading("MARKINGS");
+        for (MapPanel.Layer layer : layers) {
             Row row = new Row(layer.label, layer.label, false);
             row.on = ticked.contains(layer);
             row.whenClicked = () -> {
@@ -104,15 +108,18 @@ public class MapLayersPanel extends JPanel {
             };
             list.add(row);
         }
-        list.add(spacer());
-        heading("OVERLAY");
-        List<String> first = new ArrayList<>();
-        first.add(null);
-        first.addAll(overlays.getOrDefault("", List.of()));
-        for (String name : first) overlayRow(name, chosen, onOverlay);
+        boolean anyOverlay = overlays.values().stream().anyMatch(group -> !group.isEmpty());
+        if (anyOverlay) {
+            if (!layers.isEmpty()) list.add(spacer());
+            heading("HEATMAPS");
+            List<String> first = new ArrayList<>();
+            first.add(null);
+            first.addAll(overlays.getOrDefault("", List.of()));
+            for (String name : first) overlayRow(name, chosen, onOverlay);
+        }
         // The rest in dropdowns, open to begin with only if the chosen one is in it
         for (java.util.Map.Entry<String, List<String>> group : overlays.entrySet()) {
-            if (group.getKey().isEmpty()) continue;
+            if (group.getKey().isEmpty() || group.getValue().isEmpty()) continue;
             Group header = new Group(group.getKey());
             list.add(header);
             for (String name : group.getValue()) header.members.add(overlayRow(name, chosen, onOverlay));
@@ -337,11 +344,6 @@ public class MapLayersPanel extends JPanel {
             g2.drawString(text, tx, (h + g2.getFontMetrics().getAscent() - g2.getFontMetrics().getDescent()) / 2);
             g2.dispose();
         }
-    }
-
-    /** The height it would like, all of it showing. */
-    public int wantedHeight() {
-        return list.getPreferredSize().height + 4;
     }
 
     @Override

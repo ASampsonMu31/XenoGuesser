@@ -124,32 +124,69 @@ public final class HudStyle {
 
     // ------------------------------------------------------------------ Score panel
 
-    public static final int SCORE_W = 262, SCORE_H = 84;
+    public static final int SCORE_W = 470, SCORE_H = 84;
     /** Where the round's points fly to at the end of the results, relative to the panel. */
-    public static final int SCORE_TARGET_X = 160, SCORE_TARGET_Y = 50;
+    public static final int SCORE_TARGET_X = 250, SCORE_TARGET_Y = 50;
     /** Gap between the HUD panels and the edges of the screen. */
     public static final int HUD_MARGIN = 18;
+    // Each quarter's colour: light blue, green, yellow, pink
+    public static final Color[] QUARTER_COLOURS = {
+        new Color(120, 200, 255), new Color(110, 215, 125), new Color(250, 215, 70), new Color(250, 145, 200)
+    };
+    private static final String[] MONTHS = { "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC" };
 
-    public static void paintScorePanel(Graphics2D g, int round, int maxRounds, int score, Color body) {
+    /**
+     * The round counter (the quarter's three months as rounded tabs: this one in the quarter's
+     * colour, those gone by in it greyed, those to come dim), the money, and the quarter's
+     * target (green once reached).
+     */
+    public static void paintScorePanel(Graphics2D g, int quarter, int month, int score, int target, Color body) {
         panel(g, 0, 0, SCORE_W, SCORE_H, body);
-        // Round
-        label(g, "Round", 20, 28, 11f, LABEL);
-        g.setFont(font(Font.BOLD, 30f));
-        g.setColor(GOLD);
-        String r = String.format("%02d", round);
-        g.drawString(r, 20, 64);
-        float rw = g.getFontMetrics().stringWidth(r);
-        g.setFont(font(Font.PLAIN, 15f));
-        g.setColor(DIM);
-        g.drawString("/ " + maxRounds, 22 + rw, 64);
-        // Divider
+        Color colour = QUARTER_COLOURS[quarter];
+        label(g, "Quarter " + (quarter + 1), 20, 28, 11f, LABEL);
+        float tabW = 40f, tabH = 26f, gap = 6f, tabY = 40f;
+        Font monthFont = font(Font.BOLD, 12f);
+        for (int m = 0; m < 3; m++) {
+            float x = 20f + m * (tabW + gap);
+            java.awt.geom.RoundRectangle2D tab = new java.awt.geom.RoundRectangle2D.Float(x, tabY, tabW, tabH, 12f, 12f);
+            Color fill = m < month ? greyed(colour) : m == month ? colour : new Color(255, 255, 255, 18);
+            g.setColor(fill);
+            g.fill(tab);
+            g.setStroke(new BasicStroke(1.2f));
+            g.setColor(m > month ? new Color(120, 205, 235, 90) : new Color(255, 255, 255, 150));
+            g.draw(tab);
+            String name = MONTHS[quarter * 3 + m];
+            g.setFont(monthFont);
+            FontMetrics fm = g.getFontMetrics();
+            g.setColor(m > month ? DIM : new Color(20, 24, 32));
+            g.drawString(name, x + (tabW - fm.stringWidth(name)) / 2f, tabY + (tabH + fm.getAscent() - fm.getDescent()) / 2f);
+        }
+        // Dividers
         g.setColor(new Color(120, 205, 235, 70));
-        g.fill(new java.awt.geom.Rectangle2D.Float(100, 18, 1f, SCORE_H - 36));
-        // Score
-        label(g, "Total score", 118, 28, 11f, LABEL);
-        g.setFont(font(Font.BOLD, 30f));
-        g.setColor(VALUE);
-        g.drawString(String.format("%,d", score), 118, 64);
+        g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
+        g.fill(new java.awt.geom.Rectangle2D.Float(336, 18, 1f, SCORE_H - 36));
+        // Score, in dollars (spent in the shop), smaller should it grow too wide
+        label(g, "Score", 184, 28, 11f, LABEL);
+        money(g, score, 184, 336 - 184 - 12, VALUE);
+        // The quarter's target
+        label(g, "Target", 352, 28, 11f, LABEL);
+        money(g, target, 352, SCORE_W - 352 - 14, score >= target ? new Color(110, 225, 130) : GOLD);
+    }
+
+    /** A colour faded halfway towards grey and a little darker, for months gone by. */
+    private static Color greyed(Color c) {
+        float grey = (c.getRed() + c.getGreen() + c.getBlue()) / 3f;
+        return new Color(Math.round((c.getRed() + grey) * 0.5f * 0.8f), Math.round((c.getGreen() + grey) * 0.5f * 0.8f),
+                Math.round((c.getBlue() + grey) * 0.5f * 0.8f));
+    }
+
+    private static void money(Graphics2D g, int dollars, float x, float width, Color colour) {
+        String text = String.format("$%,d", dollars);
+        float size = 30f;
+        while (size > 14f && g.getFontMetrics(font(Font.BOLD, size)).stringWidth(text) > width) size -= 1f;
+        g.setFont(font(Font.BOLD, size));
+        g.setColor(colour);
+        g.drawString(text, x, 64);
     }
 
     // ------------------------------------------------------------------ FPS
@@ -279,6 +316,58 @@ public final class HudStyle {
         g.fill(south);
         g.setColor(new Color(200, 160, 70));
         g.fill(new java.awt.geom.Ellipse2D.Float(cx - size * 0.05f, cy - size * 0.05f, size * 0.1f, size * 0.1f));
+    }
+
+    /** A blue altimeter seen from above: a cream dial with ticks round three quarters of it and a red pointer. */
+    public static void paintAltimeterIcon(Graphics2D g, float x, float y, float size) {
+        float cx = x + size / 2f, cy = y + size / 2f, r = size * 0.46f;
+        g.setPaint(new GradientPaint(x, y, new Color(70, 120, 220), x + size, y + size, new Color(20, 50, 130)));
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - r, cy - r, r * 2, r * 2));
+        float f = r * 0.76f;
+        g.setColor(new Color(246, 240, 222));
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - f, cy - f, f * 2, f * 2));
+        g.setColor(new Color(40, 42, 50));
+        g.setStroke(new BasicStroke(size * 0.028f));
+        for (int i = 0; i <= 9; i++) {
+            double a = Math.toRadians(-135 + 30 * i);
+            float inner = i % 3 == 0 ? f * 0.66f : f * 0.8f;
+            g.draw(new java.awt.geom.Line2D.Float(cx + (float) Math.sin(a) * inner, cy - (float) Math.cos(a) * inner,
+                    cx + (float) Math.sin(a) * f * 0.94f, cy - (float) Math.cos(a) * f * 0.94f));
+        }
+        double a = Math.toRadians(40);
+        g.setColor(new Color(210, 45, 40));
+        g.setStroke(new BasicStroke(size * 0.05f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.draw(new java.awt.geom.Line2D.Float(cx, cy, cx + (float) Math.sin(a) * f * 0.75f, cy - (float) Math.cos(a) * f * 0.75f));
+        g.setColor(new Color(200, 160, 70));
+        g.fill(new java.awt.geom.Ellipse2D.Float(cx - size * 0.05f, cy - size * 0.05f, size * 0.1f, size * 0.1f));
+    }
+
+    /** An open brown book with a magnifying glass over it. */
+    public static void paintKitIcon(Graphics2D g, float x, float y, float size) {
+        // The book, open: a brown cover, two cream pages with lines of writing
+        float bx = x + size * 0.04f, by = y + size * 0.42f, bw = size * 0.78f, bh = size * 0.5f;
+        g.setColor(new Color(110, 62, 30));
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(bx, by, bw, bh, size * 0.06f, size * 0.06f));
+        g.setColor(new Color(240, 228, 198));
+        g.fill(new java.awt.geom.Rectangle2D.Float(bx + size * 0.04f, by + size * 0.04f, bw * 0.5f - size * 0.05f, bh - size * 0.08f));
+        g.fill(new java.awt.geom.Rectangle2D.Float(bx + bw * 0.5f + size * 0.01f, by + size * 0.04f, bw * 0.5f - size * 0.05f, bh - size * 0.08f));
+        g.setColor(new Color(120, 90, 60));
+        g.setStroke(new BasicStroke(size * 0.022f));
+        for (int i = 0; i < 4; i++) {
+            float ly = by + size * 0.1f + i * size * 0.08f;
+            g.draw(new java.awt.geom.Line2D.Float(bx + size * 0.08f, ly, bx + bw * 0.5f - size * 0.05f, ly));
+            g.draw(new java.awt.geom.Line2D.Float(bx + bw * 0.5f + size * 0.05f, ly, bx + bw - size * 0.08f, ly));
+        }
+        // The magnifying glass: a brass ring with a pale lens and a wooden handle
+        float lx = x + size * 0.6f, ly = y + size * 0.32f, lr = size * 0.24f;
+        g.setColor(new Color(90, 52, 24));
+        g.setStroke(new BasicStroke(size * 0.09f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.draw(new java.awt.geom.Line2D.Float(lx - lr * 0.75f, ly + lr * 0.75f, lx - lr * 1.75f, ly + lr * 1.75f));
+        g.setColor(new Color(190, 225, 240, 170));
+        g.fill(new java.awt.geom.Ellipse2D.Float(lx - lr, ly - lr, lr * 2, lr * 2));
+        g.setColor(new Color(215, 170, 80));
+        g.setStroke(new BasicStroke(size * 0.06f));
+        g.draw(new java.awt.geom.Ellipse2D.Float(lx - lr, ly - lr, lr * 2, lr * 2));
     }
 
     // ------------------------------------------------------------------ Map hint

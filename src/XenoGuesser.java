@@ -43,7 +43,7 @@ public class XenoGuesser extends JFrame {
   private final Set<Integer> keysDown = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   private final long worldSeed;
-  private final LoadingProgress loadingProgress = new LoadingProgress();
+  private LoadingProgress loadingProgress = new LoadingProgress();
   private LoadingScreen loadingScreen;
   private MainMenu mainMenu;
   private KeyAdapter escapeQuitListener;
@@ -307,6 +307,10 @@ public class XenoGuesser extends JFrame {
     glEventListener.setMinimap(minimap);
     glEventListener.setLoading(loadingProgress, this::onWorldReady);
     minimap.setOnSizeChanged(this::onMapChanged);
+    shopPanel = new ShopPanel(gameHUD);
+    quarterPanel = new QuarterPanel();
+    minimap.setOnProceedToShop(this::afterResults);
+    minimap.setProceedLabel(() -> gameHUD.isQuarterEnd() ? "End of Quarter" : "Proceed to Shop");
 
 
     canvas.addGLEventListener(glEventListener);
@@ -314,6 +318,9 @@ public class XenoGuesser extends JFrame {
 
     layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);
     layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);
+    // (the shop over the results, under the score)
+    layeredPane.add(shopPanel, Integer.valueOf(JLayeredPane.PALETTE_LAYER + 50));
+    layeredPane.add(quarterPanel, Integer.valueOf(JLayeredPane.PALETTE_LAYER + 60));
     layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);
     layoutComponents();
 
@@ -336,6 +343,8 @@ public class XenoGuesser extends JFrame {
     canvas.requestFocus();
     inGame = true;
     runHudTest();
+    // A shop before January (a HUD test run skips it)
+    if (System.getProperty("xenoguesser.hudtest") == null || System.getProperty("xenoguesser.hudtest").contains("firstshop")) openFirstShop();
     updateMouseMode();
   }
 
@@ -364,16 +373,24 @@ public class XenoGuesser extends JFrame {
           return true;
         }
         if (settingsOpen) return true;
+        // (the shop and the quarter's result take the mouse only)
+        if ((shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen())) return true;
         if (firstPress) {
           switch (code) {
             case KeyEvent.VK_M: minimap.toggleSize(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
             // The inventory: each item by its number
             case KeyEvent.VK_1: case KeyEvent.VK_NUMPAD1:
-              if (!minimap.isFullScreenRevealMode()) glEventListener.useCompass();
+              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(0);
               break;
             case KeyEvent.VK_2: case KeyEvent.VK_NUMPAD2:
-              if (!minimap.isFullScreenRevealMode()) glEventListener.useThermometer();
+              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(1);
+              break;
+            case KeyEvent.VK_3: case KeyEvent.VK_NUMPAD3:
+              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(2);
+              break;
+            case KeyEvent.VK_4: case KeyEvent.VK_NUMPAD4:
+              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(3);
               break;
             default: break;
           }
@@ -432,7 +449,7 @@ public class XenoGuesser extends JFrame {
   /** Takes or gives back the mouse to suit what is on screen. */
   private void updateMouseMode() {
     if (canvas == null || !canvas.isShowing()) return;
-    boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode();
+    boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode() || shopPanel.isOpen();
     boolean capture = inGame && !pointerNeeded && isFocused() && robot != null;
     if (capture == mouseCaptured) return;
     mouseCaptured = capture;
@@ -451,8 +468,116 @@ public class XenoGuesser extends JFrame {
     }
   }
 
+  // The shop, between a round's results and the next round
+  private ShopPanel shopPanel;
+
+  // Between a quarter's last results and the shop: whether its target was met
+  private QuarterPanel quarterPanel;
+  // Whether the shop open is one between rounds (closed as the next round starts), not the first
+  private boolean shopBetweenRounds;
+
+  /**
+   * The results' button: at the end of a quarter, whether its productivity target was met
+   * (failed, the game is lost; the last quarter passed, it's won), then on to the shop.
+   */
+  private void afterResults() {
+    if (!gameHUD.isQuarterEnd()) {
+      openShop();
+      return;
+    }
+    int money = gameHUD.getScore(), target = gameHUD.getTarget();
+    boolean passed = money >= target, won = passed && gameHUD.isLastRound();
+    quarterPanel.show(gameHUD.getQuarter(), money, target, gameHUD.isLastRound(), () -> {
+      quarterPanel.close();
+      if (!passed) endGame(false);
+      else if (won) endGame(true);
+      else openShop();
+    });
+    layoutComponents();
+  }
+
+  /** Opens the shop over the results; once the player has bought something or nothing, the next round is asked for. */
+  private void openShop() {
+    shopBetweenRounds = true;
+    shopPanel.open(glEventListener.shopOffers(gameHUD.getRound()), minimap::requestNextRound);
+    layoutComponents();
+  }
+
+  /** The shop before the first round (January): leaving it, the round (already loaded) begins. */
+  private void openFirstShop() {
+    shopBetweenRounds = false;
+    // (the money shown over it)
+    gameHUD.setVisible(true);
+    // (round 0: before the first round, where everything is free), with Xenocorp's word on it
+    ShopPanel shop = shopPanel;
+    Thread message = new Thread(() -> {
+      TransmissionMessage gift = TransmissionMessage.load(TransmissionMessage.GIFT, worldSeed);
+      SwingUtilities.invokeLater(() -> shop.playMessage(gift));
+    }, "gift-message");
+    message.setDaemon(true);
+    shopPanel.open(glEventListener.shopOffers(0), () -> {
+      shopPanel.close();
+      gameHUD.setVisible(false);
+      layoutComponents();
+      canvas.requestFocus();
+      updateMouseMode();
+    });
+    message.start();
+    layoutComponents();
+    updateMouseMode();
+  }
+
+  /** The game's over (the year won, or a quarter's target missed): says so, and goes back to the main menu. */
+  private void endGame(boolean won) {
+    System.out.println(won ? "You win" : "You lose");
+    glEventListener.stopMessage();
+    inGame = false;
+    FPSAnimator running = animator;
+    animator = null;
+    // (the animator is stopped off the UI thread, which it needs to finish its frame)
+    Thread stop = new Thread(() -> {
+      if (running != null && running.isStarted()) running.stop();
+      SwingUtilities.invokeLater(this::backToMenuFromGame);
+    }, "end-game");
+    stop.setDaemon(true);
+    stop.start();
+  }
+
+  private void backToMenuFromGame() {
+    for (java.awt.Component c : new java.awt.Component[] { canvas, minimap, minimap.getLayersPanel(), minimap.getPreviewCard(),
+        gameHUD, shopPanel, quarterPanel }) {
+      if (c != null && c.getParent() == layeredPane) layeredPane.remove(c);
+    }
+    canvas = null;
+    glEventListener = null;
+    minimap = null;
+    gameHUD = null;
+    shopPanel = null;
+    quarterPanel = null;
+    // (their GL context has gone with the 3D view)
+    Shader.forgetAll();
+    unlockWindowDragging();
+    mouseCaptured = false;
+    setCursor(Cursor.getDefaultCursor());
+    keysDown.clear();
+    loadingProgress = new LoadingProgress();
+    loadingScreen = null;
+    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
+    TransmissionMessage.prepare(worldSeed);
+    layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
+    layoutComponents();
+    layeredPane.revalidate();
+    layeredPane.repaint();
+  }
+
   private void onMapChanged() {
     gameHUD.setVisible(minimap.isFullScreenRevealMode());
+    // (the next round has begun)
+    if (!minimap.isFullScreenRevealMode() && shopPanel != null && shopPanel.isOpen() && shopBetweenRounds) {
+      shopPanel.close();
+      // April's begun: a message from Xenocorp
+      if (gameHUD.getRound() == 1 + GameHUD.ROUNDS_PER_QUARTER) glEventListener.startAprilMessage();
+    }
     // (the 3D view goes aside behind the results, and comes back for the next round)
     SwingUtilities.invokeLater(this::layoutComponents);
     updateMouseMode();
@@ -492,16 +617,35 @@ public class XenoGuesser extends JFrame {
         }
         case "settings": setSettingsOpen(true); break;
         case "thermometer": later(1200, () -> glEventListener.useThermometer()); break;
+        // lose: the game lost a moment in, back to the menu; restart: a new game from the menu after
+        case "lose": later(1500, () -> endGame(false)); break;
+        // april: April's message, as if April had just begun
+        case "april": later(1500, () -> glEventListener.startAprilMessage()); break;
+        case "restart": later(Integer.getInteger("xenoguesser.restartdelay", 5000), this::startSingleplayer); break;
+        // quarter: the end of a quarter's screen, as if its target were missed
+        case "quarter": later(1500, () -> {
+          quarterPanel.show(gameHUD.getQuarter(), gameHUD.getScore(), gameHUD.getTarget(), false, () -> quarterPanel.close());
+          layoutComponents();
+        }); break;
+        // (with -Dxenoguesser.unlockall, the third and fourth items: the altimeter and the identification kit)
+        case "altimeter": later(1200, () -> glEventListener.useItem(2)); break;
+        case "kit": later(1200, () -> glEventListener.useItem(3)); break;
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
         case "zoom": {
           String[] at = System.getProperty("xenoguesser.mapzoomat", "0.5,0.5").split(",");
           later(1500, () -> minimap.devZoom(8f, Float.parseFloat(at[0]), Float.parseFloat(at[1])));
           break;
         }
-        // guess: a guess two seconds in (-Dxenoguesser.guessdelay); next: Next Round pressed
+        // guess: a guess two seconds in (-Dxenoguesser.guessdelay); shop: Proceed to Shop pressed
+        // six seconds in (-Dxenoguesser.shopdelay); next: on to the next round, buying nothing,
         // twelve seconds in (-Dxenoguesser.nextdelay)
         case "guess": later(Integer.getInteger("xenoguesser.guessdelay", 2000), () -> minimap.devGuess()); break;
-        case "next": later(Integer.getInteger("xenoguesser.nextdelay", 12000), () -> minimap.devNextRound()); break;
+        case "shop": later(Integer.getInteger("xenoguesser.shopdelay", 6000), () -> minimap.devProceedToShop()); break;
+        case "next": later(Integer.getInteger("xenoguesser.nextdelay", 12000), () -> {
+          if (quarterPanel.isOpen() || shopPanel.isOpen()) return;
+          minimap.devProceedToShop();
+          if (shopPanel.isOpen()) shopPanel.buyNothing();
+        }); break;
         default: break;
       }
     }
@@ -568,13 +712,17 @@ public class XenoGuesser extends JFrame {
     }
     if (mainMenu != null) mainMenu.setBounds(0, top, paneWidth, paneHeight);
     if (loadingScreen != null) loadingScreen.setBounds(0, top, paneWidth, paneHeight);
+    if (shopPanel != null) shopPanel.setBounds(0, top, paneWidth, paneHeight);
+    if (quarterPanel != null) quarterPanel.setBounds(0, top, paneWidth, paneHeight);
     if (canvas == null) return;
 
     // While the cockpit is up the 3D view (drawn by the system, over everything) waits just off
     // the window's edge at full size, still drawing as the world loads, so it can't cover it
     boolean cockpit = (loadingScreen != null && loadingScreen.getParent() == layeredPane)
         // (and behind the results, while the next round is built behind them)
-        || (minimap != null && minimap.isFullScreenRevealMode());
+        || (minimap != null && minimap.isFullScreenRevealMode())
+        // (and behind the shop before the first round)
+        || (shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen());
     // (far off, so however quickly the window is pulled wider it's never seen)
     canvas.setBounds(cockpit ? paneWidth + 20000 : 0, top, paneWidth - 2, paneHeight - 2);
     // The map sized afresh for the space there is now
@@ -677,7 +825,8 @@ public class XenoGuesser extends JFrame {
         boolean shown = minimap.isLargeMap() && !minimap.isFullScreenRevealMode();
         layers.setVisible(shown);
         if (shown) {
-            int height = Math.min(layers.wantedHeight(), minimap.getHeight() - 12);
+            // (the map's full height, however few there are)
+            int height = minimap.getHeight() - 12;
             layers.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() + 6, MapLayersPanel.WIDTH, height);
             layers.revalidate();
         }

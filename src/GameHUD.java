@@ -3,12 +3,16 @@ import java.awt.Graphics2D;
 import javax.swing.JPanel;
 
 /**
- * The round and total score. During play the panel is drawn over the 3D view by the GL
- * HUD, which can be see-through; this Swing copy is shown only over the results screen,
- * which covers the 3D view, so the round's points have somewhere to land.
+ * The round, the money (score) and the quarter's productivity target. The game runs over a
+ * year in four quarters of three rounds each, a month a round; at the end of each quarter
+ * the money must have reached its target. During play the panel is drawn over the 3D view by
+ * the GL HUD, which can be see-through; this Swing copy is shown only over the results
+ * screen, which covers the 3D view, so the round's points have somewhere to land.
  */
 public class GameHUD extends JPanel {
-    private static final int MAX_ROUNDS = 20;
+    public static final int QUARTERS = 4, ROUNDS_PER_QUARTER = 3, ROUNDS = QUARTERS * ROUNDS_PER_QUARTER;
+    // The money needed at the end of each quarter
+    public static final int[] TARGETS = { 800, 2000, 4000, 10000 };
 
     private volatile int currentRound = 1;
     private volatile int totalAccumulatedScore = 0;
@@ -29,9 +33,46 @@ public class GameHUD extends JPanel {
         repaint();
     }
 
+    /** Takes money (score) spent in the shop. */
+    public void spend(int dollars) {
+        totalAccumulatedScore -= dollars;
+        version++;
+        repaint();
+    }
+
+    /** The player's score: the dollars they have to spend. */
+    public int getScore() {
+        return totalAccumulatedScore;
+    }
+
+    /** The round being played (or whose results are showing), from 1. */
+    public int getRound() {
+        return currentRound;
+    }
+
+    /** The quarter the round is in, from 0. */
+    public int getQuarter() {
+        return (currentRound - 1) / ROUNDS_PER_QUARTER;
+    }
+
+    /** The money needed by the end of this quarter. */
+    public int getTarget() {
+        return TARGETS[getQuarter()];
+    }
+
+    /** Whether this round is the last of its quarter (so the target is checked after it). */
+    public boolean isQuarterEnd() {
+        return currentRound % ROUNDS_PER_QUARTER == 0;
+    }
+
+    /** Whether this is the last round of the year. */
+    public boolean isLastRound() {
+        return currentRound >= ROUNDS;
+    }
+
     /** Advances the global game state round loop index. */
     public void advanceRound() {
-        if (currentRound < MAX_ROUNDS) {
+        if (currentRound < ROUNDS) {
             currentRound++;
         }
         version++;
@@ -52,7 +93,7 @@ public class GameHUD extends JPanel {
 
     /** Paints the panel; shared by this component and the GL HUD. */
     public void paintPanel(Graphics2D g, boolean overScene) {
-        HudStyle.paintScorePanel(g, currentRound, MAX_ROUNDS, totalAccumulatedScore,
+        HudStyle.paintScorePanel(g, getQuarter(), (currentRound - 1) % ROUNDS_PER_QUARTER, totalAccumulatedScore, getTarget(),
                 overScene ? HudStyle.GLASS : HudStyle.GLASS_SOLID);
     }
 
