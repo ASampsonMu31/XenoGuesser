@@ -1,0 +1,80 @@
+#version 330 core
+
+in vec2 uv;
+out vec4 fragColour;
+
+uniform sampler2D skyTexture;
+uniform int hasSkyTexture;
+uniform vec3 cameraPosition;
+uniform vec3 cameraForward;
+uniform vec3 cameraRight;
+uniform vec3 cameraUp;
+uniform float aspectRatio;
+uniform float time;
+uniform float cloudiness;
+uniform vec3 fallbackSky;
+uniform float planetRadius;
+
+const float PI = 3.14159265359;
+
+float hash31(vec3 p) {
+    p = fract(p * 0.1031);
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+
+float noise3(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash31(i);
+    float b = hash31(i + vec3(1, 0, 0));
+    float c = hash31(i + vec3(0, 1, 0));
+    float d = hash31(i + vec3(1, 1, 0));
+    float e = hash31(i + vec3(0, 0, 1));
+    float f1 = hash31(i + vec3(1, 0, 1));
+    float g = hash31(i + vec3(0, 1, 1));
+    float h = hash31(i + vec3(1, 1, 1));
+    return mix(mix(mix(a, b, f.x), mix(c, d, f.x), f.y),
+            mix(mix(e, f1, f.x), mix(g, h, f.x), f.y), f.z);
+}
+
+float cloudNoise(vec3 p) {
+    float value = 0.0;
+    float amplitude = 0.55;
+    for (int octave = 0; octave < 4; octave++) {
+        value += noise3(p) * amplitude;
+        p = p * 2.03 + vec3(17.3, 9.1, 5.7);
+        amplitude *= 0.5;
+    }
+    return value / 0.9375;
+}
+
+void main() {
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec3 ray = normalize(cameraForward + cameraRight * (ndc.x * aspectRatio * 0.41421356)
+            + cameraUp * (ndc.y * 0.41421356));
+    vec2 skyUv = vec2(atan(ray.x, ray.z) / (2.0 * PI) + 0.5,
+            asin(clamp(ray.y, -1.0, 1.0)) / PI + 0.5);
+    vec3 sky = hasSkyTexture != 0 ? texture(skyTexture, skyUv).rgb : fallbackSky;
+
+    float cloudRadius = planetRadius + 1500.0;
+    float b = dot(cameraPosition, ray);
+    float discriminant = b * b + cloudRadius * cloudRadius - dot(cameraPosition, cameraPosition);
+    if (discriminant > 0.0) {
+        float distanceToClouds = -b + sqrt(discriminant);
+        vec3 cloudPoint = cameraPosition + ray * distanceToClouds;
+        float drift = time * 0.000015;
+        float cosine = cos(drift), sine = sin(drift);
+        cloudPoint.xz = mat2(cosine, -sine, sine, cosine) * cloudPoint.xz;
+        float density = cloudNoise(cloudPoint * 0.0016);
+        float coverage = clamp(cloudiness, 0.0, 1.0);
+        float cloud = smoothstep(0.4 - coverage * 0.2, 0.62 - coverage * 0.2, density);
+        float horizonFade = smoothstep(-0.08, 0.12, dot(normalize(cameraPosition), ray));
+        cloud *= horizonFade;
+        float illumination = 0.58 + 0.42 * max(ray.y, 0.0);
+        vec3 cloudColour = vec3(0.82, 0.84, 0.87) * illumination;
+        sky = mix(sky, cloudColour, cloud * (0.7 + coverage * 0.3));
+    }
+    fragColour = vec4(sky, 1.0);
+}

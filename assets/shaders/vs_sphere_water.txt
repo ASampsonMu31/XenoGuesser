@@ -1,0 +1,28 @@
+#version 330 core
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 texCoord;
+
+uniform mat4 viewProjection;
+uniform vec3 sphereCamera;
+uniform float planetRadius;
+uniform float seaLevel;
+uniform float time;
+
+out vec3 viewPosition;
+out vec3 surfaceNormal;
+out float waveHeight;
+
+void main() {
+    vec3 direction = normalize(position);
+    float phase = time * 0.7;
+    float wave = 0.32 * sin(dot(direction, normalize(vec3(1.0, 0.3, 0.2))) * planetRadius * 0.026 + phase)
+               + 0.18 * sin(dot(direction, normalize(vec3(-0.2, 0.7, 1.0))) * planetRadius * 0.061 - phase * 1.4)
+               + 0.08 * sin(dot(direction, normalize(vec3(0.6, -0.4, 0.8))) * planetRadius * 0.13 + phase * 2.1);
+    vec3 worldPosition = direction * (planetRadius + seaLevel + wave);
+    viewPosition = worldPosition - sphereCamera;
+    surfaceNormal = direction;
+    waveHeight = wave;
+    gl_Position = viewProjection * vec4(viewPosition, 1.0);
+}

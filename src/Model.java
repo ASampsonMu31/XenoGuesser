@@ -85,6 +85,11 @@ public class Model {
     renderer.render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion, camera);
   }
 
+  public void renderSphereNative(GL3 gl, Vector3 ambientLight, float nightProportion) {
+    renderer.renderSphereNative(gl, mesh, modelMatrix, shader, material, lights,
+            ambientLight, nightProportion, camera);
+  }
+
   public void render(GL3 gl, Matrix4 modelMatrix, Vector3 ambientLight, float nightProportion) {
     if (mesh_null()) {
       System.out.println("Error: null in model render");
@@ -123,6 +128,14 @@ public class Model {
         alternativeShader.setInt(gl, "diffuseMap", 0);
     }
     
+    mesh.render(gl);
+  }
+
+  public void renderSphereNativeDepthPass(GL3 gl, Shader alternativeShader, Matrix4 viewProjection) {
+    if (mesh == null) return;
+    Matrix4 identity = new Matrix4(1);
+    alternativeShader.setFloatArray(gl, "model", identity.toFloatArrayForGLSL());
+    alternativeShader.setFloatArray(gl, "mvpMatrix", viewProjection.toFloatArrayForGLSL());
     mesh.render(gl);
   }
 }

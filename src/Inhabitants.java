@@ -140,6 +140,7 @@ public class Inhabitants {
     private static final float HOP_SECONDS = 0.6f;
     // Where the viewer is: someone hopelessly stuck may be quietly moved on, out of sight
     private float viewerX, viewerZ;
+    private SpherePosition sphereViewer;
     private Collision collision;
 
     /** Shares the world's solid things, so people walk round them and not through. */
@@ -681,7 +682,7 @@ public class Inhabitants {
         if (booths == null) booths = infrastructure.borderBooths();
         for (int i = 0; i < booths.size(); i++) {
             float[] b = booths.get(i);
-            boolean near = Math.hypot(b[0] - viewerX, b[1] - viewerZ) < ACTIVE_RADIUS;
+            boolean near = distanceToViewer(b[0], b[1]) < ACTIVE_RADIUS;
             if (!near) {
                 guards.remove(i);
                 continue;
@@ -821,8 +822,19 @@ public class Inhabitants {
     // ==========================================
 
     public void update(float dt, float viewerX, float viewerZ) {
+        update(dt, viewerX, viewerZ, null);
+    }
+
+    /** Native-world update: range decisions use true spherical distance; chart values remain for legacy road APIs. */
+    public void update(float dt, SpherePosition viewer) {
+        double[] chart = Planet.mercatorPosition(viewer);
+        update(dt, (float) chart[0], (float) chart[2], viewer);
+    }
+
+    private void update(float dt, float viewerX, float viewerZ, SpherePosition sphereViewer) {
         this.viewerX = viewerX;
         this.viewerZ = viewerZ;
+        this.sphereViewer = sphereViewer == null ? Planet.spherePosition(viewerX, viewerZ, 0.0) : sphereViewer;
         int cellX = (int) Math.floor(viewerX / CELL), cellZ = (int) Math.floor(viewerZ / CELL);
         int reach = (int) Math.ceil(ACTIVE_RADIUS / CELL);
         if (cellX != lastCellX || cellZ != lastCellZ) {
@@ -890,11 +902,10 @@ public class Inhabitants {
         allVehicles.addAll(throughCars);
         // People too far off to be seen are moved on a quarter as often (by four times as much)
         frame++;
-        float far2 = (DRAW_DISTANCE + 100f) * (DRAW_DISTANCE + 100f);
+        float farDistance = DRAW_DISTANCE + 100f;
         for (List<Person> list : peopleByCell.values()) {
             for (Person p : list) {
-                float dx = p.x - viewerX, dz = p.z - viewerZ;
-                if (dx * dx + dz * dz > far2 && p.phase != Phase.DRIVING) {
+                if (distanceToViewer(p.x, p.z) > farDistance && p.phase != Phase.DRIVING) {
                     if (((frame + System.identityHashCode(p)) & 3) != 0) continue;
                     live(p, Math.min(step * 4f, 0.25f));
                 } else {
@@ -903,7 +914,7 @@ public class Inhabitants {
             }
         }
         for (Person p : roaming) live(p, step);
-        vehicles.update(allVehicles, step, viewerX, viewerZ);
+        vehicles.update(allVehicles, step, viewerX, viewerZ, this.sphereViewer);
         swingDoors(step);
         staffBooths();
     }
@@ -1083,7 +1094,11 @@ public class Inhabitants {
     private final Random trafficRand = new Random(0x7AFF1CL);
 
     private boolean outOfSight(float x, float z) {
-        return Math.hypot(x - viewerX, z - viewerZ) > Vehicles.OUT_OF_SIGHT;
+        return distanceToViewer(x, z) > Vehicles.OUT_OF_SIGHT;
+    }
+
+    private double distanceToViewer(float x, float z) {
+        return Planet.surfaceDistance(sphereViewer, Planet.spherePosition(x, z, 0.0));
     }
 
     /**
@@ -1096,7 +1111,7 @@ public class Inhabitants {
         // Gone far off, or there and out of sight: no longer kept
         for (int i = throughCars.size() - 1; i >= 0; i--) {
             Vehicles.Vehicle v = throughCars.get(i);
-            if (Math.hypot(v.x() - viewerX, v.z() - viewerZ) > Vehicles.OUT_OF_SIGHT * 1.6f || (arrived.contains(v) && outOfSight(v.x(), v.z()))) {
+            if (distanceToViewer(v.x(), v.z()) > Vehicles.OUT_OF_SIGHT * 1.6f || (arrived.contains(v) && outOfSight(v.x(), v.z()))) {
                 arrived.remove(v);
                 throughCars.remove(i);
                 travellers.remove(i);
@@ -1147,7 +1162,7 @@ public class Inhabitants {
             // Most come by on the way across to the far side; the rest head off any way at all
             boolean across = trafficRand.nextFloat() < 0.75f;
             float[] to = across ? farSide(from) : infrastructure.roadPointBetween(from[0], from[1], 1200f, 2600f, trafficRand);
-            if (to == null || Math.hypot(to[0] - from[0], to[1] - from[1]) < 600f) continue;
+            if (to == null || Planet.surfaceDistance(from[0], from[1], to[0], to[1]) < 600f) continue;
             // Either way along it, as likely as each other, whichever end happens to be nearer the roads
             // round about (both ends out of sight)
             float[] start = from, end = to;
@@ -1982,7 +1997,7 @@ public class Inhabitants {
             p.steerTimer = 0f;
         } else if (p.stuckCount <= 5) {
             replan(p);
-        } else if (Math.hypot(p.x - viewerX, p.z - viewerZ) > DRAW_DISTANCE) {
+        } else if (distanceToViewer(p.x, p.z) > DRAW_DISTANCE) {
             // Hopeless, and no one to see: on from the next stretch of street
             float[] target = p.route.get(p.next);
             p.x = target[0];
@@ -2172,14 +2187,34 @@ public class Inhabitants {
 
     public void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
                        float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
+        render(gl, viewProjection, frustum, viewPos, sunPos, sunColour, ambient,
+                skyRotation, sky, time, false, null);
+    }
+
+    public void renderSphereNative(GL3 gl, Camera camera, Vector3 sunDirection, float[] sunColour,
+            Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
+        if (shader == null) return;
+        SphereRender.configure(gl, shader, camera, camera.getSphereViewProjection(),
+                sunDirection, sunColour, ambient, skyRotation);
+        render(gl, camera.getSphereViewProjection(), null, camera.getPosition(),
+                new Vector3(0f, 0f, 0f), sunColour, ambient, skyRotation, sky, time,
+                true, camera.getSpherePosition());
+        SphereRender.reset(gl, shader);
+    }
+
+    private void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
+            float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time,
+            boolean sphereNative, SpherePosition sphereEye) {
         if (shader == null) return;
         shader.use(gl);
-        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        shader.setVec3(gl, "viewPos", viewPos);
-        shader.setVec3(gl, "sunPos", sunPos);
-        shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
-        shader.setVec3(gl, "ambientLight", ambient);
+        if (!sphereNative) {
+            shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+            gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+            shader.setVec3(gl, "viewPos", viewPos);
+            shader.setVec3(gl, "sunPos", sunPos);
+            shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
+            shader.setVec3(gl, "ambientLight", ambient);
+        }
         shader.setFloat(gl, "waterLevel", -1e9f);
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
         shader.setFloat(gl, "gloss", 0.2f);
@@ -2201,9 +2236,18 @@ public class Inhabitants {
                 float px = seat != null ? seat[0] : p.x, pz = seat != null ? seat[2] : p.z;
                 float dx = px - viewPos.x, dz = pz - viewPos.z;
                 float drawn = seat != null ? Vehicles.DRAW_DISTANCE : DRAW_DISTANCE;
-                if (dx * dx + dz * dz > drawn * drawn) continue;
                 float ground = seat != null ? seat[1] - height * 0.5f : standingHeight(p);
-                if (!frustum.intersectsSphere(px, ground + height * 0.5f, pz, height)) continue;
+                if (sphereNative) {
+                    SpherePosition personPosition = Planet.spherePosition(px, pz, ground + height * 0.5f);
+                    double ex = personPosition.x() - sphereEye.x();
+                    double ey = personPosition.y() - sphereEye.y();
+                    double ez = personPosition.z() - sphereEye.z();
+                    if (ex * ex + ey * ey + ez * ez > drawn * drawn) continue;
+                } else {
+                    if (dx * dx + dz * dz > drawn * drawn) continue;
+                    if (!frustum.intersectsSphere(px, ground + height * 0.5f, pz, height)) continue;
+                }
+                if (sphereNative) shader.setVec3(gl, "sphereChartAnchor", new Vector3(px, 0f, pz));
                 pose(p, time, seat);
                 gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
                 drawPerson(gl, p, p.home.nationId, dx * dx + dz * dz < 260f * 260f);
@@ -2213,18 +2257,30 @@ public class Inhabitants {
         for (Map.Entry<Integer, Person> entry : guards.entrySet()) {
             Person g = entry.getValue();
             float dx = g.x - viewPos.x, dz = g.z - viewPos.z;
-            if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
             float ground = standingHeight(g);
-            if (!frustum.intersectsSphere(g.x, ground + height * 0.5f, g.z, height)) continue;
+            if (sphereNative) {
+                SpherePosition guardPosition = Planet.spherePosition(g.x, g.z, ground + height * 0.5f);
+                double ex = guardPosition.x() - sphereEye.x();
+                double ey = guardPosition.y() - sphereEye.y();
+                double ez = guardPosition.z() - sphereEye.z();
+                if (ex * ex + ey * ey + ez * ez > DRAW_DISTANCE * DRAW_DISTANCE) continue;
+            } else {
+                if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
+                if (!frustum.intersectsSphere(g.x, ground + height * 0.5f, g.z, height)) continue;
+            }
+            if (sphereNative) shader.setVec3(gl, "sphereChartAnchor", new Vector3(g.x, 0f, g.z));
             pose(g, time, null);
             gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
             drawPerson(gl, g, guardNations.get(entry.getKey()), dx * dx + dz * dz < 260f * 260f);
         }
         shader.setFloat(gl, "gloss", 0.55f);
-        vehicles.render(gl, shader, allVehicles, frustum, viewPos.x, viewPos.z, Vehicles.DRAW_DISTANCE);
+        vehicles.render(gl, shader, allVehicles, frustum, viewPos.x, viewPos.z, Vehicles.DRAW_DISTANCE,
+                sphereNative, sphereEye);
         shader.setFloat(gl, "gloss", 0.2f);
-        renderDoors(gl, bonesLocation, frustum, viewPos);
-        renderBorderLights(gl, bonesLocation, frustum, viewPos);
+        if (!sphereNative) {
+            renderDoors(gl, bonesLocation, frustum, viewPos);
+            renderBorderLights(gl, bonesLocation, frustum, viewPos);
+        }
         gl.glEnable(GL.GL_CULL_FACE);
     }
 

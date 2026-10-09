@@ -16,6 +16,15 @@ public class Renderer {
     shader.setVec3(gl, "viewPos", camera.getPosition());
   }
 
+  private void doVertexShaderMatrices(GL3 gl, Shader shader, Matrix4 modelMatrix,
+                                     Matrix4 viewProjection, Vector3 viewPosition, boolean modelAppliedInVertexShader) {
+    shader.setFloatArray(gl, "model", modelMatrix.toFloatArrayForGLSL());
+    Matrix4 mvpMatrix = modelAppliedInVertexShader
+            ? viewProjection : Matrix4.multiply(viewProjection, modelMatrix);
+    shader.setFloatArray(gl, "mvpMatrix", mvpMatrix.toFloatArrayForGLSL());
+    shader.setVec3(gl, "viewPos", viewPosition);
+  }
+
   // Uniform names for each light, made once
   private static final String[][] LIGHT_NAMES = new String[64][3];
   static {
@@ -123,11 +132,39 @@ public class Renderer {
   public void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, 
                      Material material, Light[] lights, Vector3 ambientLight, 
                      float nightProportion, Camera camera) {
+    render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion,
+            camera, camera.getViewProjection(), camera.getPosition(), false);
+  }
+
+  public void renderSphereNative(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader,
+                                 Material material, Light[] lights, Vector3 ambientLight,
+                                 float nightProportion, Camera camera) {
+    SpherePosition spherePosition = camera.getSpherePosition();
+    Vector3 mapPosition = camera.getPosition();
+    double longitudeOffset = Math.atan2(spherePosition.z(), spherePosition.x())
+            - mapPosition.x / Planet.radius();
+    longitudeOffset = Math.atan2(Math.sin(longitudeOffset), Math.cos(longitudeOffset));
     shader.use(gl);
-    doVertexShaderMatrices(gl, shader, modelMatrix, camera);
+    shader.setInt(gl, "sphereNativeTerrain", 1);
+    shader.setVec3(gl, "sphereCamera", new Vector3((float) spherePosition.x(),
+            (float) spherePosition.y(), (float) spherePosition.z()));
+    shader.setFloat(gl, "planetRadius", (float) Planet.radius());
+    shader.setFloat(gl, "sphereLongitudeOffset", (float) longitudeOffset);
+    render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion,
+            camera, camera.getSphereViewProjection(), new Vector3(0f, 0f, 0f), true);
+  }
+
+  private void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader,
+                      Material material, Light[] lights, Vector3 ambientLight,
+                      float nightProportion, Camera camera, Matrix4 viewProjection,
+                      Vector3 viewPosition, boolean sphereNative) {
+    shader.use(gl);
+    doVertexShaderMatrices(gl, shader, modelMatrix, viewProjection, viewPosition, sphereNative);
     doAmbientLight(gl, shader, ambientLight);
-    doLights(gl, shader, lights);
+    if (sphereNative) shader.setInt(gl, "numLights", 0);
+    else doLights(gl, shader, lights);
     doBasicMaterial(gl, shader, material);
+    shader.setInt(gl, "useDiffuseTexture", material.diffuseMapExists() ? 1 : 0);
     
     if (material.diffuseMapExists()) {
       Texture dm = material.getDiffuseMap();

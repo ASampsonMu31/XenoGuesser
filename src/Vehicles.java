@@ -1,4 +1,5 @@
 import com.jogamp.opengl.GL3;
+import com.xenoguesser.math.Vector3;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -154,6 +155,7 @@ public final class Vehicles {
     private final Map<Long, boolean[]> slotsTaken = new HashMap<>();
     private Collision collision;
     private float viewerX, viewerZ;
+    private SpherePosition sphereViewer;
     private final float[] bones = new float[OrganismSpecies.MAX_BONES * 16];
 
     public Vehicles(long seed, int nationCount, float personHeight, InfrastructureManager infrastructure, PerlinNoise terrainNoise) {
@@ -770,8 +772,16 @@ public final class Vehicles {
 
     /** Moves every vehicle on, and lists them all as solid for this frame. */
     public void update(List<Vehicle> all, float dt, float viewerX, float viewerZ) {
+        update(all, dt, viewerX, viewerZ, null);
+    }
+
+    /** Updates vehicles using true surface distance for viewer-relative simulation decisions. */
+    public void update(List<Vehicle> all, float dt, float viewerX, float viewerZ, SpherePosition sphereViewer) {
         this.viewerX = viewerX;
         this.viewerZ = viewerZ;
+        this.sphereViewer = sphereViewer == null
+                ? Planet.spherePosition(viewerX, viewerZ, 0.0)
+                : sphereViewer;
         for (Vehicle v : all) {
             if (!v.parked) step(v, all, dt);
             else if (v.settling) settle(v, dt);
@@ -1024,7 +1034,8 @@ public final class Vehicles {
                 if (!Float.isNaN(lateral) && Math.abs(lateral) > at[3] - v.width - 2f) v.detourSide = lateral > 0f ? -1 : 1;
             } else if (v.stuck > (obstacle ? 4f : 10f)) {
                 // Still held up after that: out of sight it moves on; in sight it edges through
-                if (Math.hypot(v.x - viewerX, v.z - viewerZ) > OUT_OF_SIGHT && !final_) {
+                if (Planet.surfaceDistance(sphereViewer,
+                        Planet.spherePosition(v.x, v.z, 0.0)) > OUT_OF_SIGHT && !final_) {
                     float[] p = target(v);
                     v.x = p[0];
                     v.z = p[1];
@@ -1146,13 +1157,24 @@ public final class Vehicles {
      * Draws the vehicles near enough to see, with the organism shader already set up: body
      * in its colour and pattern, glass, trim and tyres, the wheels turned as far as it has gone.
      */
-    public void render(GL3 gl, Shader shader, List<Vehicle> all, Frustum frustum, float viewX, float viewZ, float drawDistance) {
+    public void render(GL3 gl, Shader shader, List<Vehicle> all, Frustum frustum, float viewX, float viewZ,
+            float drawDistance, boolean sphereNative, SpherePosition sphereEye) {
         int bonesLocation = gl.glGetUniformLocation(shader.getID(), "bones");
         for (Vehicle v : all) {
             float dx = v.x - viewX, dz = v.z - viewZ;
-            if (dx * dx + dz * dz > drawDistance * drawDistance) continue;
             float ground = standingHeight(v);
-            if (!frustum.intersectsSphere(v.x, ground + v.height * 0.5f, v.z, v.length * 0.6f)) continue;
+            if (sphereNative) {
+                SpherePosition vehiclePosition = Planet.spherePosition(v.x, v.z, ground + v.height * 0.5f);
+                double ex = vehiclePosition.x() - sphereEye.x();
+                double ey = vehiclePosition.y() - sphereEye.y();
+                double ez = vehiclePosition.z() - sphereEye.z();
+                double reach = drawDistance + v.length * 0.6f;
+                if (ex * ex + ey * ey + ez * ez > reach * reach) continue;
+            } else {
+                if (dx * dx + dz * dz > drawDistance * drawDistance) continue;
+                if (!frustum.intersectsSphere(v.x, ground + v.height * 0.5f, v.z, v.length * 0.6f)) continue;
+            }
+            if (sphereNative) shader.setVec3(gl, "sphereChartAnchor", new Vector3(v.x, 0f, v.z));
             List<float[]> hubs = hubsOf(v);
             float s = v.length / (KIND_SIZE[v.kind][0] * scale);
             float[] body = Affine.multiply(Affine.translation(v.x, ground, v.z),

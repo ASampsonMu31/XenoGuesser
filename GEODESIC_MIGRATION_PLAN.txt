@@ -1,0 +1,187 @@
+GEODESIC WORLD MIGRATION PLAN
+=============================
+Branch: TrueSphereAttempt (started by GitHub Copilot; Claude continues it)
+Goal:   one latitude-independent 3D sphere world on the geodesic chunk grid.
+        The Mercator chart survives ONLY for drawing the minimap/heatmaps and
+        for converting a map click into a guess. Nothing in the live world uses it.
+Why:    method 1 (Mercator chart + per-latitude stretch, branch Claude5) works but
+        near 70 degrees the chart stretches about 3x, so streaming and conversions
+        cost far too much. Areas around 70 degrees matter to gameplay.
+
+HOW TO USE THIS FILE
+- Read this first at the start of every session; do not re-explore the codebase.
+- Work the phases in order. Tick [x] items as they land and add a line to the
+  LOG at the bottom (date, what was done, anything surprising).
+- If a decision changes, edit the DECISIONS section rather than adding a
+  contradiction lower down.
+- One phase (or part of one) per conversation, then start a fresh conversation:
+  long conversations cost more usage per message.
+- Effort: medium for porting; high only for Phase 1 design and for a bug that
+  survives two medium attempts.
+
+-------------------------------------------------------------------------------
+DECISIONS (settled; change here if they change)
+-------------------------------------------------------------------------------
+D1  Keep Copilot's foundation: SpherePosition (double, planet-centred
+    Cartesian), GeodesicChunkGrid (icosahedral), geodesic terrain/water
+    streaming, GeodesicCollision, sphere camera, camera-relative rendering
+    (sphereCamera uniform), SphereSkyRenderer, SphereWeather.
+D2  Do NOT keep Copilot's simplified stand-ins as the final systems:
+    GeodesicRoadMesh and GeodesicSettlementMesh get replaced by the real
+    InfrastructureManager ported to the sphere, then deleted.
+D3  Port by LOCAL TANGENT FRAMES, not rewrites. A frame = origin SpherePosition +
+    east/north/up unit vectors. Existing flat 2D code (house building, road
+    meshing, paint, fences, steering, collision tests) runs in metres-like local
+    (x, z) inside a frame and the results are lifted to the sphere with
+    frame.toWorld(x, y, z). On a 15 km round planet a frame is accurate to
+    a few cm over ~300 m, which is plenty for one house or road segment.
+D4  Plan globally on the sphere, build locally. Road networks and settlements are
+    planned with great-circle geometry on SpherePositions (or unit directions);
+    each piece (road segment, house, sign, booth) gets its own frame at its
+    own position. No piece spans more than one frame.
+D5  Spatial lookups (segmentsNear, housesNear, borders, doorways, collision) are
+    keyed by geodesic cell id (GeodesicChunkGrid at a fixed level), searching
+    the cell and its neighbours. No (x, z) chunk grids remain.
+D6  Every chart reference outside the map is a bug: Planet.stretch, trueArea,
+    seenFrom, latitude-for-placement, the shaders' onSphere/bend/curve uniforms,
+    Frustum's chart conversion. Delete these as each consumer is ported.
+D7  Noise and region factors are sampled from 3D unit directions (no seams, no
+    pole pinching). Keep the old 2D sampling only where the map needs it.
+D8  One render path. When a system is ported, delete its flat-world branch in
+    the shaders and GLEventListener in the same change. No dual flags left over
+    at the end (sphereNativeTerrain etc. go).
+D9  Units: true metres everywhere (PlayerBody.METRE = 10 game units/metre stays).
+
+-------------------------------------------------------------------------------
+PHASE 0  BASELINE  (short)
+-------------------------------------------------------------------------------
+[ ] Commit the branch's current uncommitted state as "Copilot geodesic WIP
+    baseline" so there is a safe point to return to.
+[ ] Clean build (mvn clean compile -q) and one launch at the equator and one at
+    ~70 degrees; screenshot both. Record in LOG what renders, what is missing,
+    what crashes. No fixing yet.
+[ ] Grep inventory (one pass, save counts to LOG): uses of Planet.stretch /
+    trueArea / seenFrom / latitude / chartX/chartZ, the old (x, z) chunk keys,
+    and shader uniforms bend/curveCentre/curvature/curveDown/sphereNativeTerrain.
+    This list is the to-do list for D6/D8.
+
+-------------------------------------------------------------------------------
+PHASE 1  CORE FRAME TOOLKIT  (high effort, small code; everything depends on it)
+-------------------------------------------------------------------------------
+[ ] SphereFrame class: origin, east, north, up; toWorld(x,y,z), toLocal(pos),
+    localDirection/worldDirection, heading helpers; built from any
+    SpherePosition. Handles the poles (pick east from a fixed reference axis
+    when near them).
+[ ] Surface helpers in Planet (or a SphereMath class): unit direction <->
+    SpherePosition at a height, great-circle distance, bearing, move along
+    bearing by distance, slerp, nearest point on a great-circle arc.
+[ ] Terrain height at a SpherePosition (one function, used by everything).
+[ ] Geodesic spatial index: generic CellIndex<T> keyed by GeodesicChunkGrid
+    cell id at a fixed level, with near(position, radiusMetres).
+[ ] Small unit-test style check (a main method or test) for frame round trips
+    at the equator, 70 degrees and a pole.
+
+-------------------------------------------------------------------------------
+PHASE 2  WORLD PLAYER LOOP ON ONE PATH
+-------------------------------------------------------------------------------
+[ ] Player, camera, collision, jumping fully on SpherePosition + local frame
+    (Copilot did most of this: verify, remove any chart fallbacks).
+[ ] Spawn, landing pod (LandingPod builds in a frame at the spawn point).
+[ ] Grass, rocks, flora placement sampled per geodesic cell (counts per cell;
+    cells are near-equal area so no trueArea factors).
+[ ] Animals (OrganismManager): finish the port, delete chart branches.
+[ ] Shaders: delete onSphere/bend/curve code paths for the ported models.
+CHECK: equator and 70 degrees look and walk the same; frame time flat.
+
+-------------------------------------------------------------------------------
+PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
+-------------------------------------------------------------------------------
+3a Planning on the sphere
+[ ] Settlements placed as SpherePositions (SettlementManager), urbanness
+    looked up by direction.
+[ ] Nations: getNationAt(direction) (nation map sampled in 3D or via the
+    existing map lookup through a direction -> map conversion; map stays the
+    authority for borders so the minimap matches).
+[ ] Road network (RoadPath) as sequences of SpherePositions; segment lengths
+    and smoothing by great-circle maths. Border straightening the same way.
+3b Building in frames
+[ ] RoadSegment gets a frame at its midpoint; offsetEdge/miterOffset/
+    appendRoadSegment/paint/guard rails/culdesacs run in that frame. Junction
+    tests convert the other segment into this segment's frame.
+[ ] House gets a frame at its position; localToWorld/worldToLocal/bake/
+    houseVertex become frame.toWorld/toLocal. House-building code itself
+    should barely change.
+[ ] Fences, driveways, shop fronts, signs, flags, booths, traffic lights,
+    crossover lines: frame of their own house/segment/check.
+[ ] Spatial queries (segmentsNear, housesNear, clearedAt, roadAt, roadDepth,
+    walkingSurfaceY, doorways, border checks) on CellIndex (D5).
+[ ] Batching: NationBatch meshes built per geodesic cell in camera-relative
+    world coordinates (follow how Copilot's terrain chunks do it).
+[ ] Delete GeodesicRoadMesh, GeodesicSettlementMesh and their fields/futures
+    in XenoGuesser_GLEventListener.
+CHECK: a town at the equator and one at ~70 degrees; roads, houses, paint,
+fences, signs, borders all present and true size; no gaps at cell borders.
+
+-------------------------------------------------------------------------------
+PHASE 4  VEHICLES AND PEOPLE
+-------------------------------------------------------------------------------
+[ ] Vehicles: position as SpherePosition, heading as a direction in the local
+    frame at its position (re-derived every step; parallel-transport the
+    heading as it moves). Routes as SpherePositions. Steering, following,
+    overtaking maths unchanged in the vehicle's current frame.
+[ ] Inhabitants: same pattern; streetWalk, detours, hops, doors, guards.
+[ ] Remove all Planet.stretch uses added by method 1 (they are not on this
+    branch, but check nothing was merged in).
+CHECK: a car driving between two latitudes keeps its size and speed.
+
+-------------------------------------------------------------------------------
+PHASE 5  MAP, HEATMAPS, GAME FLOW
+-------------------------------------------------------------------------------
+[ ] One conversion pair: direction <-> map (u, v) (Mercator), used only by
+    BirdsEyeMaps/MapPanel/MapTiles and guess placement.
+[ ] Heatmaps sampled from the 3D world functions at each map pixel's direction.
+[ ] Buildings/roads layers drawn by projecting world shapes to the map.
+[ ] Guess scoring by great-circle distance; pin/goal stored as directions.
+[ ] Items: altimeter (height above sea level at the player), compass
+    (north = local frame's north), identification kit lens projection.
+[ ] Shop/round flow, spawn per round, April ocean percentage (computed on the
+    sphere).
+
+-------------------------------------------------------------------------------
+PHASE 6  CLEAN-UP
+-------------------------------------------------------------------------------
+[ ] Delete every remaining chart use outside the map (D6 list from Phase 0).
+[ ] Delete flat-world shader uniforms and flags (D8).
+[ ] Remove dead classes/fields; update code comments; replace Planet's method 1
+    note with a short note describing the geodesic design and D1-D9.
+[ ] Final tests: equator, 70 degrees, near a pole, crossing an icosahedron
+    face edge; check frame rate is the same everywhere.
+
+-------------------------------------------------------------------------------
+EFFICIENCY RULES (to stretch the weekly allowance)
+-------------------------------------------------------------------------------
+- Patch with Python scripts written by the Write tool (no bash heredocs with
+  quotes). Normalise CRLF. Avoid trailing-space anchors.
+- Always mvn clean compile; the game must not be running while building.
+- Batch test launches: one launch should check several things (equator + 70
+  degrees via -Dxenoguesser.spawnat, screenshots via hudtest=shot). World load
+  takes about 90 s, so every launch is expensive.
+- Read only the parts of big files a step needs (grep first, then targeted reads).
+- No debug code left in; temporary prints marked // TEMP and removed the same turn.
+- Commit only when the user asks.
+
+-------------------------------------------------------------------------------
+NOTES
+-------------------------------------------------------------------------------
+- Branch Claude5 holds the uncommitted method 1 work (true sizes on the
+  Mercator chart). It is a fallback only; do not merge it into this branch.
+  Ideas from it that carry over: counts per true area, true-size objects,
+  the per-frame "where am I now" rule for anything that moves.
+- Planet: about 150,000 game units round (15 km), R about 23,873 units.
+
+-------------------------------------------------------------------------------
+LOG
+-------------------------------------------------------------------------------
+2026-10-09  Plan written. Not started. Copilot's foundation reviewed only
+            briefly (it builds; geodesic terrain/water/collision/flora/sky exist;
+            infrastructure, vehicles, people, maps are still on the chart).

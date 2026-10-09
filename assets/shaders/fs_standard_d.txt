@@ -19,6 +19,9 @@ uniform vec4 snowClimate;    // the freezing point, degrees below it for snow to
 uniform vec3 snowColour;
 uniform float snowCleared;  // how much of the snow has been cleared off this (roads: see InfrastructureObject)
 uniform float snowToday;    // how much warmer (Celsius) today is than usual round the player
+uniform int sphereNativeTerrain;
+uniform float planetRadius;
+uniform float sphereLongitudeOffset;
 // (an exact hash of whole-numbered cells: a sine hash loses precision far from the origin and
 // smears into stripes)
 float snowHash(ivec2 c) {
@@ -34,6 +37,7 @@ float snowNoise(vec2 p) {
     return mix(mix(snowHash(i), snowHash(i + ivec2(1, 0)), f.x), mix(snowHash(i + ivec2(0, 1)), snowHash(i + ivec2(1, 1)), f.x), f.y);
 }
 float snowAt(vec3 p, vec3 n) {
+    if (sphereNativeTerrain != 0) return 0.0;
     if (snowMap.z < 0.5) return 0.0;
     vec2 climate = texture(snowCover, (p.xz + vec2(snowMap.y)) * snowMap.x).rg;
     float celsius = climate.r * 100.0 - 60.0 - max(0.0, p.y - snowClimate.w) * snowClimate.z;
@@ -56,6 +60,7 @@ float snowAt(vec3 p, vec3 n) {
 
 
 in vec3 aPos;
+in vec3 aWorldPos;
 in vec3 aNormal;
 in vec2 aTexCoord;
 in float PlanarDepth;
@@ -130,20 +135,21 @@ float cellNoise(vec2 p) {
 // and with pale patches of lichen and flaking
 uniform float weathering;
 
-vec3 weather(vec3 c) {
+vec3 weather(vec3 c, vec3 p) {
     if (weathering <= 0.0) return c;
     float w = weathering;
     c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.45 * w);
-    float across = cellNoise(vec2(aPos.x * 0.45, aPos.y * 0.03)) * cellNoise(vec2(aPos.z * 0.45 + 31.0, aPos.y * 0.03 + 17.0));
+    float across = cellNoise(vec2(p.x * 0.45, p.y * 0.03)) * cellNoise(vec2(p.z * 0.45 + 31.0, p.y * 0.03 + 17.0));
     c *= 1.0 - 0.55 * w * smoothstep(0.18, 0.5, across);
-    float grime = smoothstep(0.45, 0.75, cellNoise(aPos.xz * 0.07 + vec2(aPos.y * 0.09, 0.0)) * 0.65
-            + cellNoise(aPos.xz * 0.33 - vec2(0.0, aPos.y * 0.3)) * 0.35);
+    float grime = smoothstep(0.45, 0.75, cellNoise(p.xz * 0.07 + vec2(p.y * 0.09, 0.0)) * 0.65
+            + cellNoise(p.xz * 0.33 - vec2(0.0, p.y * 0.3)) * 0.35);
     c = mix(c, vec3(0.16, 0.14, 0.1), 0.6 * w * grime);
-    float lichen = smoothstep(0.62, 0.8, cellNoise(aPos.xz * 0.21 + vec2(aPos.y * 0.17, 3.0)));
+    float lichen = smoothstep(0.62, 0.8, cellNoise(p.xz * 0.21 + vec2(p.y * 0.17, 3.0)));
     return mix(c, vec3(0.62, 0.66, 0.5), 0.55 * w * lichen);
 }
 
 void main() {
+    vec3 materialPos = sphereNativeTerrain != 0 ? aWorldPos : aPos;
     vec2 scaledUV = aTexCoord * scale; 
 
     // Sample the base texture color
@@ -153,18 +159,29 @@ void main() {
     if (useSoilRegions > 0.5) {
         // (images load bottom row first, and the map's first row is its northern edge, so
         // north is at the top of the texture: v runs the other way to z)
-        vec2 regionUV = vec2(aPos.x / regionWidth + 0.5, 0.5 - aPos.z / regionWidth);
+        vec2 regionUV;
+        if (sphereNativeTerrain != 0) {
+            float r = length(aWorldPos);
+            float lat = asin(clamp(aWorldPos.y / r, -1.0, 1.0));
+            float lon = atan(aWorldPos.z, aWorldPos.x) - sphereLongitudeOffset;
+            float chartX = planetRadius * atan(sin(lon), cos(lon));
+            float chartZ = -planetRadius * log(tan(0.78539816339 + lat * 0.5));
+            regionUV = vec2(chartX / regionWidth + 0.5, 0.5 - chartZ / regionWidth);
+        } else {
+            regionUV = vec2(aPos.x / regionWidth + 0.5, 0.5 - aPos.z / regionWidth);
+        }
         texColor *= texture(soilRegionMap, regionUV).rgb * 2.0;
 
         // Steep slopes are bare rock, banded in strata and broken up by grain and cracks
-        float steep = 1.0 - normalize(aNormal).y;
-        float patchy = valueNoise(aPos.xz * 0.05);
+        vec3 surfaceUp = sphereNativeTerrain != 0 ? normalize(aWorldPos) : vec3(0.0, 1.0, 0.0);
+        float steep = 1.0 - dot(normalize(aNormal), surfaceUp);
+        float patchy = valueNoise(materialPos.xz * 0.05);
         float rockAmount = smoothstep(0.26, 0.48, steep + (patchy - 0.5) * 0.12);
         if (rockAmount > 0.0) {
-            float strata = 0.82 + 0.18 * sin(aPos.y * 0.45 + valueNoise(aPos.xz * 0.015) * 7.0);
-            float grain = valueNoise(aPos.xz * 0.7 + aPos.y * 0.4) * 0.5 + valueNoise(aPos.xz * 2.3 - aPos.y) * 0.5;
-            float crack = smoothstep(0.08, 0.0, abs(valueNoise(aPos.xz * 0.12 + aPos.y * 0.08) - 0.5));
-            vec3 tint = rockColour * (0.9 + 0.2 * valueNoise(aPos.xz * 0.002));
+            float strata = 0.82 + 0.18 * sin(materialPos.y * 0.45 + valueNoise(materialPos.xz * 0.015) * 7.0);
+            float grain = valueNoise(materialPos.xz * 0.7 + materialPos.y * 0.4) * 0.5 + valueNoise(materialPos.xz * 2.3 - materialPos.y) * 0.5;
+            float crack = smoothstep(0.08, 0.0, abs(valueNoise(materialPos.xz * 0.12 + materialPos.y * 0.08) - 0.5));
+            vec3 tint = rockColour * (0.9 + 0.2 * valueNoise(materialPos.xz * 0.002));
             vec3 rock = tint * strata * (0.75 + 0.45 * grain) * (1.0 - 0.45 * crack);
             texColor = mix(texColor, rock, rockAmount);
         }
@@ -172,14 +189,15 @@ void main() {
 
     if (trackGrit > 0.0) {
         // Worn a little paler than the ground beside it, in soft patches
-        texColor *= 1.08 + 0.07 * cellNoise(aPos.xz * 0.35);
+        vec2 gritPosition = sphereNativeTerrain != 0 ? aWorldPos.xz : aPos.xz;
+        texColor *= 1.08 + 0.07 * cellNoise(gritPosition * 0.35);
         // Grit: small stones of their own sizes and lumpy shapes, each sitting somewhere in
         // its own unit cell (more cells holding one the grittier the track), lit a
         // little on one side; smoothed at their edges, and fading out with distance before
         // they can shimmer
         float near = 1.0 - smoothstep(60.0, 150.0, length(viewPos - aPos));
         if (near > 0.0) {
-            vec2 gp = aPos.xz;
+            vec2 gp = gritPosition;
             ivec2 base = ivec2(floor(gp));
             float pixel = length(fwidth(gp));
             float cover = 0.0, tone = 1.0;
@@ -209,7 +227,7 @@ void main() {
     }
 
     if (weathering > 0.0) {
-        texColor = weather(texColor);
+        texColor = weather(texColor, materialPos);
     }
 
     // Snow lying on the ground, roofs and anything else facing up

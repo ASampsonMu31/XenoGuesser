@@ -11,8 +11,9 @@ import com.xenoguesser.math.Matrix4;
 import com.xenoguesser.math.Vector3;
 
 /**
- * The world's creatures: generates a handful of bug species, populates the land around the
- * viewer with individuals of whichever species live there, walks them about, and draws them.
+ * The world's creatures: generates species, populates land around the viewer, simulates their
+ * motion, and draws them. Native-world motion and rendering use sphere positions; the legacy
+ * chart renderer and regional habitat sampling remain available while that migration proceeds.
  *
  * Individuals belong to chunks and are recreated identically whenever their chunk comes
  * back into range, so the same place always has the same creatures.
@@ -39,6 +40,8 @@ public class OrganismManager {
         float homeX, homeZ;
         float x, z, heading;
         float targetX, targetZ;
+        SpherePosition sphereHome, spherePosition, sphereTarget;
+        SpherePosition sphereProgressPosition;
         float pause;
         // Off somewhere further, steadily and a little quicker, rather than grazing about
         boolean travelling;
@@ -73,6 +76,11 @@ public class OrganismManager {
 
     private final List<OrganismSpecies> species = new ArrayList<>();
     private final Map<Long, List<Creature>> creaturesByChunk = new HashMap<>();
+    private final Map<Long, List<Creature>> creaturesByGeodesicCell = new HashMap<>();
+    private final Map<Long, Float> nativeWaterDistanceByCell = new HashMap<>();
+    private final GeodesicChunkGrid populationGrid = new GeodesicChunkGrid(7);
+    private long lastNativeCentreCell = Long.MIN_VALUE;
+    private List<GeodesicSettlementMesh.SettlementArea> nativeSettlementAreas = List.of();
     private final List<Creature> showcase = new ArrayList<>();
     private final long seed;
     private final float chunkSize;
@@ -108,6 +116,10 @@ public class OrganismManager {
 
     public void setRoads(RoadLookup lookup) {
         this.roads = lookup;
+    }
+
+    public void setGeodesicSettlements(List<GeodesicSettlementMesh.SettlementArea> settlements) {
+        nativeSettlementAreas = List.copyOf(settlements);
     }
 
     /** Somewhere a walking creature can be: dry land in the wild, off the roads. */
@@ -185,7 +197,7 @@ public class OrganismManager {
         frustum.update(viewProjection);
         Vector3 sun = new Vector3(eye.x + distance * 3f, eye.y + distance * 6f, eye.z - distance * 1f);
         return Offscreen.capture(gl, render, () -> renderCreatures(gl, viewProjection, frustum, eye, sun, new float[] { 1f, 0.97f, 0.92f },
-                new Vector3(0.55f, 0.55f, 0.6f), new Matrix4(1), null, 0f, List.of(c)));
+                new Vector3(0.55f, 0.55f, 0.6f), new Matrix4(1), null, 0f, List.of(c), false, null));
     }
 
     public int speciesCount() {
@@ -217,8 +229,11 @@ public class OrganismManager {
     public void clear() {
         roundSalt = new Random().nextLong();
         creaturesByChunk.clear();
+        creaturesByGeodesicCell.clear();
+        nativeWaterDistanceByCell.clear();
         showcase.clear();
         lastCentreX = lastCentreZ = Integer.MIN_VALUE;
+        lastNativeCentreCell = Long.MIN_VALUE;
     }
 
     /**
@@ -282,6 +297,135 @@ public class OrganismManager {
 
     /** Brings creatures into being near the viewer, retires distant ones, and moves them all on. */
     public void update(float dt, float viewerX, float viewerZ) {
+        updatePopulation(viewerX, viewerZ);
+        float step = Math.min(dt, 0.1f);
+        for (List<Creature> list : creaturesByChunk.values()) {
+            for (Creature c : list) move(c, step);
+        }
+        for (Creature c : showcase) move(c, step);
+    }
+
+    /** Updates motion in true surface distances; legacy regional habitat and spawn selection remain chart-based. */
+    public void updateSphereNative(float dt, SpherePosition viewer, GeodesicCollision geodesicCollision) {
+        updateGeodesicPopulation(viewer, geodesicCollision);
+        float step = Math.min(dt, 0.1f);
+        for (List<Creature> list : creaturesByGeodesicCell.values()) {
+            for (Creature creature : list) {
+                initializeSpherePosition(creature);
+                moveSphereNative(creature, step, geodesicCollision);
+            }
+        }
+        for (Creature creature : showcase) {
+            initializeSpherePosition(creature);
+            moveSphereNative(creature, step, geodesicCollision);
+        }
+    }
+
+    private void updateGeodesicPopulation(SpherePosition viewer, GeodesicCollision geodesicCollision) {
+        GeodesicChunkGrid.Cell centre = populationGrid.cellAt(viewer);
+        if (centre.id() == lastNativeCentreCell) return;
+        lastNativeCentreCell = centre.id();
+
+        double spawnRadius = SPAWN_RADIUS_CHUNKS * (double) chunkSize / Planet.radius();
+        double keepRadius = KEEP_RADIUS_CHUNKS * (double) chunkSize / Planet.radius();
+        List<GeodesicChunkGrid.Cell> spawnCells = populationGrid.cellsWithin(centre.centre(), spawnRadius);
+        for (GeodesicChunkGrid.Cell cell : spawnCells) {
+            if (!creaturesByGeodesicCell.containsKey(cell.id())) {
+                creaturesByGeodesicCell.put(cell.id(), populateGeodesicCell(cell, geodesicCollision));
+            }
+        }
+        creaturesByGeodesicCell.entrySet().removeIf(entry -> {
+            GeodesicChunkGrid.Cell cell = populationGrid.cell(entry.getKey());
+            return centre.centre().angleTo(cell.centre()) > keepRadius + cell.angularRadius();
+        });
+    }
+
+    private List<Creature> populateGeodesicCell(GeodesicChunkGrid.Cell cell,
+            GeodesicCollision geodesicCollision) {
+        List<Creature> residents = new ArrayList<>();
+        SpherePosition cellCentre = spherePosition(cell.centre(), 0.0);
+        float waterDistance = nativeWaterDistance(cell, cellCentre);
+        float elevation = TerrainMesh.getLayeredHeight(cellCentre, terrainNoise);
+        float[] presence = new float[species.size()];
+        float totalPresence = 0f;
+        for (int i = 0; i < species.size(); i++) {
+            presence[i] = species.get(i).presenceAt(cellCentre, elevation, waterDistance);
+            totalPresence += presence[i];
+        }
+        double cellArea = 4.0 * Math.PI * Planet.radius() * Planet.radius() / populationGrid.cellCount();
+        double referenceArea = (double) chunkSize * chunkSize;
+        Random random = new Random(seed ^ roundSalt ^ (cell.id() * 0x9E3779B97F4A7C15L) ^ 0x0B6L);
+        for (int i = 0; i < species.size(); i++) {
+            OrganismSpecies kind = species.get(i);
+            if (presence[i] <= 0f || totalPresence <= 0f) continue;
+            double expected = presence[i] / totalPresence * kind.rarity * PEAK_PER_CHUNK
+                    * cellArea / referenceArea;
+            int count = (int) expected;
+            if (random.nextDouble() < expected - count) count++;
+            for (int n = 0; n < count; n++) {
+                SpherePosition point = randomPointInCell(cell, random);
+                float height = TerrainMesh.getLayeredHeight(point, terrainNoise);
+                if (height <= seaLevel + 1f) continue;
+                if (nearNativeSettlement(point) || (geodesicCollision != null
+                        && geodesicCollision.nearRoute(point, 10.0))) continue;
+                Creature creature = createNative(kind, point, new Random(random.nextLong()));
+                creature.spherePosition = terrainPosition(point);
+                creature.sphereHome = creature.spherePosition;
+                creature.sphereProgressPosition = creature.spherePosition;
+                pickSphereTarget(creature);
+                residents.add(creature);
+            }
+        }
+        return residents;
+    }
+
+    private float nativeWaterDistance(GeodesicChunkGrid.Cell cell, SpherePosition centre) {
+        Float cached = nativeWaterDistanceByCell.get(cell.id());
+        if (cached != null) return cached;
+        double nearest = 40000.0;
+        for (int bearingIndex = 0; bearingIndex < 8; bearingIndex++) {
+            double bearing = bearingIndex * Math.PI / 4.0;
+            for (double distance = 3000.0; distance <= 40000.0; distance += 3000.0) {
+                SpherePosition sample = Planet.moveOnSurface(centre, Math.sin(bearing),
+                        Math.cos(bearing), distance);
+                if (TerrainMesh.getLayeredHeight(sample, terrainNoise) <= seaLevel) {
+                    nearest = Math.min(nearest, distance);
+                    break;
+                }
+            }
+        }
+        float value = (float) nearest;
+        nativeWaterDistanceByCell.put(cell.id(), value);
+        return value;
+    }
+
+    private boolean nearNativeSettlement(SpherePosition point) {
+        for (GeodesicSettlementMesh.SettlementArea settlement : nativeSettlementAreas) {
+            if (Planet.surfaceDistance(point, settlement.centre()) < settlement.radius()) return true;
+        }
+        return false;
+    }
+
+    private static SpherePosition randomPointInCell(GeodesicChunkGrid.Cell cell, Random random) {
+        double a = random.nextDouble(), b = random.nextDouble();
+        if (a + b > 1.0) {
+            a = 1.0 - a;
+            b = 1.0 - b;
+        }
+        double c = 1.0 - a - b;
+        GeodesicChunkGrid.Direction direction = new GeodesicChunkGrid.Direction(
+                cell.a().x() * a + cell.b().x() * b + cell.c().x() * c,
+                cell.a().y() * a + cell.b().y() * b + cell.c().y() * c,
+                cell.a().z() * a + cell.b().z() * b + cell.c().z() * c).normalized();
+        return spherePosition(direction, 0.0);
+    }
+
+    private static SpherePosition spherePosition(GeodesicChunkGrid.Direction direction, double altitude) {
+        double radius = Planet.radius() + altitude;
+        return new SpherePosition(direction.x() * radius, direction.y() * radius, direction.z() * radius);
+    }
+
+    private void updatePopulation(float viewerX, float viewerZ) {
         int centreX = (int) Math.floor(viewerX / chunkSize), centreZ = (int) Math.floor(viewerZ / chunkSize);
         if (centreX != lastCentreX || centreZ != lastCentreZ) {
             lastCentreX = centreX;
@@ -303,11 +447,167 @@ public class OrganismManager {
                 if (ddx * ddx + ddz * ddz > KEEP_RADIUS_CHUNKS * KEEP_RADIUS_CHUNKS) it.remove();
             }
         }
-        float step = Math.min(dt, 0.1f);
-        for (List<Creature> list : creaturesByChunk.values()) {
-            for (Creature c : list) move(c, step);
+    }
+
+    private void initializeSpherePosition(Creature creature) {
+        if (creature.spherePosition != null) return;
+        creature.sphereHome = terrainPosition(Planet.spherePosition(creature.homeX, creature.homeZ, 0.0));
+        creature.spherePosition = terrainPosition(Planet.spherePosition(creature.x, creature.z, 0.0));
+        creature.sphereTarget = creature.spherePosition;
+        creature.sphereProgressPosition = creature.spherePosition;
+        pickSphereTarget(creature);
+    }
+
+    private SpherePosition terrainPosition(SpherePosition position) {
+        double length = position.length();
+        double height = TerrainMesh.getLayeredHeight(position, terrainNoise);
+        double radius = Planet.radius() + height;
+        return new SpherePosition(position.x() * radius / length, position.y() * radius / length,
+                position.z() * radius / length);
+    }
+
+    private boolean sphereWalkable(SpherePosition position, Creature creature,
+            GeodesicCollision geodesicCollision) {
+        return sphereTerrainWalkable(position, creature)
+                && (geodesicCollision == null
+                        || !geodesicCollision.blocked(position, bodyRadius(creature),
+                                legHeight(creature) * STEP_OVER));
+    }
+
+    private boolean sphereTerrainWalkable(SpherePosition position, Creature creature) {
+        float height = TerrainMesh.getLayeredHeight(position, terrainNoise);
+        if (creature.species.locomotion == OrganismSpecies.Locomotion.FLOATER) {
+            if (height < seaLevel - 20f) return false;
+        } else if (height <= seaLevel + 1f) {
+            return false;
         }
-        for (Creature c : showcase) move(c, step);
+        return true;
+    }
+
+    private void pickSphereTarget(Creature creature) {
+        if (creature.species.locomotion == OrganismSpecies.Locomotion.FLYER) {
+            creature.sphereTarget = creature.spherePosition;
+            return;
+        }
+        double distanceFromHome = Planet.surfaceDistance(creature.spherePosition, creature.sphereHome);
+        double homeBearing = sphereBearing(creature.spherePosition, creature.sphereHome);
+        creature.travelling = creature.rand.nextFloat() < 0.65f;
+        for (int attempt = 0; attempt < 10; attempt++) {
+            double angle, distance;
+            if (creature.travelling) {
+                double base = distanceFromHome > ROAM_RADIUS * 3f ? homeBearing : creature.heading;
+                angle = base + (creature.rand.nextDouble() - 0.5) * 1.6;
+                distance = ROAM_RADIUS * (1.2 + 1.6 * creature.rand.nextDouble());
+            } else {
+                angle = creature.rand.nextDouble() * Math.PI * 2.0;
+                distance = 10.0 + 25.0 * creature.rand.nextDouble();
+            }
+            SpherePosition target = Planet.moveOnSurface(creature.spherePosition,
+                    Math.sin(angle), Math.cos(angle), distance);
+            target = terrainPosition(target);
+            if (sphereWalkable(target, creature, null)) {
+                creature.sphereTarget = target;
+                return;
+            }
+        }
+        creature.travelling = false;
+        creature.sphereTarget = creature.sphereHome;
+    }
+
+    private void moveSphereNative(Creature creature, float dt, GeodesicCollision geodesicCollision) {
+        if (creature.species.locomotion == OrganismSpecies.Locomotion.FLYER) {
+            double angular = creature.species.walkSpeed * creature.sizeScale
+                    / Math.max(1.0, creature.species.flightRadius);
+            creature.pause += dt * angular;
+            double radius = creature.species.flightRadius;
+            SpherePosition orbit = Planet.moveOnSurface(creature.sphereHome,
+                    Math.sin(creature.pause), Math.cos(creature.pause), radius);
+            creature.spherePosition = terrainPosition(orbit);
+            creature.heading = (float) (creature.pause + Math.PI * 0.5);
+            creature.walking = 1f;
+            creature.gaitPhase = (creature.gaitPhase + dt * creature.species.stepsPerSecond) % 1f;
+            return;
+        }
+
+        boolean resting = creature.pause > 0f;
+        if (resting) {
+            creature.pause -= dt;
+        } else {
+            double distance = Planet.surfaceDistance(creature.spherePosition, creature.sphereTarget);
+            if (distance < 4.0) {
+                creature.pause = creature.travelling
+                        ? 0.3f + creature.rand.nextFloat() * 1.7f
+                        : 2f + creature.rand.nextFloat() * 6f;
+                pickSphereTarget(creature);
+            } else {
+                double desired = sphereBearing(creature.spherePosition, creature.sphereTarget);
+                double turn = Math.atan2(Math.sin(desired - creature.heading),
+                        Math.cos(desired - creature.heading));
+                double maxTurn = 1.2 * dt;
+                creature.heading += Math.max(-maxTurn, Math.min(maxTurn, turn));
+                double pace = creature.walking * (1.0 - 0.6 * Math.min(1.0, Math.abs(turn)));
+                double speed = creature.species.walkSpeed * creature.sizeScale * creature.legScale
+                        * (creature.travelling ? 1.35 : 1.0);
+                SpherePosition candidate = Planet.moveOnSurface(creature.spherePosition,
+                        Math.sin(creature.heading), Math.cos(creature.heading), speed * pace * dt);
+                candidate = terrainPosition(candidate);
+                if (!sphereTerrainWalkable(candidate, creature)) {
+                    creature.pause = 0.5f + creature.rand.nextFloat();
+                    pickSphereTarget(creature);
+                } else {
+                    if (geodesicCollision != null) {
+                        candidate = geodesicCollision.resolve(candidate, bodyRadius(creature),
+                                creature.hopTime > 0f ? creature.hopHeight : legHeight(creature) * STEP_OVER);
+                        candidate = terrainPosition(candidate);
+                    }
+                    if (sphereWalkable(candidate, creature, geodesicCollision)) {
+                        creature.spherePosition = candidate;
+                        creature.progressExpected += (float) (speed * pace * dt);
+                    } else {
+                        creature.pause = 0.5f + creature.rand.nextFloat();
+                        pickSphereTarget(creature);
+                    }
+                }
+            }
+            creature.progressTimer += dt;
+            if (creature.progressTimer > STUCK_SECONDS) {
+                double moved = Planet.surfaceDistance(creature.spherePosition, creature.sphereProgressPosition);
+                if (creature.progressExpected > 4f && moved < creature.progressExpected * 0.3f) {
+                    pickSphereTarget(creature);
+                }
+                creature.progressTimer = 0f;
+                creature.progressExpected = 0f;
+                creature.sphereProgressPosition = creature.spherePosition;
+            }
+        }
+
+        if (creature.hopTime > 0f) creature.hopTime = Math.max(0f, creature.hopTime - dt);
+        float targetWalking = resting ? 0f : 1f;
+        creature.walking += (targetWalking - creature.walking) * Math.min(1f, dt * 3f);
+        creature.gaitPhase = (creature.gaitPhase + dt * creature.species.stepsPerSecond
+                * creature.walking) % 1f;
+    }
+
+    private static double sphereBearing(SpherePosition from, SpherePosition to) {
+        double length = from.length();
+        double latitude = Math.asin(from.y() / length);
+        double longitude = Math.atan2(from.z(), from.x());
+        double upX = Math.cos(latitude) * Math.cos(longitude);
+        double upY = Math.sin(latitude);
+        double upZ = Math.cos(latitude) * Math.sin(longitude);
+        double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
+        double southX = Math.sin(latitude) * Math.cos(longitude);
+        double southY = -Math.cos(latitude);
+        double southZ = Math.sin(latitude) * Math.sin(longitude);
+        double targetLength = to.length();
+        double dot = (from.x() * to.x() + from.y() * to.y() + from.z() * to.z())
+                / (length * targetLength);
+        double tx = to.x() / targetLength - dot * upX;
+        double ty = to.y() / targetLength - dot * upY;
+        double tz = to.z() / targetLength - dot * upZ;
+        double east = tx * eastX + tz * eastZ;
+        double south = tx * southX + ty * southY + tz * southZ;
+        return Math.atan2(east, south);
     }
 
     private static long chunkKey(int cx, int cz) {
@@ -366,10 +666,17 @@ public class OrganismManager {
     }
 
     private Creature create(OrganismSpecies s, float x, float z, Random rand) {
+        return create(s, x, z, s.traitsAt(x, z, rand), rand);
+    }
+
+    private Creature createNative(OrganismSpecies s, SpherePosition position, Random rand) {
+        return create(s, Float.NaN, Float.NaN, s.traitsAt(position, rand), rand);
+    }
+
+    private Creature create(OrganismSpecies s, float x, float z, float[] traits, Random rand) {
         Creature c = new Creature();
         c.species = s;
         c.rand = rand;
-        float[] traits = s.traitsAt(x, z, rand);
         c.sizeScale = traits[0];
         c.legScale = traits[1];
         c.morph = (int) traits[3];
@@ -382,7 +689,9 @@ public class OrganismManager {
         c.heading = rand.nextFloat() * (float) Math.PI * 2f;
         c.gaitPhase = rand.nextFloat();
         c.pause = rand.nextFloat() * 3f;
-        pickTarget(c);
+        if (Float.isFinite(x) && Float.isFinite(z)) {
+            pickTarget(c);
+        }
         return c;
     }
 
@@ -592,19 +901,41 @@ public class OrganismManager {
                        float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
         List<Creature> all = new ArrayList<>(showcase);
         for (List<Creature> list : creaturesByChunk.values()) all.addAll(list);
-        renderCreatures(gl, viewProjection, frustum, viewPos, sunPos, sunColour, ambient, skyRotation, sky, time, all);
+        renderCreatures(gl, viewProjection, frustum, viewPos, sunPos, sunColour, ambient,
+                skyRotation, sky, time, all, false, null);
+    }
+
+    public void renderSphereNative(GL3 gl, Camera camera, Vector3 sunDirection, float[] sunColour,
+            Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
+        if (shader == null) return;
+        List<Creature> all = new ArrayList<>(showcase);
+        for (List<Creature> list : creaturesByGeodesicCell.values()) all.addAll(list);
+        SphereRender.configure(gl, shader, camera, camera.getSphereViewProjection(),
+                sunDirection, sunColour, ambient, skyRotation);
+        if (sky != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            sky.bind(gl);
+            shader.setInt(gl, "skyTexture", 2);
+        }
+        renderCreatures(gl, camera.getSphereViewProjection(), null, new Vector3(0f, 0f, 0f),
+                new Vector3(0f, 0f, 0f), sunColour, ambient, skyRotation, sky, time,
+                all, true, camera.getSpherePosition());
+        SphereRender.reset(gl, shader);
     }
 
     private void renderCreatures(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
-                                 float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time, List<Creature> creatures) {
+                                 float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time,
+                                 List<Creature> creatures, boolean sphereNative, SpherePosition sphereEye) {
         if (shader == null) return;
         shader.use(gl);
-        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        shader.setVec3(gl, "viewPos", viewPos);
-        shader.setVec3(gl, "sunPos", sunPos);
-        shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
-        shader.setVec3(gl, "ambientLight", ambient);
+        if (!sphereNative) {
+            shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+            gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+            shader.setVec3(gl, "viewPos", viewPos);
+            shader.setVec3(gl, "sunPos", sunPos);
+            shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
+            shader.setVec3(gl, "ambientLight", ambient);
+        }
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             sky.bind(gl);
@@ -617,7 +948,7 @@ public class OrganismManager {
         // Thin parts are open lathes seen from all sides
         gl.glDisable(GL.GL_CULL_FACE);
         drawing++;
-        for (Creature c : creatures) draw(gl, c, frustum, viewPos, bonesLocation, time);
+        for (Creature c : creatures) draw(gl, c, frustum, viewPos, bonesLocation, time, sphereNative, sphereEye);
         gl.glEnable(GL.GL_CULL_FACE);
     }
 
@@ -639,23 +970,35 @@ public class OrganismManager {
     /** Every creature drawn last time (while outlines are kept), with its outline as drawn. */
     public void forEachOutline(CreatureOutline visit) {
         java.util.List<List<Creature>> lists = new ArrayList<>(creaturesByChunk.values());
+        lists.addAll(creaturesByGeodesicCell.values());
         lists.add(showcase);
         for (List<Creature> list : lists) {
             for (Creature c : list) {
-                if (c.outline != null && c.outlineDrawing == drawing) visit.at(species.indexOf(c.species), c.x, c.z, c.outline);
+                if (c.outline != null && c.outlineDrawing == drawing) {
+                    double[] chart = c.spherePosition == null ? null : Planet.mercatorPosition(c.spherePosition);
+                    visit.at(species.indexOf(c.species),
+                            chart == null ? c.x : (float) chart[0],
+                            chart == null ? c.z : (float) chart[2], c.outline);
+                }
             }
         }
     }
 
-    private void draw(GL3 gl, Creature c, Frustum frustum, Vector3 viewPos, int bonesLocation, float time) {
+    private void draw(GL3 gl, Creature c, Frustum frustum, Vector3 viewPos, int bonesLocation,
+            float time, boolean sphereNative, SpherePosition sphereEye) {
+        if (sphereNative) {
+            drawSphereNative(gl, c, bonesLocation, time, sphereEye);
+            return;
+        }
         OrganismSpecies s = c.species;
         float dx = c.x - viewPos.x, dz = c.z - viewPos.z;
-        if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) return;
         float ground = TerrainMesh.getLayeredHeight(c.x, c.z, terrainNoise);
         float radius = s.reachRadius() * c.sizeScale * c.legScale;
         // (a flyer is tested where it flies, not on the ground below)
         float middle = s.locomotion == OrganismSpecies.Locomotion.FLYER ? Math.max(ground, seaLevel) + s.bodyHeight : ground + radius * 0.3f;
-        if (!frustum.intersectsSphere(c.x, middle, c.z, radius + (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 10f : 0f))) return;
+        if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) return;
+        if (!frustum.intersectsSphere(c.x, middle, c.z,
+                radius + (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 10f : 0f))) return;
 
         // Level the body along the slope beneath it
         float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
@@ -706,6 +1049,107 @@ public class OrganismManager {
         shader.setFloat(gl, "gloss", s.gloss);
         shader.setVec3(gl, "trimColour", vec(c.limbColour));
         s.mesh(c.morph).render(gl);
+    }
+
+    private void drawSphereNative(GL3 gl, Creature creature, int bonesLocation, float time,
+            SpherePosition eye) {
+        if (creature.spherePosition == null) return;
+        OrganismSpecies s = creature.species;
+        SpherePosition groundPosition = terrainPosition(creature.spherePosition);
+        double dx = groundPosition.x() - eye.x(), dy = groundPosition.y() - eye.y();
+        double dz = groundPosition.z() - eye.z();
+        if (dx * dx + dy * dy + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) return;
+
+        double frontDistance = s.halfLength() * creature.sizeScale;
+        double backDistance = s.tailLength() * creature.sizeScale;
+        SpherePosition front = Planet.moveOnSurface(groundPosition, Math.sin(creature.heading),
+                Math.cos(creature.heading), frontDistance);
+        SpherePosition back = Planet.moveOnSurface(groundPosition, -Math.sin(creature.heading),
+                -Math.cos(creature.heading), backDistance);
+        float ground = TerrainMesh.getLayeredHeight(groundPosition, terrainNoise);
+        float frontGround = creature.level ? ground : TerrainMesh.getLayeredHeight(front, terrainNoise);
+        float backGround = creature.level ? ground : TerrainMesh.getLayeredHeight(back, terrainNoise);
+        float pitch = s.locomotion == OrganismSpecies.Locomotion.FLYER
+                ? creature.level ? 0f : 0.05f * (float) Math.sin(creature.gaitPhase * Math.PI * 2)
+                : s.locomotion == OrganismSpecies.Locomotion.FLOATER ? 0f
+                : (float) Math.atan2(frontGround - backGround, frontDistance + backDistance);
+        float bodyHeight;
+        if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
+            bodyHeight = Math.max(ground, seaLevel) + s.bodyHeight
+                    + (float) Math.sin(time * 0.4f + spherePhase(creature.sphereHome)) * 8f - ground;
+        } else if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
+            bodyHeight = Math.max(ground, seaLevel)
+                    + (s.bodyHeight + (float) Math.sin(time * 0.7f + spherePhase(creature.sphereHome)) * 2.5f)
+                    * creature.sizeScale - ground;
+        } else {
+            float bob = s.locomotion == OrganismSpecies.Locomotion.WALKER
+                    ? (float) Math.abs(Math.sin(creature.gaitPhase * Math.PI * 4))
+                            * 0.03f * s.bodyHeight * creature.walking : 0f;
+            bodyHeight = Math.max(ground, (frontGround + backGround) * 0.5f)
+                    + (s.bodyHeight * creature.legScale + bob) * creature.sizeScale
+                    + hopLift(creature) - ground;
+        }
+
+        float[] body = Affine.multiply(Affine.translation(0f, bodyHeight, 0f),
+                Affine.multiply(Affine.rotationY(creature.heading),
+                        Affine.multiply(Affine.rotationX(-pitch),
+                                Affine.scale(creature.sizeScale, creature.sizeScale, creature.sizeScale))));
+        s.pose(body, creature.legScale, creature.gaitPhase, creature.walking,
+                time + spherePhase(creature.sphereHome) * 0.01f, bones);
+        if (keepOutlines) {
+            float[] local = s.outline(creature.morph);
+            if (creature.outline == null || creature.outline.length != local.length / 4 * 3) {
+                creature.outline = new float[local.length / 4 * 3];
+            }
+            double length = groundPosition.length();
+            double latitude = Math.asin(groundPosition.y() / length);
+            double longitude = Math.atan2(groundPosition.z(), groundPosition.x());
+            double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
+            double upX = groundPosition.x() / length, upY = groundPosition.y() / length,
+                    upZ = groundPosition.z() / length;
+            double southX = Math.sin(latitude) * Math.cos(longitude);
+            double southY = -Math.cos(latitude);
+            double southZ = Math.sin(latitude) * Math.sin(longitude);
+            for (int k = 0, o = 0; k < local.length; k += 4, o += 3) {
+                int matrix = (int) local[k + 3] * 16;
+                double x = bones[matrix] * local[k] + bones[matrix + 4] * local[k + 1]
+                        + bones[matrix + 8] * local[k + 2] + bones[matrix + 12];
+                double y = bones[matrix + 1] * local[k] + bones[matrix + 5] * local[k + 1]
+                        + bones[matrix + 9] * local[k + 2] + bones[matrix + 13];
+                double z = bones[matrix + 2] * local[k] + bones[matrix + 6] * local[k + 1]
+                        + bones[matrix + 10] * local[k + 2] + bones[matrix + 14];
+                SpherePosition point = new SpherePosition(groundPosition.x() + eastX * x + upX * y + southX * z,
+                        groundPosition.y() + upY * y + southY * z,
+                        groundPosition.z() + eastZ * x + upZ * y + southZ * z);
+                double[] chart = Planet.mercatorPosition(point);
+                creature.outline[o] = (float) chart[0];
+                creature.outline[o + 1] = (float) chart[1];
+                creature.outline[o + 2] = (float) chart[2];
+            }
+            creature.outlineDrawing = drawing;
+        }
+        gl.glUniformMatrix4fv(bonesLocation, s.boneCount, false, bones, 0);
+        shader.setInt(gl, "sphereNativeAnchor", 1);
+        shader.setVec3(gl, "sphereWorldAnchor", new Vector3((float) groundPosition.x(),
+                (float) groundPosition.y(), (float) groundPosition.z()));
+        shader.setVec3(gl, "baseColour", vec(creature.baseColour));
+        shader.setVec3(gl, "accentColour", vec(creature.accentColour));
+        shader.setVec3(gl, "bellyColour", vec(creature.bellyColour));
+        shader.setVec3(gl, "limbColour", vec(creature.limbColour));
+        shader.setVec3(gl, "eyeColour", vec(s.eyeColour));
+        shader.setInt(gl, "patternType", s.patternType);
+        shader.setFloat(gl, "patternScale", s.patternScale);
+        shader.setFloat(gl, "gloss", s.gloss);
+        shader.setVec3(gl, "trimColour", vec(creature.limbColour));
+        s.mesh(creature.morph).render(gl);
+        shader.setInt(gl, "sphereNativeAnchor", 0);
+    }
+
+    private static float spherePhase(SpherePosition position) {
+        double length = position.length();
+        double latitude = Math.asin(position.y() / length);
+        double longitude = Math.atan2(position.z(), position.x());
+        return (float) (longitude + latitude * 0.37);
     }
 
     private static Vector3 vec(float[] c) {

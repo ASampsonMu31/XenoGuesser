@@ -24,6 +24,50 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private TextureLibrary textures;
     private Map<String, Model> chunkCache;
     private Map<String, float[]> grassCache; 
+    private final GeodesicChunkGrid geodesicTerrainGrid = new GeodesicChunkGrid(6);
+    private Model geodesicTerrainModel;
+    private java.util.concurrent.Future<Object[]> geodesicTerrainBuild;
+    private SpherePosition geodesicTerrainBuildCentre;
+    private SpherePosition geodesicTerrainActiveCentre;
+    private long geodesicTerrainRetryAfterNanos;
+    private Mesh geodesicWaterMesh;
+    private java.util.concurrent.Future<Object[]> geodesicWaterBuild;
+    private SpherePosition geodesicWaterBuildCentre;
+    private SpherePosition geodesicWaterActiveCentre;
+    private long geodesicWaterRetryAfterNanos;
+    private Shader sphereWaterShader;
+    private SphereSkyRenderer sphereSkyRenderer;
+    private SphereWeather sphereWeather;
+    private Shader sphereStructureShader;
+    private static final int GEODESIC_WATER_SEGMENTS = 8;
+    private Model geodesicRoadModel;
+    private java.util.concurrent.Future<GeodesicRoadMesh.Patch> geodesicRoadBuild;
+    private SpherePosition geodesicRoadBuildCentre;
+    private SpherePosition geodesicRoadActiveCentre;
+    private long geodesicRoadRetryAfterNanos;
+    private List<GeodesicRoadMesh.RouteSegment> geodesicRoadRoutes = List.of();
+    private final Material geodesicRoadMaterial = new Material(new Vector3(0.8f, 0.8f, 0.8f),
+            new Vector3(0.34f, 0.34f, 0.32f), new Vector3(0.02f, 0.02f, 0.02f), 2f);
+    private Model geodesicSettlementWallModel;
+    private Model geodesicSettlementRoofModel;
+    private java.util.concurrent.Future<GeodesicSettlementMesh.Patch> geodesicSettlementBuild;
+    private SpherePosition geodesicSettlementBuildCentre;
+    private SpherePosition geodesicSettlementActiveCentre;
+    private long geodesicSettlementRetryAfterNanos;
+    private List<GeodesicSettlementMesh.WallSegment> geodesicSettlementWalls = List.of();
+    private final GeodesicCollision geodesicCollision = new GeodesicCollision();
+    private final Material geodesicWallMaterial = new Material(new Vector3(0.9f, 0.9f, 0.9f),
+            new Vector3(0.72f, 0.63f, 0.48f), new Vector3(0.01f, 0.01f, 0.01f), 2f);
+    private final Material geodesicRoofMaterial = new Material(new Vector3(0.8f, 0.8f, 0.8f),
+            new Vector3(0.32f, 0.28f, 0.23f), new Vector3(0.01f, 0.01f, 0.01f), 2f);
+    private record SphereFlora(SpherePosition position, int speciesIndex, int modelIndex,
+                               float scale, float rotationY) {}
+    private volatile List<SphereFlora> geodesicFlora = List.of();
+    private java.util.concurrent.Future<List<SphereFlora>> geodesicFloraBuild;
+    private SpherePosition geodesicFloraBuildCentre;
+    private SpherePosition geodesicFloraActiveCentre;
+    private long geodesicFloraRetryAfterNanos;
+    private static final int GEODESIC_TERRAIN_SEGMENTS = 32;
     
 private static class SpeciesConfig {
         String name;
@@ -191,7 +235,6 @@ private static class SpeciesConfig {
 
     // --- Seasonal Simulation Fields ---
     private float planetAxialTiltDegrees;
-    private float currentSeasonalTiltDegrees;
     // The sun: its declination (radians north of the equator it stands overhead) and the
     // longitude where it is noon
     private double sunDeclination, noonLongitude;
@@ -1257,9 +1300,27 @@ private static class SpeciesConfig {
         landingPod.dispose(gl);
         if (rockField != null) rockField.clear(gl);
         hud.dispose(gl);
+        if (sphereSkyRenderer != null) sphereSkyRenderer.dispose(gl);
+        if (sphereWeather != null) sphereWeather.dispose(gl);
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
+        if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
+            geodesicTerrainModel.mesh.dispose(gl);
+        }
+        if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
+        if (geodesicRoadModel != null && geodesicRoadModel.mesh != null) geodesicRoadModel.mesh.dispose(gl);
+        if (geodesicSettlementWallModel != null && geodesicSettlementWallModel.mesh != null) {
+            geodesicSettlementWallModel.mesh.dispose(gl);
+        }
+        if (geodesicSettlementRoofModel != null && geodesicSettlementRoofModel.mesh != null) {
+            geodesicSettlementRoofModel.mesh.dispose(gl);
+        }
+        if (geodesicTerrainBuild != null) geodesicTerrainBuild.cancel(true);
+        if (geodesicWaterBuild != null) geodesicWaterBuild.cancel(true);
+        if (geodesicRoadBuild != null) geodesicRoadBuild.cancel(true);
+        if (geodesicSettlementBuild != null) geodesicSettlementBuild.cancel(true);
+        if (geodesicFloraBuild != null) geodesicFloraBuild.cancel(true);
         
         if (floraBranchModelsLOD != null) {
             for (int s = 0; s < NUM_SPECIES; s++) {
@@ -1335,6 +1396,15 @@ private static class SpeciesConfig {
     private Matrix4 skyRotation(Vector3 at) {
         float[] sun = Planet.sunDirection(at.x, at.z, sunDeclination, noonLongitude);
         float[] pole = Planet.celestialPole(at.z);
+        return skyRotation(sun, pole);
+    }
+
+    private Matrix4 skyRotation(SpherePosition at) {
+        return skyRotation(Planet.sunDirection(at, sunDeclination, noonLongitude),
+                Planet.celestialPole(at));
+    }
+
+    private Matrix4 skyRotation(float[] sun, float[] pole) {
         float[] across = Affine.cross(pole, sun);
         if (Affine.length(across) < 1e-4f) across = Affine.cross(new float[] { 1f, 0f, 0f }, sun);
         across = Affine.normalise(across);
@@ -1385,12 +1455,16 @@ private static class SpeciesConfig {
         lights[0] = l;
 
         skyModel = makeSkybox(gl, GamePaths.HOME + "assets/shaders/fs_single_sky.txt", textures.get("sky"));
+        sphereSkyRenderer = new SphereSkyRenderer(gl);
+        sphereWeather = new SphereWeather(gl, worldSeed);
         
         chunkCache = new HashMap<>();
         grassCache = new HashMap<>(); 
         floraCache = new HashMap<>();
 
         terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
+        sphereStructureShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt",
+                GamePaths.HOME + "assets/shaders/fs_sphere_structure.txt");
         depthPrePassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_solid.txt");
         glassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_glass.txt", GamePaths.HOME + "assets/shaders/fs_glass.txt");
@@ -1414,6 +1488,13 @@ private static class SpeciesConfig {
         for (String name : infraManager.textureJobs().keySet()) {
             textures.addWrap(gl, name, WorldArtGenerator.pathFor(name));
             enableAnisotropicFiltering(textures.get(name));
+        }
+        for (String name : infraManager.textureJobs().keySet()) {
+            if (!geodesicWallMaterial.diffuseMapExists() && name.startsWith("wall_variant")) {
+                geodesicWallMaterial.setDiffuseMap(textures.get(name));
+            } else if (!geodesicRoofMaterial.diffuseMapExists() && name.startsWith("roof_nation")) {
+                geodesicRoofMaterial.setDiffuseMap(textures.get(name));
+            }
         }
         infraManager.setNationTextures(textures::get);
         terrainRenderer = new Renderer();
@@ -1608,6 +1689,8 @@ private static class SpeciesConfig {
 
     private void initialiseWaterAndGrass() {
                 waterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_water.txt", GamePaths.HOME + "assets/shaders/fs_water.txt");
+        sphereWaterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_water.txt",
+                GamePaths.HOME + "assets/shaders/fs_sphere_water.txt");
                 waveMapTexture = createWaveMapTexture();
         
         waterMaterial = new Material(
@@ -2015,7 +2098,6 @@ private static class SpeciesConfig {
         // The season: where the planet is in its orbit sets how far north or south the sun
         // stands overhead
         float seasonalPhase = dynamicRand.nextFloat() * (float)(2.0 * Math.PI);
-        this.currentSeasonalTiltDegrees = this.planetAxialTiltDegrees * (float)Math.sin(seasonalPhase);
         this.sunDeclination = Math.asin(Math.sin(Math.toRadians(planetAxialTiltDegrees)) * Math.sin(seasonalPhase));
 
         if (this.minimap != null) {
@@ -2088,10 +2170,15 @@ private static class SpeciesConfig {
      * Carries the player from where they were to where the keys took them, in short steps,
      * stopping against anything solid and sliding along it rather than passing through.
      */
-    private void moveSolidly(Vector3 from) {
+    private void moveSolidly(Vector3 from, SpherePosition sphereFrom) {
+        if (geodesicTerrainModel != null) {
+            movePlayerOnGeodesicTerrain(sphereFrom);
+            return;
+        }
         Vector3 to = camera.getPosition();
         float mx = to.x - from.x, mz = to.z - from.z;
-        int steps = Math.max(1, (int) Math.ceil(Math.hypot(mx, mz) / 1.5f));
+        double startScale = Planet.scale(from.z);
+        int steps = Math.max(1, (int) Math.ceil(Math.hypot(mx, mz) * startScale / 1.5f));
         float px = from.x, pz = from.z;
         for (int i = 0; i < steps; i++) {
             float sx = mx / steps, sz = mz / steps;
@@ -2102,11 +2189,55 @@ private static class SpeciesConfig {
                 else if (!tooSteep(px, pz, 0f, sz)) sx = 0f;
                 else break;
             }
-            float[] next = collision.resolveFirm(px, pz, px + sx, pz + sz, PLAYER_RADIUS, PLAYER, jumpHeight);
+            float chartRadius = PLAYER_RADIUS * (float) Planet.stretch(pz);
+            float[] next = collision.resolveFirm(px, pz, px + sx, pz + sz, chartRadius, PLAYER, jumpHeight);
             px = next[0];
             pz = next[1];
         }
         if (px != to.x || pz != to.z) camera.setGroundPosition(px, pz);
+    }
+
+    private void movePlayerOnGeodesicTerrain(SpherePosition from) {
+        SpherePosition to = camera.getSpherePosition();
+        double distance = Planet.surfaceDistance(from, to);
+        int steps = Math.max(1, (int) Math.ceil(distance / 1.5));
+        SpherePosition lastFree = from;
+        for (int i = 1; i <= steps; i++) {
+            SpherePosition candidate = Planet.interpolateSurface(from, to, i / (double) steps);
+            if (jumpHeight < 1f && sphereTooSteep(candidate, to)) break;
+            SpherePosition resolved = geodesicCollision.resolve(candidate, PLAYER_RADIUS, jumpHeight);
+            if (geodesicCollision.blocked(resolved, PLAYER_RADIUS, jumpHeight)) break;
+            lastFree = resolved;
+        }
+        if (Planet.surfaceDistance(lastFree, to) > 1e-4) camera.setSpherePosition(lastFree);
+    }
+
+    private boolean sphereTooSteep(SpherePosition at, SpherePosition toward) {
+        double length = at.length();
+        double latitude = Math.asin(at.y() / length);
+        double longitude = Math.atan2(at.z(), at.x());
+        double upX = Math.cos(latitude) * Math.cos(longitude);
+        double upY = Math.sin(latitude);
+        double upZ = Math.cos(latitude) * Math.sin(longitude);
+        double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
+        double southX = Math.sin(latitude) * Math.cos(longitude);
+        double southY = -Math.cos(latitude);
+        double southZ = Math.sin(latitude) * Math.sin(longitude);
+        double targetLength = toward.length();
+        double dot = (at.x() * toward.x() + at.y() * toward.y() + at.z() * toward.z())
+                / (length * targetLength);
+        double tangentX = toward.x() / targetLength - dot * upX;
+        double tangentY = toward.y() / targetLength - dot * upY;
+        double tangentZ = toward.z() / targetLength - dot * upZ;
+        double east = tangentX * eastX + tangentZ * eastZ;
+        double south = tangentX * southX + tangentY * southY + tangentZ * southZ;
+        double directionLength = Math.hypot(east, south);
+        if (directionLength < 1e-9) return false;
+        SpherePosition ahead = Planet.moveOnSurface(at, east, south, 3.0);
+        SpherePosition behind = Planet.moveOnSurface(at, -east, -south, 3.0);
+        float rise = TerrainMesh.getLayeredHeight(ahead, worldNoise)
+                - TerrainMesh.getLayeredHeight(behind, worldNoise);
+        return rise / 6f > MAX_CLIMB;
     }
 
     /**
@@ -2286,6 +2417,47 @@ private static class SpeciesConfig {
         for (Model model : chunkCache.values()) {
             if (model.mesh != null) model.mesh.dispose(gl);
         }
+        if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
+            geodesicTerrainModel.mesh.dispose(gl);
+        }
+        if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
+        if (geodesicRoadModel != null && geodesicRoadModel.mesh != null) geodesicRoadModel.mesh.dispose(gl);
+        if (geodesicSettlementWallModel != null && geodesicSettlementWallModel.mesh != null) {
+            geodesicSettlementWallModel.mesh.dispose(gl);
+        }
+        if (geodesicSettlementRoofModel != null && geodesicSettlementRoofModel.mesh != null) {
+            geodesicSettlementRoofModel.mesh.dispose(gl);
+        }
+        geodesicWaterMesh = null;
+        geodesicWaterActiveCentre = null;
+        if (geodesicWaterBuild != null) geodesicWaterBuild.cancel(true);
+        geodesicWaterBuild = null;
+        geodesicWaterBuildCentre = null;
+        geodesicRoadModel = null;
+        geodesicRoadActiveCentre = null;
+        geodesicRoadRoutes = List.of();
+        if (geodesicRoadBuild != null) geodesicRoadBuild.cancel(true);
+        geodesicRoadBuild = null;
+        geodesicRoadBuildCentre = null;
+        geodesicSettlementWallModel = null;
+        geodesicSettlementRoofModel = null;
+        geodesicSettlementActiveCentre = null;
+        geodesicSettlementWalls = List.of();
+        if (organismManager != null) organismManager.setGeodesicSettlements(List.of());
+        geodesicCollision.clear();
+        if (geodesicSettlementBuild != null) geodesicSettlementBuild.cancel(true);
+        geodesicSettlementBuild = null;
+        geodesicSettlementBuildCentre = null;
+        geodesicFlora = List.of();
+        geodesicFloraActiveCentre = null;
+        if (geodesicFloraBuild != null) geodesicFloraBuild.cancel(true);
+        geodesicFloraBuild = null;
+        geodesicFloraBuildCentre = null;
+        geodesicTerrainModel = null;
+        geodesicTerrainActiveCentre = null;
+        if (geodesicTerrainBuild != null) geodesicTerrainBuild.cancel(true);
+        geodesicTerrainBuild = null;
+        geodesicTerrainBuildCentre = null;
         chunkCache.clear();
         terrainInFlight.clear();
         grassGather = null;
@@ -2425,7 +2597,8 @@ private static class SpeciesConfig {
 
     private boolean surroundingsBuilt() {
         int viewChunks = (VIEW_DISTANCE * 2 + 1) * (VIEW_DISTANCE * 2 + 1);
-        return chunkCache.size() >= viewChunks && floraCache.size() >= viewChunks && infraCache.size() >= viewChunks;
+        boolean terrainReady = geodesicTerrainModel != null || chunkCache.size() >= viewChunks;
+        return terrainReady && floraCache.size() >= viewChunks && infraCache.size() >= viewChunks;
     }
 
     /** One chunk's trees and shrubs (safe to work out off the GL thread). */
@@ -2618,6 +2791,499 @@ private static class SpeciesConfig {
         drawnGrassInstances = count;
     }
 
+    private void updateGeodesicTerrain(GL3 gl) {
+        if (geodesicTerrainBuild != null && geodesicTerrainBuild.isDone()) {
+            try {
+                Object[] data = geodesicTerrainBuild.get();
+                Mesh mesh = new Mesh(gl, (float[]) data[0], (int[]) data[1]);
+                Model replacement = new Model("geodesic_terrain", mesh, globalModelMatrix, terrainShader,
+                        terrainMaterial, terrainRenderer, lights, camera);
+                if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
+                    geodesicTerrainModel.mesh.dispose(gl);
+                }
+                geodesicTerrainModel = replacement;
+                geodesicTerrainActiveCentre = geodesicTerrainBuildCentre;
+                for (Model legacyTerrain : chunkCache.values()) {
+                    if (legacyTerrain.mesh != null) legacyTerrain.mesh.dispose(gl);
+                }
+                chunkCache.clear();
+                chunkBounds.clear();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while building geodesic terrain: " + e.getMessage());
+            } catch (java.util.concurrent.ExecutionException e) {
+                System.err.println("Could not build geodesic terrain: " + e.getCause());
+                geodesicTerrainRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
+            } finally {
+                geodesicTerrainBuild = null;
+                geodesicTerrainBuildCentre = null;
+            }
+        }
+
+        if (geodesicTerrainBuild != null) return;
+        if (System.nanoTime() < geodesicTerrainRetryAfterNanos) return;
+        SpherePosition current = camera.getSpherePosition();
+        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
+        boolean needsPatch = geodesicTerrainModel == null;
+        if (!needsPatch && geodesicTerrainActiveCentre != null) {
+            double angle = Math.atan2(
+                    crossLength(geodesicTerrainActiveCentre, current),
+                    geodesicTerrainActiveCentre.x() * current.x()
+                            + geodesicTerrainActiveCentre.y() * current.y()
+                            + geodesicTerrainActiveCentre.z() * current.z());
+            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
+            needsPatch = angle > patchRadius * 0.35;
+        }
+        if (!needsPatch) return;
+
+        geodesicTerrainBuildCentre = current;
+        double angularRadius = Math.min(Math.PI, FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
+        geodesicTerrainBuild = terrainBuilders.submit(() ->
+                TerrainMesh.buildGeodesicPatchData(geodesicTerrainGrid, current, angularRadius,
+                        GEODESIC_TERRAIN_SEGMENTS, worldNoise));
+    }
+
+    private void updateGeodesicWater(GL3 gl) {
+        if (geodesicWaterBuild != null && geodesicWaterBuild.isDone()) {
+            try {
+                Object[] data = geodesicWaterBuild.get();
+                Mesh replacement = new Mesh(gl, (float[]) data[0], (int[]) data[1]);
+                if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
+                geodesicWaterMesh = replacement;
+                geodesicWaterActiveCentre = geodesicWaterBuildCentre;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while building geodesic water: " + e.getMessage());
+            } catch (java.util.concurrent.ExecutionException e) {
+                System.err.println("Could not build geodesic water: " + e.getCause());
+                geodesicWaterRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
+            } finally {
+                geodesicWaterBuild = null;
+                geodesicWaterBuildCentre = null;
+            }
+        }
+        if (geodesicWaterBuild != null || System.nanoTime() < geodesicWaterRetryAfterNanos) return;
+        if (geodesicTerrainModel == null || geodesicTerrainActiveCentre == null) return;
+
+        SpherePosition current = camera.getSpherePosition();
+        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
+        boolean needsPatch = geodesicWaterMesh == null;
+        if (!needsPatch && geodesicWaterActiveCentre != null) {
+            double angle = Math.atan2(crossLength(geodesicWaterActiveCentre, current),
+                    geodesicWaterActiveCentre.x() * current.x()
+                            + geodesicWaterActiveCentre.y() * current.y()
+                            + geodesicWaterActiveCentre.z() * current.z());
+            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
+            needsPatch = angle > patchRadius * 0.35;
+        }
+        if (!needsPatch) return;
+
+        geodesicWaterBuildCentre = current;
+        double angularRadius = Math.min(Math.PI, FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
+        geodesicWaterBuild = terrainBuilders.submit(() -> TerrainMesh.buildGeodesicWaterPatchData(
+                geodesicTerrainGrid, current, angularRadius, GEODESIC_WATER_SEGMENTS, seaLevelHeight, worldNoise));
+    }
+
+    private void updateGeodesicRoads(GL3 gl) {
+        if (geodesicRoadBuild != null && geodesicRoadBuild.isDone()) {
+            try {
+                GeodesicRoadMesh.Patch data = geodesicRoadBuild.get();
+                Model replacement = null;
+                if (data.indices().length > 0) {
+                    Mesh mesh = new Mesh(gl, data.vertices(), data.indices());
+                    replacement = new Model("geodesic_roads", mesh, new Matrix4(1), sphereStructureShader,
+                            geodesicRoadMaterial, terrainRenderer, lights, camera);
+                }
+                if (geodesicRoadModel != null && geodesicRoadModel.mesh != null) {
+                    geodesicRoadModel.mesh.dispose(gl);
+                }
+                geodesicRoadModel = replacement;
+                geodesicRoadRoutes = data.routes();
+                geodesicRoadActiveCentre = geodesicRoadBuildCentre;
+                rebuildGeodesicCollision();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while building geodesic roads: " + e.getMessage());
+            } catch (java.util.concurrent.ExecutionException e) {
+                System.err.println("Could not build geodesic roads: " + e.getCause());
+                geodesicRoadRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
+            } finally {
+                geodesicRoadBuild = null;
+                geodesicRoadBuildCentre = null;
+            }
+        }
+        if (geodesicRoadBuild != null || System.nanoTime() < geodesicRoadRetryAfterNanos
+                || geodesicTerrainModel == null || geodesicTerrainActiveCentre == null) return;
+
+        SpherePosition current = camera.getSpherePosition();
+        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
+        boolean needsPatch = geodesicRoadModel == null && geodesicRoadActiveCentre == null;
+        if (!needsPatch && geodesicRoadActiveCentre != null) {
+            double angle = Math.atan2(crossLength(geodesicRoadActiveCentre, current),
+                    geodesicRoadActiveCentre.x() * current.x()
+                            + geodesicRoadActiveCentre.y() * current.y()
+                            + geodesicRoadActiveCentre.z() * current.z());
+            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
+            needsPatch = angle > patchRadius * 0.35;
+        }
+        if (!needsPatch) return;
+
+        geodesicRoadBuildCentre = current;
+        double angularRadius = Math.min(Math.PI,
+                FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
+        geodesicRoadBuild = terrainBuilders.submit(() -> GeodesicRoadMesh.buildPatchData(
+                current, angularRadius, seaLevelHeight, worldSeed, worldNoise));
+    }
+
+    private void renderGeodesicRoads(GL3 gl) {
+        updateGeodesicRoads(gl);
+        if (geodesicRoadModel == null) return;
+        terrainShader.setFloat(gl, "useSoilRegions", 0f);
+        terrainShader.setFloat(gl, "snowCleared", 0f);
+        terrainShader.setFloat(gl, "trackGrit", 0f);
+        terrainShader.setFloat(gl, "weathering", 0f);
+        terrainShader.setFloat(gl, "bend", 0f);
+        gl.glDisable(GL.GL_CULL_FACE);
+        geodesicRoadModel.renderSphereNative(gl, ambientLight, nightProportion);
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    private void renderGeodesicInfrastructure(GL3 gl) {
+        SpherePosition eye = camera.getSpherePosition();
+        Vector3 forward = camera.getSphereForwardDirection();
+        float drawDistance = Math.max(VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE, FAR_PLANE);
+        for (List<InfrastructureObject> objects : infraCache.values()) {
+            for (InfrastructureObject object : objects) {
+                if (object.type != InfrastructureObject.Type.BATCH) continue;
+                SpherePosition anchor = Planet.spherePosition(
+                        object.position.x, object.position.z, object.position.y);
+                double dx = anchor.x() - eye.x();
+                double dy = anchor.y() - eye.y();
+                double dz = anchor.z() - eye.z();
+                double distanceSquared = dx * dx + dy * dy + dz * dz;
+                double radius = object.boundingRadius;
+                if (distanceSquared > (drawDistance + radius) * (drawDistance + radius)) continue;
+                if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
+                object.setViewerDistanceSquared((float) distanceSquared);
+                object.renderSphereNativeBatch(gl, ambientLight, nightProportion,
+                        solidShader, terrainShader, terrainRenderer, lights, camera);
+            }
+        }
+    }
+
+    private void updateGeodesicSettlements(GL3 gl) {
+        if (geodesicSettlementBuild != null && geodesicSettlementBuild.isDone()) {
+            try {
+                GeodesicSettlementMesh.Patch data = geodesicSettlementBuild.get();
+                Model walls = null, roofs = null;
+                if (data.wallIndices().length > 0) {
+                    walls = new Model("geodesic_settlement_walls",
+                            new Mesh(gl, data.wallVertices(), data.wallIndices()), new Matrix4(1),
+                            sphereStructureShader, geodesicWallMaterial, terrainRenderer, lights, camera);
+                }
+                if (data.roofIndices().length > 0) {
+                    roofs = new Model("geodesic_settlement_roofs",
+                            new Mesh(gl, data.roofVertices(), data.roofIndices()), new Matrix4(1),
+                            sphereStructureShader, geodesicRoofMaterial, terrainRenderer, lights, camera);
+                }
+                if (geodesicSettlementWallModel != null && geodesicSettlementWallModel.mesh != null) {
+                    geodesicSettlementWallModel.mesh.dispose(gl);
+                }
+                if (geodesicSettlementRoofModel != null && geodesicSettlementRoofModel.mesh != null) {
+                    geodesicSettlementRoofModel.mesh.dispose(gl);
+                }
+                geodesicSettlementWallModel = walls;
+                geodesicSettlementRoofModel = roofs;
+                geodesicSettlementWalls = data.walls();
+                organismManager.setGeodesicSettlements(data.areas());
+                geodesicSettlementActiveCentre = geodesicSettlementBuildCentre;
+                rebuildGeodesicCollision();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while building geodesic settlements: " + e.getMessage());
+            } catch (java.util.concurrent.ExecutionException e) {
+                System.err.println("Could not build geodesic settlements: " + e.getCause());
+                geodesicSettlementRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
+            } finally {
+                geodesicSettlementBuild = null;
+                geodesicSettlementBuildCentre = null;
+            }
+        }
+        if (geodesicSettlementBuild != null || System.nanoTime() < geodesicSettlementRetryAfterNanos
+                || geodesicTerrainModel == null || geodesicTerrainActiveCentre == null) return;
+
+        SpherePosition current = camera.getSpherePosition();
+        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
+        boolean needsPatch = geodesicSettlementActiveCentre == null;
+        if (!needsPatch) {
+            double angle = Math.atan2(crossLength(geodesicSettlementActiveCentre, current),
+                    geodesicSettlementActiveCentre.x() * current.x()
+                            + geodesicSettlementActiveCentre.y() * current.y()
+                            + geodesicSettlementActiveCentre.z() * current.z());
+            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
+            needsPatch = angle > patchRadius * 0.35;
+        }
+        if (!needsPatch) return;
+
+        geodesicSettlementBuildCentre = current;
+        double angularRadius = Math.min(Math.PI,
+                FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
+        geodesicSettlementBuild = terrainBuilders.submit(() -> GeodesicSettlementMesh.buildPatchData(
+                geodesicTerrainGrid, current, angularRadius, seaLevelHeight, worldSeed, worldNoise));
+    }
+
+    private void rebuildGeodesicCollision() {
+        geodesicCollision.clear();
+        for (GeodesicSettlementMesh.WallSegment wall : geodesicSettlementWalls) {
+            geodesicCollision.addSegment(wall.start(), wall.end(), 0.75, wall.top());
+        }
+        for (GeodesicRoadMesh.RouteSegment route : geodesicRoadRoutes) {
+            geodesicCollision.addRouteSegment(route.start(), route.end(), route.halfWidth());
+        }
+    }
+
+    /** Native sphere-space obstacle and generated-road route queries for sphere-native actors. */
+    public GeodesicCollision geodesicCollision() {
+        return geodesicCollision;
+    }
+
+    private void renderGeodesicSettlements(GL3 gl) {
+        updateGeodesicSettlements(gl);
+        terrainShader.setFloat(gl, "useSoilRegions", 0f);
+        terrainShader.setFloat(gl, "snowCleared", 0f);
+        terrainShader.setFloat(gl, "trackGrit", 0f);
+        terrainShader.setFloat(gl, "weathering", 0f);
+        terrainShader.setFloat(gl, "bend", 0f);
+        gl.glDisable(GL.GL_CULL_FACE);
+        if (geodesicSettlementWallModel != null) {
+            geodesicSettlementWallModel.renderSphereNative(gl, ambientLight, nightProportion);
+        }
+        if (geodesicSettlementRoofModel != null) {
+            geodesicSettlementRoofModel.renderSphereNative(gl, ambientLight, nightProportion);
+        }
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    private void renderGeodesicWater(GL3 gl, Vector3 skyColour, float daylight, float time) {
+        if (geodesicTerrainModel == null) return;
+        updateGeodesicWater(gl);
+        if (geodesicWaterMesh == null || geodesicWaterMesh.getIndexCount() == 0) return;
+
+        SpherePosition cameraPosition = camera.getSpherePosition();
+        double length = cameraPosition.length();
+        double latitude = Math.asin(cameraPosition.y() / length);
+        double longitude = Math.atan2(cameraPosition.z(), cameraPosition.x());
+        float[] localSun = Planet.sunDirection(cameraPosition, sunDeclination, noonLongitude);
+        double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
+        double northX = -Math.sin(latitude) * Math.cos(longitude);
+        double northY = Math.cos(latitude);
+        double northZ = -Math.sin(latitude) * Math.sin(longitude);
+        double upX = Math.cos(latitude) * Math.cos(longitude), upY = Math.sin(latitude);
+        double upZ = Math.cos(latitude) * Math.sin(longitude);
+        Vector3 sunDirection = new Vector3(
+                (float) (localSun[0] * eastX - localSun[2] * northX + localSun[1] * upX),
+                (float) (-localSun[2] * northY + localSun[1] * upY),
+                (float) (localSun[0] * eastZ - localSun[2] * northZ + localSun[1] * upZ));
+        sunDirection.normalize();
+
+        gl.glEnable(GL.GL_DEPTH_TEST);
+        gl.glDisable(GL.GL_CULL_FACE);
+        gl.glEnable(GL.GL_BLEND);
+        gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
+        gl.glDepthMask(false);
+        sphereWaterShader.use(gl);
+        sphereWaterShader.setFloatArray(gl, "viewProjection", camera.getSphereViewProjection().toFloatArrayForGLSL());
+        sphereWaterShader.setVec3(gl, "sphereCamera", new Vector3((float) cameraPosition.x(),
+                (float) cameraPosition.y(), (float) cameraPosition.z()));
+        sphereWaterShader.setFloat(gl, "planetRadius", (float) Planet.radius());
+        sphereWaterShader.setFloat(gl, "seaLevel", seaLevelHeight);
+        sphereWaterShader.setFloat(gl, "time", time);
+        sphereWaterShader.setVec3(gl, "waterColour", waterMaterial.getDiffuse());
+        sphereWaterShader.setVec3(gl, "skyColour", skyColour);
+        sphereWaterShader.setVec3(gl, "sunDirection", sunDirection);
+        sphereWaterShader.setFloat(gl, "daylight", daylight);
+        geodesicWaterMesh.render(gl);
+        gl.glDepthMask(true);
+        gl.glDisable(GL.GL_BLEND);
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    private void updateGeodesicFlora() {
+        if (geodesicFloraBuild != null && geodesicFloraBuild.isDone()) {
+            try {
+                geodesicFlora = geodesicFloraBuild.get();
+                geodesicFloraActiveCentre = geodesicFloraBuildCentre;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Interrupted while building geodesic vegetation: " + e.getMessage());
+            } catch (java.util.concurrent.ExecutionException e) {
+                System.err.println("Could not build geodesic vegetation: " + e.getCause());
+                geodesicFloraRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
+            } finally {
+                geodesicFloraBuild = null;
+                geodesicFloraBuildCentre = null;
+            }
+        }
+        if (geodesicFloraBuild != null || System.nanoTime() < geodesicFloraRetryAfterNanos
+                || geodesicTerrainModel == null) return;
+
+        SpherePosition current = camera.getSpherePosition();
+        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
+        boolean needsPatch = geodesicFloraActiveCentre == null;
+        if (!needsPatch) {
+            double angle = Math.atan2(crossLength(geodesicFloraActiveCentre, current),
+                    geodesicFloraActiveCentre.x() * current.x()
+                            + geodesicFloraActiveCentre.y() * current.y()
+                            + geodesicFloraActiveCentre.z() * current.z());
+            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
+            needsPatch = angle > patchRadius * 0.35;
+        }
+        if (!needsPatch) return;
+
+        geodesicFloraBuildCentre = current;
+        double angularRadius = Math.min(Math.PI, FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
+        geodesicFloraBuild = terrainBuilders.submit(() -> buildGeodesicFlora(current, angularRadius));
+    }
+
+    private List<SphereFlora> buildGeodesicFlora(SpherePosition centre, double angularRadius) {
+        List<SphereFlora> plants = new ArrayList<>();
+        List<GeodesicChunkGrid.Cell> cells = geodesicTerrainGrid.cellsWithin(
+                new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z()), angularRadius);
+        for (GeodesicChunkGrid.Cell cell : cells) {
+            if (Thread.currentThread().isInterrupted()) return plants;
+            long seed = worldSeed ^ (cell.id() * 0x9E3779B97F4A7C15L);
+            Random random = new Random(seed);
+            double root = Math.sqrt(random.nextDouble());
+            double b = root * (1.0 - random.nextDouble());
+            double c = root - b;
+            double a = 1.0 - root;
+            GeodesicChunkGrid.Direction direction = new GeodesicChunkGrid.Direction(
+                    a * cell.a().x() + b * cell.b().x() + c * cell.c().x(),
+                    a * cell.a().y() + b * cell.b().y() + c * cell.c().y(),
+                    a * cell.a().z() + b * cell.b().z() + c * cell.c().z()).normalized();
+            float[] surface = {
+                    (float) (direction.x() * Planet.radius()),
+                    (float) (direction.y() * Planet.radius()),
+                    (float) (direction.z() * Planet.radius())
+            };
+            float height = TerrainMesh.getLayeredHeight(
+                    new SpherePosition(surface[0], surface[1], surface[2]), worldNoise);
+            if (height <= seaLevelHeight + 0.5f) continue;
+
+            float habitat = worldNoise.onSphere(surface, 0.004f, 17.1f, -9.2f);
+            if (habitat < -0.28f) continue;
+            int species = random.nextInt(NUM_SPECIES);
+            int variation = random.nextInt(FLORA_VARIATIONS);
+            float scale = 0.7f + random.nextFloat() * 0.6f;
+            float rotation = random.nextFloat() * 360f;
+            double radial = Planet.radius() + height;
+            plants.add(new SphereFlora(new SpherePosition(direction.x() * radial,
+                    direction.y() * radial, direction.z() * radial), species, variation, scale, rotation));
+            if (habitat > 0.35f && random.nextFloat() < 0.35f) {
+                double offsetAngle = random.nextDouble() * Math.PI * 2.0;
+                double offsetDistance = 8.0 + random.nextDouble() * 12.0;
+                double lat = Math.asin(direction.y());
+                double lon = Math.atan2(direction.z(), direction.x());
+                double eastX = -Math.sin(lon), eastZ = Math.cos(lon);
+                double northX = -Math.sin(lat) * Math.cos(lon);
+                double northY = Math.cos(lat);
+                double northZ = -Math.sin(lat) * Math.sin(lon);
+                double tangentEast = Math.cos(offsetAngle), tangentNorth = Math.sin(offsetAngle);
+                double arc = offsetDistance / Planet.radius();
+                GeodesicChunkGrid.Direction clumpDirection = new GeodesicChunkGrid.Direction(
+                        direction.x() * Math.cos(arc)
+                                + (eastX * tangentEast + northX * tangentNorth) * Math.sin(arc),
+                        direction.y() * Math.cos(arc) + northY * tangentNorth * Math.sin(arc),
+                        direction.z() * Math.cos(arc)
+                                + (eastZ * tangentEast + northZ * tangentNorth) * Math.sin(arc));
+                float clumpHeight = TerrainMesh.getLayeredHeight(new SpherePosition(
+                        clumpDirection.x() * Planet.radius(), clumpDirection.y() * Planet.radius(),
+                        clumpDirection.z() * Planet.radius()), worldNoise);
+                if (clumpHeight > seaLevelHeight + 0.5f) {
+                    double clumpRadius = Planet.radius() + clumpHeight;
+                    plants.add(new SphereFlora(new SpherePosition(clumpDirection.x() * clumpRadius,
+                            clumpDirection.y() * clumpRadius, clumpDirection.z() * clumpRadius),
+                            species, random.nextInt(FLORA_VARIATIONS), 0.7f + random.nextFloat() * 0.6f,
+                            random.nextFloat() * 360f));
+                }
+            }
+        }
+        return plants;
+    }
+
+    private void renderGeodesicFlora(GL3 gl, Matrix4 skyRotation) {
+        if (geodesicTerrainModel == null) return;
+        updateGeodesicFlora();
+        if (geodesicFlora.isEmpty()) return;
+
+        leafShader.setFloatArray(gl, "skyRotation", skyRotation.toFloatArrayForGLSL());
+        if (textures.get("sky") != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get("sky").bind(gl);
+            leafShader.setInt(gl, "skyTexture", 2);
+        }
+        gl.glDisable(GL.GL_CULL_FACE);
+        for (SphereFlora plant : geodesicFlora) {
+            SpherePosition position = plant.position();
+            double dx = position.x() - camera.getSpherePosition().x();
+            double dy = position.y() - camera.getSpherePosition().y();
+            double dz = position.z() - camera.getSpherePosition().z();
+            double distanceSquared = dx * dx + dy * dy + dz * dz;
+            if (distanceSquared > 2500.0 * 2500.0) continue;
+
+            int lod = distanceSquared > 135.0 * 135.0 ? 2 : (distanceSquared > 65.0 * 65.0 ? 1 : 0);
+            Matrix4 model = sphereFloraMatrix(position, plant.rotationY(), plant.scale());
+            Model branch = floraBranchModelsLOD[plant.speciesIndex()][lod][plant.modelIndex()];
+            branch.setModelMatrix(model);
+            branch.renderSphereNative(gl, ambientLight, nightProportion);
+
+            leafShader.setVec3(gl, "u_LeafDarkColor", leafDarkColour(speciesConfigs[plant.speciesIndex()].healthyColor));
+            leafShader.setVec3(gl, "u_LeafLightColor", leafLightColour(speciesConfigs[plant.speciesIndex()].healthyColor));
+            Model leaves = floraLeafModelsLOD[plant.speciesIndex()][lod][plant.modelIndex()];
+            leaves.setModelMatrix(model);
+            leaves.renderSphereNative(gl, ambientLight, nightProportion);
+        }
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    private static Matrix4 sphereFloraMatrix(SpherePosition position, float rotationDegrees, float scale) {
+        double length = position.length();
+        double lat = Math.asin(position.y() / length);
+        double lon = Math.atan2(position.z(), position.x());
+        double eastX = -Math.sin(lon), eastZ = Math.cos(lon);
+        double northX = -Math.sin(lat) * Math.cos(lon), northY = Math.cos(lat);
+        double northZ = -Math.sin(lat) * Math.sin(lon);
+        double upX = Math.cos(lat) * Math.cos(lon), upY = Math.sin(lat);
+        double upZ = Math.cos(lat) * Math.sin(lon);
+        double yaw = Math.toRadians(rotationDegrees);
+        double cosine = Math.cos(yaw), sine = Math.sin(yaw);
+        float[] matrix = {
+            (float) ((eastX * cosine - northX * sine) * scale),
+            (float) (-northY * sine * scale),
+            (float) ((eastZ * cosine - northZ * sine) * scale), 0f,
+            (float) (upX * scale), (float) (upY * scale), (float) (upZ * scale), 0f,
+            (float) ((eastX * sine + northX * cosine) * scale),
+            (float) (northY * cosine * scale),
+            (float) ((eastZ * sine + northZ * cosine) * scale), 0f,
+            (float) position.x(), (float) position.y(), (float) position.z(), 1f
+        };
+        return Matrix4.fromColumns(matrix);
+    }
+
+    private static double crossLength(SpherePosition first, SpherePosition second) {
+        double ax = first.y() * second.z() - first.z() * second.y();
+        double ay = first.z() * second.x() - first.x() * second.z();
+        double az = first.x() * second.y() - first.y() * second.x();
+        return Math.sqrt(ax * ax + ay * ay + az * az);
+    }
+
+    private void setSphereTerrainTransform(Shader shader, boolean enabled) {
+        shader.setInt(gl, "sphereNativeTerrain", enabled ? 1 : 0);
+        if (!enabled) return;
+        SpherePosition position = camera.getSpherePosition();
+        shader.setVec3(gl, "sphereCamera", new Vector3((float) position.x(), (float) position.y(), (float) position.z()));
+    }
+
     private void updateVisibleChunks(boolean forceImmediate) {
         boolean loadingNow = roundLoading || teleportLoading || !worldReady;
         roundChunkDeadline = System.nanoTime() + (loadingNow ? ROUND_LOADING_BUDGET_NANOS : PLAY_CHUNK_BUDGET_NANOS);
@@ -2629,6 +3295,8 @@ private static class SpeciesConfig {
         int uploadsThisFrame = 0;
         boolean pending = false;
 
+        // Keep legacy patches only until the first sphere-native terrain patch is ready.
+        if (geodesicTerrainModel == null) {
         // --- TERRAIN: dropped well behind, built (or re-detailed) nearest and ahead first
         Iterator<Map.Entry<String, Model>> iterator = chunkCache.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -2703,6 +3371,7 @@ private static class SpeciesConfig {
             String[] coords = key.split("_");
             return Math.max(Math.abs(Integer.parseInt(coords[0]) - lastChunkX), Math.abs(Integer.parseInt(coords[1]) - lastChunkZ)) > reach + 1;
         });
+        }
 
         // --- MULTI-SPECIES PROBABILISTIC SPATIAL ECOSYSTEM SEEDING ---
         floraInFlight.keySet().removeIf(key -> {
@@ -2904,8 +3573,9 @@ private static class SpeciesConfig {
                     List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
                         cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
                     );
-                    for (InfrastructureObject obj : spawnedObjects) {
-                        if (obj.type == InfrastructureObject.Type.BATCH) {
+                    if (geodesicTerrainModel == null) {
+                        for (InfrastructureObject obj : spawnedObjects) {
+                            if (obj.type != InfrastructureObject.Type.BATCH) continue;
                             obj.initializeBatch(gl, solidShader, terrainShader, terrainRenderer, lights, camera);
                         }
                     }
@@ -2982,7 +3652,8 @@ private static class SpeciesConfig {
         if (moveW && moveS) { moveW = false; moveS = false; }
         if (moveA && moveD) { moveA = false; moveD = false; }
 
-        Vector3 beforeMove = camera.getPosition();
+        Vector3 beforeMove = geodesicTerrainModel == null ? camera.getPosition() : null;
+        SpherePosition sphereBeforeMove = camera.getSpherePosition();
         if (minimap != null && minimap.isFullScreenRevealMode()) {
             camera.updatePosition(false, false, false, false, (float)deltaTime);
         } else {
@@ -2990,16 +3661,21 @@ private static class SpeciesConfig {
         }
 
         if (!menuShotHold) {
-            moveSolidly(beforeMove);
-            followThePlanet(beforeMove);
+                    moveSolidly(beforeMove, sphereBeforeMove);
+                    if (geodesicTerrainModel == null) followThePlanet(beforeMove);
         }
         Vector3 currentPos = camera.getPosition();
-        float rawGroundHeight = groundHeightAt(currentPos.x, currentPos.z);
+        float currentAltitude = geodesicTerrainModel == null ? currentPos.y : camera.getAltitude();
+                float rawGroundHeight = geodesicTerrainModel == null
+                        ? groundHeightAt(currentPos.x, currentPos.z)
+                        : TerrainMesh.getLayeredHeight(camera.getSpherePosition(), worldNoise);
                 float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
-        // Too deep to stand: swim, eyes just above the waves and riding them
-        waterSurfaceHere = regionalManager.waveSurfaceAt(currentPos.x, currentPos.z, (float) elapsedTime,
-                seaLevelHeight, PHYSICAL_CHUNK_SIZE);
+                // Too deep to stand: swim, eyes just above the waves and riding them
+                waterSurfaceHere = geodesicTerrainModel == null
+                        ? regionalManager.waveSurfaceAt(currentPos.x, currentPos.z, (float) elapsedTime,
+                                seaLevelHeight, PHYSICAL_CHUNK_SIZE)
+                        : seaLevelHeight;
         swimming = targetCameraHeight < waterSurfaceHere + SWIM_EYE_HEIGHT;
         if (swimming) {
             targetCameraHeight = waterSurfaceHere + SWIM_EYE_HEIGHT;
@@ -3020,7 +3696,7 @@ private static class SpeciesConfig {
                 jumpVelocity = JUMP_SPEED;
                 // From where the eyes are now (the walking height eases after the ground, so
                 // starting from the ground itself would jolt)
-                airborneEyeY = currentPos.y;
+                airborneEyeY = currentAltitude;
             }
         }
         if (airborne) {
@@ -3034,13 +3710,13 @@ private static class SpeciesConfig {
                 jumpHeight = 0f;
                 jumpVelocity = 0f;
                 airborne = false;
-                camera.setHeight(Math.max(airborneEyeY, targetCameraHeight - 0.5f));
+                camera.setAltitude(Math.max(airborneEyeY, targetCameraHeight - 0.5f));
             } else {
-                camera.setHeight(Math.max(airborneEyeY, targetCameraHeight));
+                camera.setAltitude(Math.max(airborneEyeY, targetCameraHeight));
             }
         } else {
-            float smoothedHeight = currentPos.y + (targetCameraHeight - currentPos.y) * dynamicSmoothingFactor;
-            camera.setHeight(smoothedHeight);
+            float smoothedHeight = currentAltitude + (targetCameraHeight - currentAltitude) * dynamicSmoothingFactor;
+            camera.setAltitude(smoothedHeight);
         }
 
         lights[0].setPosition(getSunPosition());
@@ -3065,7 +3741,9 @@ private static class SpeciesConfig {
         }
 
         // Night falls as the sun sinks: full day above 18 degrees, full night once it's 6 below
-        float[] sunDir = Planet.sunDirection(currentPos.x, currentPos.z, sunDeclination, noonLongitude);
+        float[] sunDir = geodesicTerrainModel == null
+                ? Planet.sunDirection(currentPos.x, currentPos.z, sunDeclination, noonLongitude)
+                : Planet.sunDirection(camera.getSpherePosition(), sunDeclination, noonLongitude);
         float sunElevation = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, sunDir[1]))));
         nightProportion = Math.max(0f, Math.min(1f, (18f - sunElevation) / 24f));
 
@@ -3105,6 +3783,7 @@ private static class SpeciesConfig {
         Matrix4 view = camera.getViewMatrix();
         Matrix4 projection = camera.getPerspectiveMatrix();
         Matrix4 viewProjection = Matrix4.multiply(projection, view);
+        Matrix4 sphereViewProjection = camera.getSphereViewProjection();
         frustum.update(viewProjection);
         // The ground curves away with the planet
         float[] vp = viewProjection.toFloatArrayForGLSL();
@@ -3114,21 +3793,33 @@ private static class SpeciesConfig {
         depthPrePassShader.use(gl);
 
         // Only chunks inside the view volume are drawn, in both the depth and colour passes
+        updateGeodesicTerrain(gl);
         visibleChunks.clear();
-        for (Map.Entry<String, Model> chunk : chunkCache.entrySet()) {
-            float[] b = chunkBounds.get(chunk.getKey());
-            if (b == null || frustum.intersectsSphere(b[0], b[1], b[2], b[3])) {
-                visibleChunks.add(chunk.getValue());
+        if (geodesicTerrainModel != null) {
+            visibleChunks.add(geodesicTerrainModel);
+        } else {
+            for (Map.Entry<String, Model> chunk : chunkCache.entrySet()) {
+                float[] b = chunkBounds.get(chunk.getKey());
+                if (b == null || frustum.intersectsSphere(b[0], b[1], b[2], b[3])) {
+                    visibleChunks.add(chunk.getValue());
+                }
             }
         }
 
+        depthPrePassShader.use(gl);
+        setSphereTerrainTransform(depthPrePassShader, geodesicTerrainModel != null);
+        if (geodesicTerrainModel != null) gl.glFrontFace(GL.GL_CW);
         for (Model plane : visibleChunks) {
-            plane.renderDepthPass(gl, depthPrePassShader, viewProjection);
+            if (plane == geodesicTerrainModel) plane.renderSphereNativeDepthPass(gl, depthPrePassShader, sphereViewProjection);
+            else plane.renderDepthPass(gl, depthPrePassShader, viewProjection);
         }
+        gl.glFrontFace(GL.GL_CCW);
+        setSphereTerrainTransform(depthPrePassShader, false);
         
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);   // (back to where the world is drawn)
 
         // --- PASS 2: MAIN FORWARD DRAW ---
+        gl.glClearColor(skyColour.x, skyColour.y, skyColour.z, 1.0f);
         gl.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT);
         gl.glDisable(GL.GL_DEPTH_TEST); 
         gl.glDisable(GL.GL_CULL_FACE); 
@@ -3136,25 +3827,28 @@ private static class SpeciesConfig {
         float sunProgress = timeOfDay - (float)Math.floor(timeOfDay);
         float sunAngleDeg = 10.0f + sunProgress * (170.0f - 10.0f);
 
-        Vector3 camPosForSky = camera.getPosition();
-        float totalPlayableRegion = (VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE) * 50.0f;
-        float maxMapEdgeZ = totalPlayableRegion / 2.0f;
-        
-        float latitudeFactor = camPosForSky.z / maxMapEdgeZ;
-        if (latitudeFactor > 1.0f) latitudeFactor = 1.0f;
-        if (latitudeFactor < -1.0f) latitudeFactor = -1.0f;
-        
-        float latitudeAngleDeg = -latitudeFactor * 35.0f;
-        float tiltAngleDeg = latitudeAngleDeg + currentSeasonalTiltDegrees;
+        Vector3 camPosForSky = geodesicTerrainModel == null ? camera.getPosition() : null;
 
-        Matrix4 skyRotation = skyRotation(camPosForSky);
+        if (geodesicTerrainModel != null) {
+            sphereWeather.update((float) deltaTime, (float) elapsedTime, camera, worldNoise,
+                    seaLevelHeight, freezingPoint);
+            rainSound.setRain(sphereWeather.snowing() ? 0f : sphereWeather.intensity());
+        }
 
-        Matrix4 skyTransform = Matrix4Transform.translate(camera.getPosition());
-        skyTransform = Matrix4.multiply(skyTransform, skyRotation);
-        skyTransform = Matrix4.multiply(skyTransform, Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f));
-        
-        skyModel.setModelMatrix(skyTransform);
-        skyModel.render(gl, ambientLight, nightProportion);
+        Matrix4 skyRotation = geodesicTerrainModel == null
+                ? skyRotation(camPosForSky) : skyRotation(camera.getSpherePosition());
+
+        if (geodesicTerrainModel != null) {
+            sphereSkyRenderer.render(gl, camera, textures.get("sky"), skyColour,
+                    (float) currentWidth / Math.max(1, currentHeight), (float) elapsedTime,
+                    0.38f + sphereWeather.intensity() * 0.55f);
+        } else {
+            Matrix4 skyTransform = Matrix4Transform.translate(camera.getPosition());
+            skyTransform = Matrix4.multiply(skyTransform, skyRotation);
+            skyTransform = Matrix4.multiply(skyTransform, Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f));
+            skyModel.setModelMatrix(skyTransform);
+            skyModel.render(gl, ambientLight, nightProportion);
+        }
 
         gl.glEnable(GL.GL_CULL_FACE);
         gl.glEnable(GL.GL_DEPTH_TEST);
@@ -3167,12 +3861,19 @@ private static class SpeciesConfig {
         gl.glDisable(GL.GL_BLEND);
 
         // --- CLOUDS, over the sky and behind everything else ---
-        rainSound.setRain(weather.snowing() ? 0f : weather.intensity());
-        weather.update((float) deltaTime, (float) elapsedTime, camera.getPosition(), () -> rainfallAt(camera.getPosition().x, camera.getPosition().z),
-                this::surfaceHeightAt, freezingPoint - temperatureAt(camera.getPosition().x, camera.getPosition().z));
         float[] sunTintNow = worldArt.palette().sunTint;
-        weather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, 1.0f - nightProportion, (float) elapsedTime,
-                Planet.sunDirection(camera.getPosition().x, camera.getPosition().z, sunDeclination, noonLongitude), sunTintNow, fogColour(skyColour));
+        if (geodesicTerrainModel == null) {
+            rainSound.setRain(weather.snowing() ? 0f : weather.intensity());
+            weather.update((float) deltaTime, (float) elapsedTime, camera.getPosition(),
+                    () -> rainfallAt(camera.getPosition().x, camera.getPosition().z), this::surfaceHeightAt,
+                    freezingPoint - temperatureAt(camera.getPosition().x, camera.getPosition().z));
+            weather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour,
+                    1.0f - nightProportion, (float) elapsedTime,
+                    Planet.sunDirection(camera.getPosition().x, camera.getPosition().z, sunDeclination, noonLongitude),
+                    sunTintNow, fogColour(skyColour));
+        } else {
+            rainSound.setRain(sphereWeather.snowing() ? 0f : sphereWeather.intensity());
+        }
         // The fog everything fades into with distance
         float[] fog = fogColour(skyColour);
         Shader.setFog(gl, fog[0], fog[1], fog[2]);
@@ -3195,12 +3896,44 @@ private static class SpeciesConfig {
         textures.get("soil_regions").bind(gl);
         terrainShader.setInt(gl, "soilRegionMap", 6);
         terrainShader.setFloat(gl, "regionWidth", TOTAL_REGION_WIDTH);
-        terrainShader.setFloat(gl, "useSoilRegions", 1.0f);
+        terrainShader.setFloat(gl, "useSoilRegions", geodesicTerrainModel == null ? 1.0f : 0.0f);
         terrainShader.setVec3(gl, "rockColour", worldRockColour());
+        setSphereTerrainTransform(terrainShader, geodesicTerrainModel != null);
+        if (geodesicTerrainModel != null) gl.glFrontFace(GL.GL_CW);
         for (Model plane : visibleChunks) {
-            plane.render(gl, ambientLight, nightProportion);
+            if (plane == geodesicTerrainModel) plane.renderSphereNative(gl, ambientLight, nightProportion);
+            else plane.render(gl, ambientLight, nightProportion);
         }
+        gl.glFrontFace(GL.GL_CCW);
+        setSphereTerrainTransform(terrainShader, false);
         terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
+
+        if (geodesicTerrainModel != null) {
+            gl.glFrontFace(GL.GL_CW);
+            renderGeodesicInfrastructure(gl);
+            renderGeodesicRoads(gl);
+            renderGeodesicSettlements(gl);
+            gl.glFrontFace(GL.GL_CCW);
+            renderGeodesicFlora(gl, skyRotation);
+            renderGeodesicWater(gl, skyColour, 1.0f - nightProportion, (float) elapsedTime);
+            sphereWeather.render(gl, camera, sphereViewProjection, 1.0f - nightProportion);
+            organismManager.updateSphereNative((float) deltaTime, camera.getSpherePosition(), geodesicCollision);
+            inhabitants.update((float) deltaTime, camera.getSpherePosition());
+            SpherePosition sphereEye = camera.getSpherePosition();
+            Vector3 nativeSunDirection = SphereRender.sunDirection(sphereEye,
+                    Planet.sunDirection(sphereEye, sunDeclination, noonLongitude));
+            organismManager.renderSphereNative(gl, camera, nativeSunDirection,
+                    new float[] { sunTintNow[0] * (1.0f - nightProportion),
+                            sunTintNow[1] * (1.0f - nightProportion),
+                            sunTintNow[2] * (1.0f - nightProportion) },
+                    ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+            inhabitants.renderSphereNative(gl, camera, nativeSunDirection,
+                    new float[] { sunTintNow[0] * (1.0f - nightProportion),
+                            sunTintNow[1] * (1.0f - nightProportion),
+                            sunTintNow[2] * (1.0f - nightProportion) },
+                    ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+            return;
+        }
         
         // ==========================================
         // --- MULTI-SPECIES FLORA RENDERING PASS ---
@@ -3329,7 +4062,8 @@ private static class SpeciesConfig {
 
         inhabitants.update((float) deltaTime, currentPos.x, currentPos.z);
         // The player is solid to everything else too; then this frame's bodies take over
-        collision.addBody(PLAYER, camera.getPosition().x, camera.getPosition().z, PLAYER_RADIUS, true);
+        collision.addBody(PLAYER, camera.getPosition().x, camera.getPosition().z,
+                PLAYER_RADIUS * (float) Planet.stretch(camera.getPosition().z), true);
         collision.endFrame();
         inhabitants.render(gl, viewProjection, frustum, camera.getPosition(), sunPos,
                 new float[] { sunTintForCreatures[0] * daylight, sunTintForCreatures[1] * daylight, sunTintForCreatures[2] * daylight },

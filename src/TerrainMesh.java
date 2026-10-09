@@ -1,4 +1,5 @@
 import com.jogamp.opengl.*;
+import java.util.List;
 
 public class TerrainMesh {
 
@@ -8,7 +9,10 @@ public class TerrainMesh {
      * with no seam where the chart's east and west edges meet.
      */
     public static float getLayeredHeight(float worldX, float worldZ, PerlinNoise noise) {
-        float[] surface = Planet.surface(worldX, worldZ);
+        return getLayeredHeight(Planet.surface(worldX, worldZ), noise);
+    }
+
+    private static float getLayeredHeight(float[] surface, PerlinNoise noise) {
         // LAYER 1: the continents. A handful of separate landmasses spread round the planet
         // (see continentField), their coasts broken up by broad noise so they're irregular,
         // now and then split into two or joined by an isthmus
@@ -85,6 +89,243 @@ public class TerrainMesh {
 
         float height = baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
         return flattenLowlands(height, surface, continent, noise);
+    }
+
+    /** Terrain height sampled from the authoritative spherical position. */
+    public static float getLayeredHeight(SpherePosition position, PerlinNoise noise) {
+        double length = position.length();
+        if (!(length > 0.0)) throw new IllegalArgumentException("Terrain cannot be sampled at the planet centre");
+        float[] surface = {
+                (float) (position.x() * Planet.radius() / length),
+                (float) (position.y() * Planet.radius() / length),
+                (float) (position.z() * Planet.radius() / length)
+        };
+        return getLayeredHeight(surface, noise);
+    }
+
+    /**
+     * Builds a triangular geodesic terrain cell as {vertices, indices}. Vertices are stored
+     * in planet-centred Cartesian coordinates and transformed by the sphere-aware vertex shader.
+     */
+    public static Object[] buildGeodesicCellData(GeodesicChunkGrid.Cell cell, int segments, PerlinNoise noise) {
+        if (segments < 1) throw new IllegalArgumentException("A geodesic terrain cell needs at least one segment");
+        int vertexCount = (segments + 1) * (segments + 2) / 2;
+        float[] vertices = new float[vertexCount * 8];
+        GeodesicChunkGrid.Direction a = cell.a(), b = cell.b(), c = cell.c();
+        int vertex = 0;
+        for (int row = 0; row <= segments; row++) {
+            for (int column = 0; column <= row; column++) {
+                double wa = (segments - row) / (double) segments;
+                double wb = (row - column) / (double) segments;
+                double wc = column / (double) segments;
+                GeodesicChunkGrid.Direction direction = new GeodesicChunkGrid.Direction(
+                        wa * a.x() + wb * b.x() + wc * c.x(),
+                        wa * a.y() + wb * b.y() + wc * c.y(),
+                        wa * a.z() + wb * b.z() + wc * c.z()).normalized();
+                SpherePosition ground = new SpherePosition(direction.x() * Planet.radius(),
+                        direction.y() * Planet.radius(), direction.z() * Planet.radius());
+                float height = getLayeredHeight(ground, noise);
+                float radius = (float) (Planet.radius() + height);
+                vertices[vertex++] = (float) direction.x() * radius;
+                vertices[vertex++] = (float) direction.y() * radius;
+                vertices[vertex++] = (float) direction.z() * radius;
+                vertices[vertex++] = (float) direction.x();
+                vertices[vertex++] = (float) direction.y();
+                vertices[vertex++] = (float) direction.z();
+                vertices[vertex++] = (float) (wb + wc);
+                vertices[vertex++] = (float) wc;
+            }
+        }
+
+        int triangleCount = segments * segments;
+        int[] indices = new int[triangleCount * 3];
+        int index = 0;
+        for (int row = 0; row < segments; row++) {
+            int rowStart = row * (row + 1) / 2;
+            int nextRowStart = (row + 1) * (row + 2) / 2;
+            for (int column = 0; column <= row; column++) {
+                int top = rowStart + column;
+                int lowerLeft = nextRowStart + column;
+                int lowerRight = lowerLeft + 1;
+                indices[index++] = top;
+                indices[index++] = lowerLeft;
+                indices[index++] = lowerRight;
+                if (column < row) {
+                    indices[index++] = top;
+                    indices[index++] = top + 1;
+                    indices[index++] = lowerRight;
+                }
+            }
+        }
+        orientTrianglesOutward(vertices, indices);
+        smoothGeodesicNormals(vertices, indices);
+        return new Object[] { vertices, indices };
+    }
+
+    private static void smoothGeodesicNormals(float[] vertices, int[] indices) {
+        for (int i = 0; i < vertices.length; i += 8) {
+            vertices[i + 3] = 0f;
+            vertices[i + 4] = 0f;
+            vertices[i + 5] = 0f;
+        }
+        for (int i = 0; i < indices.length; i += 3) {
+            int a = indices[i] * 8, b = indices[i + 1] * 8, c = indices[i + 2] * 8;
+            float abx = vertices[b] - vertices[a], aby = vertices[b + 1] - vertices[a + 1],
+                    abz = vertices[b + 2] - vertices[a + 2];
+            float acx = vertices[c] - vertices[a], acy = vertices[c + 1] - vertices[a + 1],
+                    acz = vertices[c + 2] - vertices[a + 2];
+            float nx = aby * acz - abz * acy;
+            float ny = abz * acx - abx * acz;
+            float nz = abx * acy - aby * acx;
+            vertices[a + 3] += nx; vertices[a + 4] += ny; vertices[a + 5] += nz;
+            vertices[b + 3] += nx; vertices[b + 4] += ny; vertices[b + 5] += nz;
+            vertices[c + 3] += nx; vertices[c + 4] += ny; vertices[c + 5] += nz;
+        }
+        for (int i = 0; i < vertices.length; i += 8) {
+            float nx = vertices[i + 3], ny = vertices[i + 4], nz = vertices[i + 5];
+            float length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (length < 1e-8f) {
+                nx = vertices[i]; ny = vertices[i + 1]; nz = vertices[i + 2];
+                length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            }
+            vertices[i + 3] = nx / length;
+            vertices[i + 4] = ny / length;
+            vertices[i + 5] = nz / length;
+        }
+    }
+
+    private static void orientTrianglesOutward(float[] vertices, int[] indices) {
+        for (int i = 0; i < indices.length; i += 3) {
+            int a = indices[i] * 8, b = indices[i + 1] * 8, c = indices[i + 2] * 8;
+            double abx = vertices[b] - vertices[a];
+            double aby = vertices[b + 1] - vertices[a + 1];
+            double abz = vertices[b + 2] - vertices[a + 2];
+            double acx = vertices[c] - vertices[a];
+            double acy = vertices[c + 1] - vertices[a + 1];
+            double acz = vertices[c + 2] - vertices[a + 2];
+            double outward = (aby * acz - abz * acy) * vertices[a]
+                    + (abz * acx - abx * acz) * vertices[a + 1]
+                    + (abx * acy - aby * acx) * vertices[a + 2];
+            if (outward < 0.0) {
+                int swap = indices[i + 1];
+                indices[i + 1] = indices[i + 2];
+                indices[i + 2] = swap;
+            }
+        }
+    }
+
+    /** Builds one merged geodesic terrain patch as {vertices, indices}. */
+    public static Object[] buildGeodesicPatchData(GeodesicChunkGrid grid, SpherePosition centre,
+            double angularRadius, int segments, PerlinNoise noise) {
+        if (segments < 1) throw new IllegalArgumentException("A geodesic terrain patch needs at least one segment");
+        List<GeodesicChunkGrid.Cell> cells = grid.cellsWithin(
+                new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z()), angularRadius);
+        if (cells.isEmpty()) throw new IllegalStateException("Geodesic terrain patch contains no cells");
+
+        int verticesPerCell = (segments + 1) * (segments + 2) / 2;
+        int indicesPerCell = segments * segments * 3;
+        float[] vertices = new float[Math.multiplyExact(Math.multiplyExact(cells.size(), verticesPerCell), 8)];
+        int[] indices = new int[Math.multiplyExact(cells.size(), indicesPerCell)];
+        int vertexOffset = 0;
+        int indexOffset = 0;
+        for (GeodesicChunkGrid.Cell cell : cells) {
+            Object[] cellData = buildGeodesicCellData(cell, segments, noise);
+            float[] cellVertices = (float[]) cellData[0];
+            int[] cellIndices = (int[]) cellData[1];
+            System.arraycopy(cellVertices, 0, vertices, vertexOffset * 8, cellVertices.length);
+            for (int i = 0; i < cellIndices.length; i++) {
+                indices[indexOffset + i] = cellIndices[i] + vertexOffset;
+            }
+            vertexOffset += verticesPerCell;
+            indexOffset += cellIndices.length;
+        }
+        return new Object[] { vertices, indices };
+    }
+
+    /** Builds a sphere-native ocean patch, omitting triangles whose sampled ground is above sea level. */
+    public static Object[] buildGeodesicWaterPatchData(GeodesicChunkGrid grid, SpherePosition centre,
+            double angularRadius, int segments, float seaLevel, PerlinNoise noise) {
+        if (segments < 1) throw new IllegalArgumentException("A geodesic water patch needs at least one segment");
+        List<GeodesicChunkGrid.Cell> cells = grid.cellsWithin(
+                new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z()), angularRadius);
+        int verticesPerCell = (segments + 1) * (segments + 2) / 2;
+        float[] vertices = new float[Math.multiplyExact(Math.multiplyExact(cells.size(), verticesPerCell), 8)];
+        int[] indices = new int[Math.multiplyExact(Math.multiplyExact(cells.size(), segments * segments), 6)];
+        int vertexOffset = 0;
+        int indexOffset = 0;
+        double oceanRadius = Planet.radius() + seaLevel;
+        for (GeodesicChunkGrid.Cell cell : cells) {
+            GeodesicChunkGrid.Direction[] directions = new GeodesicChunkGrid.Direction[verticesPerCell];
+            boolean[] underwater = new boolean[verticesPerCell];
+            int vertex = 0;
+            for (int row = 0; row <= segments; row++) {
+                for (int column = 0; column <= row; column++) {
+                    double wa = (segments - row) / (double) segments;
+                    double wb = (row - column) / (double) segments;
+                    double wc = column / (double) segments;
+                    GeodesicChunkGrid.Direction direction = new GeodesicChunkGrid.Direction(
+                            wa * cell.a().x() + wb * cell.b().x() + wc * cell.c().x(),
+                            wa * cell.a().y() + wb * cell.b().y() + wc * cell.c().y(),
+                            wa * cell.a().z() + wb * cell.b().z() + wc * cell.c().z()).normalized();
+                    directions[vertex] = direction;
+                    SpherePosition surface = new SpherePosition(direction.x() * Planet.radius(),
+                            direction.y() * Planet.radius(), direction.z() * Planet.radius());
+                    underwater[vertex] = getLayeredHeight(surface, noise) <= seaLevel;
+                    int offset = (vertexOffset + vertex) * 8;
+                    vertices[offset] = (float) (direction.x() * oceanRadius);
+                    vertices[offset + 1] = (float) (direction.y() * oceanRadius);
+                    vertices[offset + 2] = (float) (direction.z() * oceanRadius);
+                    vertices[offset + 3] = (float) direction.x();
+                    vertices[offset + 4] = (float) direction.y();
+                    vertices[offset + 5] = (float) direction.z();
+                    vertices[offset + 6] = (float) wb;
+                    vertices[offset + 7] = (float) wc;
+                    vertex++;
+                }
+            }
+            for (int row = 0; row < segments; row++) {
+                int rowStart = row * (row + 1) / 2;
+                int nextRowStart = (row + 1) * (row + 2) / 2;
+                for (int column = 0; column <= row; column++) {
+                    int top = rowStart + column;
+                    int lowerLeft = nextRowStart + column;
+                    int lowerRight = lowerLeft + 1;
+                    if (underwater[top] && underwater[lowerLeft] && underwater[lowerRight]) {
+                        indexOffset = appendOutwardTriangle(indices, indexOffset, vertexOffset, top, lowerLeft,
+                                lowerRight, directions);
+                    }
+                    if (column < row) {
+                        int upperRight = top + 1;
+                        if (underwater[top] && underwater[upperRight] && underwater[lowerRight]) {
+                            indexOffset = appendOutwardTriangle(indices, indexOffset, vertexOffset, top, upperRight,
+                                    lowerRight, directions);
+                        }
+                    }
+                }
+            }
+            vertexOffset += verticesPerCell;
+        }
+        return new Object[] { vertices, java.util.Arrays.copyOf(indices, indexOffset) };
+    }
+
+    private static int appendOutwardTriangle(int[] indices, int offset, int vertexOffset, int a, int b, int c,
+            GeodesicChunkGrid.Direction[] directions) {
+        GeodesicChunkGrid.Direction pa = directions[a], pb = directions[b], pc = directions[c];
+        double abx = pb.x() - pa.x(), aby = pb.y() - pa.y(), abz = pb.z() - pa.z();
+        double acx = pc.x() - pa.x(), acy = pc.y() - pa.y(), acz = pc.z() - pa.z();
+        double outward = (aby * acz - abz * acy) * pa.x()
+                + (abz * acx - abx * acz) * pa.y()
+                + (abx * acy - aby * acx) * pa.z();
+        if (outward >= 0.0) {
+            indices[offset++] = vertexOffset + a;
+            indices[offset++] = vertexOffset + b;
+            indices[offset++] = vertexOffset + c;
+        } else {
+            indices[offset++] = vertexOffset + a;
+            indices[offset++] = vertexOffset + c;
+            indices[offset++] = vertexOffset + b;
+        }
+        return offset;
     }
 
     private static final float CONTINENT_HEIGHT = 480.0f;

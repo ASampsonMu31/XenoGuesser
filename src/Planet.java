@@ -57,6 +57,42 @@ public final class Planet {
         return new float[] { (float) (c * Math.cos(lon)), (float) (Math.sin(lat) * radius), (float) (c * Math.sin(lon)) };
     }
 
+    /** Converts a Mercator map coordinate and altitude to its spherical world-space position. */
+    public static SpherePosition spherePosition(double chartX, double chartZ, double altitude) {
+        double lat = latitude(chartZ), lon = longitude(chartX), r = radius + altitude;
+        double cosLat = Math.cos(lat);
+        return new SpherePosition(r * cosLat * Math.cos(lon), r * Math.sin(lat), r * cosLat * Math.sin(lon));
+    }
+
+    /** Projects a spherical world-space position to {Mercator x, altitude, Mercator z}. */
+    public static double[] mercatorPosition(SpherePosition position) {
+        double r = position.length();
+        if (r == 0.0) throw new IllegalArgumentException("The planet centre has no map coordinate");
+        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
+        double lon = Math.atan2(position.z(), position.x());
+        return new double[] { chartX(lon), r - radius, chartZ(lat) };
+    }
+
+    /**
+     * Converts a spherical point into the camera's east/up/south tangent frame, with the
+     * camera's ground origin kept at chart (cameraX, cameraZ) for existing view matrices.
+     */
+    public static SpherePosition inTangentFrame(SpherePosition position, double cameraX, double cameraZ) {
+        double r = position.length();
+        if (r == 0.0) throw new IllegalArgumentException("The planet centre has no tangent-frame position");
+        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
+        double lon = Math.atan2(position.z(), position.x());
+        double cameraLat = latitude(cameraZ), cameraLon = longitude(cameraX);
+        double deltaLon = Math.atan2(Math.sin(lon - cameraLon), Math.cos(lon - cameraLon));
+        double cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+        double cosCameraLat = Math.cos(cameraLat), sinCameraLat = Math.sin(cameraLat);
+        double east = r * cosLat * Math.sin(deltaLon);
+        double north = r * (cosCameraLat * sinLat - sinCameraLat * cosLat * Math.cos(deltaLon));
+        double up = r * (sinCameraLat * sinLat + cosCameraLat * cosLat * Math.cos(deltaLon)) - radius;
+        double cameraScale = Math.cos(cameraLat);
+        return new SpherePosition(cameraX + east / cameraScale, up, cameraZ - north / cameraScale);
+    }
+
     /** A chunk index brought round into the chart, so the same place always has the same chunk. */
     public static int wrapChunk(int index, float chunkSize) {
         int count = Math.max(1, Math.round(width / chunkSize));
@@ -129,6 +165,19 @@ public final class Planet {
     public static float[] sunDirection(double x, double z, double declination, double noonLongitude) {
         double[] sun = point(declination, noonLongitude);
         double lat = latitude(z), lon = longitude(x);
+        return localSunDirection(sun, lat, lon);
+    }
+
+    /** Sun direction in the local east/up/south frame at an ECEF position. */
+    public static float[] sunDirection(SpherePosition position, double declination, double noonLongitude) {
+        double length = position.length();
+        if (!(length > 0.0)) throw new IllegalArgumentException("The planet centre has no local sun direction");
+        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / length)));
+        double lon = Math.atan2(position.z(), position.x());
+        return localSunDirection(point(declination, noonLongitude), lat, lon);
+    }
+
+    private static float[] localSunDirection(double[] sun, double lat, double lon) {
         double[] up = point(lat, lon), e = east(lon), n = north(lat, lon);
         float[] d = { (float) dot(sun, e), (float) dot(sun, up), (float) -dot(sun, n) };
         // It's always day wherever the player is: the sun is never let below MIN_SUN_ELEVATION
@@ -152,6 +201,14 @@ public final class Planet {
         return new float[] { 0f, (float) Math.sin(lat), (float) -Math.cos(lat) };
     }
 
+    /** North pole star direction in the local east/up/south frame at an ECEF position. */
+    public static float[] celestialPole(SpherePosition position) {
+        double length = position.length();
+        if (!(length > 0.0)) throw new IllegalArgumentException("The planet centre has no local celestial pole direction");
+        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / length)));
+        return new float[] { 0f, (float) Math.sin(lat), (float) -Math.cos(lat) };
+    }
+
     /**
      * How strongly a compass is pulled round to north here, 1 at the equator falling to
      * nothing at the poles, where the planet's field points straight down.
@@ -169,6 +226,93 @@ public final class Planet {
     /** True units (along the sphere) per chart unit here. */
     public static double scale(double z) {
         return Math.cos(latitude(z));
+    }
+
+    /** Chart units per true unit at this latitude. */
+    public static double stretch(double z) {
+        return 1.0 / scale(z);
+    }
+
+    /** Fraction of an equatorial chart cell's area represented by its ground area here. */
+    public static double trueArea(double z) {
+        double localScale = scale(z);
+        return localScale * localScale;
+    }
+
+    /** Chart distance corresponding to a true surface distance at this latitude. */
+    public static double chartDistance(double trueDistance, double z) {
+        return trueDistance * stretch(z);
+    }
+
+    /**
+     * Moves a spherical position along its local east/south tangent by a true ground distance.
+     * The displacement follows a great circle; the input direction is measured in the tangent
+     * frame and altitude is kept unchanged.
+     */
+    public static SpherePosition moveOnSurface(SpherePosition position, double east, double south, double distance) {
+        double r = position.length();
+        if (!(r > 0.0)) throw new IllegalArgumentException("Cannot move from the planet centre");
+        if (!Double.isFinite(east) || !Double.isFinite(south) || !Double.isFinite(distance) || distance < 0.0) {
+            throw new IllegalArgumentException("Movement direction and distance must be finite, with non-negative distance");
+        }
+        double directionLength = Math.hypot(east, south);
+        if (directionLength == 0.0 || distance == 0.0) return position;
+        east /= directionLength;
+        south /= directionLength;
+
+        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
+        double lon = Math.atan2(position.z(), position.x());
+        double cosLon = Math.cos(lon), sinLon = Math.sin(lon);
+        double px = position.x() / r, py = position.y() / r, pz = position.z() / r;
+        double sinLat = py;
+        double tx = -east * sinLon + south * sinLat * cosLon;
+        double ty = -south * Math.cos(lat);
+        double tz = east * cosLon + south * sinLat * sinLon;
+
+        double arc = distance / radius;
+        double cosArc = Math.cos(arc), sinArc = Math.sin(arc);
+        return new SpherePosition(r * (px * cosArc + tx * sinArc),
+                r * (py * cosArc + ty * sinArc),
+                r * (pz * cosArc + tz * sinArc));
+    }
+
+    /** Interpolates two planet positions along the shorter great-circle arc. */
+    public static SpherePosition interpolateSurface(SpherePosition from, SpherePosition to, double fraction) {
+        if (!Double.isFinite(fraction) || fraction < 0.0 || fraction > 1.0) {
+            throw new IllegalArgumentException("Interpolation fraction must be between zero and one");
+        }
+        double fromRadius = from.length(), toRadius = to.length();
+        if (!(fromRadius > 0.0) || !(toRadius > 0.0)) {
+            throw new IllegalArgumentException("Cannot interpolate a position at the planet centre");
+        }
+        double ax = from.x() / fromRadius, ay = from.y() / fromRadius, az = from.z() / fromRadius;
+        double bx = to.x() / toRadius, by = to.y() / toRadius, bz = to.z() / toRadius;
+        double dot = Math.max(-1.0, Math.min(1.0, ax * bx + ay * by + az * bz));
+        double angle = Math.acos(dot);
+        double wa, wb;
+        if (angle < 1e-9) {
+            wa = 1.0 - fraction;
+            wb = fraction;
+        } else {
+            double sinAngle = Math.sin(angle);
+            wa = Math.sin((1.0 - fraction) * angle) / sinAngle;
+            wb = Math.sin(fraction * angle) / sinAngle;
+        }
+        double x = wa * ax + wb * bx, y = wa * ay + wb * by, z = wa * az + wb * bz;
+        double directionLength = Math.sqrt(x * x + y * y + z * z);
+        double radius = fromRadius + (toRadius - fromRadius) * fraction;
+        return new SpherePosition(radius * x / directionLength, radius * y / directionLength,
+                radius * z / directionLength);
+    }
+
+    /** Shortest surface distance between two planet positions, in world units. */
+    public static double surfaceDistance(SpherePosition a, SpherePosition b) {
+        double aLength = a.length(), bLength = b.length();
+        if (!(aLength > 0.0) || !(bLength > 0.0)) {
+            throw new IllegalArgumentException("Cannot measure a surface distance from the planet centre");
+        }
+        double dot = (a.x() * b.x() + a.y() * b.y() + a.z() * b.z()) / (aLength * bLength);
+        return radius * Math.acos(Math.max(-1.0, Math.min(1.0, dot)));
     }
 
     /**
