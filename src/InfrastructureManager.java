@@ -723,7 +723,7 @@ public class InfrastructureManager {
         seaLevel = seaLevelHeight;
         terrainNoise = noise;
 
-        RoadNetworkBuilder builder = new RoadNetworkBuilder(worldSeed, totalRegionWidth, seaLevelHeight, noise,
+        RoadNetworkBuilder builder = new RoadNetworkBuilder(worldSeed, seaLevelHeight, noise,
                 settlementManager, nationManager);
         builder.setNationRichness(this::nationRichness);
         // (dirt tracks don't cross fenced borders)
@@ -731,26 +731,28 @@ public class InfrastructureManager {
         islandWealth = builder;
         roadNetwork.addAll(builder.build());
         straightenCrossings();
+        // The roads are planned on the sphere; they are built on the chart until Phase 3b
+        for (RoadPath path : roadNetwork) path.toChart();
         deadEnds.addAll(builder.getDeadEnds());
 
         for (int pathIndex = 0; pathIndex < roadNetwork.size(); pathIndex++) {
             RoadPath path = roadNetwork.get(pathIndex);
             float width = path.roadClass.width;
-            if (path.roadClass == RoadPath.RoadClass.DIRT && !path.points.isEmpty()) {
-                Vector3 first = path.points.get(0);
+            if (path.roadClass == RoadPath.RoadClass.DIRT && !path.chart.isEmpty()) {
+                Vector3 first = path.chart.get(0);
                 width = trackWidth(nationManager.getNationAtWorld(first.x, first.z, totalRegionWidth));
             }
             // Running distance along the path keeps dash patterns continuous across segments
             float distanceAlongPath = 0.0f;
-            for (int i = 0; i < path.points.size() - 1; i++) {
-                Vector3 start = path.points.get(i);
-                Vector3 end = path.points.get(i + 1);
+            for (int i = 0; i < path.chart.size() - 1; i++) {
+                Vector3 start = path.chart.get(i);
+                Vector3 end = path.chart.get(i + 1);
                 float length = (float) Math.sqrt((end.x - start.x) * (end.x - start.x) + (end.z - start.z) * (end.z - start.z));
                 if (length < 0.01f) {
                     continue;
                 }
-                Vector3 startTangent = roadTangent(path.points, i == 0 ? i : i - 1, i + 1);
-                Vector3 endTangent = roadTangent(path.points, i, i + 1 == path.points.size() - 1 ? i + 1 : i + 2);
+                Vector3 startTangent = roadTangent(path.chart, i == 0 ? i : i - 1, i + 1);
+                Vector3 endTangent = roadTangent(path.chart, i, i + 1 == path.chart.size() - 1 ? i + 1 : i + 2);
                 float midpointX = (start.x + end.x) * 0.5f;
                 float midpointZ = (start.z + end.z) * 0.5f;
                 int nationId = nationManager.getNationAtWorld(midpointX, midpointZ, totalRegionWidth);
@@ -1286,9 +1288,9 @@ public class InfrastructureManager {
             if (bucket != null) {
                 bucket.remove(terminal);
             }
-            for (int i = 0; i < path.points.size(); i++) {
-                if (path.points.get(i) == end) {
-                    path.points.remove(i);
+            for (int i = 0; i < path.chart.size(); i++) {
+                if (path.chart.get(i) == end) {
+                    path.chart.remove(i);
                     break;
                 }
             }
@@ -2948,8 +2950,8 @@ public class InfrastructureManager {
             if (!canBeShop(house)) continue;
             SettlementManager.Settlement town = settlementManager.dominantSettlementAt(house.x, house.z);
             if (town == null) continue;
-            float dx = (float) Planet.wrapX(house.x - town.x), dz = house.z - town.z;
-            float distance = (float) Math.sqrt(dx * dx + dz * dz);
+            // (along the surface, as the town's radius is)
+            float distance = (float) Planet.surfaceDistance(house.x, house.z, town.chartX, town.chartZ);
             // Villages have a shop or two at their heart; cities a district a few streets across
             float size = Math.min(1f, town.radius / 1600f);
             float core = town.radius * (0.55f + 0.45f * size);
@@ -3208,12 +3210,12 @@ public class InfrastructureManager {
         List<SettlementManager.Settlement> all = settlementManager.getSettlements();
         List<SettlementManager.Settlement> fit = new ArrayList<>();
         for (SettlementManager.Settlement s : all) {
-            float d = (float) Planet.surfaceDistance(x, z, s.x, s.z);
+            float d = (float) Planet.surfaceDistance(x, z, s.chartX, s.chartZ);
             if (d >= minDistance && d <= maxDistance) fit.add(s);
         }
         if (fit.isEmpty()) return null;
         SettlementManager.Settlement pick = fit.get(rand.nextInt(fit.size()));
-        return new float[] { pick.x, pick.z };
+        return new float[] { pick.chartX, pick.chartZ };
     }
 
     /**
@@ -4387,32 +4389,32 @@ public class InfrastructureManager {
     private void straightenCrossings() {
         for (RoadPath path : roadNetwork) {
             if (path.roadClass == RoadPath.RoadClass.DIRT) continue;
-            List<Vector3> pts = path.points;
+            List<SpherePosition> pts = path.points;
             for (int i = 0; i + 1 < pts.size(); i++) {
-                Vector3 a = pts.get(i), b = pts.get(i + 1);
-                int na = nationAt(a.x, a.z), nb = nationAt(b.x, b.z);
+                SpherePosition a = pts.get(i), b = pts.get(i + 1);
+                int na = nationAt(a), nb = nationAt(b);
                 if (na == nb || na < 1 || nb < 1) continue;
                 if (!kinship.hostile(na, nb) && drivingSide(na) == drivingSide(nb)) continue;
-                float[] p = borderCrossing(new float[] { a.x, a.z }, new float[] { b.x, b.z }, na);
+                SpherePosition p = borderCrossing(a, b, na);
                 // Its heading there, from a little way either side
-                Vector3 before = pts.get(Math.max(0, i - 1)), after = pts.get(Math.min(pts.size() - 1, i + 2));
-                float dx = after.x - before.x, dz = after.z - before.z, len = (float) Math.hypot(dx, dz);
-                if (len < 1e-3f) continue;
-                dx /= len;
-                dz /= len;
-                // The points within reach either side go; a straight run takes their place
+                SpherePosition before = pts.get(Math.max(0, i - 1)), after = pts.get(Math.min(pts.size() - 1, i + 2));
+                if (SphereMath.distance(before, after) < 1e-3) continue;
+                SphereFrame frame = SphereFrame.at(p);
+                double heading = frame.headingOf(after.x() - before.x(), after.y() - before.y(), after.z() - before.z());
+                // The points within reach either side go; a straight run (along the great
+                // circle through the crossing) takes their place
                 int first = i, last = i + 1;
-                while (first > 0 && Math.hypot(pts.get(first).x - p[0], pts.get(first).z - p[1]) < STRAIGHT_REACH) first--;
-                while (last < pts.size() - 1 && Math.hypot(pts.get(last).x - p[0], pts.get(last).z - p[1]) < STRAIGHT_REACH) last++;
-                List<Vector3> run = new ArrayList<>();
+                while (first > 0 && SphereMath.distance(pts.get(first), p) < STRAIGHT_REACH) first--;
+                while (last < pts.size() - 1 && SphereMath.distance(pts.get(last), p) < STRAIGHT_REACH) last++;
+                List<SpherePosition> run = new ArrayList<>();
                 for (float t = -STRAIGHT_REACH; t <= STRAIGHT_REACH + 0.01f; t += 15f) {
-                    float x = p[0] + dx * t, z = p[1] + dz * t;
-                    run.add(new Vector3(x, TerrainMesh.getLayeredHeight(x, z, terrainNoise), z));
+                    run.add(TerrainMesh.groundAt(SphereMath.move(p, heading, t), terrainNoise));
                 }
                 // (the run goes the path's own way)
-                List<Vector3> keepHead = new ArrayList<>(pts.subList(0, first + 1));
-                List<Vector3> keepTail = new ArrayList<>(pts.subList(last, pts.size()));
-                boolean forward = (b.x - a.x) * dx + (b.z - a.z) * dz >= 0f;
+                List<SpherePosition> keepHead = new ArrayList<>(pts.subList(0, first + 1));
+                List<SpherePosition> keepTail = new ArrayList<>(pts.subList(last, pts.size()));
+                double[] way = frame.headingDirection(heading);
+                boolean forward = (b.x() - a.x()) * way[0] + (b.y() - a.y()) * way[1] + (b.z() - a.z()) * way[2] >= 0.0;
                 if (!forward) java.util.Collections.reverse(run);
                 pts.clear();
                 pts.addAll(keepHead);
@@ -4427,8 +4429,8 @@ public class InfrastructureManager {
     private void findBorderChecks() {
         for (RoadPath path : roadNetwork) {
             if (path.roadClass == RoadPath.RoadClass.DIRT) continue;
-            for (int i = 0; i + 1 < path.points.size(); i++) {
-                Vector3 a = path.points.get(i), b = path.points.get(i + 1);
+            for (int i = 0; i + 1 < path.chart.size(); i++) {
+                Vector3 a = path.chart.get(i), b = path.chart.get(i + 1);
                 int na = nationAt(a.x, a.z), nb = nationAt(b.x, b.z);
                 // Fenced borders get a check; open ones (alike cultures) only if the two drive on
                 // different sides of the road, for the traffic lights
@@ -4796,6 +4798,20 @@ public class InfrastructureManager {
 
     private int nationAt(float x, float z) {
         return nationManager.getNationAtWorld(x, z, Planet.width());
+    }
+
+    private int nationAt(SpherePosition place) {
+        return nationManager.getNationAt(place);
+    }
+
+    /** Where along the great circle between two places the border lies, found by halving (a belongs to nation first). */
+    private SpherePosition borderCrossing(SpherePosition a, SpherePosition b, int first) {
+        double lo = 0.0, hi = 1.0;
+        for (int k = 0; k < 4; k++) {
+            double mid = (lo + hi) * 0.5;
+            if (nationAt(SphereMath.slerp(a, b, mid)) == first) lo = mid; else hi = mid;
+        }
+        return SphereMath.slerp(a, b, (lo + hi) * 0.5);
     }
 
     /** Where between two points the border lies, found by halving (a belongs to nation first). */

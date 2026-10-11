@@ -475,10 +475,10 @@ public class BirdsEyeMaps {
         g.setColor(colour);
         g.setStroke(new BasicStroke(strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
         infrastructure.forEachRoadPath(path -> {
-            if (path.roadClass != roadClass || path.points.size() < 2) {
+            if (path.roadClass != roadClass || path.chart.size() < 2) {
                 return;
             }
-            List<Vector3> points = path.points;
+            List<Vector3> points = path.chart;
             Path2D.Float line = new Path2D.Float();
             line.moveTo(worldToPixel(points.get(0).x), worldToPixel(points.get(0).z));
             for (int i = 1; i < points.size(); i++) {
@@ -780,16 +780,16 @@ public class BirdsEyeMaps {
                 g.setStroke(new BasicStroke((Float) rc[2] * detailToWorld * Math.max(widen, 1f / tileMagnification(level, size)),
                         BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 infrastructure.forEachRoadPath(path -> {
-                    if (path.roadClass != rc[0] || path.points.size() < 2) return;
+                    if (path.roadClass != rc[0] || path.chart.size() < 2) return;
                     float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-                    for (Vector3 p : path.points) {
+                    for (Vector3 p : path.chart) {
                         minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
                         minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
                     }
                     if (maxX < bounds[0] || minX > bounds[2] || maxZ < bounds[1] || minZ > bounds[3]) return;
                     Path2D.Float line = new Path2D.Float();
-                    line.moveTo(path.points.get(0).x, path.points.get(0).z);
-                    for (int i = 1; i < path.points.size(); i++) line.lineTo(path.points.get(i).x, path.points.get(i).z);
+                    line.moveTo(path.chart.get(0).x, path.chart.get(0).z);
+                    for (int i = 1; i < path.chart.size(); i++) line.lineTo(path.chart.get(i).x, path.chart.get(i).z);
                     g.draw(line);
                 });
             }

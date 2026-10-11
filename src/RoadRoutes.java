@@ -27,7 +27,7 @@ public final class RoadRoutes {
         List<int[]> pathRanges = new ArrayList<>();
         infrastructure.forEachRoadPath(path -> {
             int first = points.size();
-            for (Vector3 p : path.points) points.add(new float[] { p.x, p.z });
+            for (Vector3 p : path.chart) points.add(new float[] { p.x, p.z });
             pathRanges.add(new int[] { first, points.size() });
         });
         int n = points.size();

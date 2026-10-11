@@ -84,6 +84,12 @@ D13 Chart bridges: while a system is still on the chart (buildings, roads,
     chartViewpoint, chartObstaclesNear, the wild/road/keep-out lambdas,
     groundHeightAt's walkingSurfaceY) and SphereRender.chartAnchor. Each phase
     deletes the bridges for what it ports; grep chart( to find them.
+    Since Phase 3a the plan is on the sphere and the building is not, so there are
+    marked bridges outside the listener too (grep "Chart bridge" / "chart bridge"):
+    RoadPath.chart + toChart (made once in prepareRoadNetwork, after border
+    straightening), Settlement.chartX/chartZ, SettlementManager's (x, z)
+    overloads, RoadNetworkBuilder.islandRichnessAt(x, z). Phase 3b deletes them
+    (the maps' use of RoadPath.chart and the urbanness factor go in Phase 5).
 
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
@@ -159,12 +165,12 @@ PHASE 2  WORLD PLAYER LOOP ON ONE PATH
 PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
 -------------------------------------------------------------------------------
 3a Planning on the sphere
-[ ] Settlements placed as SpherePositions (SettlementManager), urbanness
+[x] Settlements placed as SpherePositions (SettlementManager), urbanness
     looked up by direction.
-[ ] Nations: getNationAt(direction) (nation map sampled in 3D or via the
+[x] Nations: getNationAt(direction) (nation map sampled in 3D or via the
     existing map lookup through a direction -> map conversion; map stays the
     authority for borders so the minimap matches).
-[ ] Road network (RoadPath) as sequences of SpherePositions; segment lengths
+[x] Road network (RoadPath) as sequences of SpherePositions; segment lengths
     and smoothing by great-circle maths. Border straightening the same way.
 3b Building in frames
 [ ] RoadSegment gets a frame at its midpoint; offsetEdge/miterOffset/
@@ -437,3 +443,49 @@ LOG
   - Equator (0, 11.5): grass, rocks, distant trees and a flying creature, no
     exceptions, 29 FPS. 70 N (27.5 E): ground and sparse short (cold) grass on
     a slope, no exceptions, 30 FPS. Frame time is flat. Phase 2 is complete.
+2026-10-11  PHASE 3a DONE (uncommitted).
+  - SettlementManager: sites drawn evenly over the sphere (up to 73 degrees),
+    spacing, one-nation test and slopes by great-circle distance / the site's
+    frame; radii are true world units. Urbanness, city size and the dominant
+    town are exact Gaussians of surface distance, from the settlements listed
+    per level-5 cell (0.7 us a lookup); the old 750x750 chart grids and the
+    stamping a whole way round the join are gone. Habitability cached per
+    level-7 cell (water distance and temperature still the map's, D12).
+  - NationGenerationManager.getNationAt(direction | SpherePosition): the map's
+    own lookup at the place's map point (borders identical: 2000/2000 random
+    places agree), the grid's edge rows carried on to the poles.
+  - RoadNetworkBuilder rewritten on the sphere: highways A* over level-6
+    geodesic cells (each joined to the 9 cells sharing a corner, ~260 units
+    apart, built in parallel), Chaikin/resample/easing by slerp and great-
+    circle distance, lanes and tracks walk with SphereMath.move + carryHeading,
+    streets laid flat in each town's SphereFrame and lifted with toSphere, roads
+    found through a CellIndex<segment> (level 7). The track/island latitude
+    limit is 73 degrees. RoadPath.points are SpherePositions on the ground.
+  - Border straightening (InfrastructureManager.straightenCrossings) on the
+    sphere: crossing by halving along the great circle, the straight run along
+    the great circle through it. findBorderChecks (booths) stays on the chart.
+  - Flora's and the animals' urbanness now read the sphere directly (two
+    chart( bridges in the listener gone).
+  - Seed 123: 340 towns, 360 highway / 1283 street / 566 lane / 917 track
+    paths, roads 4.0 s, 16407 houses, 34 border checks. Towns by latitude band
+    (0-10, 10-20, ...): 45 60 87 64 45 22 13 4 0; none above 70 now (before,
+    sites were even on the chart, which over-weighted the far north).
+  - Launches: equator town (3.297, 16.389): road and paint, building, person,
+    car, 29 FPS. 70 N (70, 139): no town there, ground/trees/creature, 30 FPS.
+    Town at 67.461 N 139.716 E: building, fences, shop, person, road paint,
+    27 FPS. World ready 65-84 s. No exceptions.
+  - Expected until 3b: roads and town extents are now true size, but houses,
+    road widths, paint etc. are still built in chart units and lifted point by
+    point, so above ~50 degrees they are narrower than true and packed more
+    densely along roads (more houses per true km at high latitude).
+  - PlanningCheck (new, separate from SphereToolkitCheck as it builds seed
+    123's nations, towns and roads, several seconds):
+    java -cp "target/classes;lib/jogamp-fat.jar" PlanningCheck (exit 1 on
+    failure). Nations by direction = map lookup (2000 places, and the poles);
+    urbanness and dominant town = brute force over all towns (3000 places),
+    chart bridge agrees; towns within 73 degrees and spaced in true distance;
+    every road point on the ground, steps under 600 units, chart copy at the
+    same place with no jump across the map. 330311 checks pass.
+  - Launch script used: PowerShell needs the -D arguments quoted
+    ('-Dxenoguesser.seed=123'), else java reads ".seed=123" as the main class;
+    Tee-Object writes the log as UTF-16 (read it with iconv -f UTF-16).

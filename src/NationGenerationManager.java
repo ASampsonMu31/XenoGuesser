@@ -262,8 +262,29 @@ public class NationGenerationManager {
      * cells rather than stepping along them: zooming in never shows the grid.
      */
     public int getNationAtWorld(float worldX, float worldZ, float totalRegionWidth) {
+        return nationAt(Planet.surface(worldX, worldZ), worldX, worldZ, totalRegionWidth);
+    }
+
+    /**
+     * Which nation a place on the sphere belongs to: the map's own lookup (above) at the
+     * place's point on the map, so the world's borders are exactly the minimap's. Past the
+     * map's top and bottom, the territory grid's edge rows carry on to the poles.
+     */
+    public int getNationAt(GeodesicChunkGrid.Direction direction) {
+        return getNationAt(SphereMath.atAltitude(direction, 0.0));
+    }
+
+    public int getNationAt(SpherePosition place) {
+        SpherePosition onDatum = SphereMath.atAltitude(place, 0.0);
+        double[] map = Planet.mercatorPosition(onDatum);
+        float half = savedTotalRegionWidth * 0.5f;
+        float mapZ = (float) Math.max(-half, Math.min(half, map[2]));
+        float[] surface = { (float) onDatum.x(), (float) onDatum.y(), (float) onDatum.z() };
+        return nationAt(surface, (float) map[0], mapZ, savedTotalRegionWidth);
+    }
+
+    private int nationAt(float[] surface, float worldX, float worldZ, float totalRegionWidth) {
         float cell = totalRegionWidth / resolution;
-        float[] surface = Planet.surface(worldX, worldZ);
         float frequency = 1f / (cell * 2.5f), fine = 1f / (cell * 0.6f);
         float warpX = (borderWarp.onSphere(surface, frequency, 0f, 0f) * 1.4f + borderWarp.onSphere(surface, fine, 17.1f, 3.3f) * 0.45f) * cell;
         float warpZ = (borderWarp.onSphere(surface, frequency, 41.9f, 7.7f) * 1.4f + borderWarp.onSphere(surface, fine, 5.3f, 29.4f) * 0.45f) * cell;

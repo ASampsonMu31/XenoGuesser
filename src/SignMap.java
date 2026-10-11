@@ -110,12 +110,12 @@ public final class SignMap {
             float stroke = Math.max(minPixels, roadClass.width * scale);
             Color fill = roadClass == RoadPath.RoadClass.HIGHWAY ? highwayFill : roadFill;
             infrastructure.forEachRoadPath(path -> {
-                if (path.roadClass != roadClass || path.points.size() < 2 || !near(path.points, left, top, right, bottom, margin)) return;
+                if (path.roadClass != roadClass || path.chart.size() < 2 || !near(path.chart, left, top, right, bottom, margin)) return;
                 Path2D.Float line = new Path2D.Float();
-                Vector3 first = path.points.get(0);
+                Vector3 first = path.chart.get(0);
                 line.moveTo((first.x - left) * scale, (first.z - top) * scale);
-                for (int i = 1; i < path.points.size(); i++) {
-                    Vector3 p = path.points.get(i);
+                for (int i = 1; i < path.chart.size(); i++) {
+                    Vector3 p = path.chart.get(i);
                     line.lineTo((p.x - left) * scale, (p.z - top) * scale);
                 }
                 if (roadCasing != null && stroke > 1.4f) {

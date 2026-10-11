@@ -629,7 +629,7 @@ private static class SpeciesConfig {
         this.nationManager.generateTerritories(this.worldSeed, TOTAL_REGION_WIDTH);
 
         // Settlements decide where cities grow; the road network and buildings follow from them
-        this.settlementManager = new SettlementManager(worldSeed, TOTAL_REGION_WIDTH, PHYSICAL_CHUNK_SIZE,
+        this.settlementManager = new SettlementManager(worldSeed, PHYSICAL_CHUNK_SIZE,
                                 seaLevelHeight, worldNoise, regionalManager, nationManager);
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
@@ -652,7 +652,7 @@ private static class SpeciesConfig {
                 settlementWalls.forEachNear(centre, reach, wall -> sink.segment(wall.start(), wall.end(), 0.75, wall.top())));
         geodesicCollision.addSource(this::chartObstaclesNear);
         organismManager.setCollision(geodesicCollision);
-        organismManager.setWild(p -> { Vector3 m = chart(p); return infraManager.getUrbanness(m.x, m.z) < 0.12f; });
+        organismManager.setWild(p -> settlementManager.getUrbanness(p) < 0.12f);
         organismManager.setRoads((p, clearance) -> { Vector3 m = chart(p); return infraManager.isRoadLocation(m.x, m.z, clearance); });
         double floraReach = (VIEW_DISTANCE + PREFETCH_RINGS) * PHYSICAL_CHUNK_SIZE;
         floraStream = new CellStream<List<SphereFlora>>(VEGETATION_LEVEL, floraReach, PHYSICAL_CHUNK_SIZE * 1.5, this::buildFloraCell)
@@ -2367,9 +2367,7 @@ private static class SpeciesConfig {
         List<SphereFlora> plants = new ArrayList<>();
         SpherePosition middle = SphereMath.atAltitude(cell.centre(), 0.0);
         float area = areaInChunks(cell);
-        // (the towns are laid out on the chart until Phase 3)
-        Vector3 onMap = chart(middle);
-        float urbanness = infraManager.getUrbanness(onMap.x, onMap.z);
+        float urbanness = settlementManager.getUrbanness(middle);
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             java.util.Random cRand = new java.util.Random(worldSeed ^ (id * 492876847L) ^ ((long) s * 9012431L));
