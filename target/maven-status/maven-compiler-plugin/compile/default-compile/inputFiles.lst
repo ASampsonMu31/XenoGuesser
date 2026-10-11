@@ -18,6 +18,10 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Frustum.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameHUD.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GamePaths.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameSettings.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicChunkGrid.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicCollision.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicRoadMesh.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicSettlementMesh.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GlyphGenerator.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GuardRailStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\HudOverlay.java
@@ -79,6 +83,10 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ShopPanel.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SignMap.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SoftwareRenderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Sphere.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SpherePosition.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereRender.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereSkyRenderer.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereWeather.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TerrainMesh.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TextureLibrary.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TileableNoise.java

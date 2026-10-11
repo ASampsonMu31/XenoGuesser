@@ -55,12 +55,12 @@ D9  Units: true metres everywhere (PlayerBody.METRE = 10 game units/metre stays)
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
 -------------------------------------------------------------------------------
-[ ] Commit the branch's current uncommitted state as "Copilot geodesic WIP
+[x] Commit the branch's current uncommitted state as "Copilot geodesic WIP
     baseline" so there is a safe point to return to.
-[ ] Clean build (mvn clean compile -q) and one launch at the equator and one at
+[x] Clean build (mvn clean compile -q) and one launch at the equator and one at
     ~70 degrees; screenshot both. Record in LOG what renders, what is missing,
     what crashes. No fixing yet.
-[ ] Grep inventory (one pass, save counts to LOG): uses of Planet.stretch /
+[x] Grep inventory (one pass, save counts to LOG): uses of Planet.stretch /
     trueArea / seenFrom / latitude / chartX/chartZ, the old (x, z) chunk keys,
     and shader uniforms bend/curveCentre/curvature/curveDown/sphereNativeTerrain.
     This list is the to-do list for D6/D8.
@@ -68,6 +68,31 @@ PHASE 0  BASELINE  (short)
 -------------------------------------------------------------------------------
 PHASE 1  CORE FRAME TOOLKIT  (high effort, small code; everything depends on it)
 -------------------------------------------------------------------------------
+[x] Fix fs_sphere_sky compile error (see LOG 2026-10-11).
+[x] Find why geodesic terrain only shows a strip (camera was underground).
+[ ] HANDEDNESS (do first): the chart -> sphere map is a reflection. Chart
+    (x east, y up, z south) has east x up = south; Copilot's sphere
+    (x = r cos lat cos lon, z = r cos lat sin lon) has east x up = north, so
+    anything built on the chart and copied onto the sphere point by point is
+    mirrored. Copilot hid it with a mirrored sphere camera (right = up x
+    forward in Camera.getSphereViewProjection and SphereSkyRenderer) plus
+    glFrontFace(GL_CW) around sphere terrain and geodesic infrastructure.
+    Fix both together: make the sphere right-handed against the chart
+    (e.g. z = -r cos lat sin lon, lon = atan2(-z, x)), put the convention in
+    ONE place (Planet / SphereFrame), replace the ~49 hand-written
+    lon/east computations (Camera, GeodesicCollision, GeodesicRoadMesh,
+    GeodesicSettlementMesh, OrganismManager, Planet, Renderer, SphereRender,
+    GLEventListener, vs_organism, fs_standard_d) with it, then use a normal
+    lookAt camera (right = forward x up) and delete the GL_CW flips.
+    Check: shop sign lettering reads correctly and the map's east is the
+    world's east.
+[ ] "World ready" must wait for the first geodesic terrain patch: at ~66 S the
+    chart world shows for the first seconds (2 FPS) before the sphere takes
+    over (10 FPS in a dense city).
+[ ] One spawn path: spawnat takes lat,lon; every spawn goes through the
+    sphere world; the old chart world is no longer reachable at runtime.
+[ ] Copilot's geodesic roads float above the terrain and its stand-in houses
+    have gaps in their roofs: ignore (both are replaced in Phase 3).
 [ ] SphereFrame class: origin, east, north, up; toWorld(x,y,z), toLocal(pos),
     localDirection/worldDirection, heading helpers; built from any
     SpherePosition. Handles the poles (pick east from a fixed reference axis
@@ -185,3 +210,51 @@ LOG
 2026-10-09  Plan written. Not started. Copilot's foundation reviewed only
             briefly (it builds; geodesic terrain/water/collision/flora/sky exist;
             infrastructure, vehicles, people, maps are still on the chart).
+2026-10-11  PHASE 0 DONE.
+  - Baseline commit 490e496 "Copilot geodesic WIP baseline, plus migration
+    plan". Most geodesic files were untracked before this (never committed by
+    Copilot). target/ files left uncommitted on purpose.
+  - The method 1 work from Claude5 is NOT in this tree (Claude5 and this branch
+    both sit at c3482c9; its uncommitted changes are gone). Copilot's own diff
+    has a few stretch/trueArea uses (Planet.trueArea, PLAYER_RADIUS *
+    Planet.stretch in GLEventListener): delete these in Phase 2.
+  - Launch, normal spawn (seed 123): BROKEN. Sky fragment shader fails to
+    compile ("ERROR: 0:26 'float': overloaded functions must have the same
+    return type", likely fs_sphere_sky.txt noise3 at line 26 clashing with
+    another noise3), so the sky is flat purple. Terrain mostly missing (only a
+    thin strip of ground and water), Copilot's geodesic roads float in the sky,
+    a little flora and birds. 58 FPS. Load 126 s.
+  - Launch with -Dxenoguesser.spawnat=49768,37072 (~66 S): the OLD chart world
+    renders instead (houses, shops, people, fences, road paint all fine),
+    16 FPS. So spawnat bypasses the geodesic path: two worlds coexist and the
+    spawn route picks which. Phase 1 must give spawnat a sphere form
+    (lat,lon or direction) and route every spawn through one path.
+  - Inventory (counts of lines):
+      chart API (Planet.stretch/trueArea/seenFrom/latitude/chartX/chartZ/scale)
+        outside the map: XenoGuesser_GLEventListener 9,
+        RegionalGenerationManager 2, InfrastructureObject 1; map: MapPanel 2.
+      (x, z) chunk keys (chunkKey/chunkIndex/PHYSICAL_CHUNK_SIZE):
+        XenoGuesser_GLEventListener 57, InfrastructureManager 32,
+        OrganismManager 2.
+      flat-world shader uniforms (bend/curveCentre/curvature/curveDown/
+        sphereNativeTerrain): vs_standard, vs_organism, vs_rock, vs_glass,
+        vs_grass_instanced, vs_water, fs_standard_d; Java setters in
+        InfrastructureObject 3, GLEventListener 4, Shader 2, Renderer 1.
+  - Added to Phase 1 (first items): fix the sky shader compile error; find why
+    geodesic terrain only shows a strip near the spawn (likely the build
+    centre/radius or camera-relative offset) before building on it.
+2026-10-11  PHASE 0 BUG FIXES (uncommitted on top of 490e496):
+  - fs_sphere_sky: own noise3() clashed with GLSL's built-in noise3 (returns
+    vec3); renamed valueNoise3. Sky now renders.
+  - Camera underground: two causes. (1) Spawn set the eye from the CHART
+    terrain height (different noise from the sphere terrain): spawn and its
+    dry-land test now use TerrainMesh.getLayeredHeight(Planet.spherePosition(
+    x, z, 0)). (2) movePlayerOnGeodesicTerrain stepped along the bare surface
+    (altitude 0) and kept that, dropping the eyes underground on every move;
+    it now keeps the altitude it had. Result: ground, sea, sky, flora and
+    houses render at the normal spawn, 27 FPS.
+  - Tried a non-mirrored camera: correct maths, but it shows the world
+    mirrored against the map (the reflection described in Phase 1), so it was
+    reverted; the handedness fix is Phase 1's first item.
+  - spawnat at ~66 S: does end up in the sphere world after a few seconds
+    (see the "World ready" item in Phase 1).

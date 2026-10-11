@@ -2087,7 +2087,8 @@ private static class SpeciesConfig {
         while (!foundDryLand) {
             spawnX = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
             spawnZ = (dynamicRand.nextFloat() * TOTAL_REGION_WIDTH) - halfRegion;
-            terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(spawnX, spawnZ, worldNoise);
+            // (the sphere world's ground, the one that is drawn and walked on)
+            terrainHeightAtSpawn = TerrainMesh.getLayeredHeight(Planet.spherePosition(spawnX, spawnZ, 0.0), worldNoise);
             if (terrainHeightAtSpawn > seaLevelHeight) {
                 foundDryLand = true;
             }
@@ -2155,7 +2156,10 @@ private static class SpeciesConfig {
     }
 
     private void moveToLocation(float spawnX, float spawnZ, float lookX, float lookZ) {
-        float terrainHeightAtSpawn = groundHeightAt(spawnX, spawnZ);
+        // (the sphere world's ground, not the chart's: the chart's heights come from other noise,
+        // and standing on them put the eyes underground until the round began)
+        float terrainHeightAtSpawn = Math.max(seaLevelHeight,
+                TerrainMesh.getLayeredHeight(Planet.spherePosition(spawnX, spawnZ, 0.0), worldNoise));
         camera.setPosition(new Vector3(spawnX, terrainHeightAtSpawn + playerEyeHeight, spawnZ));
         camera.setTarget(new Vector3(spawnX + lookX * 10.0f, terrainHeightAtSpawn + playerEyeHeight, spawnZ + lookZ * 10.0f));
 
@@ -2209,6 +2213,8 @@ private static class SpeciesConfig {
             if (geodesicCollision.blocked(resolved, PLAYER_RADIUS, jumpHeight)) break;
             lastFree = resolved;
         }
+        // (the steps run along the bare surface; the eyes keep the height they had)
+        lastFree = lastFree.scale(to.length() / lastFree.length());
         if (Planet.surfaceDistance(lastFree, to) > 1e-4) camera.setSpherePosition(lastFree);
     }
 
