@@ -1,20 +1,16 @@
 /**
- * The world is a sphere. Everything in the game is laid out on a Mercator chart of it: x
- * running east with longitude (-180 to 180 degrees across the chart's WIDTH) and z running
- * south, cut off before Mercator runs away to infinity at the poles, at 75 degrees north
- * and south, so the chart is wider than it is tall. Being conformal, the chart is
- * locally just the sphere at a scale (cos latitude true units to one chart unit), so the
- * world can be built, walked and drawn flat in chart units round the player while:
- * <ul>
- *   <li>the horizon curves away with the sphere (see curvature, used by every vertex shader);</li>
- *   <li>walking straight follows a great circle, the view turning very slightly as you go;</li>
- *   <li>walking off the east edge brings you in from the west, and walking over a pole (past
- *       the chart's top or bottom) brings you out on the far side heading the other way;</li>
- *   <li>distances for scoring are along the sphere's surface.</li>
- * </ul>
- * Everything about the land (its height, climate, plants, rocks, nations) is worked out
- * from places on the sphere rather than on the chart, so the east and west edges of the
- * chart, being the same place, match exactly.
+ * The world is a sphere, and the live world is built on it directly (SpherePosition,
+ * SphereFrame, SphereMath, the geodesic grid; see GEODESIC_MIGRATION_PLAN.txt). This class
+ * holds the planet's size, the one definition of its axes (position, latitude, longitude), the
+ * sun and the celestial pole, and the Mercator chart: x running east with longitude across
+ * the chart's WIDTH and z running south, cut off at 75 degrees north and south. The chart is
+ * for the map and for turning a map click into a place; systems not yet moved onto the sphere
+ * (buildings and roads, people and vehicles) still lay themselves out on it, and are lifted
+ * onto the sphere until they are ported.
+ * <p>
+ * Everything about the land (its height, climate, plants, rocks, nations) is worked out from
+ * places on the sphere rather than on the chart, so the map and the world agree, and the
+ * chart's east and west edges, being the same place, match exactly.
  */
 public final class Planet {
 
@@ -50,53 +46,56 @@ public final class Planet {
         return 2f * clipHalfHeight() / width;
     }
 
+    // ------------------------------------------------------------------ the sphere's axes
+
+    /*
+     * The one place the sphere's axes are fixed; everything else goes through these three or
+     * through SphereFrame (whose east follows from them without naming a longitude). y runs
+     * to the north pole, longitude 0 lies along +x and longitude 90 east along -z, so east
+     * cross up is south, as on the chart (x east, y up, z south): the sphere has the chart's
+     * own handedness rather than its mirror image, and anything built on the chart and lifted
+     * onto the sphere keeps its winding and reads the right way round.
+     */
+
+    /** The place at a latitude and longitude (radians) and an altitude above the datum. */
+    public static SpherePosition position(double latitude, double longitude, double altitude) {
+        double r = radius + altitude, cosLat = Math.cos(latitude);
+        return new SpherePosition(r * cosLat * Math.cos(longitude), r * Math.sin(latitude), -r * cosLat * Math.sin(longitude));
+    }
+
+    /** A position's latitude, radians north of the equator. */
+    public static double latitude(SpherePosition position) {
+        double r = position.length();
+        if (!(r > 0.0)) throw new IllegalArgumentException("The planet centre has no latitude");
+        return Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
+    }
+
+    /** A position's longitude, radians east of longitude 0 (-pi to pi). */
+    public static double longitude(SpherePosition position) {
+        return Math.atan2(-position.z(), position.x());
+    }
+
+    /** The longitude at the chart's middle (where chart x is 0). */
+    public static double centreLongitude() {
+        return centreLongitude;
+    }
+
     /** The place on the sphere under chart point (x, z), in world units from its centre. */
     public static float[] surface(float x, float z) {
-        double lat = latitude(z), lon = longitude(x);
-        double c = Math.cos(lat) * radius;
-        return new float[] { (float) (c * Math.cos(lon)), (float) (Math.sin(lat) * radius), (float) (c * Math.sin(lon)) };
+        SpherePosition p = position(latitude(z), longitude(x), 0.0);
+        return new float[] { (float) p.x(), (float) p.y(), (float) p.z() };
     }
 
     /** Converts a Mercator map coordinate and altitude to its spherical world-space position. */
     public static SpherePosition spherePosition(double chartX, double chartZ, double altitude) {
-        double lat = latitude(chartZ), lon = longitude(chartX), r = radius + altitude;
-        double cosLat = Math.cos(lat);
-        return new SpherePosition(r * cosLat * Math.cos(lon), r * Math.sin(lat), r * cosLat * Math.sin(lon));
+        return position(latitude(chartZ), longitude(chartX), altitude);
     }
 
     /** Projects a spherical world-space position to {Mercator x, altitude, Mercator z}. */
     public static double[] mercatorPosition(SpherePosition position) {
         double r = position.length();
         if (r == 0.0) throw new IllegalArgumentException("The planet centre has no map coordinate");
-        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
-        double lon = Math.atan2(position.z(), position.x());
-        return new double[] { chartX(lon), r - radius, chartZ(lat) };
-    }
-
-    /**
-     * Converts a spherical point into the camera's east/up/south tangent frame, with the
-     * camera's ground origin kept at chart (cameraX, cameraZ) for existing view matrices.
-     */
-    public static SpherePosition inTangentFrame(SpherePosition position, double cameraX, double cameraZ) {
-        double r = position.length();
-        if (r == 0.0) throw new IllegalArgumentException("The planet centre has no tangent-frame position");
-        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
-        double lon = Math.atan2(position.z(), position.x());
-        double cameraLat = latitude(cameraZ), cameraLon = longitude(cameraX);
-        double deltaLon = Math.atan2(Math.sin(lon - cameraLon), Math.cos(lon - cameraLon));
-        double cosLat = Math.cos(lat), sinLat = Math.sin(lat);
-        double cosCameraLat = Math.cos(cameraLat), sinCameraLat = Math.sin(cameraLat);
-        double east = r * cosLat * Math.sin(deltaLon);
-        double north = r * (cosCameraLat * sinLat - sinCameraLat * cosLat * Math.cos(deltaLon));
-        double up = r * (sinCameraLat * sinLat + cosCameraLat * cosLat * Math.cos(deltaLon)) - radius;
-        double cameraScale = Math.cos(cameraLat);
-        return new SpherePosition(cameraX + east / cameraScale, up, cameraZ - north / cameraScale);
-    }
-
-    /** A chunk index brought round into the chart, so the same place always has the same chunk. */
-    public static int wrapChunk(int index, float chunkSize) {
-        int count = Math.max(1, Math.round(width / chunkSize));
-        return Math.floorMod(index + count / 2, count) - count / 2;
+        return new double[] { chartX(longitude(position)), r - radius, chartZ(latitude(position)) };
     }
 
     // ------------------------------------------------------------------ chart and sphere
@@ -158,23 +157,12 @@ public final class Planet {
     // ------------------------------------------------------------------ the sun
 
     /**
-     * Where the sun is in the sky at chart point (x, z), as a unit direction in the world
-     * (x east, y up, z south): from its declination (the season, from the planet's tilt)
-     * and the longitude where it's noon (the time of day).
+     * Where the sun is in the sky at a place, as a unit direction in the local east/up/south
+     * frame there: from its declination (the season, from the planet's tilt) and the longitude
+     * where it's noon (the time of day).
      */
-    public static float[] sunDirection(double x, double z, double declination, double noonLongitude) {
-        double[] sun = point(declination, noonLongitude);
-        double lat = latitude(z), lon = longitude(x);
-        return localSunDirection(sun, lat, lon);
-    }
-
-    /** Sun direction in the local east/up/south frame at an ECEF position. */
     public static float[] sunDirection(SpherePosition position, double declination, double noonLongitude) {
-        double length = position.length();
-        if (!(length > 0.0)) throw new IllegalArgumentException("The planet centre has no local sun direction");
-        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / length)));
-        double lon = Math.atan2(position.z(), position.x());
-        return localSunDirection(point(declination, noonLongitude), lat, lon);
+        return localSunDirection(point(declination, noonLongitude), latitude(position), longitude(position));
     }
 
     private static float[] localSunDirection(double[] sun, double lat, double lon) {
@@ -195,133 +183,16 @@ public final class Planet {
     public static final double MIN_SUN_ELEVATION = 10.0;
     private static final double SIN_MIN_SUN = Math.sin(Math.toRadians(MIN_SUN_ELEVATION));
 
-    /** The direction in the world of the planet's north pole star (the celestial pole) seen from (x, z). */
-    public static float[] celestialPole(double z) {
-        double lat = latitude(z);
-        return new float[] { 0f, (float) Math.sin(lat), (float) -Math.cos(lat) };
-    }
-
-    /** North pole star direction in the local east/up/south frame at an ECEF position. */
+    /** The direction of the planet's north pole star (the celestial pole) in the local east/up/south frame at a place. */
     public static float[] celestialPole(SpherePosition position) {
-        double length = position.length();
-        if (!(length > 0.0)) throw new IllegalArgumentException("The planet centre has no local celestial pole direction");
-        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / length)));
+        double lat = latitude(position);
         return new float[] { 0f, (float) Math.sin(lat), (float) -Math.cos(lat) };
-    }
-
-    /**
-     * How strongly a compass is pulled round to north here, 1 at the equator falling to
-     * nothing at the poles, where the planet's field points straight down.
-     */
-    public static float compassPull(double z) {
-        return (float) Math.cos(latitude(z));
     }
 
     /** x brought back into the chart, -width/2 to width/2. */
     public static double wrapX(double x) {
         double w = width;
         return x - w * Math.floor((x + w / 2) / w);
-    }
-
-    /** True units (along the sphere) per chart unit here. */
-    public static double scale(double z) {
-        return Math.cos(latitude(z));
-    }
-
-    /** Chart units per true unit at this latitude. */
-    public static double stretch(double z) {
-        return 1.0 / scale(z);
-    }
-
-    /** Fraction of an equatorial chart cell's area represented by its ground area here. */
-    public static double trueArea(double z) {
-        double localScale = scale(z);
-        return localScale * localScale;
-    }
-
-    /** Chart distance corresponding to a true surface distance at this latitude. */
-    public static double chartDistance(double trueDistance, double z) {
-        return trueDistance * stretch(z);
-    }
-
-    /**
-     * Moves a spherical position along its local east/south tangent by a true ground distance.
-     * The displacement follows a great circle; the input direction is measured in the tangent
-     * frame and altitude is kept unchanged.
-     */
-    public static SpherePosition moveOnSurface(SpherePosition position, double east, double south, double distance) {
-        double r = position.length();
-        if (!(r > 0.0)) throw new IllegalArgumentException("Cannot move from the planet centre");
-        if (!Double.isFinite(east) || !Double.isFinite(south) || !Double.isFinite(distance) || distance < 0.0) {
-            throw new IllegalArgumentException("Movement direction and distance must be finite, with non-negative distance");
-        }
-        double directionLength = Math.hypot(east, south);
-        if (directionLength == 0.0 || distance == 0.0) return position;
-        east /= directionLength;
-        south /= directionLength;
-
-        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, position.y() / r)));
-        double lon = Math.atan2(position.z(), position.x());
-        double cosLon = Math.cos(lon), sinLon = Math.sin(lon);
-        double px = position.x() / r, py = position.y() / r, pz = position.z() / r;
-        double sinLat = py;
-        double tx = -east * sinLon + south * sinLat * cosLon;
-        double ty = -south * Math.cos(lat);
-        double tz = east * cosLon + south * sinLat * sinLon;
-
-        double arc = distance / radius;
-        double cosArc = Math.cos(arc), sinArc = Math.sin(arc);
-        return new SpherePosition(r * (px * cosArc + tx * sinArc),
-                r * (py * cosArc + ty * sinArc),
-                r * (pz * cosArc + tz * sinArc));
-    }
-
-    /** Interpolates two planet positions along the shorter great-circle arc. */
-    public static SpherePosition interpolateSurface(SpherePosition from, SpherePosition to, double fraction) {
-        if (!Double.isFinite(fraction) || fraction < 0.0 || fraction > 1.0) {
-            throw new IllegalArgumentException("Interpolation fraction must be between zero and one");
-        }
-        double fromRadius = from.length(), toRadius = to.length();
-        if (!(fromRadius > 0.0) || !(toRadius > 0.0)) {
-            throw new IllegalArgumentException("Cannot interpolate a position at the planet centre");
-        }
-        double ax = from.x() / fromRadius, ay = from.y() / fromRadius, az = from.z() / fromRadius;
-        double bx = to.x() / toRadius, by = to.y() / toRadius, bz = to.z() / toRadius;
-        double dot = Math.max(-1.0, Math.min(1.0, ax * bx + ay * by + az * bz));
-        double angle = Math.acos(dot);
-        double wa, wb;
-        if (angle < 1e-9) {
-            wa = 1.0 - fraction;
-            wb = fraction;
-        } else {
-            double sinAngle = Math.sin(angle);
-            wa = Math.sin((1.0 - fraction) * angle) / sinAngle;
-            wb = Math.sin(fraction * angle) / sinAngle;
-        }
-        double x = wa * ax + wb * bx, y = wa * ay + wb * by, z = wa * az + wb * bz;
-        double directionLength = Math.sqrt(x * x + y * y + z * z);
-        double radius = fromRadius + (toRadius - fromRadius) * fraction;
-        return new SpherePosition(radius * x / directionLength, radius * y / directionLength,
-                radius * z / directionLength);
-    }
-
-    /** Shortest surface distance between two planet positions, in world units. */
-    public static double surfaceDistance(SpherePosition a, SpherePosition b) {
-        double aLength = a.length(), bLength = b.length();
-        if (!(aLength > 0.0) || !(bLength > 0.0)) {
-            throw new IllegalArgumentException("Cannot measure a surface distance from the planet centre");
-        }
-        double dot = (a.x() * b.x() + a.y() * b.y() + a.z() * b.z()) / (aLength * bLength);
-        return radius * Math.acos(Math.max(-1.0, Math.min(1.0, dot)));
-    }
-
-    /**
-     * How far the ground drops below the flat chart per square unit of horizontal distance
-     * from the viewer, so the horizon curves away as on a sphere of this size (in chart units
-     * the sphere's radius here is radius / scale).
-     */
-    public static float curvature(double z) {
-        return (float) (scale(z) / (2 * radius));
     }
 
     /** The shortest distance between two places along the sphere's surface, in true units. */
@@ -348,62 +219,6 @@ public final class Planet {
 
     private static double[] north(double lat, double lon) {
         return new double[] { -Math.sin(lat) * Math.cos(lon), -Math.sin(lat) * Math.sin(lon), Math.cos(lat) };
-    }
-
-    /** A chart direction (angle from +x towards +z) as a direction along the sphere at (x, z). */
-    private static double[] tangent(double x, double z, double angle) {
-        double lat = latitude(z), lon = longitude(x);
-        double[] e = east(lon), n = north(lat, lon);
-        double dx = Math.cos(angle), dz = Math.sin(angle);
-        return new double[] { dx * e[0] - dz * n[0], dx * e[1] - dz * n[1], dx * e[2] - dz * n[2] };
-    }
-
-    /** ...and back: a direction along the sphere at (x, z) as a chart angle. */
-    private static double chartAngle(double x, double z, double[] t) {
-        double lat = latitude(z), lon = longitude(x);
-        double dx = dot(t, east(lon)), dz = -dot(t, north(lat, lon));
-        return Math.atan2(dz, dx);
-    }
-
-    /**
-     * Walking straight: someone facing along chart angle at (ax, az) who steps to (bx, bz)
-     * is facing this much further round (radians, towards +z) on arriving, as their facing
-     * is carried along the great circle between the two. Tiny for any one step, but it's
-     * what makes a straight walk a great circle rather than a line on the chart.
-     */
-    public static double turnAlong(double ax, double az, double bx, double bz, double angle) {
-        double[] p = point(latitude(az), longitude(ax)), q = point(latitude(bz), longitude(bx));
-        double[] t = tangent(ax, az, angle);
-        double k = dot(q, t) / (1 + dot(p, q));
-        double[] carried = { t[0] - k * (p[0] + q[0]), t[1] - k * (p[1] + q[1]), t[2] - k * (p[2] + q[2]) };
-        double turned = chartAngle(bx, bz, carried) - angle;
-        return Math.atan2(Math.sin(turned), Math.cos(turned));
-    }
-
-    /**
-     * Past the chart's top or bottom (over a polar cap the chart can't show): where someone
-     * at (x, z) facing along chart angle comes out on the far side of the cap if they keep
-     * going straight, as {x, z, new angle}. Null if (x, z) is still on the chart.
-     */
-    public static double[] acrossPole(double x, double z, double angle) {
-        double half = clipHalfHeight();
-        if (Math.abs(z) <= half) return null;
-        double sign = z < 0 ? 1 : -1;   // north is -z
-        double[] p = point(latitude(z), longitude(x));
-        double[] t = tangent(x, z, angle);
-        // Height above the equator along the great circle: sign * (p.z cos s + t.z sin s)
-        double a = sign * p[2], b = sign * t[2];
-        double c = Math.sqrt(a * a + b * b);
-        double limit = Math.sin(CLIP_LATITUDE) - 1e-4;
-        if (c < 1e-9) return null;
-        double s = Math.atan2(b, a) + Math.acos(Math.max(-1, Math.min(1, limit / c))) + 1e-5;
-        double cs = Math.cos(s), sn = Math.sin(s);
-        double[] q = { p[0] * cs + t[0] * sn, p[1] * cs + t[1] * sn, p[2] * cs + t[2] * sn };
-        double[] u = { -p[0] * sn + t[0] * cs, -p[1] * sn + t[1] * cs, -p[2] * sn + t[2] * cs };
-        double lat = Math.asin(Math.max(-1, Math.min(1, q[2])));
-        double lon = Math.atan2(q[1], q[0]);
-        double nx = chartX(lon), nz = chartZ(lat);
-        return new double[] { nx, nz, chartAngle(nx, nz, u) };
     }
 
     private static double dot(double[] a, double[] b) {

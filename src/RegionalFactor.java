@@ -78,6 +78,19 @@ public class RegionalFactor {
     }
 
     /**
+     * The factor at a place on the planet, as the map shows it there. The samplers still take
+     * map coordinates (the map's chunk and point), so this is the one place the world turns a
+     * place into them for the regional factors, until they are sampled on the sphere
+     * themselves (D7 in GEODESIC_MIGRATION_PLAN.txt); the map stays the authority meanwhile,
+     * so what the world grows matches what its overlays show.
+     */
+    public float evaluateAt(SpherePosition position, float chunkSize) {
+        double[] map = Planet.mercatorPosition(position);
+        float x = (float) map[0], z = (float) map[2];
+        return evaluate((int) Math.floor(x / chunkSize), (int) Math.floor(z / chunkSize), x, z);
+    }
+
+    /**
      * Recursive Evaluation Process. Evaluates itself if atomic, 
      * or dynamically computes a weighted, normalized blended value across its children.
      */

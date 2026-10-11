@@ -318,9 +318,9 @@ public class Weather {
 
     private void ensureGl(GL3 gl) {
         if (cloudShader != null) return;
-        cloudShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_cloud.txt", GamePaths.HOME + "assets/shaders/fs_cloud.txt").flat();
-        rainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rain.txt", GamePaths.HOME + "assets/shaders/fs_rain.txt").flat();
-        snowShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_snow.txt", GamePaths.HOME + "assets/shaders/fs_snow.txt").flat();
+        cloudShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_cloud.txt", GamePaths.HOME + "assets/shaders/fs_cloud.txt");
+        rainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rain.txt", GamePaths.HOME + "assets/shaders/fs_rain.txt");
+        snowShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_snow.txt", GamePaths.HOME + "assets/shaders/fs_snow.txt");
         int[] ids = new int[2];
         gl.glGenVertexArrays(2, ids, 0);
         emptyVao = ids[0];
@@ -333,58 +333,6 @@ public class Weather {
         gl.glVertexAttribPointer(0, 4, GL.GL_FLOAT, false, 16, 0);
         gl.glBindVertexArray(0);
         gl.glBindBuffer(GL.GL_ARRAY_BUFFER, 0);
-    }
-
-    /**
-     * The clouds, over the sky (drawn straight after it, before anything that stands in
-     * front). skyColour tints them at dusk and by night; daylight is 0 at night to 1 by day.
-     */
-    public void renderClouds(GL3 gl, Camera camera, float aspect, Vector3 skyColour, float daylight, float time, float[] sunDirection, float[] sunTint, float[] fog) {
-        ensureGl(gl);
-        if (coverage < 0f) return;
-        Vector3 eye = camera.getPosition();
-        Vector3 forward = camera.getForwardDirection();
-        float fx = forward.x, fy = forward.y, fz = forward.z;
-        float fl = (float) Math.sqrt(fx * fx + fy * fy + fz * fz);
-        fx /= fl; fy /= fl; fz /= fl;
-        // Right = forward x up, up = right x forward
-        float rx = -fz, rz = fx;
-        float rl = (float) Math.sqrt(rx * rx + rz * rz);
-        if (rl < 1e-4f) { rx = 1f; rz = 0f; rl = 1f; }
-        rx /= rl; rz /= rl;
-        float ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;
-
-        gl.glDisable(GL.GL_DEPTH_TEST);
-        gl.glDisable(GL.GL_CULL_FACE);
-        gl.glEnable(GL.GL_BLEND);
-        gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
-        cloudShader.use(gl);
-        cloudShader.setFloat(gl, "forward", fx, fy, fz);
-        cloudShader.setFloat(gl, "right", rx, 0f, rz);
-        cloudShader.setFloat(gl, "up", ux, uy, uz);
-        cloudShader.setFloat(gl, "lens", (float) Math.tan(Math.toRadians(45.0 / 2.0)), aspect);
-        cloudShader.setFloat(gl, "eye", eye.x, eye.y, eye.z);
-        cloudShader.setFloat(gl, "cloudHeight", Math.max(seaLevel + CLOUD_ALTITUDE, eye.y + 400f));
-        cloudShader.setFloat(gl, "wind", windX, windZ);
-        cloudShader.setFloat(gl, "scale", CLOUD_SCALE);
-        cloudShader.setFloat(gl, "drift", time * CLOUD_DRIFT);
-        cloudShader.setFloat(gl, "coverage", coverage);
-        cloudShader.setFloat(gl, "darkness", darkness);
-        cloudShader.setFloat(gl, "daylight", daylight);
-        cloudShader.setFloat(gl, "skyColour", skyColour.x, skyColour.y, skyColour.z);
-        cloudShader.setFloat(gl, "dayOffset", dayOffsetX, dayOffsetZ);
-        cloudShader.setFloat(gl, "streak", streak);
-        cloudShader.setFloat(gl, "sunDirection", sunDirection[0], sunDirection[1], sunDirection[2]);
-        cloudShader.setFloat(gl, "sunColour", 0.8f + 0.2f * sunTint[0], 0.8f + 0.2f * sunTint[1], 0.8f + 0.2f * sunTint[2]);
-        cloudShader.setFloat(gl, "shading", CLOUD_SHADING);
-        // (low in the sky, the clouds and sky fade into the fog the distant land fades into)
-        cloudShader.setFloat(gl, "haze", fog[0], fog[1], fog[2], HORIZON_FOG);
-        gl.glBindVertexArray(emptyVao);
-        gl.glDrawArrays(GL.GL_TRIANGLES, 0, 3);
-        gl.glBindVertexArray(0);
-        gl.glDisable(GL.GL_BLEND);
-        gl.glEnable(GL.GL_CULL_FACE);
-        gl.glEnable(GL.GL_DEPTH_TEST);
     }
 
     /**

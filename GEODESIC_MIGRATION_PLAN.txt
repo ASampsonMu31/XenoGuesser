@@ -51,6 +51,39 @@ D8  One render path. When a system is ported, delete its flat-world branch in
     the shaders and GLEventListener in the same change. No dual flags left over
     at the end (sphereNativeTerrain etc. go).
 D9  Units: true metres everywhere (PlayerBody.METRE = 10 game units/metre stays).
+D10 Axes (Phase 1): y = north pole, longitude 0 along +x, longitude 90 E along -z
+    (Planet.position/latitude/longitude are the only place this is written down).
+    East = y cross up (SphereFrame.at), south = east cross up: the sphere has the
+    chart's handedness, so chart-built meshes lift without flipping winding.
+    Local frame coordinates are chart-like: x east, y up, z south. A heading is
+    radians from local x towards local z (east towards south), as camera yaw.
+    Creatures follow it too since Phase 2 (their meshes face local +z, so they
+    are turned by rotationY(pi/2 - heading)); headings are carried along each
+    step with SphereMath.carryHeading.
+D11 Toolkit (Phase 1): SphereFrame (rigid toWorld/toLocal for one object;
+    curved toSphere/fromSphere for ground-hugging reaches; rotated(); headings;
+    modelMatrix), SphereMath (distance/angle, heading, move/moveToward,
+    carryHeading = parallel transport, slerp, arcFraction/nearestOnArc/
+    distanceToArc, atAltitude), TerrainMesh.getLayeredHeight(SpherePosition |
+    Direction) + groundAt = THE terrain height, CellIndex<T> (D5 index, default
+    level 8 = ~10 m cells, items with an extent; radii in world units, 10 per
+    metre, as everywhere). Self-check (LandingPod needs JOGL to load):
+    java -cp "target/classes;lib/jogamp-fat.jar" SphereToolkitCheck
+    (exit 1 on failure).
+D12 Regional factors (RegionalFactor: species habitats and abundance, grass,
+    leaf colour, urbanness) stay sampled in map coordinates until Phase 5 moves
+    them to 3D (D7); the world reads them only through
+    RegionalFactor.evaluateAt(position, chunkSize), so the map remains the
+    authority and what grows where matches its overlays. Counts per cell come
+    from the factor at the cell and the cell's own area (Cell.area(): level 7
+    cells differ by up to ~1.6x, so no per-level constant). Copilot's separate
+    sphere habitat model (OrganismSpecies native presence) is deleted.
+D13 Chart bridges: while a system is still on the chart (buildings, roads,
+    signs: Phase 3; people, vehicles: Phase 4), the ported systems reach it
+    only through marked conversions in XenoGuesser_GLEventListener (chart(p),
+    chartViewpoint, chartObstaclesNear, the wild/road/keep-out lambdas,
+    groundHeightAt's walkingSurfaceY) and SphereRender.chartAnchor. Each phase
+    deletes the bridges for what it ports; grep chart( to find them.
 
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
@@ -70,7 +103,7 @@ PHASE 1  CORE FRAME TOOLKIT  (high effort, small code; everything depends on it)
 -------------------------------------------------------------------------------
 [x] Fix fs_sphere_sky compile error (see LOG 2026-10-11).
 [x] Find why geodesic terrain only shows a strip (camera was underground).
-[ ] HANDEDNESS (do first): the chart -> sphere map is a reflection. Chart
+[x] HANDEDNESS (do first): the chart -> sphere map is a reflection. Chart
     (x east, y up, z south) has east x up = south; Copilot's sphere
     (x = r cos lat cos lon, z = r cos lat sin lon) has east x up = north, so
     anything built on the chart and copied onto the sphere point by point is
@@ -85,38 +118,42 @@ PHASE 1  CORE FRAME TOOLKIT  (high effort, small code; everything depends on it)
     GLEventListener, vs_organism, fs_standard_d) with it, then use a normal
     lookAt camera (right = forward x up) and delete the GL_CW flips.
     Check: shop sign lettering reads correctly and the map's east is the
-    world's east.
-[ ] "World ready" must wait for the first geodesic terrain patch: at ~66 S the
+    world's east. (Map/world east: verified by SphereToolkitCheck. Sign
+    lettering: signs are not drawn on the sphere yet, so it moved to Phase 3's
+    CHECK.)
+[x] "World ready" must wait for the first geodesic terrain patch: at ~66 S the
     chart world shows for the first seconds (2 FPS) before the sphere takes
     over (10 FPS in a dense city).
-[ ] One spawn path: spawnat takes lat,lon; every spawn goes through the
+[x] One spawn path: spawnat takes lat,lon; every spawn goes through the
     sphere world; the old chart world is no longer reachable at runtime.
-[ ] Copilot's geodesic roads float above the terrain and its stand-in houses
+[x] Copilot's geodesic roads float above the terrain and its stand-in houses
     have gaps in their roofs: ignore (both are replaced in Phase 3).
-[ ] SphereFrame class: origin, east, north, up; toWorld(x,y,z), toLocal(pos),
+[x] SphereFrame class: origin, east, north, up; toWorld(x,y,z), toLocal(pos),
     localDirection/worldDirection, heading helpers; built from any
     SpherePosition. Handles the poles (pick east from a fixed reference axis
     when near them).
-[ ] Surface helpers in Planet (or a SphereMath class): unit direction <->
+[x] Surface helpers in Planet (or a SphereMath class): unit direction <->
     SpherePosition at a height, great-circle distance, bearing, move along
     bearing by distance, slerp, nearest point on a great-circle arc.
-[ ] Terrain height at a SpherePosition (one function, used by everything).
-[ ] Geodesic spatial index: generic CellIndex<T> keyed by GeodesicChunkGrid
+[x] Terrain height at a SpherePosition (one function, used by everything).
+[x] Geodesic spatial index: generic CellIndex<T> keyed by GeodesicChunkGrid
     cell id at a fixed level, with near(position, radiusMetres).
-[ ] Small unit-test style check (a main method or test) for frame round trips
+[x] Small unit-test style check (a main method or test) for frame round trips
     at the equator, 70 degrees and a pole.
 
 -------------------------------------------------------------------------------
 PHASE 2  WORLD PLAYER LOOP ON ONE PATH
 -------------------------------------------------------------------------------
-[ ] Player, camera, collision, jumping fully on SpherePosition + local frame
+[x] Player, camera, collision, jumping fully on SpherePosition + local frame
     (Copilot did most of this: verify, remove any chart fallbacks).
-[ ] Spawn, landing pod (LandingPod builds in a frame at the spawn point).
-[ ] Grass, rocks, flora placement sampled per geodesic cell (counts per cell;
-    cells are near-equal area so no trueArea factors).
-[ ] Animals (OrganismManager): finish the port, delete chart branches.
-[ ] Shaders: delete onSphere/bend/curve code paths for the ported models.
-CHECK: equator and 70 degrees look and walk the same; frame time flat.
+[x] Spawn, landing pod (LandingPod builds in a frame at the spawn point).
+[x] Grass, rocks, flora placement sampled per geodesic cell (counts per cell;
+    cells are near-equal area so no trueArea factors). (Counts use each
+    cell's own area, see D12.)
+[x] Animals (OrganismManager): finish the port, delete chart branches.
+[x] Shaders: delete onSphere/bend/curve code paths for the ported models.
+[x] CHECK: equator and 70 degrees look and walk the same; frame time flat.
+    (29 FPS equator, 30 FPS at 70 N; see LOG.)
 
 -------------------------------------------------------------------------------
 PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
@@ -146,6 +183,7 @@ PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
     in XenoGuesser_GLEventListener.
 CHECK: a town at the equator and one at ~70 degrees; roads, houses, paint,
 fences, signs, borders all present and true size; no gaps at cell borders.
+Shop sign lettering reads the right way round (moved here from Phase 1).
 
 -------------------------------------------------------------------------------
 PHASE 4  VEHICLES AND PEOPLE
@@ -189,8 +227,17 @@ EFFICIENCY RULES (to stretch the weekly allowance)
   quotes). Normalise CRLF. Avoid trailing-space anchors.
 - Always mvn clean compile; the game must not be running while building.
 - Batch test launches: one launch should check several things (equator + 70
-  degrees via -Dxenoguesser.spawnat, screenshots via hudtest=shot). World load
-  takes about 90 s, so every launch is expensive.
+  degrees via -Dxenoguesser.spawnat=lat,lon, screenshots via hudtest=shot). World
+  load takes about 80 s, so every launch is expensive.
+- Launching for a test: java directly (classpath = target/classes plus
+  mvn dependency:build-classpath), the pom's JVM flags (--add-exports
+  java.desktop/sun.awt=ALL-UNNAMED etc.: without them JOGL can't open the
+  window), KMP_AFFINITY=disabled, from the Terminal panel, with -Dxenoguesser.seed=123
+  -Dxenoguesser.skipmenu (without skipmenu it waits at the main menu forever).
+  Debug runs save first_frame.png and later_frame.png (150 frames on) in
+  %TEMP%/xenoguesser/run-<pid>/generated_world: use those; hudtest=shot's
+  window_shot grabs whatever window is in front. hudtest=guess,shop,next runs a
+  round change. Land for seed 123: 70 N at lon 27.5 or 139; equator at lon 11.5.
 - Read only the parts of big files a step needs (grep first, then targeted reads).
 - No debug code left in; temporary prints marked // TEMP and removed the same turn.
 - Commit only when the user asks.
@@ -258,3 +305,135 @@ LOG
     reverted; the handedness fix is Phase 1's first item.
   - spawnat at ~66 S: does end up in the sphere world after a few seconds
     (see the "World ready" item in Phase 1).
+2026-10-11  PHASE 1 DONE (uncommitted).
+  - Toolkit: SphereFrame, SphereMath, CellIndex<T>, TerrainMesh.getLayeredHeight
+    (Direction overload) + groundAt; see D10/D11. SphereToolkitCheck: 2425 checks
+    pass (frames at 0, 66, +-70, 89.9999 and +-90 degrees; chart lift keeps
+    handedness and chart east = world east at 200 random points; walking a
+    great circle with carryHeading closes over the pole; CellIndex equals brute
+    force at 70 N, a pole, an icosahedron vertex and the equator).
+  - Handedness: Planet.position/latitude/longitude now put lon 90 E on -z.
+    Every hand-written lat/lon frame (Camera, GeodesicCollision, GeodesicRoadMesh,
+    GeodesicSettlementMesh, InfrastructureObject, OrganismManager, SphereRender,
+    GLEventListener water/flora/steepness, vs_organism, fs_standard_d) now goes
+    through SphereFrame/Planet. Camera and SphereSkyRenderer use a plain look-at
+    (right = forward x up, up = right x forward); the GL_CW flips and
+    InfrastructureObject's index swap are gone. Surprise: changing only `right`
+    rolled the view upside down; the corrected up must change with it.
+    The map now shows the mirror image of the old map: same 3D planet, now
+    labelled the right way round (old chart coordinates no longer match).
+  - Camera walking carries its yaw along each step (great circles, over poles);
+    Planet.moveOnSurface/interpolateSurface/surfaceDistance(SpherePosition),
+    turnAlong, acrossPole, inTangentFrame and Camera.turn deleted (SphereMath).
+  - One world: the chart terrain streaming (chunkCache, terrainInFlight,
+    prefetchTerrain, chunkBounds) is deleted. Loading at launch, between rounds
+    and after a teleport waits for geodesicTerrainReadyHere(); display() draws
+    nothing without the sphere's ground. render()'s chart branches before the
+    sphere block are collapsed (movement, sun, sky, terrain pass; this removed
+    the Planet.stretch in moveSolidly). The chart passes after the sphere block
+    are unreachable and labelled as the porting reference for grass, rocks,
+    glass, signs and chart-built people/vehicles (delete per D8 when ported).
+    Chart batch GPU uploads in updateVisibleChunks are gone too.
+  - Spawning: moveToLocation places the camera through Camera.setSphereView;
+    -Dxenoguesser.spawnat now takes latitude,longitude in degrees.
+  - Launches (seed 123): shop view: shop front, shelves, people, street correct
+    way up, walls show with culling on, 23 FPS. 70 N (27.5 E, 139 E): straight
+    into the sphere world, level horizon, sea, houses, 29 FPS. Equator (11.5 E):
+    trees, fences, houses, rain, 28 FPS. Load 79-83 s (was 126 s). Round change
+    (guess, shop, next): next round built in 3.9 s, no errors.
+  - Seen, not fixed (later phases): a sliver of sky between coast and sea
+    (the geodesic water patch drops any triangle with a vertex on land); shop
+    signs/glass are not drawn on the sphere yet (Phase 3); the sky texture is
+    sampled by world direction, not the local frame. Chart-world helpers now
+    unused but left for Phase 6: Collision.resolveFirm, Weather (chart clouds),
+    skyModel, regionalManager.waveSurfaceAt.
+2026-10-11  PHASE 1 REVIEW before Phase 2.
+  - Added a camera check to SphereToolkitCheck (2449 checks pass): with the
+    game's own Camera, facing north puts east on the right of the screen and
+    up at the top, facing east puts south on the right (equator, +-70, near
+    the pole). With "chart east = world east" this closes the handedness check
+    without needing signs. A launch on a west-facing coast (19.75 S, 101.8 W)
+    showed only a hill ahead, so the screen test was done in code instead.
+  - Not exercised by a launch: the debug teleport (map click). It goes through
+    the same moveToLocation and teleportLoading wait as spawning, which were
+    tested.
+  - Phase 1 is complete; Phase 2 can start.
+2026-10-11  PHASE 2 CODE DONE (uncommitted); its CHECK launch still to do.
+  - Camera is sphere-only: position + yaw/pitch in the local frame; lookAt,
+    frame(), getSphereView, localViewProjection (for things posed in the
+    camera's frame). getChartPosition() is the one chart accessor, for the map
+    and unported systems. setPosition/setTarget/getViewMatrix etc. are gone.
+  - GeodesicCollision rewritten: obstacle Sources (pod, trees, rocks, the
+    stand-in walls, and the real infrastructure through a chart bridge),
+    moving bodies in a CellIndex swapped each frame, and Collision's flat
+    tests (resolve, resolveFirm, blocked, blockedStatic, steer) run in the
+    tangent frame of the place asked about. Copilot's route graph (findPath,
+    findRoadPath, nearRoute) is deleted (unused). The player moves with
+    resolveFirm and is a body other things give way to.
+  - Player: stands on groundHeightAt (terrain, road deck via the chart, pod
+    stairs); body posed in the camera's local frame and drawn again (it was
+    not drawn on the sphere at all); compass pull from the latitude.
+  - Spawn: every dev view and the normal landing site end as a Viewpoint
+    (place + D10 heading); infra-chosen ones go through chartViewpoint.
+    "edge" view deleted (the sphere has no edge). mountain/shore/swim/zoo/bug
+    sample the sphere. The next round's pod spot is kept clear of trees,
+    grass and rocks while it is prefetched (the chart version did not).
+  - LandingPod: placed in a rotated SphereFrame (local z = stairs), floorAt,
+    covers and obstacles on SpherePositions, drawn with an anchor matrix.
+  - Rocks: placed per level-8 cell, meshed per level-6 detail tile and
+    level-5 coarse tile (built on worker threads), stored relative to the
+    tile centre and drawn camera-relative; coarse rocks hide per quarter of
+    their tile drawn in detail (exact, no overlaps). Solid rocks in a
+    CellIndex. Grain noise uses tile coordinates, sky light uses local up.
+  - Flora and grass: CellStream<T> (new) keeps per-level-7-cell data round
+    the viewer, built on workers, prefetched for the next round. Flora uses
+    the real species abundance (Copilot's one-random-plant-per-cell stand-in
+    is gone); trees go in a CellIndex for trunk collision and the lens.
+    Grass slope comes from an 8-step lattice per cell, colour/height are
+    blended from the cell's corners (no seams). vs_grass_instanced billboards
+    about the planet's up, camera-relative.
+  - Animals: OrganismManager has no chart code left: population per level-7
+    cell from the map habitat (D12), D10 headings carried with carryHeading,
+    steering, hops and body chains ported onto GeodesicCollision, outlines
+    kept in world coordinates for the lens. Wild/road tests go through the
+    chart bridge to the real towns and roads (not Copilot's stand-ins).
+  - Shaders: vs_organism is one camera-relative path with an `anchor` matrix
+    worked out in double (people and vehicles use SphereRender.chartAnchor
+    until Phase 4); planetDrop/curve removed from vs_organism, vs_rock,
+    vs_grass_instanced, vs_standard; Shader.setPlanetCurve and .flat() gone.
+    (vs_glass and vs_water still declare curve uniforms: Phase 3 / dead.)
+    Snow on rocks removed (the sphere terrain has none either, see below).
+  - Also: sky reflections now use the sky rotation in world form (frame
+    rotation x local rotation), fixing the "sky texture sampled by world
+    direction" item from Phase 1; the body gets the local one. The sun disc
+    (Light) is drawn camera-relative. The identification kit's lens now
+    projects through the camera's local frame (part of Phase 5's lens item).
+    Flora/animal pictures are drawn with their own view (Model.renderWith),
+    not by moving the camera. Planet's stretch, trueArea, curvature,
+    compassPull, chartDistance, scale, wrapChunk and the chart sun/pole
+    overloads are deleted (no users left). Weather.renderClouds deleted (dead).
+    The unreachable chart passes in render() are deleted; for porting glass,
+    signs and chart people see render() in commit d99cb86.
+  - SphereToolkitCheck: 2928 checks pass (cell areas sum to 4 pi and points
+    stay in their cell; collision pushes, jumps, steering and bodies at 0, 70,
+    -70, 89.9999 and 90 degrees; the pod's frame, stairs and facing; the
+    camera's lookAt and local view against the world view).
+  - LAUNCH BLOCKED: every launch (Bash sandboxed and not, PowerShell, the
+    Terminal panel) failed at window creation with JOGL "Unable to determine
+    GraphicsConfiguration" in GLCanvas.addNotify, before any game code runs,
+    so it looks like the machine's display state at the time, not this
+    change. Confirmed later the same day: commit d99cb86 built in a separate
+    worktree fails identically. Also needed from a tool shell: KMP_AFFINITY=disabled (PyTorch's
+    OpenMP failed to set thread affinity outside the sandbox).
+  - Seen, not fixed: snow is drawn nowhere on the sphere yet (terrain shader
+    returns 0, rocks/grass removed); needs a direction-based snow lookup.
+    The thermometer reads temperatureAt through the chart (Phase 5).
+2026-10-11  PHASE 2 CHECK PASSED.
+  - The earlier launch failures were not the display: launches need the JVM
+    flags from pom.xml/launch.json (--add-exports java.desktop/sun.awt and
+    sun.java2d, java.base/java.lang; -XX:+UseZGC -XX:+ZGenerational). Without
+    sun.awt, JOGL fails with "Unable to determine GraphicsConfiguration".
+    Launch from the Terminal panel with those flags and KMP_AFFINITY=disabled.
+  - Equator (0, 11.5): grass, rocks, distant trees and a flying creature, no
+    exceptions, 29 FPS. 70 N (27.5 E): ground and sparse short (cold) grass on
+    a slope, no exceptions, 30 FPS. Frame time is flat. Phase 2 is complete.

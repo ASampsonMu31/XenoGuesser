@@ -1098,7 +1098,7 @@ public class Inhabitants {
     }
 
     private double distanceToViewer(float x, float z) {
-        return Planet.surfaceDistance(sphereViewer, Planet.spherePosition(x, z, 0.0));
+        return SphereMath.distance(sphereViewer, Planet.spherePosition(x, z, 0.0));
     }
 
     /**
@@ -2194,12 +2194,11 @@ public class Inhabitants {
     public void renderSphereNative(GL3 gl, Camera camera, Vector3 sunDirection, float[] sunColour,
             Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
         if (shader == null) return;
-        SphereRender.configure(gl, shader, camera, camera.getSphereViewProjection(),
+        SphereRender.configure(gl, shader, camera.getSphereViewProjection(),
                 sunDirection, sunColour, ambient, skyRotation);
-        render(gl, camera.getSphereViewProjection(), null, camera.getPosition(),
+        render(gl, camera.getSphereViewProjection(), null, camera.getChartPosition(),
                 new Vector3(0f, 0f, 0f), sunColour, ambient, skyRotation, sky, time,
                 true, camera.getSpherePosition());
-        SphereRender.reset(gl, shader);
     }
 
     private void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
@@ -2208,6 +2207,7 @@ public class Inhabitants {
         if (shader == null) return;
         shader.use(gl);
         if (!sphereNative) {
+            SphereRender.setAnchor(gl, shader, null);
             shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
             gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
             shader.setVec3(gl, "viewPos", viewPos);
@@ -2247,7 +2247,7 @@ public class Inhabitants {
                     if (dx * dx + dz * dz > drawn * drawn) continue;
                     if (!frustum.intersectsSphere(px, ground + height * 0.5f, pz, height)) continue;
                 }
-                if (sphereNative) shader.setVec3(gl, "sphereChartAnchor", new Vector3(px, 0f, pz));
+                if (sphereNative) SphereRender.setAnchor(gl, shader, SphereRender.chartAnchor(px, pz, sphereEye));
                 pose(p, time, seat);
                 gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
                 drawPerson(gl, p, p.home.nationId, dx * dx + dz * dz < 260f * 260f);
@@ -2268,7 +2268,7 @@ public class Inhabitants {
                 if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
                 if (!frustum.intersectsSphere(g.x, ground + height * 0.5f, g.z, height)) continue;
             }
-            if (sphereNative) shader.setVec3(gl, "sphereChartAnchor", new Vector3(g.x, 0f, g.z));
+            if (sphereNative) SphereRender.setAnchor(gl, shader, SphereRender.chartAnchor(g.x, g.z, sphereEye));
             pose(g, time, null);
             gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
             drawPerson(gl, g, guardNations.get(entry.getKey()), dx * dx + dz * dz < 260f * 260f);

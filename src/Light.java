@@ -102,7 +102,8 @@ public class Light {
 
     // 1. Compute the direct vector from the Player Camera position to the Sun position
     // FIX: Reversing this direction vectors solves the backface culling problem!
-    Vector3 camPos = camera.getPosition();
+    // (the sun's position is relative to the eyes, as the sphere world is drawn)
+    Vector3 camPos = new Vector3(0f, 0f, 0f);
     float lookX = position.x - camPos.x;
     float lookY = position.y - camPos.y;
     float lookZ = position.z - camPos.z;
@@ -154,7 +155,7 @@ public class Light {
     localMM = Matrix4.multiply(localMM, Matrix4Transform.scale(this.size, 1.0f, this.size));
     
     // Calculate final matrices
-    Matrix4 mvMatrix = Matrix4.multiply(camera.getViewMatrix(), localMM);
+    Matrix4 mvMatrix = Matrix4.multiply(camera.getSphereView(), localMM);
     Matrix4 mvpMatrix = Matrix4.multiply(camera.getPerspectiveMatrix(), mvMatrix);
     
     shader.setFloatArray(gl, "mvpMatrix", mvpMatrix.toFloatArrayForGLSL());

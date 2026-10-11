@@ -91,7 +91,11 @@ public class TerrainMesh {
         return flattenLowlands(height, surface, continent, noise);
     }
 
-    /** Terrain height sampled from the authoritative spherical position. */
+    /**
+     * The ground's height above the datum under a place on the sphere: the one terrain height
+     * everything in the world uses (the chart's getLayeredHeight(x, z) goes through the same
+     * sampling, for the map). The position's own altitude makes no difference.
+     */
     public static float getLayeredHeight(SpherePosition position, PerlinNoise noise) {
         double length = position.length();
         if (!(length > 0.0)) throw new IllegalArgumentException("Terrain cannot be sampled at the planet centre");
@@ -101,6 +105,16 @@ public class TerrainMesh {
                 (float) (position.z() * Planet.radius() / length)
         };
         return getLayeredHeight(surface, noise);
+    }
+
+    /** The ground's height above the datum in a direction from the planet's centre. */
+    public static float getLayeredHeight(GeodesicChunkGrid.Direction direction, PerlinNoise noise) {
+        return getLayeredHeight(new SpherePosition(direction.x(), direction.y(), direction.z()), noise);
+    }
+
+    /** The point on the ground straight below (or above) a place. */
+    public static SpherePosition groundAt(SpherePosition position, PerlinNoise noise) {
+        return SphereMath.atAltitude(position, getLayeredHeight(position, noise));
     }
 
     /**

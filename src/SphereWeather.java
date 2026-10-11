@@ -35,7 +35,7 @@ public final class SphereWeather {
         random = new Random(seed * 0x6A09E667F3BCC909L);
         for (int i = 0; i < particles.length; i++) particles[i] = new Particle();
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_precipitation.txt",
-                GamePaths.HOME + "assets/shaders/fs_sphere_precipitation.txt").flat();
+                GamePaths.HOME + "assets/shaders/fs_sphere_precipitation.txt");
         gl.glGenVertexArrays(1, vao, 0);
         gl.glGenBuffers(1, vbo, 0);
         gl.glBindVertexArray(vao[0]);
@@ -94,7 +94,7 @@ public final class SphereWeather {
                 double eastMotion = windEast * windSpeed * dt + swayDistance;
                 double southMotion = windSouth * windSpeed * dt;
                 double travel = Math.hypot(eastMotion, southMotion);
-                SpherePosition moved = Planet.moveOnSurface(particle.position,
+                SpherePosition moved = SphereMath.moveToward(particle.position,
                         eastMotion / Math.max(1e-12, travel), southMotion / Math.max(1e-12, travel), travel);
                 double movedRadius = moved.length();
                 double ground = groundHeight(moved, noise, seaLevel);
@@ -158,7 +158,7 @@ public final class SphereWeather {
             float seaLevel, boolean anywhere) {
         double angle = random.nextDouble() * Math.PI * 2.0;
         double distance = Math.sqrt(random.nextDouble()) * PARTICLE_REACH;
-        SpherePosition nearby = Planet.moveOnSurface(eye, Math.cos(angle), Math.sin(angle), distance);
+        SpherePosition nearby = SphereMath.moveToward(eye, Math.cos(angle), Math.sin(angle), distance);
         double ground = groundHeight(nearby, noise, seaLevel);
         particle.altitude = anywhere ? random.nextDouble() * RAIN_TOP : RAIN_TOP;
         particle.sway = random.nextDouble() * Math.PI * 2.0;

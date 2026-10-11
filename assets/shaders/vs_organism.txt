@@ -15,59 +15,18 @@ flat out int vPart;
 
 uniform mat4 bones[48];
 uniform mat4 viewProjection;
-
-// The planet's curve (see Planet): lowered by curvature times the square of the distance
-// across the ground from curveCentre, along curveDown, the projection of a step up
-uniform vec2 curveCentre;
-uniform float curvature;
-uniform vec4 curveDown;
-uniform int sphereNativeWorld;
-uniform vec3 sphereCamera;
-uniform float sphereRadius;
-uniform float sphereLongitudeOffset;
-uniform vec3 sphereChartAnchor;
-uniform int sphereNativeAnchor;
-uniform vec3 sphereWorldAnchor;
-
-vec4 planetDrop(vec3 world) {
-    vec2 d = world.xz - curveCentre;
-    return curveDown * (curvature * dot(d, d));
-}
+// Takes the posed body, in its own frame (x east, y up, z south about where it stands), into
+// the world less the camera's position (SphereFrame.modelMatrix(scale, eye), worked out in
+// double precision); the identity for something drawn in its own space (a picture, the
+// player's body in the camera's frame)
+uniform mat4 anchor;
 
 void main() {
-    mat4 bone = bones[int(boneIndex + 0.5)];
+    mat4 bone = anchor * bones[int(boneIndex + 0.5)];
     vec4 world = bone * vec4(position, 1.0);
-    vec3 worldNormal = normalize(mat3(bone) * normal);
-    if (sphereNativeWorld != 0) {
-        float latitude;
-        float longitude;
-        vec3 anchor;
-        if (sphereNativeAnchor != 0) {
-            vec3 up = normalize(sphereWorldAnchor);
-            latitude = asin(up.y);
-            longitude = atan(up.z, up.x);
-            anchor = sphereWorldAnchor;
-        } else {
-            latitude = 2.0 * atan(exp(-sphereChartAnchor.z / sphereRadius)) - 1.57079632679;
-            longitude = sphereChartAnchor.x / sphereRadius + sphereLongitudeOffset;
-            anchor = sphereRadius * vec3(cos(latitude) * cos(longitude), sin(latitude),
-                    cos(latitude) * sin(longitude));
-        }
-        float cosineLatitude = cos(latitude);
-        vec3 east = vec3(-sin(longitude), 0.0, cos(longitude));
-        vec3 up = vec3(cosineLatitude * cos(longitude), sin(latitude), cosineLatitude * sin(longitude));
-        vec3 south = vec3(sin(latitude) * cos(longitude), -cosineLatitude,
-                sin(latitude) * sin(longitude));
-        vec3 chartOffset = world.xyz - sphereChartAnchor;
-        vec3 localOffset = sphereNativeAnchor != 0 ? world.xyz : chartOffset;
-        aPos = anchor + east * localOffset.x + up * localOffset.y + south * localOffset.z - sphereCamera;
-        aNormal = normalize(east * worldNormal.x + up * worldNormal.y + south * worldNormal.z);
-        gl_Position = viewProjection * vec4(aPos, 1.0);
-    } else {
-        aPos = world.xyz;
-        aNormal = worldNormal;
-        gl_Position = viewProjection * world - planetDrop(world.xyz);
-    }
+    aPos = world.xyz;
+    aNormal = normalize(mat3(bone) * normal);
+    gl_Position = viewProjection * world;
     vUV = texCoord;
     vPart = int(partKind + 0.5);
 }

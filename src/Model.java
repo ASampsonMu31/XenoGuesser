@@ -85,6 +85,11 @@ public class Model {
     renderer.render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion, camera);
   }
 
+  /** Draws the model through a view-projection of its own (a picture of it on its own), seen from viewPosition. */
+  public void renderWith(GL3 gl, Vector3 ambientLight, Matrix4 viewProjection, Vector3 viewPosition) {
+    renderer.render(gl, mesh, modelMatrix, shader, material, ambientLight, viewProjection, viewPosition);
+  }
+
   public void renderSphereNative(GL3 gl, Vector3 ambientLight, float nightProportion) {
     renderer.renderSphereNative(gl, mesh, modelMatrix, shader, material, lights,
             ambientLight, nightProportion, camera);

@@ -66,23 +66,11 @@ public final class GeodesicRoadMesh {
         }
     }
 
+    /** The direction distance along the surface from origin at a compass bearing (radians, 0 north, turning east). */
     private static GeodesicChunkGrid.Direction offset(GeodesicChunkGrid.Direction origin,
             double bearing, double distance) {
-        double length = distance / Planet.radius();
-        double lat = Math.asin(origin.y());
-        double lon = Math.atan2(origin.z(), origin.x());
-        double eastX = -Math.sin(lon), eastZ = Math.cos(lon);
-        double northX = -Math.sin(lat) * Math.cos(lon);
-        double northY = Math.cos(lat);
-        double northZ = -Math.sin(lat) * Math.sin(lon);
-        double tangentX = eastX * Math.sin(bearing) + northX * Math.cos(bearing);
-        double tangentY = northY * Math.cos(bearing);
-        double tangentZ = eastZ * Math.sin(bearing) + northZ * Math.cos(bearing);
-        double cosine = Math.cos(length), sine = Math.sin(length);
-        return new GeodesicChunkGrid.Direction(
-                origin.x() * cosine + tangentX * sine,
-                origin.y() * cosine + tangentY * sine,
-                origin.z() * cosine + tangentZ * sine).normalized();
+        return SphereMath.direction(SphereMath.move(SphereMath.atAltitude(origin, 0.0),
+                bearing - Math.PI / 2.0, distance));
     }
 
     private static boolean isLand(GeodesicChunkGrid.Direction direction, float seaLevel, PerlinNoise noise) {

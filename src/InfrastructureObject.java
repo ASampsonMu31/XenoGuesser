@@ -233,15 +233,10 @@ public class InfrastructureObject {
         if (type != Type.BATCH) return;
         for (BatchPart part : batchParts) {
             if (part.sphereModel != null || part.indices.length == 0) continue;
+            // (the chart and the sphere have the same handedness, so the winding carries over)
             float[] vertices = sphereVertices(part.vertices);
-            int[] indices = part.indices.clone();
-            for (int i = 0; i + 2 < indices.length; i += 3) {
-                int swap = indices[i + 1];
-                indices[i + 1] = indices[i + 2];
-                indices[i + 2] = swap;
-            }
             part.sphereModel = new Model("sphere_infrastructure_batch",
-                    new Mesh(gl, vertices, indices), new Matrix4(1), part.textured ? texturedShader : shader,
+                    new Mesh(gl, vertices, part.indices.clone()), new Matrix4(1), part.textured ? texturedShader : shader,
                     part.material, renderer, lights, camera);
         }
     }
@@ -255,23 +250,12 @@ public class InfrastructureObject {
             result[i + 1] = (float) point.y();
             result[i + 2] = (float) point.z();
 
-            double latitude = Planet.latitude(chartZ);
-            double longitude = Planet.longitude(chartX);
-            double cosine = Math.max(1e-6, Math.cos(latitude));
-            double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
-            double southX = Math.sin(latitude) * Math.cos(longitude);
-            double southY = -Math.cos(latitude);
-            double southZ = Math.sin(latitude) * Math.sin(longitude);
-            double radialX = point.x() / point.length();
-            double radialY = point.y() / point.length();
-            double radialZ = point.z() / point.length();
-            double nx = eastX * source[i + 3] / cosine
-                    + radialX * source[i + 4]
-                    + southX * source[i + 5] / cosine;
-            double ny = radialY * source[i + 4] + southY * source[i + 5] / cosine;
-            double nz = eastZ * source[i + 3] / cosine
-                    + radialZ * source[i + 4]
-                    + southZ * source[i + 5] / cosine;
+            // Lifting shrinks the chart across the ground by cos(latitude), so a normal's level
+            // parts grow by its inverse
+            double cosine = Math.max(1e-6, Math.cos(Planet.latitude(chartZ)));
+            double[] n = SphereFrame.at(point).worldDirection(source[i + 3] / cosine, source[i + 4],
+                    source[i + 5] / cosine);
+            double nx = n[0], ny = n[1], nz = n[2];
             double length = Math.sqrt(nx * nx + ny * ny + nz * nz);
             if (length > 1e-12) {
                 result[i + 3] = (float) (nx / length);

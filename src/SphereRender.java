@@ -2,57 +2,59 @@ import com.jogamp.opengl.GL3;
 import com.xenoguesser.math.Matrix4;
 import com.xenoguesser.math.Vector3;
 
-/** Shared camera and lighting uniforms for sphere-native articulated meshes. */
+/**
+ * Shared camera and lighting uniforms for the articulated meshes drawn with the organism
+ * shader (creatures, people, vehicles, the landing pod), which are drawn relative to the
+ * camera: each is placed by an anchor matrix taking its own frame to the world less the
+ * camera's position.
+ */
 public final class SphereRender {
+    // How far off the sun is put, for shaders that light from a point
+    private static final float SUN_DISTANCE = 2350f;
+    private static final float[] IDENTITY = new Matrix4(1).toFloatArrayForGLSL();
+
     private SphereRender() {
     }
 
+    /** A direction given in the local east/up/south frame at a position, as a world direction. */
     public static Vector3 sunDirection(SpherePosition position, float[] localDirection) {
-        double length = position.length();
-        double latitude = Math.asin(position.y() / length);
-        double longitude = Math.atan2(position.z(), position.x());
-        double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
-        double southX = Math.sin(latitude) * Math.cos(longitude);
-        double southY = -Math.cos(latitude);
-        double southZ = Math.sin(latitude) * Math.sin(longitude);
-        double upX = Math.cos(latitude) * Math.cos(longitude);
-        double upY = Math.sin(latitude);
-        double upZ = Math.cos(latitude) * Math.sin(longitude);
-        Vector3 direction = new Vector3(
-                (float) (eastX * localDirection[0] + upX * localDirection[1] + southX * localDirection[2]),
-                (float) (upY * localDirection[1] + southY * localDirection[2]),
-                (float) (eastZ * localDirection[0] + upZ * localDirection[1] + southZ * localDirection[2]));
+        double[] d = SphereFrame.at(position).worldDirection(localDirection[0], localDirection[1], localDirection[2]);
+        Vector3 direction = new Vector3((float) d[0], (float) d[1], (float) d[2]);
         direction.normalize();
         return direction;
     }
 
-    public static void configure(GL3 gl, Shader shader, Camera camera, Matrix4 viewProjection,
-            Vector3 sunDirection, float[] sunColour, Vector3 ambient, Matrix4 skyRotation) {
-        SpherePosition position = camera.getSpherePosition();
-        Vector3 mapPosition = camera.getPosition();
-        double longitudeOffset = Math.atan2(position.z(), position.x()) - mapPosition.x / Planet.radius();
-        longitudeOffset = Math.atan2(Math.sin(longitudeOffset), Math.cos(longitudeOffset));
+    /** The sun, as a point SUN_DISTANCE away along a direction from the eyes (at the origin). */
+    public static Vector3 sunPoint(Vector3 sunDirection) {
+        return new Vector3(sunDirection.x * SUN_DISTANCE, sunDirection.y * SUN_DISTANCE, sunDirection.z * SUN_DISTANCE);
+    }
 
+    public static void configure(GL3 gl, Shader shader, Matrix4 viewProjection,
+            Vector3 sunDirection, float[] sunColour, Vector3 ambient, Matrix4 skyRotation) {
         shader.use(gl);
-        shader.setInt(gl, "sphereNativeWorld", 1);
-        shader.setInt(gl, "sphereNativeAnchor", 0);
-        shader.setVec3(gl, "sphereCamera", new Vector3((float) position.x(),
-                (float) position.y(), (float) position.z()));
-        shader.setFloat(gl, "sphereRadius", (float) Planet.radius());
-        shader.setFloat(gl, "sphereLongitudeOffset", (float) longitudeOffset);
-        shader.setVec3(gl, "sphereChartAnchor", mapPosition);
         shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
         shader.setVec3(gl, "viewPos", new Vector3(0f, 0f, 0f));
-        shader.setVec3(gl, "sunPos", new Vector3(sunDirection.x * 2350f,
-                sunDirection.y * 2350f, sunDirection.z * 2350f));
+        shader.setVec3(gl, "sunPos", sunPoint(sunDirection));
         shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
         shader.setVec3(gl, "ambientLight", ambient);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1,
                 false, skyRotation.toFloatArrayForGLSL(), 0);
+        setAnchor(gl, shader, null);
     }
 
-    public static void reset(GL3 gl, Shader shader) {
-        shader.use(gl);
-        shader.setInt(gl, "sphereNativeWorld", 0);
+    /**
+     * The anchor for something still laid out on the Mercator chart (people and vehicles,
+     * until Phase 4 of GEODESIC_MIGRATION_PLAN.txt): its bones are in chart coordinates round
+     * (chartX, chartZ), so they are taken back to that point and lifted onto the sphere in the
+     * local frame there, relative to the camera at eye.
+     */
+    public static Matrix4 chartAnchor(float chartX, float chartZ, SpherePosition eye) {
+        return Matrix4.multiply(SphereFrame.at(Planet.spherePosition(chartX, chartZ, 0.0)).modelMatrix(1f, eye),
+                com.xenoguesser.math.Matrix4Transform.translate(-chartX, 0f, -chartZ));
+    }
+
+    /** Places what is drawn next with the organism shader: its frame relative to the camera (null for the identity). */
+    public static void setAnchor(GL3 gl, Shader shader, Matrix4 anchor) {
+        shader.setFloatArray(gl, "anchor", anchor == null ? IDENTITY : anchor.toFloatArrayForGLSL());
     }
 }

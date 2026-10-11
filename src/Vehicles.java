@@ -1034,7 +1034,7 @@ public final class Vehicles {
                 if (!Float.isNaN(lateral) && Math.abs(lateral) > at[3] - v.width - 2f) v.detourSide = lateral > 0f ? -1 : 1;
             } else if (v.stuck > (obstacle ? 4f : 10f)) {
                 // Still held up after that: out of sight it moves on; in sight it edges through
-                if (Planet.surfaceDistance(sphereViewer,
+                if (SphereMath.distance(sphereViewer,
                         Planet.spherePosition(v.x, v.z, 0.0)) > OUT_OF_SIGHT && !final_) {
                     float[] p = target(v);
                     v.x = p[0];
@@ -1174,7 +1174,7 @@ public final class Vehicles {
                 if (dx * dx + dz * dz > drawDistance * drawDistance) continue;
                 if (!frustum.intersectsSphere(v.x, ground + v.height * 0.5f, v.z, v.length * 0.6f)) continue;
             }
-            if (sphereNative) shader.setVec3(gl, "sphereChartAnchor", new Vector3(v.x, 0f, v.z));
+            if (sphereNative) SphereRender.setAnchor(gl, shader, SphereRender.chartAnchor(v.x, v.z, sphereEye));
             List<float[]> hubs = hubsOf(v);
             float s = v.length / (KIND_SIZE[v.kind][0] * scale);
             float[] body = Affine.multiply(Affine.translation(v.x, ground, v.z),

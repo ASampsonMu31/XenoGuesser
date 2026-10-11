@@ -46,7 +46,7 @@ public final class GeodesicSettlementMesh {
             for (int i = 0; i < count; i++) {
                 double bearing = random.nextDouble() * Math.PI * 2.0;
                 double distance = Math.sqrt(random.nextDouble()) * 420.0;
-                SpherePosition ground = Planet.moveOnSurface(hubPoint,
+                SpherePosition ground = SphereMath.moveToward(hubPoint,
                         Math.cos(bearing), Math.sin(bearing), distance);
                 GeodesicChunkGrid.Direction direction =
                         new GeodesicChunkGrid.Direction(ground.x(), ground.y(), ground.z()).normalized();
@@ -73,19 +73,9 @@ public final class GeodesicSettlementMesh {
     private static void appendHouse(SpherePosition base, double yaw, float width, float depth,
             float wallHeight, float roofHeight, Geometry walls, Geometry roofs,
             List<WallSegment> collisionWalls) {
-        double length = base.length();
-        double lat = Math.asin(base.y() / length), lon = Math.atan2(base.z(), base.x());
-        double eastX = -Math.sin(lon), eastZ = Math.cos(lon);
-        double northX = -Math.sin(lat) * Math.cos(lon), northY = Math.cos(lat);
-        double northZ = -Math.sin(lat) * Math.sin(lon);
-        double upX = base.x() / length, upY = base.y() / length, upZ = base.z() / length;
-        double xX = eastX * Math.cos(yaw) + northX * Math.sin(yaw);
-        double xY = northY * Math.sin(yaw);
-        double xZ = eastZ * Math.cos(yaw) + northZ * Math.sin(yaw);
-        double zX = -eastX * Math.sin(yaw) + northX * Math.cos(yaw);
-        double zY = northY * Math.cos(yaw);
-        double zZ = -eastZ * Math.sin(yaw) + northZ * Math.cos(yaw);
-        Frame frame = new Frame(base, xX, xY, xZ, upX, upY, upZ, zX, zY, zZ);
+        SphereFrame turned = SphereFrame.at(base, -yaw);
+        double[] x = turned.xAxis(), up = turned.up(), z = turned.zAxis();
+        Frame frame = new Frame(base, x[0], x[1], x[2], up[0], up[1], up[2], z[0], z[1], z[2]);
 
         float x0 = -width * 0.5f, x1 = width * 0.5f;
         float z0 = -depth * 0.5f, z1 = depth * 0.5f;

@@ -163,7 +163,7 @@ void main() {
         if (sphereNativeTerrain != 0) {
             float r = length(aWorldPos);
             float lat = asin(clamp(aWorldPos.y / r, -1.0, 1.0));
-            float lon = atan(aWorldPos.z, aWorldPos.x) - sphereLongitudeOffset;
+            float lon = atan(-aWorldPos.z, aWorldPos.x) - sphereLongitudeOffset;
             float chartX = planetRadius * atan(sin(lon), cos(lon));
             float chartZ = -planetRadius * log(tan(0.78539816339 + lat * 0.5));
             regionUV = vec2(chartX / regionWidth + 0.5, 0.5 - chartZ / regionWidth);

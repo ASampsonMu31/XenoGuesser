@@ -118,7 +118,6 @@ public class OrganismSpecies {
     final RegionalFactor habitat;
     final float habitatThreshold;
     private final PerlinNoise sizeCline, legCline, hueCline, morphCline;
-    private final PerlinNoise nativePatchNoise, nativeMoistureNoise, nativeHomeNoise;
     private final float nativeOptimalTemperature, nativeTemperatureDeviation, nativeWaterPreference,
             nativeWaterDeviation, nativePatchScale, nativeHomeScale;
 
@@ -416,9 +415,6 @@ public class OrganismSpecies {
             return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * local;
         });
         habitatThreshold = 0.3f;
-        nativePatchNoise = new PerlinNoise(seed ^ (0x4E41544956455041L + index * 7919L));
-        nativeMoistureNoise = new PerlinNoise(seed ^ (0x4E41544956454D4FL + index * 104729L));
-        nativeHomeNoise = new PerlinNoise(seed ^ (0x4E4154495645484FL + index * 130363L));
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
         sizeCline = new PerlinNoise(seed + 9001L + index * 31L);
         legCline = new PerlinNoise(seed + 9101L + index * 31L);
@@ -457,39 +453,13 @@ public class OrganismSpecies {
         return Math.max(0f, Math.min(1f, (h - habitatThreshold) / (1f - habitatThreshold) * 2.0f));
     }
 
-    /** Native habitat suitability from spherical climate, native water distance, and seamless noise fields. */
-    public float presenceAt(SpherePosition position, float elevation, float waterDistance) {
-        double length = position.length();
-        double latitude = Math.asin(position.y() / length);
-        float warmth = (float) Math.cos(latitude);
-        float temperature = (float) (0.06 + 0.94 * Math.pow(Math.max(0.0, warmth), 1.6));
-        temperature -= Math.max(0f, elevation) * RegionalGenerationManager.ALTITUDE_CHILL;
-        temperature = Math.max(0f, Math.min(1f, temperature));
-        float temperatureDifference = temperature - nativeOptimalTemperature;
-        float climate = (float) Math.exp(-(temperatureDifference * temperatureDifference)
-                / (2f * nativeTemperatureDeviation * nativeTemperatureDeviation));
-
-        float[] surface = sphereSurface(position);
-        float waterDifference = waterDistance - nativeWaterPreference;
-        float water = (float) Math.exp(-(waterDifference * waterDifference)
-                / (2f * nativeWaterDeviation * nativeWaterDeviation));
-        float moisture = (nativeMoistureNoise.onSphere(surface, 1f / 24000f, 2.7f, -4.1f) + 1f) * 0.5f;
-        float patches = (nativePatchNoise.onSphere(surface, nativePatchScale, 0f, 0f) + 1f) * 0.5f;
-        float home = (nativeHomeNoise.onSphere(surface, nativeHomeScale, 0f, 0f) + 1f) * 0.5f;
-        float homeT = Math.max(0f, Math.min(1f, (home - HOME_FROM) / (HOME_TO - HOME_FROM)));
-        float local = 1f - homeStrength + homeStrength * homeT * homeT * (3f - 2f * homeT);
-        float suitability = climate * (0.35f + 0.65f * water) * (0.35f + 0.65f * moisture);
-        float habitatValue = suitability * (0.25f + 1.5f * patches) * 0.8f * local;
-        return Math.max(0f, Math.min(1f, (habitatValue - habitatThreshold)
-                / (1f - habitatThreshold) * 2f));
+    /** How strongly the species lives at a place: its presenceAt on the map there (see RegionalFactor.evaluateAt). */
+    public float presenceAt(SpherePosition position, float chunkSize) {
+        float h = habitat.evaluateAt(position, chunkSize);
+        return Math.max(0f, Math.min(1f, (h - habitatThreshold) / (1f - habitatThreshold) * 2.0f));
     }
 
     /** Per-individual traits from where it lives: {size scale, leg scale, hue shift, morph (0 or 1)}. */
-    public float[] traitsAt(float worldX, float worldZ, Random rand) {
-        return traitsAt(Planet.spherePosition(worldX, worldZ, 0.0), rand);
-    }
-
-    /** Per-individual traits sampled directly from a native spherical position. */
     public float[] traitsAt(SpherePosition position, Random rand) {
         float clineScale = 1.0f / 18000f;
         float[] surface = sphereSurface(position);

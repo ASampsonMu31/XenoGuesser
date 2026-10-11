@@ -1,405 +1,333 @@
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.PriorityQueue;
 
 /**
- * Chart-free collision and local route search on the planet surface.
- * Obstacle centres and route points are planet-centred positions; radii and path costs are
- * true surface distances.
+ * Keeps everything that walks on the planet out of everything solid: walls, fences, rocks,
+ * tree trunks and the landing pod (static, from sources asked for what is near a place), and
+ * the player and creatures (moving, round, listed afresh each frame in a CellIndex).
+ * <p>
+ * The tests are Collision's flat ones, run in the tangent frame of the place asked about (D3):
+ * the shapes near it are gathered into that frame's local (x, z), as distances along the
+ * surface (SphereFrame.fromSphere), and the answer is lifted back onto the sphere. Shapes are
+ * small next to the planet, so this is exact to well under a millimetre, and the same at the
+ * equator, at 70 degrees and at a pole. Headings are D10's: radians from local x (east)
+ * towards local z (south) in the frame at the place asked about.
  */
 public final class GeodesicCollision {
-    private static final int SEARCH_LIMIT = 20000;
-    private static final int ROUTE_LEVEL = 11;
 
-    private sealed interface Obstacle permits Circle, Segment {
-        double clearance(SpherePosition point);
+    /** Supplies the static shapes near a place. */
+    public interface Source {
+        void obstaclesNear(SpherePosition centre, double reach, Sink sink);
     }
 
-    private record Circle(SpherePosition centre, double radius, double top) implements Obstacle {
-        @Override
-        public double clearance(SpherePosition point) {
-            return Planet.surfaceDistance(centre, point) - radius;
+    /** Receives shapes, each with how high it stands above the ground (infinite if not given). */
+    public interface Sink {
+        void segment(SpherePosition a, SpherePosition b, double halfWidth, double top);
+
+        void circle(SpherePosition centre, double radius, double top);
+
+        default void segment(SpherePosition a, SpherePosition b, double halfWidth) {
+            segment(a, b, halfWidth, Double.POSITIVE_INFINITY);
+        }
+
+        default void circle(SpherePosition centre, double radius) {
+            circle(centre, radius, Double.POSITIVE_INFINITY);
         }
     }
 
-    private record Segment(SpherePosition start, SpherePosition end, double halfWidth, double top)
-            implements Obstacle {
+    private static final int FIELDS = 7;
+    // Moving bodies are never bigger than this round (the largest creature)
+    private static final double LARGEST_BODY = 12.0;
+
+    private final List<Source> sources = new ArrayList<>();
+
+    private static final class Body {
+        SpherePosition position;
+        double radius;
+        Object owner;
+        boolean immovable;   // others give way to it entirely (the player)
+    }
+    // Queries see last frame's bodies while this frame's are listed
+    private CellIndex<Body> bodies = new CellIndex<>();
+    private CellIndex<Body> listing = new CellIndex<>();
+
+    // Shapes gathered for the current query, in the frame at its place:
+    // {kind, ax, az, bx, bz, size, top}, kind 0 segment, 1 circle
+    private double[] shapes = new double[FIELDS * 256];
+    private int shapeCount;
+    private SphereFrame frame;
+    private double queryReach;
+
+    private final Sink gather = new Sink() {
         @Override
-        public double clearance(SpherePosition point) {
-            double length = Planet.surfaceDistance(start, end);
-            if (length < 1e-8) return Planet.surfaceDistance(start, point) - halfWidth;
-            int samples = Math.max(2, Math.min(64, (int) Math.ceil(length / Math.max(1.0, halfWidth))));
-            double closest = Double.POSITIVE_INFINITY;
-            for (int i = 0; i <= samples; i++) {
-                SpherePosition sample = Planet.interpolateSurface(start, end, i / (double) samples);
-                closest = Math.min(closest, Planet.surfaceDistance(sample, point));
-            }
-            return closest - halfWidth;
+        public void segment(SpherePosition a, SpherePosition b, double halfWidth, double top) {
+            double[] la = frame.fromSphere(a), lb = frame.fromSphere(b);
+            // Only what could touch the query circle
+            double minX = Math.min(la[0], lb[0]) - halfWidth, maxX = Math.max(la[0], lb[0]) + halfWidth;
+            double minZ = Math.min(la[2], lb[2]) - halfWidth, maxZ = Math.max(la[2], lb[2]) + halfWidth;
+            if (maxX < -queryReach || minX > queryReach || maxZ < -queryReach || minZ > queryReach) return;
+            add(0, la[0], la[2], lb[0], lb[2], halfWidth, top);
         }
+
+        @Override
+        public void circle(SpherePosition centre, double radius, double top) {
+            double[] l = frame.fromSphere(centre);
+            double reach = queryReach + radius;
+            if (Math.abs(l[0]) > reach || Math.abs(l[2]) > reach) return;
+            add(1, l[0], l[2], 0, 0, radius, top);
+        }
+    };
+
+    public void addSource(Source source) {
+        sources.add(source);
     }
 
-    private final List<Obstacle> obstacles = new ArrayList<>();
-    private final GeodesicChunkGrid grid = new GeodesicChunkGrid(ROUTE_LEVEL);
-    private final Map<Long, List<Obstacle>> obstaclesByCell = new HashMap<>();
-    private final Map<Long, List<Segment>> routesByCell = new HashMap<>();
-    private final Map<NodeKey, SpherePosition> routeNodes = new HashMap<>();
-    private final Map<NodeKey, List<RouteEdge>> routes = new HashMap<>();
+    // ------------------------------------------------------------------ moving bodies
 
-    private record NodeKey(long x, long y, long z) {
+    /** Ends a frame: the bodies listed during it become the ones queries see next frame. */
+    public void endFrame() {
+        CellIndex<Body> seen = bodies;
+        bodies = listing;
+        listing = seen;
+        listing.clear();
     }
 
-    private record RouteEdge(NodeKey destination, double width) {
-    }
-
+    /** Forgets every moving body (a new round). */
     public void clear() {
-        obstacles.clear();
-        obstaclesByCell.clear();
-        routesByCell.clear();
-        routeNodes.clear();
-        routes.clear();
+        bodies.clear();
+        listing.clear();
     }
 
-    public void addCircle(SpherePosition centre, double radius, double top) {
-        requireRadius(radius);
-        requireTop(top);
-        addObstacle(new Circle(groundPosition(centre), radius, top), radius);
+    /** Lists a moving body for this frame. */
+    public void addBody(Object owner, SpherePosition position, double radius) {
+        addBody(owner, position, radius, false);
     }
 
-    public void addSegment(SpherePosition start, SpherePosition end, double halfWidth, double top) {
-        requireRadius(halfWidth);
-        requireTop(top);
-        SpherePosition surfaceStart = groundPosition(start), surfaceEnd = groundPosition(end);
-        addObstacle(new Segment(surfaceStart, surfaceEnd, halfWidth, top),
-                Planet.surfaceDistance(surfaceStart, surfaceEnd) * 0.5 + halfWidth);
-    }
-
-    /** Adds a native road-centreline edge to the routable graph. */
-    public void addRouteSegment(SpherePosition start, SpherePosition end, double halfWidth) {
-        requireRadius(halfWidth);
-        SpherePosition surfaceStart = groundPosition(start), surfaceEnd = groundPosition(end);
-        if (Planet.surfaceDistance(surfaceStart, surfaceEnd) < 1e-6) return;
-        NodeKey from = nodeKey(surfaceStart), to = nodeKey(surfaceEnd);
-        routeNodes.putIfAbsent(from, surfaceStart);
-        routeNodes.putIfAbsent(to, surfaceEnd);
-        routes.computeIfAbsent(from, ignored -> new ArrayList<>()).add(new RouteEdge(to, halfWidth));
-        routes.computeIfAbsent(to, ignored -> new ArrayList<>()).add(new RouteEdge(from, halfWidth));
-        Segment road = new Segment(surfaceStart, surfaceEnd, halfWidth, Double.POSITIVE_INFINITY);
-        indexSegment(road, Planet.surfaceDistance(surfaceStart, surfaceEnd) * 0.5 + halfWidth,
-                routesByCell);
-    }
-
-    /** True when a native spherical location lies within the requested distance of a generated road. */
-    public boolean nearRoute(SpherePosition position, double distance) {
-        requireRadius(distance);
-        SpherePosition ground = groundPosition(position);
-        GeodesicChunkGrid.Cell cell = cellFor(ground);
-        double reach = distance / Planet.radius() + 2.0 * cell.angularRadius();
-        GeodesicChunkGrid.Direction direction =
-                new GeodesicChunkGrid.Direction(ground.x(), ground.y(), ground.z());
-        Map<Segment, Boolean> unique = new HashMap<>();
-        for (GeodesicChunkGrid.Cell nearby : grid.cellsWithin(direction, reach)) {
-            for (Segment segment : routesByCell.getOrDefault(nearby.id(), List.of())) {
-                unique.put(segment, Boolean.TRUE);
-            }
+    /** Lists a moving body for this frame; others always step fully clear of an immovable one. */
+    public void addBody(Object owner, SpherePosition position, double radius, boolean immovable) {
+        if (!Double.isFinite(radius) || radius < 0.0 || radius > LARGEST_BODY) {
+            throw new IllegalArgumentException("A moving body's radius must be between 0 and " + LARGEST_BODY);
         }
-        for (Segment segment : unique.keySet()) {
-            if (segment.clearance(ground) < distance) return true;
-        }
-        return false;
+        Body body = new Body();
+        body.position = position;
+        body.radius = radius;
+        body.owner = owner;
+        body.immovable = immovable;
+        listing.add(position, radius, body);
     }
 
-    /** True when the moving body's surface clearance intersects an obstacle below its height. */
-    public boolean blocked(SpherePosition position, double radius, double clearance) {
-        requireRadius(radius);
-        requireTop(clearance);
-        SpherePosition ground = groundPosition(position);
-        for (Obstacle obstacle : nearbyObstacles(ground, radius)) {
-            double top = obstacle instanceof Circle circle ? circle.top()
-                    : ((Segment) obstacle).top();
-            if (top >= clearance && obstacle.clearance(ground) < radius) return true;
+    // ------------------------------------------------------------------ queries
+
+    private void gatherNear(SpherePosition centre, double reach) {
+        shapeCount = 0;
+        frame = SphereFrame.at(centre);
+        queryReach = reach;
+        for (Source source : sources) source.obstaclesNear(centre, reach, gather);
+    }
+
+    private void add(double kind, double a, double b, double c, double d, double size, double top) {
+        if ((shapeCount + 1) * FIELDS > shapes.length) shapes = java.util.Arrays.copyOf(shapes, shapes.length * 2);
+        int i = shapeCount * FIELDS;
+        shapes[i] = kind;
+        shapes[i + 1] = a;
+        shapes[i + 2] = b;
+        shapes[i + 3] = c;
+        shapes[i + 4] = d;
+        shapes[i + 5] = size;
+        shapes[i + 6] = top;
+        shapeCount++;
+    }
+
+    /** The moving bodies within reach of the gathered frame's origin, as {x, z, radius} there, with their bodies. */
+    private List<Body> nearbyBodies(double reach, List<double[]> places) {
+        List<Body> found = bodies.near(frame.origin(), reach);
+        for (Body body : found) {
+            double[] l = frame.fromSphere(body.position);
+            places.add(new double[] { l[0], l[2], body.radius });
         }
-        return false;
+        return found;
+    }
+
+    private SpherePosition lift(double x, double z, SpherePosition original) {
+        if (x == 0.0 && z == 0.0) return original;
+        return frame.toSphere(x, SphereMath.altitude(original), z);
     }
 
     /**
-     * Pushes a proposed position out of obstacles in the local tangent plane. Returns the
-     * original point if it is clear; the caller can stop movement when no free point is found.
+     * Where a circle of radius r at a place ends up once pushed out of every solid thing it
+     * overlaps (moving bodies other than self included), at the place's own altitude; anything
+     * lower than clearance passes beneath it.
      */
-    public SpherePosition resolve(SpherePosition proposed, double radius, double clearance) {
-        requireRadius(radius);
-        requireTop(clearance);
-        SpherePosition result = groundPosition(proposed);
-        List<Obstacle> nearby = nearbyObstacles(result, radius);
-        for (int pass = 0; pass < 5; pass++) {
+    public SpherePosition resolve(SpherePosition position, double r, Object self, double clearance) {
+        requireRadius(r);
+        gatherNear(position, r + 4.0);
+        List<double[]> places = new ArrayList<>();
+        List<Body> near = nearbyBodies(r + 4.0, places);
+        double px = 0.0, pz = 0.0;
+        for (int pass = 0; pass < 3; pass++) {
             boolean moved = false;
-            for (Obstacle obstacle : nearby) {
-                double top = obstacle instanceof Circle circle ? circle.top()
-                        : ((Segment) obstacle).top();
-                if (top < clearance) continue;
-                double distance = obstacle.clearance(result);
-                if (distance >= radius) continue;
-                SpherePosition nearest = nearestPoint(obstacle, result);
-                double push = radius - distance + 0.02;
-                double[] bearing = bearing(nearest, result);
-                if (Math.hypot(bearing[0], bearing[1]) < 1e-9) {
-                    bearing = new double[] { 1.0, 0.0 };
+            for (int s = 0; s < shapeCount; s++) {
+                if (shapes[s * FIELDS + 6] < clearance) continue;
+                double[] push = penetration(s, px, pz, r);
+                if (push != null) {
+                    px += push[0];
+                    pz += push[1];
+                    moved = true;
                 }
-                result = Planet.moveOnSurface(nearest, bearing[0], bearing[1], push);
+            }
+            for (int b = 0; b < near.size(); b++) {
+                Body body = near.get(b);
+                if (body.owner == self) continue;
+                double[] at = places.get(b);
+                double dx = px - at[0], dz = pz - at[1];
+                double d = Math.sqrt(dx * dx + dz * dz), min = r + at[2];
+                if (d >= min) continue;
+                if (d < 1e-4) { dx = 1.0; dz = 0.0; d = 1.0; }
+                // Moving bodies share the shove: this one moves half the overlap, or all of it
+                // when the other won't budge
+                double push = (min - d) * (body.immovable ? 1.0 : 0.5);
+                px += dx / d * push;
+                pz += dz / d * push;
                 moved = true;
             }
-            if (!moved) return result;
+            if (!moved) break;
         }
-        return blocked(result, radius, clearance) ? groundPosition(proposed) : result;
+        return lift(px, pz, position);
     }
 
     /**
-     * A* route over connected geodesic cells. Route nodes are cell-centre sphere positions,
-     * never chart coordinates. Returns null when no route is found within maxDistance.
+     * Static push-out for someone who is never shoved by others (the player), whose feet are
+     * clearance above the ground: going from one place to another they stop against walls
+     * and the like, and against moving bodies they may not come any closer than they already
+     * were, so they can't walk through a creature but one brushing past doesn't drag them along.
      */
-    public List<SpherePosition> findPath(SpherePosition start, SpherePosition goal, double radius,
-            double maxDistance, double clearance) {
-        requireRadius(radius);
-        requireRadius(maxDistance);
-        requireTop(clearance);
-        SpherePosition source = groundPosition(start), destination = groundPosition(goal);
-        GeodesicChunkGrid.Cell first = cellFor(source), last = cellFor(destination);
-        if (first.id() == last.id()) return List.of(destination);
-        PriorityQueue<QueueEntry> open = new PriorityQueue<>(Comparator.comparingDouble(QueueEntry::score));
-        Map<Long, Double> costs = new HashMap<>();
-        Map<Long, Long> previous = new HashMap<>();
-        Map<Long, GeodesicChunkGrid.Cell> visitedCells = new HashMap<>();
-        costs.put(first.id(), 0.0);
-        visitedCells.put(first.id(), first);
-        open.add(new QueueEntry(first.id(), Planet.surfaceDistance(cellPosition(first), destination)));
-        int expanded = 0;
-        boolean found = false;
-        while (!open.isEmpty() && expanded++ < SEARCH_LIMIT) {
-            QueueEntry entry = open.remove();
-            GeodesicChunkGrid.Cell current = visitedCells.get(entry.cellId());
-            double cost = costs.getOrDefault(entry.cellId(), Double.POSITIVE_INFINITY);
-            if (current == null || entry.score() > cost + Planet.surfaceDistance(cellPosition(current), destination) + 1e-6) continue;
-            if (current.id() == last.id()) {
-                found = true;
-                break;
+    public SpherePosition resolveFirm(SpherePosition from, SpherePosition to, double r, Object self, double clearance) {
+        requireRadius(r);
+        gatherNear(to, r + 4.0);
+        double px = 0.0, pz = 0.0;
+        for (int pass = 0; pass < 3; pass++) {
+            boolean moved = false;
+            for (int s = 0; s < shapeCount; s++) {
+                if (shapes[s * FIELDS + 6] < clearance) continue;
+                double[] push = penetration(s, px, pz, r);
+                if (push != null) {
+                    px += push[0];
+                    pz += push[1];
+                    moved = true;
+                }
             }
-            for (GeodesicChunkGrid.Cell neighbour : grid.neighbours(current)) {
-                SpherePosition point = cellPosition(neighbour);
-                SpherePosition currentPoint = cellPosition(current);
-                double edgeLength = Planet.surfaceDistance(currentPoint, point);
-                double nextCost = cost + edgeLength;
-                if (nextCost > maxDistance || !clearSegment(currentPoint, point, edgeLength,
-                        radius, clearance)) continue;
-                if (nextCost >= costs.getOrDefault(neighbour.id(), Double.POSITIVE_INFINITY)) continue;
-                costs.put(neighbour.id(), nextCost);
-                previous.put(neighbour.id(), current.id());
-                visitedCells.put(neighbour.id(), neighbour);
-                open.add(new QueueEntry(neighbour.id(),
-                        nextCost + Planet.surfaceDistance(point, destination)));
-            }
+            if (!moved) break;
         }
-        if (!found) return null;
-
-        List<SpherePosition> path = new ArrayList<>();
-        long cursor = last.id();
-        while (cursor != first.id()) {
-            GeodesicChunkGrid.Cell cell = visitedCells.get(cursor);
-            if (cell == null) return null;
-            path.add(0, cellPosition(cell));
-            Long parent = previous.get(cursor);
-            if (parent == null) return null;
-            cursor = parent;
+        double[] start = frame.fromSphere(from);
+        List<double[]> places = new ArrayList<>();
+        List<Body> near = nearbyBodies(r + 4.0, places);
+        for (int b = 0; b < near.size(); b++) {
+            if (near.get(b).owner == self) continue;
+            double[] at = places.get(b);
+            double dx = px - at[0], dz = pz - at[1];
+            double d = Math.sqrt(dx * dx + dz * dz);
+            double before = Math.hypot(start[0] - at[0], start[2] - at[1]);
+            double allowed = Math.min(r + at[2], before);
+            if (d >= allowed || d < 1e-4) continue;
+            px = at[0] + dx / d * allowed;
+            pz = at[1] + dz / d * allowed;
         }
-        if (!blocked(destination, radius, clearance)) path.add(destination);
-        return path;
+        return lift(px, pz, to);
     }
 
-    /** Finds a shortest path along native generated roads, snapped to the network within maxSnap. */
-    public List<SpherePosition> findRoadPath(SpherePosition start, SpherePosition goal, double maxSnap) {
-        requireRadius(maxSnap);
-        if (routes.isEmpty()) return null;
-        SpherePosition source = groundPosition(start), destination = groundPosition(goal);
-        NodeKey sourceNode = nearestRouteNode(source, maxSnap);
-        NodeKey destinationNode = nearestRouteNode(destination, maxSnap);
-        if (sourceNode == null || destinationNode == null) return null;
+    /** Whether a circle at a place would overlap anything solid as tall as clearance (moving bodies other than self included). */
+    public boolean blocked(SpherePosition position, double r, Object self, double clearance) {
+        requireRadius(r);
+        gatherNear(position, r + 4.0);
+        List<double[]> places = new ArrayList<>();
+        List<Body> near = nearbyBodies(r + 4.0, places);
+        return overlapsGathered(0.0, 0.0, r, self, clearance, near, places);
+    }
 
-        PriorityQueue<RouteQueueEntry> open = new PriorityQueue<>(Comparator.comparingDouble(RouteQueueEntry::score));
-        Map<NodeKey, Double> cost = new HashMap<>();
-        Map<NodeKey, NodeKey> previous = new HashMap<>();
-        cost.put(sourceNode, 0.0);
-        open.add(new RouteQueueEntry(sourceNode, Planet.surfaceDistance(routeNodes.get(sourceNode),
-                routeNodes.get(destinationNode))));
-        while (!open.isEmpty()) {
-            RouteQueueEntry entry = open.remove();
-            double currentCost = cost.getOrDefault(entry.node(), Double.POSITIVE_INFINITY);
-            if (entry.score() > currentCost + Planet.surfaceDistance(routeNodes.get(entry.node()),
-                    routeNodes.get(destinationNode)) + 1e-6) continue;
-            if (entry.node().equals(destinationNode)) break;
-            for (RouteEdge edge : routes.getOrDefault(entry.node(), List.of())) {
-                SpherePosition from = routeNodes.get(entry.node()), to = routeNodes.get(edge.destination());
-                double nextCost = currentCost + Planet.surfaceDistance(from, to);
-                if (nextCost >= cost.getOrDefault(edge.destination(), Double.POSITIVE_INFINITY)) continue;
-                cost.put(edge.destination(), nextCost);
-                previous.put(edge.destination(), entry.node());
-                open.add(new RouteQueueEntry(edge.destination(),
-                        nextCost + Planet.surfaceDistance(to, routeNodes.get(destinationNode))));
+    /** As blocked, counting only the static shapes (walls, rocks and the like), not moving bodies. */
+    public boolean blockedStatic(SpherePosition position, double r, double clearance) {
+        requireRadius(r);
+        gatherNear(position, r + 4.0);
+        return overlapsGathered(0.0, 0.0, r, null, clearance, List.of(), List.of());
+    }
+
+    private boolean overlapsGathered(double x, double z, double r, Object self, double clearance,
+            List<Body> near, List<double[]> places) {
+        for (int s = 0; s < shapeCount; s++) {
+            if (shapes[s * FIELDS + 6] < clearance) continue;
+            if (penetration(s, x, z, r) != null) return true;
+        }
+        for (int b = 0; b < near.size(); b++) {
+            if (near.get(b).owner == self) continue;
+            double[] at = places.get(b);
+            double dx = x - at[0], dz = z - at[1], min = r + at[2];
+            if (dx * dx + dz * dz < min * min) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Chooses a heading close to the one wanted that leads somewhere free over the next probe
+     * distance from a place, trying ever wider turns either side, ignoring anything lower than
+     * clearance. Returns NaN if every way is blocked.
+     */
+    public double steer(SpherePosition position, double r, double wanted, double probe, Object self, double clearance) {
+        requireRadius(r);
+        double[] tries = { 0.0, 0.35, -0.35, 0.75, -0.75, 1.2, -1.2, 1.7, -1.7, 2.3, -2.3, Math.PI };
+        // One gathering covers every way it might go
+        gatherNear(position, probe + r + 4.0);
+        List<double[]> places = new ArrayList<>();
+        List<Body> near = nearbyBodies(probe + r + 4.0, places);
+        for (double offset : tries) {
+            double h = wanted + offset;
+            double sx = Math.cos(h), sz = Math.sin(h);
+            // Both halfway and at the end, so a thin fence isn't stepped over
+            if (!overlapsGathered(sx * probe * 0.5, sz * probe * 0.5, r, self, clearance, near, places)
+                    && !overlapsGathered(sx * probe, sz * probe, r, self, clearance, near, places)) {
+                return h;
             }
         }
-        if (!cost.containsKey(destinationNode)) return null;
-        List<SpherePosition> path = new ArrayList<>();
-        for (NodeKey node = destinationNode; node != null; node = previous.get(node)) {
-            path.add(0, routeNodes.get(node));
-            if (node.equals(sourceNode)) break;
+        return Double.NaN;
+    }
+
+    /** How far to move a circle at local (x, z) to clear gathered shape s, or null if clear. */
+    private double[] penetration(int s, double x, double z, double r) {
+        int i = s * FIELDS;
+        double qx, qz, size = shapes[i + 5];
+        if (shapes[i] == 1.0) {
+            qx = shapes[i + 1];
+            qz = shapes[i + 2];
+        } else {
+            double ax = shapes[i + 1], az = shapes[i + 2], bx = shapes[i + 3], bz = shapes[i + 4];
+            double ex = bx - ax, ez = bz - az;
+            double len2 = ex * ex + ez * ez;
+            double t = len2 < 1e-12 ? 0.0 : Math.max(0.0, Math.min(1.0, ((x - ax) * ex + (z - az) * ez) / len2));
+            qx = ax + ex * t;
+            qz = az + ez * t;
         }
-        if (!path.get(0).equals(routeNodes.get(sourceNode))) return null;
-        path.add(0, source);
-        path.add(destination);
-        return path;
-    }
-
-    private record RouteQueueEntry(NodeKey node, double score) {
-    }
-
-    private NodeKey nearestRouteNode(SpherePosition point, double maxSnap) {
-        NodeKey nearest = null;
-        double best = maxSnap;
-        for (Map.Entry<NodeKey, SpherePosition> entry : routeNodes.entrySet()) {
-            double distance = Planet.surfaceDistance(point, entry.getValue());
-            if (distance <= best) {
-                best = distance;
-                nearest = entry.getKey();
+        double dx = x - qx, dz = z - qz;
+        double d2 = dx * dx + dz * dz, min = r + size;
+        if (d2 >= min * min) return null;
+        double d = Math.sqrt(d2);
+        if (d < 1e-4) {
+            // Exactly on the line: out along its normal
+            if (shapes[i] == 0.0) {
+                double ex = shapes[i + 3] - shapes[i + 1], ez = shapes[i + 4] - shapes[i + 2];
+                double len = Math.sqrt(ex * ex + ez * ez);
+                dx = len < 1e-9 ? 1.0 : -ez / len;
+                dz = len < 1e-9 ? 0.0 : ex / len;
+            } else {
+                dx = 1.0;
+                dz = 0.0;
             }
+            return new double[] { dx * min, dz * min };
         }
-        return nearest;
-    }
-
-    private void addObstacle(Obstacle obstacle, double extent) {
-        obstacles.add(obstacle);
-        if (obstacle instanceof Segment segment) {
-            SpherePosition centre = Planet.interpolateSurface(segment.start(), segment.end(), 0.5);
-            indexFeature(segment, centre, extent, obstaclesByCell);
-            return;
-        }
-        SpherePosition centre = ((Circle) obstacle).centre();
-        indexFeature(obstacle, centre, extent, obstaclesByCell);
-    }
-
-    private void indexSegment(Segment segment, double extent, Map<Long, List<Segment>> index) {
-        SpherePosition centre = Planet.interpolateSurface(segment.start(), segment.end(), 0.5);
-        indexFeature(segment, centre, extent, index);
-    }
-
-    private <T> void indexFeature(T feature, SpherePosition centre, double extent,
-            Map<Long, List<T>> index) {
-        double angularRadius = Math.min(Math.PI, extent / Planet.radius());
-        GeodesicChunkGrid.Direction direction =
-                new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z());
-        for (GeodesicChunkGrid.Cell cell : grid.cellsWithin(direction, angularRadius)) {
-            index.computeIfAbsent(cell.id(), ignored -> new ArrayList<>()).add(feature);
-        }
-    }
-
-    private List<Obstacle> nearbyObstacles(SpherePosition point, double radius) {
-        GeodesicChunkGrid.Cell cell = cellFor(point);
-        double reach = radius / Planet.radius() + 2.0 * cell.angularRadius();
-        GeodesicChunkGrid.Direction direction =
-                new GeodesicChunkGrid.Direction(point.x(), point.y(), point.z());
-        Map<Obstacle, Boolean> unique = new HashMap<>();
-        for (GeodesicChunkGrid.Cell nearby : grid.cellsWithin(direction, reach)) {
-            for (Obstacle obstacle : obstaclesByCell.getOrDefault(nearby.id(), List.of())) {
-                unique.put(obstacle, Boolean.TRUE);
-            }
-        }
-        return new ArrayList<>(unique.keySet());
-    }
-
-    private static NodeKey nodeKey(SpherePosition point) {
-        double precision = 0.1;
-        return new NodeKey(Math.round(point.x() / precision), Math.round(point.y() / precision),
-                Math.round(point.z() / precision));
-    }
-
-    private boolean clearSegment(SpherePosition start, SpherePosition end, double length,
-            double radius, double clearance) {
-        int samples = Math.max(1, (int) Math.ceil(length / Math.max(1.0, radius * 0.5)));
-        for (int i = 1; i <= samples; i++) {
-            SpherePosition point = Planet.interpolateSurface(start, end, i / (double) samples);
-            if (blocked(point, radius, clearance)) return false;
-        }
-        return true;
-    }
-
-    private record QueueEntry(long cellId, double score) {
-    }
-
-    private GeodesicChunkGrid.Cell cellFor(SpherePosition position) {
-        return grid.cellAt(new GeodesicChunkGrid.Direction(position.x(), position.y(), position.z()));
-    }
-
-    private static SpherePosition cellPosition(GeodesicChunkGrid.Cell cell) {
-        double height = Planet.radius();
-        return new SpherePosition(cell.centre().x() * height, cell.centre().y() * height,
-                cell.centre().z() * height);
-    }
-
-    private static SpherePosition groundPosition(SpherePosition position) {
-        double length = position.length();
-        if (!(length > 0.0)) throw new IllegalArgumentException("Position cannot be at the planet centre");
-        double radius = Planet.radius();
-        return new SpherePosition(position.x() * radius / length, position.y() * radius / length,
-                position.z() * radius / length);
-    }
-
-    private static SpherePosition nearestPoint(Obstacle obstacle, SpherePosition point) {
-        if (obstacle instanceof Circle circle) return circle.centre();
-        Segment segment = (Segment) obstacle;
-        double length = Planet.surfaceDistance(segment.start(), segment.end());
-        int samples = Math.max(2, Math.min(64, (int) Math.ceil(length / Math.max(1.0, segment.halfWidth()))));
-        SpherePosition nearest = segment.start();
-        double nearestDistance = Double.POSITIVE_INFINITY;
-        for (int i = 0; i <= samples; i++) {
-            SpherePosition candidate = Planet.interpolateSurface(segment.start(), segment.end(),
-                    i / (double) samples);
-            double distance = Planet.surfaceDistance(candidate, point);
-            if (distance < nearestDistance) {
-                nearest = candidate;
-                nearestDistance = distance;
-            }
-        }
-        return nearest;
-    }
-
-    /** Local east/south components pointing from one surface position to another. */
-    private static double[] bearing(SpherePosition from, SpherePosition to) {
-        double length = from.length();
-        double latitude = Math.asin(from.y() / length);
-        double longitude = Math.atan2(from.z(), from.x());
-        double upX = Math.cos(latitude) * Math.cos(longitude);
-        double upY = Math.sin(latitude);
-        double upZ = Math.cos(latitude) * Math.sin(longitude);
-        double eastX = -Math.sin(longitude), eastZ = Math.cos(longitude);
-        double southX = Math.sin(latitude) * Math.cos(longitude);
-        double southY = -Math.cos(latitude);
-        double southZ = Math.sin(latitude) * Math.sin(longitude);
-        double targetLength = to.length();
-        double dot = (from.x() * to.x() + from.y() * to.y() + from.z() * to.z())
-                / (length * targetLength);
-        double tx = to.x() / targetLength - dot * upX;
-        double ty = to.y() / targetLength - dot * upY;
-        double tz = to.z() / targetLength - dot * upZ;
-        return new double[] { tx * eastX + tz * eastZ,
-                tx * southX + ty * southY + tz * southZ };
+        return new double[] { dx / d * (min - d), dz / d * (min - d) };
     }
 
     private static void requireRadius(double value) {
         if (!Double.isFinite(value) || value < 0.0) {
             throw new IllegalArgumentException("Distance must be finite and non-negative");
         }
-    }
-
-    private static void requireTop(double value) {
-        if (Double.isNaN(value)) throw new IllegalArgumentException("Obstacle top cannot be NaN");
     }
 }

@@ -16,18 +16,12 @@ uniform mat4 mvpMatrix;
 // distance across it (in the board's own units, -0.5 to 0.5), round a cylinder
 uniform float bend;
 
-// The planet's curve (see Planet): lowered by curvature times the square of the distance
-// across the ground from curveCentre, along curveDown, the projection of a step up
-uniform vec2 curveCentre;
-uniform float curvature;
-uniform vec4 curveDown;
+// Planet-centred meshes (sphereNativeTerrain): the model matrix puts them in the world, and
+// the camera's position is taken off before the camera-relative view-projection; otherwise
+// mvpMatrix takes the mesh all the way (a picture drawn on its own, or a mesh placed relative
+// to the camera)
 uniform int sphereNativeTerrain;
 uniform vec3 sphereCamera;
-
-vec4 planetDrop(vec3 world) {
-    vec2 d = world.xz - curveCentre;
-    return curveDown * (curvature * dot(d, d));
-}
 
 void main() {
     vec3 p = position;
@@ -43,7 +37,7 @@ void main() {
         world -= sphereCamera;
         gl_Position = mvpMatrix * vec4(world, 1.0);
     } else {
-        gl_Position = mvpMatrix * vec4(p, 1.0) - planetDrop(vec3(model * vec4(p, 1.0)));
+        gl_Position = mvpMatrix * vec4(p, 1.0);
     }
 
     // Exact forward-facing depth used by water screen-space thickness calculations

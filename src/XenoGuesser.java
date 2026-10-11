@@ -243,7 +243,8 @@ public class XenoGuesser extends JFrame {
       float joinLand = Planet.chooseJoin((x, z) -> TerrainMesh.getLayeredHeight(x, z, worldNoise), seaLevelHeight);
       System.out.printf("[PLANET] The map's join crosses %.1f%% land%n", joinLand * 100f);
       
-      Camera camera = new Camera(Camera.DEFAULT_POSITION, Camera.DEFAULT_TARGET, Camera.DEFAULT_UP, seaLevelHeight);
+      // (put in place by the first spawn)
+      Camera camera = new Camera(Planet.position(0.0, 0.0, seaLevelHeight + 20.0), seaLevelHeight);
       MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
 
       loadingProgress.begin(LoadingProgress.Stage.WORLD_LAYOUT);

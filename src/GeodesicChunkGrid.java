@@ -42,6 +42,28 @@ public final class GeodesicChunkGrid {
             return Math.max(centre.angleTo(a), Math.max(centre.angleTo(b), centre.angleTo(c)));
         }
 
+        /**
+         * The cell's area on the unit sphere (its spherical excess, in steradians); times the
+         * radius squared, its area on a sphere. Cells of a level differ in area by a few tens
+         * of percent, so counts per area are worked out from each cell's own.
+         */
+        public double area() {
+            double denominator = 1.0 + a.dot(b) + b.dot(c) + c.dot(a);
+            return 2.0 * Math.abs(Math.atan2(determinant(a, b, c), denominator));
+        }
+
+        /**
+         * A place in the cell from two numbers 0 to 1, spread evenly over it when they are
+         * (u picks how far from corner a, v where across).
+         */
+        public Direction point(double u, double v) {
+            double root = Math.sqrt(u);
+            double wa = 1.0 - root, wb = root * (1.0 - v), wc = root * v;
+            return new Direction(wa * a.x() + wb * b.x() + wc * c.x(),
+                    wa * a.y() + wb * b.y() + wc * c.y(),
+                    wa * a.z() + wb * b.z() + wc * c.z()).normalized();
+        }
+
         public Address address(Direction point) {
             Direction p = point.normalized();
             double det = determinant(a, b, c);

@@ -12,8 +12,8 @@ import java.util.List;
  * player landed, and the player starts on its stairs, looking out.
  *
  * Built from the organism parts library and drawn with the organism shader. In the pod's
- * own space the ground under its middle is the origin, +Y is up and the stairs run down
- * towards +Z.
+ * own space (a SphereFrame where it stands, D3) the ground under its middle is the origin,
+ * +Y is up and the stairs run down towards +Z.
  */
 public class LandingPod {
 
@@ -34,7 +34,9 @@ public class LandingPod {
     private OrganismMesh mesh;
     private final float[] bones = new float[BONES * 16];
     private boolean placed;
-    private float x, z, ground, footGround, stairScale, heading;
+    private SphereFrame frame;
+    private double ground, footGround;
+    private float stairScale;
 
     public void initialise(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
@@ -207,48 +209,48 @@ public class LandingPod {
     }
 
     /**
-     * Stands the pod so that a player at (spawnX, spawnZ) is on its stairs, facing along
-     * (dirX, dirZ) away from it.
+     * Stands the pod so that a player at spawn is on its stairs, facing along heading (D10:
+     * radians from east towards south at spawn) away from it. terrain gives the ground's
+     * height at a place.
      */
-    public void place(float spawnX, float spawnZ, float dirX, float dirZ, java.util.function.BiFunction<Float, Float, Float> terrain) {
-        float len = (float) Math.hypot(dirX, dirZ);
-        if (len < 1e-4f) { dirX = 0f; dirZ = 1f; len = 1f; }
-        dirX /= len;
-        dirZ /= len;
-        heading = (float) Math.atan2(dirX, dirZ);
-        x = spawnX - dirX * SPAWN_DISTANCE;
-        z = spawnZ - dirZ * SPAWN_DISTANCE;
+    public void place(SpherePosition spawn, double heading, java.util.function.ToDoubleFunction<SpherePosition> terrain) {
+        SpherePosition centre = SphereMath.atAltitude(SphereMath.move(spawn, heading + Math.PI, SPAWN_DISTANCE), 0.0);
+        // The pod's own space: its local z (the way the stairs run) towards the spawn point
+        SphereFrame level = SphereFrame.at(centre, SphereMath.heading(centre, spawn) - Math.PI * 0.5);
         // Settled on the lowest of its feet, so none of them hangs in the air
-        ground = Float.MAX_VALUE;
+        ground = terrain.applyAsDouble(centre);
         for (int leg = 0; leg < 4; leg++) {
-            float a = (float) (Math.PI * 0.25 + leg * Math.PI * 0.5) + heading;
-            ground = Math.min(ground, terrain.apply(x + (float) Math.sin(a) * 36f, z + (float) Math.cos(a) * 36f));
+            double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
+            ground = Math.min(ground, terrain.applyAsDouble(level.toSphere(Math.sin(a) * 36.0, 0.0, Math.cos(a) * 36.0)));
         }
-        ground = Math.min(ground, terrain.apply(x, z));
         float reach = PLATFORM_FRONT + STAIR_LENGTH;
-        footGround = terrain.apply(x + dirX * reach, z + dirZ * reach);
+        double footGround = terrain.applyAsDouble(level.toSphere(0.0, 0.0, reach));
         // The stairs stretch or squash to meet the ground at their foot
-        stairScale = Math.max(0.35f, Math.min(2.5f, (ground + PLATFORM_HEIGHT - footGround) / PLATFORM_HEIGHT));
-        footGround = ground + PLATFORM_HEIGHT - stairScale * PLATFORM_HEIGHT;
+        stairScale = (float) Math.max(0.35, Math.min(2.5, (ground + PLATFORM_HEIGHT - footGround) / PLATFORM_HEIGHT));
+        this.footGround = ground + PLATFORM_HEIGHT - stairScale * PLATFORM_HEIGHT;
+        frame = level.movedTo(SphereMath.atAltitude(centre, ground));
 
-        float[] world = Affine.multiply(Affine.translation(x, ground, z), Affine.rotationY(heading));
-        System.arraycopy(world, 0, bones, HULL * 16, 16);
-        float[] stairs = Affine.multiply(world, Affine.multiply(Affine.translation(0f, footGround - ground, PLATFORM_FRONT),
-                Affine.scale(1f, stairScale, 1f)));
+        System.arraycopy(Affine.translation(0f, 0f, 0f), 0, bones, HULL * 16, 16);
+        float[] stairs = Affine.multiply(Affine.translation(0f, (float) (this.footGround - ground), PLATFORM_FRONT),
+                Affine.scale(1f, stairScale, 1f));
         System.arraycopy(stairs, 0, bones, STAIRS * 16, 16);
         placed = true;
         buildObstacles();
     }
 
-    // The pod's solid outline in the world: {kind, ax, az, bx, bz, size} as Collision gathers them
-    private final List<float[]> obstacles = new ArrayList<>();
+    // The pod's solid outline in the world: segments {a, b} with their half widths, and the four feet
+    private final List<SpherePosition[]> segments = new ArrayList<>();
+    private final List<Double> segmentWidths = new ArrayList<>();
+    private final List<SpherePosition> feet = new ArrayList<>();
 
     /**
      * A ring round the hull with a gap where the stairs meet it, rails down both sides of the
      * stairs, the hatch closed off at the top, and the four feet.
      */
     private void buildObstacles() {
-        obstacles.clear();
+        segments.clear();
+        segmentWidths.clear();
+        feet.clear();
         int sides = 24;
         float ring = HULL_RADIUS + 1.5f;
         float gap = (float) Math.asin((STAIR_WIDTH * 0.5f + 0.5f) / ring);
@@ -256,57 +258,42 @@ public class LandingPod {
             float a0 = (float) (i * Math.PI * 2 / sides), a1 = (float) ((i + 1) * Math.PI * 2 / sides);
             float mid = (float) Math.atan2(Math.sin((a0 + a1) * 0.5f), Math.cos((a0 + a1) * 0.5f));
             if (Math.abs(mid) < gap) continue;
-            addSegment(new float[] { (float) Math.sin(a0) * ring, (float) Math.cos(a0) * ring },
-                    new float[] { (float) Math.sin(a1) * ring, (float) Math.cos(a1) * ring }, 0.8f);
+            addSegment(Math.sin(a0) * ring, Math.cos(a0) * ring, Math.sin(a1) * ring, Math.cos(a1) * ring, 0.8);
         }
         float side = STAIR_WIDTH * 0.5f + 0.6f;
         for (float sign : new float[] { -1f, 1f }) {
-            addSegment(new float[] { sign * side, 18f }, new float[] { sign * side, PLATFORM_FRONT + STAIR_LENGTH }, 0.4f);
+            addSegment(sign * side, 18.0, sign * side, PLATFORM_FRONT + STAIR_LENGTH, 0.4);
         }
-        addSegment(new float[] { -side, 18f }, new float[] { side, 18f }, 0.6f);
+        addSegment(-side, 18.0, side, 18.0, 0.6);
         for (int leg = 0; leg < 4; leg++) {
-            float a = (float) (Math.PI * 0.25 + leg * Math.PI * 0.5);
-            float[] w = toWorld((float) Math.sin(a) * 36f, (float) Math.cos(a) * 36f);
-            obstacles.add(new float[] { 1f, w[0], w[1], 0f, 0f, 4f });
+            double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
+            feet.add(frame.toWorld(Math.sin(a) * 36.0, 0.0, Math.cos(a) * 36.0));
         }
     }
 
-    private void addSegment(float[] a, float[] b, float halfWidth) {
-        float[] wa = toWorld(a[0], a[1]), wb = toWorld(b[0], b[1]);
-        obstacles.add(new float[] { 0f, wa[0], wa[1], wb[0], wb[1], halfWidth });
+    /** A segment from (across, along) a to b in the pod's own space. */
+    private void addSegment(double ax, double az, double bx, double bz, double halfWidth) {
+        segments.add(new SpherePosition[] { frame.toWorld(ax, 0.0, az), frame.toWorld(bx, 0.0, bz) });
+        segmentWidths.add(halfWidth);
     }
 
-    private float[] toWorld(float across, float along) {
-        float s = (float) Math.sin(heading), c = (float) Math.cos(heading);
-        return new float[] { x + across * c + along * s, z - across * s + along * c };
-    }
-
-    /** The pod's solid outline near a point, for collision. */
-    public void obstaclesNear(float px, float pz, float reach, Collision.Sink sink) {
-        if (!placed) return;
-        float r = reach + KEEP_OUT + 30f;
-        if (Math.abs(px - x) > r || Math.abs(pz - z) > r) return;
-        for (float[] o : obstacles) {
-            if (o[0] == 0f) sink.segment(o[1], o[2], o[3], o[4], o[5]);
-            else sink.circle(o[1], o[2], o[5]);
+    /** The pod's solid outline near a place, for collision. */
+    public void obstaclesNear(SpherePosition centre, double reach, GeodesicCollision.Sink sink) {
+        if (!placed || SphereMath.distance(centre, frame.origin()) > reach + KEEP_OUT + 30.0) return;
+        for (int i = 0; i < segments.size(); i++) {
+            sink.segment(segments.get(i)[0], segments.get(i)[1], segmentWidths.get(i));
         }
+        for (SpherePosition foot : feet) sink.circle(foot, 4.0);
     }
 
-    /** Where (px, pz) lies in the pod's own space: {across, along}. */
-    private float[] local(float px, float pz) {
-        float dx = px - x, dz = pz - z;
-        float s = (float) Math.sin(heading), c = (float) Math.cos(heading);
-        return new float[] { dx * c - dz * s, dx * s + dz * c };
-    }
-
-    /** The height of the pod's stairs or platform underfoot at (px, pz), or -infinity off them. */
-    public float floorAt(float px, float pz) {
-        if (!placed) return Float.NEGATIVE_INFINITY;
-        float[] l = local(px, pz);
-        if (Math.abs(l[0]) > STAIR_WIDTH * 0.5f + 0.5f) return Float.NEGATIVE_INFINITY;
-        if (l[1] >= 18f && l[1] < PLATFORM_FRONT) return ground + PLATFORM_HEIGHT;
-        float along = l[1] - PLATFORM_FRONT;
-        if (along < 0f || along >= STAIR_LENGTH) return Float.NEGATIVE_INFINITY;
+    /** The altitude of the pod's stairs or platform underfoot at a place, or -infinity off them. */
+    public double floorAt(SpherePosition position) {
+        if (!placed) return Double.NEGATIVE_INFINITY;
+        double[] l = frame.toLocal(position);
+        if (Math.abs(l[0]) > STAIR_WIDTH * 0.5f + 0.5f) return Double.NEGATIVE_INFINITY;
+        if (l[2] >= 18f && l[2] < PLATFORM_FRONT) return ground + PLATFORM_HEIGHT;
+        double along = l[2] - PLATFORM_FRONT;
+        if (along < 0.0 || along >= STAIR_LENGTH) return Double.NEGATIVE_INFINITY;
         int step = (int) (along / STAIR_RUN);
         float top = PLATFORM_HEIGHT - PLATFORM_HEIGHT / (STEPS + 1) * (step + 1);
         return footGround + top * stairScale;
@@ -315,29 +302,27 @@ public class LandingPod {
     /** How far the pod, its feet and its stairs reach from its middle. */
     public static final float REACH = PLATFORM_FRONT + STAIR_LENGTH + 2f;
 
-    /** Whether (px, pz) is within margin of the pod's ground plan. */
-    public boolean covers(float px, float pz, float margin) {
-        if (!placed) return false;
-        float r = Math.max(40f, REACH) + margin;
-        return (px - x) * (px - x) + (pz - z) * (pz - z) < r * r;
+    /** Whether a place is within margin of the pod's ground plan. */
+    public boolean covers(SpherePosition position, double margin) {
+        return placed && SphereMath.distance(position, frame.origin()) < Math.max(40f, REACH) + margin;
     }
 
-    public float x() { return x; }
-    public float z() { return z; }
-    public float ground() { return ground; }
-    public float heading() { return heading; }
+    /** The pod's own frame: origin under its middle on the ground, local z the way its stairs run. */
+    public SphereFrame frame() {
+        return frame;
+    }
 
-    public void render(GL3 gl, Matrix4 viewProjection, Vector3 viewPos, Vector3 sunPos, float[] sunColour,
+    /** The altitude of the ground the pod stands on. */
+    public double ground() {
+        return ground;
+    }
+
+    public void render(GL3 gl, Matrix4 viewProjection, SpherePosition eye, Vector3 sunDirection, float[] sunColour,
                        Vector3 ambient, Matrix4 skyRotation, Texture sky) {
         if (mesh == null || !placed) return;
-        shader.use(gl);
-        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        SphereRender.configure(gl, shader, viewProjection, sunDirection, sunColour, ambient, skyRotation);
+        SphereRender.setAnchor(gl, shader, frame.modelMatrix(1f, eye));
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), BONES, false, bones, 0);
-        shader.setVec3(gl, "viewPos", viewPos);
-        shader.setVec3(gl, "sunPos", sunPos);
-        shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
-        shader.setVec3(gl, "ambientLight", ambient);
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             sky.bind(gl);

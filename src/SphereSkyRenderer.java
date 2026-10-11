@@ -10,7 +10,7 @@ public final class SphereSkyRenderer {
 
     public SphereSkyRenderer(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_sky.txt",
-                GamePaths.HOME + "assets/shaders/fs_sphere_sky.txt").flat();
+                GamePaths.HOME + "assets/shaders/fs_sphere_sky.txt");
         gl.glGenVertexArrays(1, vertexArray, 0);
     }
 
@@ -19,9 +19,9 @@ public final class SphereSkyRenderer {
         SpherePosition position = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
         Vector3 up = camera.getSphereUpDirection();
-        Vector3 right = Vector3.crossProduct(up, forward);
+        Vector3 right = Vector3.crossProduct(forward, up);
         right.normalize();
-        Vector3 correctedUp = Vector3.crossProduct(forward, right);
+        Vector3 correctedUp = Vector3.crossProduct(right, forward);
         correctedUp.normalize();
 
         gl.glDisable(GL.GL_BLEND);

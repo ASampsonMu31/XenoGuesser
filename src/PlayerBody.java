@@ -146,7 +146,7 @@ public class PlayerBody {
     private float strokePhase;
     private float swimBlend;
     private float pitch;
-    private float lastX = Float.NaN, lastZ = Float.NaN;
+    private SpherePosition lastEye;
     // Time since the compass was taken out (negative when put away), and its needle's
     // heading in the world (0 is north) and how fast that is turning
     private float compassTime = -1f;
@@ -444,7 +444,10 @@ public class PlayerBody {
         printDirty = true;
     }
 
-    /** The magnifying glass's lens {x, y, z, radius} in the world, while it's held up to look through; else null. */
+    /**
+     * The magnifying glass's lens {x, y, z, radius} in the camera's local frame (the eyes at
+     * the origin, x east, y up, z south), while it's held up to look through; else null.
+     */
     public float[] lensView() {
         return kitBlend() > 0.97f ? lens : null;
     }
@@ -624,10 +627,9 @@ public class PlayerBody {
      * @param eye      where the eyes are
      * @param swimming whether the player is swimming rather than standing
      */
-    public void update(float dt, Vector3 eye, boolean swimming) {
-        float moved = Float.isNaN(lastX) ? 0f : (float) Math.hypot(eye.x - lastX, eye.z - lastZ);
-        lastX = eye.x;
-        lastZ = eye.z;
+    public void update(float dt, SpherePosition eye, boolean swimming) {
+        float moved = lastEye == null ? 0f : (float) SphereMath.distance(lastEye, eye);
+        lastEye = eye;
         if (moved > 50f) moved = 0f;   // a teleport, not a step
         float speed = dt > 0 ? moved / dt : 0f;
         float targetWalking = Math.min(1f, speed / 40f);
@@ -654,11 +656,11 @@ public class PlayerBody {
             compassTime += dt;
             if (compassTime > 2f * COMPASS_RAISE + COMPASS_HOLD) compassTime = -1f;
             // The needle is a damped pendulum pulled towards north; its heading is kept in
-            // the world, so it holds steady as the body turns under it. North on the map is
-            // north on the planet (it's a Mercator chart), but the pull weakens towards the
-            // poles, where the planet's field points into the ground: there the needle is
-            // sluggish, any jolt sends it wandering, and at the pole itself it points anywhere
-            float pull = Planet.compassPull(eye.z);
+            // the local frame (north is local -z), so it holds steady as the body turns under
+            // it. The pull weakens towards the poles, where the planet's field points into the
+            // ground: there the needle is sluggish, any jolt sends it wandering, and at the
+            // pole itself it points anywhere
+            float pull = (float) Math.cos(Planet.latitude(eye));
             float step = Math.min(dt, 0.05f);
             float wobble = (1f - pull) * (1f - pull) * 6f;
             needleSpin += (-38f * pull * pull * (float) Math.sin(needleAngle) - 4.5f * needleSpin
@@ -671,24 +673,27 @@ public class PlayerBody {
     /**
      * Draws the body over the finished scene. It gets its own close-range projection, since
      * the scene's near plane would cut away anything within arm's reach, and it is always the
-     * nearest thing to the eyes.
+     * nearest thing to the eyes. The body is posed in the camera's local frame (x east, y up,
+     * z south, the eyes at the origin), so sunPos, skyRotation and waterLevel (the water's
+     * height less the eyes') are in that frame too.
      */
     public void render(GL3 gl, Camera camera, float aspect, Vector3 sunPos, float[] sunColour, Vector3 ambient,
                        Matrix4 skyRotation, Texture sky, float waterLevel, float[] waterTint) {
         if (mesh == null) return;
-        Vector3 eye = camera.getPosition();
-        Vector3 forward = camera.getForwardDirection();
-        float heading = (float) Math.atan2(forward.x, forward.z);
-        pitch = (float) Math.asin(Math.max(-1f, Math.min(1f, forward.y)));
+        Vector3 eye = new Vector3(0f, 0f, 0f);
+        float[] forward = camera.getLocalForward();
+        float heading = (float) Math.atan2(forward[0], forward[2]);
+        pitch = (float) Math.asin(Math.max(-1f, Math.min(1f, forward[1])));
         pose(eye, heading);
 
         Matrix4 projection = Matrix4Transform.perspective(45, aspect, 0.3f, 60f);
-        Matrix4 viewProjection = Matrix4.multiply(projection, camera.getViewMatrix());
+        Matrix4 viewProjection = camera.localViewProjection(projection);
 
         gl.glClear(GL.GL_DEPTH_BUFFER_BIT);
         gl.glDisable(GL.GL_CULL_FACE);
         shader.use(gl);
         shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+        SphereRender.setAnchor(gl, shader, null);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), BONES, false, bones, 0);
         shader.setVec3(gl, "viewPos", eye);
