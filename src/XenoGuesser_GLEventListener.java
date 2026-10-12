@@ -643,17 +643,17 @@ private static class SpeciesConfig {
         collision.addSource(infraManager::obstaclesNear);
         inhabitants.setCollision(collision);
         // What's solid on the sphere: the pod, trees, rocks, the stand-in settlements' walls, and
-        // (through the chart, until Phase 3) the real buildings, fences and rails
+        // the real buildings, fences, rails and sign posts
         geodesicCollision.addSource(landingPod::obstaclesNear);
         geodesicCollision.addSource((centre, reach, sink) ->
                 trees.forEachNear(centre, reach, tree -> sink.circle(tree.position(), tree.trunk())));
         geodesicCollision.addSource((centre, reach, sink) -> { if (rockField != null) rockField.obstaclesNear(centre, reach, sink); });
         geodesicCollision.addSource((centre, reach, sink) ->
                 settlementWalls.forEachNear(centre, reach, wall -> sink.segment(wall.start(), wall.end(), 0.75, wall.top())));
-        geodesicCollision.addSource(this::chartObstaclesNear);
+        geodesicCollision.addSource((centre, reach, sink) -> { if (infraManager != null) infraManager.obstaclesNear(centre, reach, sink); });
         organismManager.setCollision(geodesicCollision);
         organismManager.setWild(p -> settlementManager.getUrbanness(p) < 0.12f);
-        organismManager.setRoads((p, clearance) -> { Vector3 m = chart(p); return infraManager.isRoadLocation(m.x, m.z, clearance); });
+        organismManager.setRoads((p, clearance) -> infraManager.isRoadLocation(p, clearance));
         double floraReach = (VIEW_DISTANCE + PREFETCH_RINGS) * PHYSICAL_CHUNK_SIZE;
         floraStream = new CellStream<List<SphereFlora>>(VEGETATION_LEVEL, floraReach, PHYSICAL_CHUNK_SIZE * 1.5, this::buildFloraCell)
                 .onChange(added -> { for (SphereFlora tree : added) trees.add(tree.position(), tree.trunk(), tree); },
@@ -1074,7 +1074,7 @@ private static class SpeciesConfig {
     private static final int VEHICLE_SHOT_FRAME = Integer.getInteger("xenoguesser.vehicleshotframe", 120);
     private int vehicleShotFrames;
     private final java.util.Set<InfrastructureObject> signsShot = new java.util.HashSet<>();
-    private Vector3 signShotEye, signShotTarget;
+    private SpherePosition signShotEye, signShotTarget;
 
     /**
      * Developer aid: from a little after the round starts, stands in front of one nearby sign
@@ -1083,39 +1083,33 @@ private static class SpeciesConfig {
     private void signShot(GL3 gl) {
         int frame = framesRenderedSinceReady - 40;
         if (frame < 0 || frame > 40 * 8) return;
-        if (signShotEye != null) lookFromChart(signShotEye, signShotTarget);
+        if (signShotEye != null) lookFrom(signShotEye, signShotTarget);
         if (frame % 40 == 0) {
             hideFirstPerson = true;
             InfrastructureObject best = null;
-            float bestScore = Float.MAX_VALUE;
-            Vector3 at = camera.getChartPosition();
+            double bestScore = Double.MAX_VALUE;
+            SpherePosition at = camera.getSpherePosition();
             for (List<InfrastructureObject> objects : infraCache.values()) {
                 for (InfrastructureObject obj : objects) {
                     if (obj.type != InfrastructureObject.Type.SIGN || signsShot.contains(obj)) continue;
                     // -Dxenoguesser.signshot=shaped: only posters on leaning or round walls
                     if ("shaped".equals(System.getProperty("xenoguesser.signshot")) && !obj.shaped) continue;
-                    float dx = obj.position.x - at.x, dz = obj.position.z - at.z;
-                    float score = dx * dx + dz * dz;
-                    if (obj.pictureCount == 0 && !obj.wallMounted) score += 1e9f;
+                    double score = SphereMath.distance(obj.frame.origin(), at);
+                    if (obj.pictureCount == 0 && !obj.wallMounted) score += 1e9;
                     if (score < bestScore) { bestScore = score; best = obj; }
                 }
             }
             if (best == null) return;
             signsShot.add(best);
-            float[] m = best.frontBoardMatrix.toFloatArrayForGLSL();
-            float nx = m[4], nz = m[6];
-            float len = (float) Math.sqrt(nx * nx + nz * nz);
+            // (in the sign's own frame, whose local +z its face looks along)
             float side = Float.parseFloat(System.getProperty("xenoguesser.signside", "1"));
-            nx = nx / len * side;
-            nz = nz / len * side;
             float back = best.wallMounted ? Math.min(30f, Math.max(best.boardWidth * 0.75f, best.boardHeight * 1.6f) + 6f) : 40f;
             float lift = best.wallMounted ? 0f : 32f;
             // -Dxenoguesser.signslant=0.8 views it from off to one side, by that much of the distance
             float slant = Float.parseFloat(System.getProperty("xenoguesser.signslant", "0"));
-            float ex = best.position.x + nx * back - nz * back * slant, ez = best.position.z + nz * back + nx * back * slant;
-            signShotEye = new Vector3(ex, best.position.y + lift, ez);
-            signShotTarget = new Vector3(best.position.x, best.position.y + lift, best.position.z);
-            lookFromChart(signShotEye, signShotTarget);
+            signShotEye = best.frame.toWorld(-back * slant * side, lift, back * side);
+            signShotTarget = best.frame.toWorld(0.0, lift, 0.0);
+            lookFrom(signShotEye, signShotTarget);
             System.out.println("[SIGNSHOT] sign " + signsShot.size() + ": pictures " + best.pictureCount + (best.wallMounted ? (best.banner ? " banner" : " poster") : "") + ", title " + best.titleLength
                     + ", direction " + nationDirections.getOrDefault(best.nationId, 0) + ", nation " + best.nationId
                     + ", patriotism " + infraManager.patriotismOf(best.nationId));
@@ -1124,10 +1118,10 @@ private static class SpeciesConfig {
         }
     }
 
-    /** Developer aid: stands the camera at a place on the chart (signs and such, until they are ported) looking at another. */
-    private void lookFromChart(Vector3 eye, Vector3 target) {
-        camera.setSphereView(Planet.spherePosition(eye.x, eye.z, eye.y), 0f, 0f);
-        camera.lookAt(Planet.spherePosition(target.x, target.z, target.y));
+    /** Developer aid: stands the camera at a place looking at another. */
+    private void lookFrom(SpherePosition eye, SpherePosition target) {
+        camera.setSphereView(eye, 0f, 0f);
+        camera.lookAt(target);
     }
 
     private void menuShot(GL3 gl) {
@@ -1783,9 +1777,7 @@ private static class SpeciesConfig {
         rockField = rocks();
         rockField.setKeepout((p, r) -> {
             if (podCovers(p, r)) return true;
-            // (the roads and buildings are still laid out on the chart: Phase 3)
-            Vector3 m = chart(p);
-            return infraManager.isRoadLocation(m.x, m.z, r + 2f) || infraManager.isBuildingLocation(m.x, m.z, r + 4f);
+            return infraManager.isRoadLocation(p, r + 2f) || infraManager.isBuildingLocation(p, r + 4f);
         });
         rockField.initialise(gl, terrainBuilders);
         hud.initialise(gl);
@@ -1987,9 +1979,8 @@ private static class SpeciesConfig {
         // A new day: new clouds and weather
         weather.newDay(dynamicRand);
         landingPod.place(spawn.place(), spawn.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
-        // Nothing else stands where it came down (the buildings are still laid out on the chart: Phase 3)
-        Vector3 pod = chart(landingPod.frame().origin());
-        infraManager.setKeepClear(pod.x, pod.z, Math.max(40f, LandingPod.REACH) + 6f);
+        // Nothing else stands where it came down
+        infraManager.setKeepClear(landingPod.frame().origin(), Math.max(40f, LandingPod.REACH) + 6f);
         moveToLocation(spawn);
         // Developer aid: -Dxenoguesser.lookatsun starts the round looking straight at the sun
         if (System.getProperty("xenoguesser.lookatsun") != null) {
@@ -2165,14 +2156,13 @@ private static class SpeciesConfig {
 
     /**
      * The altitude of what the player stands on at a place: the land or a road (up on the
-     * road's deck where it stands above the ground; the roads are on the chart until Phase 3),
+     * road's deck where it stands above the ground),
      * or the pod's stairs where they are higher.
      */
     private double groundHeightAt(SpherePosition p) {
         double ground;
         if (infraManager != null) {
-            Vector3 m = chart(p);
-            ground = infraManager.walkingSurfaceY(m.x, m.z);
+            ground = infraManager.walkingSurfaceY(p);
         } else {
             ground = TerrainMesh.getLayeredHeight(p, worldNoise);
         }
@@ -2385,8 +2375,7 @@ private static class SpeciesConfig {
                 float rotation = cRand.nextFloat() * 360.0f;
                 float ground = TerrainMesh.getLayeredHeight(at, worldNoise);
                 if (ground <= seaLevelHeight + 0.1f || slopeAt(at) >= 0.9f || podCovers(at, 8f)) continue;
-                Vector3 m = chart(at);
-                if (infraManager.isClearedForRoad(m.x, m.z, 11.0f, 3.0f) || infraManager.isBuildingLocation(m.x, m.z, 6.0f)) continue;
+                if (infraManager.isClearedForRoad(at, 11.0f, 3.0f) || infraManager.isBuildingLocation(at, 6.0f)) continue;
                 plants.add(plant(SphereMath.atAltitude(at, ground), s, model, scale, rotation));
             }
         }
@@ -2470,9 +2459,7 @@ private static class SpeciesConfig {
             if (ground <= seaLevelHeight + 0.1f || onSlope) continue;
             SpherePosition at = SphereMath.atAltitude(direction, ground);
             if (podCovers(at, -2f)) continue;
-            // (the roads are laid out on the chart until Phase 3)
-            Vector3 m = chart(at);
-            if (infraManager.isClearedForRoad(m.x, m.z, 11.0f, 1.5f)) continue;
+            if (infraManager.isClearedForRoad(at, 11.0f, 1.5f)) continue;
 
             // (each stretched over the whole range there is on the planet, so the shortest and
             // tallest, the driest and lushest, are all seen)
@@ -2710,12 +2697,17 @@ private static class SpeciesConfig {
         gl.glEnable(GL.GL_CULL_FACE);
     }
 
-    private void renderGeodesicInfrastructure(GL3 gl) {
+    private void renderGeodesicInfrastructure(GL3 gl, Matrix4 skyRotation) {
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
         float drawDistance = Math.max(VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE, FAR_PLANE);
+        List<InfrastructureObject> signs = new ArrayList<>();
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject object : objects) {
+                if (object.type == InfrastructureObject.Type.SIGN) {
+                    signs.add(object);
+                    continue;
+                }
                 if (object.type != InfrastructureObject.Type.BATCH) continue;
                 SpherePosition anchor = Planet.spherePosition(
                         object.position.x, object.position.z, object.position.y);
@@ -2730,6 +2722,34 @@ private static class SpeciesConfig {
                 object.renderSphereNativeBatch(gl, ambientLight, nightProportion,
                         solidShader, terrainShader, terrainRenderer, lights, camera);
             }
+        }
+        renderSigns(gl, signs, eye, forward, skyRotation);
+    }
+
+    /** The signs near the viewer, each drawn on the sphere through its own frame. */
+    private void renderSigns(GL3 gl, List<InfrastructureObject> signs, SpherePosition eye, Vector3 forward, Matrix4 skyRotation) {
+        if (signs.isEmpty()) return;
+        signboardShader.use(gl);
+        signboardShader.setFloat(gl, "bend", 0f);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(signboardShader.getID(), "skyRotation"), 1, false,
+                skyRotation.toFloatArrayForGLSL(), 0);
+        if (textures.get("sky") != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            textures.get("sky").bind(gl);
+            signboardShader.setInt(gl, "skyTexture", 2);
+        }
+        for (InfrastructureObject sign : signs) {
+            // (culled round the middle of what's drawn: up its frame's local y)
+            SpherePosition middle = sign.frame.toWorld(0.0, sign.drawnCentreY(), 0.0);
+            double dx = middle.x() - eye.x(), dy = middle.y() - eye.y(), dz = middle.z() - eye.z();
+            double reach = SIGN_DRAW_DISTANCE + sign.drawnRadius();
+            if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
+            if (dx * forward.x + dy * forward.y + dz * forward.z < -sign.drawnRadius()) continue;
+            sign.render(gl, ambientLight, nightProportion, signModelsByNation, postModelsByNation,
+                    nationAtlases.get(sign.nationId), nationAtlasSizes.getOrDefault(sign.nationId, 1),
+                    nationDirections.getOrDefault(sign.nationId, 0),
+                    textures.get(InfrastructureManager.nationTextureName("flag", sign.nationId)),
+                    peoplePictures != null && sign.nationId > 0 && sign.nationId < peoplePictures.length ? peoplePictures[sign.nationId] : null);
         }
     }
 
@@ -2797,29 +2817,6 @@ private static class SpeciesConfig {
             settlementWalls.add(SphereMath.slerp(wall.start(), wall.end(), 0.5),
                     SphereMath.distance(wall.start(), wall.end()) * 0.5 + 0.75, wall);
         }
-    }
-
-    /**
-     * The real buildings, fences, rails and signs near a place, as solid shapes on the sphere:
-     * they are still laid out on the chart (Phase 3 moves them onto CellIndex), so they are
-     * gathered there and lifted.
-     */
-    private void chartObstaclesNear(SpherePosition centre, double reach, GeodesicCollision.Sink sink) {
-        if (infraManager == null) return;
-        Vector3 m = chart(centre);
-        // (chart units are this many true units here)
-        double scale = Math.max(1e-6, Math.cos(Planet.latitude(centre)));
-        infraManager.obstaclesNear(m.x, m.z, (float) (reach / scale), new Collision.Sink() {
-            @Override
-            public void segment(float ax, float az, float bx, float bz, float halfWidth, float top) {
-                sink.segment(Planet.spherePosition(ax, az, 0.0), Planet.spherePosition(bx, bz, 0.0), halfWidth, top);
-            }
-
-            @Override
-            public void circle(float x, float z, float radius, float top) {
-                sink.circle(Planet.spherePosition(x, z, 0.0), radius, top);
-            }
-        });
     }
 
     private void renderGeodesicSettlements(GL3 gl) {
@@ -3279,7 +3276,7 @@ private static class SpeciesConfig {
         setSphereTerrainTransform(terrainShader, false);
         terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
 
-        renderGeodesicInfrastructure(gl);
+        renderGeodesicInfrastructure(gl, skyRotation);
         renderGeodesicRoads(gl);
         renderGeodesicSettlements(gl);
         renderFlora(gl, skyRotation);

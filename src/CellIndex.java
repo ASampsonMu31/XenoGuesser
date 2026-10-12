@@ -1,11 +1,8 @@
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -27,7 +24,8 @@ public final class CellIndex<T> {
     public static final int DEFAULT_LEVEL = 8;
     private static final int SHAPE_CACHE_LIMIT = 200_000;
 
-    private record Entry<T>(SpherePosition position, double extent, T item) {
+    // (with its unit direction and its extent as an angle, for a quick test before the exact one)
+    private record Entry<T>(SpherePosition position, double extent, T item, double ux, double uy, double uz, double angle) {
     }
 
     /** A cell's centre, its angular radius and its edge neighbours, kept once worked out. */
@@ -72,7 +70,9 @@ public final class CellIndex<T> {
     /** Files an item reaching extent world units (along the surface) from position. */
     public void add(SpherePosition position, double extent, T item) {
         if (!Double.isFinite(extent) || extent < 0.0) throw new IllegalArgumentException("Extent must be finite and non-negative");
-        Entry<T> entry = new Entry<>(position, extent, item);
+        double length = position.length();
+        Entry<T> entry = new Entry<>(position, extent, item, position.x() / length, position.y() / length, position.z() / length,
+                extent / Planet.radius());
         cells.compute(cellId(position), (id, list) -> {
             List<Entry<T>> grown = list == null ? new ArrayList<>(1) : new ArrayList<>(list);
             grown.add(entry);
@@ -141,28 +141,70 @@ public final class CellIndex<T> {
         if (!Double.isFinite(radius) || radius < 0.0) throw new IllegalArgumentException("Radius must be finite and non-negative");
         if (size.get() == 0) return;
         GeodesicChunkGrid.Direction origin = SphereMath.direction(position);
-        double reach = (radius + largestExtent) / Planet.radius();
+        double reach = (radius + largestExtent) / Planet.radius(), radiusAngle = radius / Planet.radius();
         long start = grid.cellAt(origin).id();
-        ArrayDeque<Long> queue = new ArrayDeque<>();
-        Set<Long> seen = new HashSet<>();
-        queue.add(start);
+        // (a breadth-first search: the queue is also the list of cells seen)
+        long[] queue = new long[32];
+        int head = 0, tail = 0;
+        queue[tail++] = start;
+        IdSet seen = new IdSet();
         seen.add(start);
-        while (!queue.isEmpty()) {
-            long id = queue.removeFirst();
+        while (head < tail) {
+            long id = queue[head++];
             Shape shape = shape(id);
             // (the cells meeting the circle of reach join up edge to edge, so the search stops at
-            // the first ring of cells clear of it)
-            if (id != start && SphereMath.angle(origin, shape.centre()) > reach + shape.radius()) continue;
+            // the first ring of cells clear of it; cos x >= 1 - x^2 / 2, so a cell failing that is
+            // certainly clear, and the exact angle is only worked out for the rest)
+            if (id != start) {
+                double limit = reach + shape.radius();
+                if (limit < Math.PI && (origin.dot(shape.centre()) < 1.0 - limit * limit * 0.5
+                        || SphereMath.angle(origin, shape.centre()) > limit)) continue;
+            }
             List<Entry<T>> entries = cells.get(id);
             if (entries != null) {
                 for (Entry<T> entry : entries) {
+                    double limit = radiusAngle + entry.angle();
+                    if (limit < Math.PI && origin.x() * entry.ux() + origin.y() * entry.uy() + origin.z() * entry.uz() < 1.0 - limit * limit * 0.5) continue;
                     double distance = SphereMath.distance(position, entry.position()) - entry.extent();
                     if (distance <= radius) visitor.found(entry, Math.max(0.0, distance));
                 }
             }
             for (long neighbour : shape.neighbours()) {
-                if (seen.add(neighbour)) queue.addLast(neighbour);
+                if (!seen.add(neighbour)) continue;
+                if (tail == queue.length) queue = Arrays.copyOf(queue, tail * 2);
+                queue[tail++] = neighbour;
             }
+        }
+    }
+
+    /** A set of cell ids, open addressed (no boxing: a search adds a few tens of them). */
+    private static final class IdSet {
+        private long[] slots = new long[64];
+        private boolean[] used = new boolean[64];
+        private int count;
+
+        /** Adds an id; false if it was there already. */
+        boolean add(long id) {
+            if (count * 2 >= slots.length) grow();
+            int mask = slots.length - 1;
+            int i = (int) (Long.hashCode(id * 0x9E3779B97F4A7C15L)) & mask;
+            while (used[i]) {
+                if (slots[i] == id) return false;
+                i = (i + 1) & mask;
+            }
+            used[i] = true;
+            slots[i] = id;
+            count++;
+            return true;
+        }
+
+        private void grow() {
+            long[] oldSlots = slots;
+            boolean[] oldUsed = used;
+            slots = new long[oldSlots.length * 2];
+            used = new boolean[oldSlots.length * 2];
+            count = 0;
+            for (int i = 0; i < oldSlots.length; i++) if (oldUsed[i]) add(oldSlots[i]);
         }
     }
 

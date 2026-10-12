@@ -28,8 +28,8 @@ public class SettlementManager {
         public final float radius;
         /** Urbanness at the centre, between 0 and 1. */
         public final float intensity;
-        // Chart bridge (D13): the centre on the Mercator chart, for the buildings still laid
-        // out there (InfrastructureManager); goes in Phase 3b
+        // Chart bridge (D13): the centre on the Mercator chart, for the people's drives out
+        // (InfrastructureManager.settlementBetween); goes in Phase 4
         public final float chartX, chartZ;
 
         private Settlement(SpherePosition centre, int rank, float radius, float intensity) {
@@ -195,7 +195,7 @@ public class SettlementManager {
     }
 
     // ------------------------------------------------------------------ chart bridges (D13)
-    // For the buildings and the map, still on the Mercator chart until Phase 3b and Phase 5
+    // For the map, still on the Mercator chart until Phase 5
 
     private static GeodesicChunkGrid.Direction onSphere(float chartX, float chartZ) {
         return SphereMath.direction(Planet.spherePosition(chartX, chartZ, 0.0));
@@ -203,18 +203,6 @@ public class SettlementManager {
 
     public float getUrbanness(float chartX, float chartZ) {
         return getUrbanness(onSphere(chartX, chartZ));
-    }
-
-    public float getCitySize(float chartX, float chartZ) {
-        return getCitySize(onSphere(chartX, chartZ));
-    }
-
-    public float getHabitability(float chartX, float chartZ) {
-        return getHabitability(Planet.spherePosition(chartX, chartZ, 0.0));
-    }
-
-    public Settlement dominantSettlementAt(float chartX, float chartZ) {
-        return dominantSettlementAt(onSphere(chartX, chartZ));
     }
 
     /** Wraps urbanness as a RegionalFactor so it can drive or be visualised like any other factor. */

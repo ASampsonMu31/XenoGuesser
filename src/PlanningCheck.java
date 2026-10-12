@@ -7,6 +7,13 @@ import java.util.Random;
  * lookup, that urbanness by direction is the exact union of every town's influence (and the
  * chart bridge agrees), that towns keep their spacing in true distance, and that every road
  * point is on the ground, evenly spaced, and carried onto the chart without a jump.
+ * Phase 3b (building in frames): builds the houses and roads as the game does and checks they
+ * are true size at every latitude (houses fill their footprints and no more, roads are as wide
+ * as their class), and that two towns' chunks (at the equator and near 70 degrees) build
+ * meshes that stay where they belong on the chart; that signs stand in right-handed frames of
+ * their own, on the ground facing a road or flat on a wall; that walls are solid, driveways
+ * cleared, border booths, lights and stops placed in their checks' frames; and that the
+ * lookups on the sphere (D5) cost no more in the north.
  * Run after compiling (takes several seconds):
  * java -cp "target/classes;lib/jogamp-fat.jar" PlanningCheck (exit code 1 on a failure).
  */
@@ -31,6 +38,7 @@ public final class PlanningCheck {
         checkNations(nations, width);
         checkSettlements(settlements);
         checkRoads(new RoadNetworkBuilder(seed, sea, noise, settlements, nations).build(), noise, width);
+        checkInfrastructure(new InfrastructureManager(seed, nations.numNations, nations, settlements, null), chunk, width, sea, noise);
 
         System.out.printf("%d checks, %d failed%n", checks, failures);
         if (failures > 0) System.exit(1);
@@ -119,5 +127,301 @@ public final class PlanningCheck {
                 }
             }
         }
+    }
+
+    /** A point in a building's frame (as the maps are given it: middle and turn on the chart) on the chart. */
+    private static double[] onChart(SphereFrame frame, double x, double z) {
+        return Planet.mercatorPosition(frame.toWorld(x, 0.0, z));
+    }
+
+    private static void checkInfrastructure(InfrastructureManager infra, float chunk, float width, float sea, PerlinNoise noise) {
+        long start = System.currentTimeMillis();
+        infra.prepareRoadNetwork(chunk, width, sea, noise);
+        System.out.printf("Infrastructure built in %d ms%n", System.currentTimeMillis() - start);
+        // Every building (and extension) fills its footprint, true size, and stops at its back wall
+        int[] byBand = new int[10];
+        infra.forEachBuilding((x, z, rotationY, w, d, nation, outline) -> {
+            SpherePosition middle = Planet.spherePosition(x, z, 0.0);
+            byBand[Math.min(9, (int) (Math.abs(Math.toDegrees(Planet.latitude(middle))) / 10))]++;
+            SphereFrame frame = SphereFrame.at(middle, -Math.toRadians(rotationY));
+            for (double[] inside : new double[][] { { 0, 0 }, { 0.4, 0.4 }, { -0.4, 0.4 }, { 0.4, -0.4 }, { -0.4, -0.4 } }) {
+                double[] m = onChart(frame, inside[0] * w, inside[1] * d);
+                check(infra.isBuildingLocation((float) m[0], (float) m[2], 0f), "building at " + middle + " missing at " + inside[0] + ", " + inside[1]);
+            }
+            double[] behind = onChart(frame, 0.0, -d * 0.5 - 1.5);
+            check(!infra.isBuildingLocation((float) behind[0], (float) behind[2], 0f), "building at " + middle + " reaches past its back wall");
+        });
+        System.out.printf("Buildings by latitude band (0-10, 10-20, ...): %s%n", java.util.Arrays.toString(byBand));
+        check(byBand[6] > 50, "few buildings between 60 and 70 degrees: " + byBand[6]);
+        // Made roads are as wide as their class, on the ground at the middle of every step
+        infra.forEachRoadPath(path -> {
+            if (path.roadClass == RoadPath.RoadClass.DIRT) return;
+            for (int i = 1; i < path.points.size(); i += 3) {
+                SpherePosition a = path.points.get(i - 1), b = path.points.get(i);
+                if (SphereMath.distance(a, b) < 1.0) continue;
+                SpherePosition middle = SphereMath.slerp(a, b, 0.5);
+                double heading = SphereFrame.at(middle).headingTo(b);
+                for (double side : new double[] { -1, 1 }) {
+                    SpherePosition edge = SphereMath.move(middle, heading + Math.PI * 0.5, side * path.roadClass.width * 0.45);
+                    double[] m = Planet.mercatorPosition(edge);
+                    check(infra.isRoadLocation((float) m[0], (float) m[2], 0f), path.roadClass + " at " + middle + " narrower than its class");
+                }
+            }
+        });
+        // Two towns' chunks (as much true ground round each: the chart's chunks are smaller in the
+        // north) build meshes on the chart round the chunk (lifted back exactly as drawn), and
+        // signs in frames of their own, standing where they should and facing the right way
+        double[] lookupMicros = new double[2];
+        double[][] towns = { { 3.297, 16.389 }, { 67.461, 139.716 } };
+        for (int t = 0; t < towns.length; t++) {
+            double[] town = towns[t];
+            SpherePosition centre = Planet.position(Math.toRadians(town[0]), Math.toRadians(town[1]), 0.0);
+            double[] m = Planet.mercatorPosition(centre);
+            int cx = (int) Math.floor((m[0] + chunk * 0.5) / chunk), cz = (int) Math.floor((m[2] + chunk * 0.5) / chunk);
+            int reach = (int) Math.round(4.0 / Math.cos(Math.toRadians(town[0])));
+            int vertices = 0, wide = 0;
+            List<InfrastructureObject> signs = new java.util.ArrayList<>();
+            for (int dz = -reach; dz <= reach; dz++) {
+                for (int dx = -reach; dx <= reach; dx++) {
+                    for (InfrastructureObject object : infra.generateForChunk(cx + dx, cz + dz, chunk, width, sea, noise)) {
+                        if (object.type == InfrastructureObject.Type.SIGN) signs.add(object);
+                        for (InfrastructureObject.BatchPart part : object.batchParts()) {
+                            for (int v = 0; v + 7 < part.vertices.length; v += 8) {
+                                vertices++;
+                                float vx = part.vertices[v], vz = part.vertices[v + 2];
+                                if (Math.abs(vx - (cx + dx) * chunk) > 1500f || Math.abs(vz - (cz + dz) * chunk) > 1500f) wide++;
+                            }
+                        }
+                    }
+                }
+            }
+            String where = String.format("round %.3f, %.3f", town[0], town[1]);
+            System.out.printf("Town at %.3f, %.3f: %d vertices and %d signs in its %d chunks%n", town[0], town[1], vertices, signs.size(),
+                    (2 * reach + 1) * (2 * reach + 1));
+            check(vertices > 10000, "town " + where + " built almost nothing: " + vertices + " vertices");
+            check(wide == 0, wide + " vertices built far from their chunk " + where);
+            checkSigns(infra, signs, noise, where);
+            checkSolids(infra, centre, where);
+            checkDriveways(infra, Planet.mercatorPosition(centre), where);
+            lookupMicros[t] = lookupCost(infra, centre);
+        }
+        // A lookup costs the same wherever it is (D5)
+        System.out.printf("Lookups (road, building, walking surface, cleared ground): %.2f us at the equator, %.2f us at 67 N%n",
+                lookupMicros[0], lookupMicros[1]);
+        check(lookupMicros[1] < lookupMicros[0] * 2.0 + 2.0, "lookups cost more in the north: " + lookupMicros[1] + " us against " + lookupMicros[0]);
+        checkBorders(infra);
+        checkBorderFences(infra, chunk, width, sea, noise);
+    }
+
+    /**
+     * Border fences at fenced crossings (built as their chunks are): reaching the road where it
+     * crosses the border, with a gatepost there, and true size (short pieces at 70 degrees too).
+     */
+    private static void checkBorderFences(InfrastructureManager infra, float chunk, float width, float sea, PerlinNoise noise) {
+        List<float[]> booths = infra.borderBooths(), lights = infra.borderLights();
+        int crossings = 0, fenced = 0, gated = 0;
+        double longest = 0.0, farthest = 0.0;
+        for (int i = 0; i + 1 < lights.size() && crossings < 12; i += 2) {
+            // (the crossing is half way between its two traffic lights)
+            SpherePosition crossing = SphereMath.slerp(Planet.spherePosition(lights.get(i)[0], lights.get(i)[1], 0.0),
+                    Planet.spherePosition(lights.get(i + 1)[0], lights.get(i + 1)[1], 0.0), 0.5);
+            boolean hasBooth = false;
+            for (float[] booth : booths) hasBooth |= SphereMath.distance(Planet.spherePosition(booth[0], booth[1], 0.0), crossing) < 90.0;
+            if (!hasBooth) continue;
+            crossings++;
+            double[] m = Planet.mercatorPosition(crossing);
+            int cx = (int) Math.floor((m[0] + chunk * 0.5) / chunk), cz = (int) Math.floor((m[2] + chunk * 0.5) / chunk);
+            int reach = (int) Math.ceil(1.5 / Math.cos(Planet.latitude(crossing)));
+            for (int dz = -reach; dz <= reach; dz++) {
+                for (int dx = -reach; dx <= reach; dx++) infra.generateForChunk(cx + dx, cz + dz, chunk, width, sea, noise);
+            }
+            double[] nearest = { Double.MAX_VALUE, Double.MAX_VALUE }, most = { 0.0 };
+            infra.obstaclesNear(crossing, 120.0, new GeodesicCollision.Sink() {
+                @Override
+                public void segment(SpherePosition a, SpherePosition b, double halfWidth, double top) {
+                    if (top < 29.0 || top > 31.0) return;   // (a border fence stands 30 high)
+                    nearest[0] = Math.min(nearest[0], SphereMath.distanceToArc(crossing, a, b));
+                    most[0] = Math.max(most[0], SphereMath.distance(a, b));
+                }
+
+                @Override
+                public void circle(SpherePosition c, double radius, double top) {
+                    if (Math.abs(radius - 2.2) < 1e-3) nearest[1] = Math.min(nearest[1], SphereMath.distance(c, crossing));
+                }
+            });
+            if (nearest[0] < 60.0) fenced++;
+            if (nearest[1] < 60.0) gated++;
+            farthest = Math.max(farthest, Math.min(nearest[0], nearest[1]));
+            longest = Math.max(longest, most[0]);
+        }
+        System.out.printf("Border fences: %d of %d fenced crossings have fence within 60 of the road's crossing, %d a gatepost; "
+                + "longest piece %.1f%n", fenced, crossings, gated, longest);
+        check(crossings > 0, "no fenced crossings");
+        check(fenced == crossings, (crossings - fenced) + " of " + crossings + " fenced crossings with no fence near the road");
+        check(gated == crossings, (crossings - gated) + " of " + crossings + " fenced crossings with no gatepost");
+        check(longest < 12.0, "a border fence piece " + longest + " long (not true size)");
+    }
+
+    /**
+     * Signs: every one in a right-handed frame (so its lettering reads the right way round),
+     * standing ones on the ground and off the road with their faces towards a road; boards on
+     * walls flat against the building behind them.
+     */
+    private static void checkSigns(InfrastructureManager infra, List<InfrastructureObject> signs, PerlinNoise noise, String where) {
+        int standing = 0, facingRoad = 0, onWalls = 0, againstWalls = 0;
+        for (InfrastructureObject sign : signs) {
+            check(sign.frame != null, "sign without a frame " + where);
+            if (sign.frame == null) continue;
+            double[] x = sign.frame.xAxis(), up = sign.frame.up(), z = sign.frame.zAxis();
+            double handed = (x[1] * up[2] - x[2] * up[1]) * z[0] + (x[2] * up[0] - x[0] * up[2]) * z[1] + (x[0] * up[1] - x[1] * up[0]) * z[2];
+            check(handed > 0.999, "sign at " + sign.frame.origin() + " in a mirrored frame " + where);
+            // (its up is the planet's up there)
+            SpherePosition origin = sign.frame.origin();
+            double level = (up[0] * origin.x() + up[1] * origin.y() + up[2] * origin.z()) / origin.length();
+            check(level > 0.99999, "sign at " + origin + " leaning " + where);
+            if (sign.wallMounted) {
+                if (sign.bothSides) continue;
+                onWalls++;
+                if (infra.isBuildingLocation(sign.frame.toWorld(0.0, 0.0, -2.0), 1.5f)) againstWalls++;
+                continue;
+            }
+            standing++;
+            float ground = TerrainMesh.getLayeredHeight(origin, noise);
+            check(Math.abs(SphereMath.altitude(origin) - ground) < 0.05, "sign at " + origin + " not on the ground " + where);
+            check(!infra.isRoadLocation(origin, 1f), "sign at " + origin + " standing in the road " + where);
+            // (straight ahead, or a little to one side: a dead end's house faces the road coming
+            // straight at its door, which its sign, off to the side of the path, looks along)
+            boolean faces = false;
+            for (double ahead = 2.0; ahead <= 160.0 && !faces; ahead += 2.0) {
+                for (double side : new double[] { 0.0, -ahead, ahead }) {
+                    faces |= infra.isRoadLocation(sign.frame.toWorld(side, 0.0, ahead), 0.5f);
+                }
+            }
+            if (faces) facingRoad++;
+        }
+        System.out.printf("  signs %s: %d standing (%d facing a road), %d boards on walls (%d against the building)%n", where, standing, facingRoad,
+                onWalls, againstWalls);
+        check(standing > 0 && onWalls > 0, "no signs " + where);
+        check(facingRoad >= standing * 0.95, (standing - facingRoad) + " of " + standing + " standing signs not facing a road " + where);
+        check(againstWalls >= onWalls * 0.95, (onWalls - againstWalls) + " of " + onWalls + " boards on walls not against a building " + where);
+    }
+
+    /** The walls of every building round a town are solid (filed on the sphere as their chunks are built). */
+    private static void checkSolids(InfrastructureManager infra, SpherePosition centre, String where) {
+        int buildings = 0, solid = 0;
+        for (InfrastructureManager.Doorway door : infra.doorwaysNear((float) Planet.mercatorPosition(centre)[0], (float) Planet.mercatorPosition(centre)[2], 250f)) {
+            buildings++;
+            SpherePosition at = Planet.spherePosition(door.doorX, door.doorZ, 0.0);
+            int[] shapes = { 0 };
+            infra.obstaclesNear(at, 6.0, new GeodesicCollision.Sink() {
+                @Override
+                public void segment(SpherePosition a, SpherePosition b, double halfWidth, double top) {
+                    shapes[0]++;
+                }
+
+                @Override
+                public void circle(SpherePosition c, double radius, double top) {
+                    shapes[0]++;
+                }
+            });
+            if (shapes[0] > 0) solid++;
+        }
+        System.out.printf("  solids %s: %d of %d front doors have a wall within 6 units%n", where, solid, buildings);
+        check(buildings > 0 && solid == buildings, (buildings - solid) + " of " + buildings + " buildings with no solid walls " + where);
+    }
+
+    /** A driveway's paving is ground cleared for the road (so no grass or trees on it), all along it. */
+    private static void checkDriveways(InfrastructureManager infra, double[] centre, String where) {
+        int driveways = 0, cleared = 0;
+        float stretch = (float) (1.0 / Math.cos(Planet.latitude(centre[2])));
+        for (InfrastructureManager.Doorway door : infra.doorwaysNear((float) centre[0], (float) centre[2], 2000f)) {
+            float[] d = door.driveway;
+            if (d == null) continue;
+            driveways++;
+            // (the doorway's driveway is given on the chart: its length in true units along a chart direction)
+            boolean all = true;
+            for (float f : new float[] { 0.2f, 0.5f, 0.8f }) {
+                float x = d[0] + d[2] * d[4] * f * stretch, z = d[1] + d[3] * d[4] * f * stretch;
+                all &= infra.isClearedForRoad(Planet.spherePosition(x, z, 0.0), 0f, 0f);
+            }
+            if (all) cleared++;
+        }
+        System.out.printf("  driveways %s: %d of %d cleared all along%n", where, cleared, driveways);
+        check(driveways == 0 || cleared >= driveways * 0.97, (driveways - cleared) + " of " + driveways + " driveways not cleared " + where);
+    }
+
+    /** How long a round of the per-frame lookups takes round a place, in microseconds. */
+    private static double lookupCost(InfrastructureManager infra, SpherePosition centre) {
+        Random rand = new Random(11);
+        int count = 20000;
+        SpherePosition[] places = new SpherePosition[count];
+        for (int i = 0; i < count; i++) places[i] = SphereMath.move(centre, rand.nextDouble() * Math.PI * 2, rand.nextDouble() * 400.0);
+        int hits = 0;
+        // (once to warm up, then timed)
+        for (int pass = 0; pass < 2; pass++) {
+            long start = System.nanoTime();
+            for (SpherePosition p : places) {
+                if (infra.isRoadLocation(p, 2f)) hits++;
+                if (infra.isBuildingLocation(p, 4f)) hits++;
+                if (infra.isClearedForRoad(p, 11f, 3f)) hits++;
+                hits += (int) infra.walkingSurfaceY(p) & 1;
+            }
+            if (pass == 1) return (System.nanoTime() - start) / 1000.0 / count + hits * 0.0;
+        }
+        return 0.0;
+    }
+
+    /**
+     * Border checks: their booths beside the road (off it, guards facing it), their traffic
+     * lights either side, and a vehicle coming up the road stopping level with the booth.
+     */
+    private static void checkBorders(InfrastructureManager infra) {
+        List<float[]> booths = infra.borderBooths(), lights = infra.borderLights();
+        int facing = 0, offRoad = 0, lightsOffRoad = 0;
+        for (float[] b : booths) {
+            SpherePosition at = Planet.spherePosition(b[0], b[1], 0.0);
+            // (well clear of its own road's edge; now and then another road runs close by)
+            if (!infra.isRoadLocation(at, 2f)) offRoad++;
+            double heading = Math.atan2(b[3], b[2]);
+            if (infra.isRoadLocation(SphereMath.move(at, heading, 16.0), 1.5f)) facing++;
+        }
+        check(facing == booths.size(), (booths.size() - facing) + " of " + booths.size() + " booths' guards not facing the road");
+        check(offRoad >= booths.size() * 0.9, (booths.size() - offRoad) + " of " + booths.size() + " booths in a road");
+        check(lights.size() % 2 == 0, "traffic lights not in pairs");
+        int stops = 0, fencedLit = 0;
+        for (int i = 0; i + 1 < lights.size(); i += 2) {
+            float[] a = lights.get(i), b = lights.get(i + 1);
+            check(a[5] == b[5], "traffic lights " + i + " not a pair");
+            SpherePosition pa = Planet.spherePosition(a[0], a[1], 0.0), pb = Planet.spherePosition(b[0], b[1], 0.0);
+            if (!infra.isRoadLocation(pa, 1f)) lightsOffRoad++;
+            if (!infra.isRoadLocation(pb, 1f)) lightsOffRoad++;
+            // The crossing is half way between its lights; come up the road towards it from 100 away
+            SpherePosition crossing = SphereMath.slerp(pa, pb, 0.5);
+            double heading = SphereMath.carryHeading(pa, crossing, Math.atan2(a[3], a[2]));
+            boolean fenced = false;
+            for (float[] booth : booths) fenced |= SphereMath.distance(Planet.spherePosition(booth[0], booth[1], 0.0), crossing) < 90.0;
+            if (!fenced) continue;
+            fencedLit++;
+            SpherePosition from = SphereMath.move(crossing, heading + Math.PI, 100.0);
+            double[] m = Planet.mercatorPosition(from);
+            double way = SphereMath.carryHeading(crossing, from, heading);
+            float stretch = (float) (1.0 / Math.cos(Planet.latitude(from)));
+            float[] stop = infra.borderStopAhead((float) m[0], (float) m[2], (float) Math.cos(way), (float) Math.sin(way), 200f * stretch);
+            check(stop != null, "no stop ahead of a vehicle coming up to border check " + (int) a[5]);
+            if (stop == null) continue;
+            // (another check may come first: a road can cross the same border twice)
+            if (stop[0] != a[5]) {
+                check(stop[1] / stretch < 55f, "border check " + (int) stop[0] + " stopped at beyond check " + (int) a[5]);
+                continue;
+            }
+            // (level with the near end's booth, CROSS_HALF before the border: 55 true units on)
+            check(Math.abs(stop[1] / stretch - 55f) < 3f, "border check " + (int) a[5] + " stop " + stop[1] / stretch + " ahead, not 55");
+            stops++;
+        }
+        System.out.printf("Borders: %d booths (%d off the road, %d guards facing it), %d traffic lights (%d off the road), %d of %d fenced crossings stop traffic level with the booth%n",
+                booths.size(), offRoad, facing, lights.size(), lightsOffRoad, stops, fencedLit);
+        check(lightsOffRoad >= lights.size() * 0.9, (lights.size() - lightsOffRoad) + " of " + lights.size() + " traffic lights in a road");
+        check(stops >= fencedLit * 0.9, "only " + stops + " of " + fencedLit + " fenced crossings stop traffic level with the booth");
+        check(!booths.isEmpty() && !lights.isEmpty(), "no border checks");
     }
 }

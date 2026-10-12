@@ -13,6 +13,25 @@ public class MeshBuilder {
     private int[] indices = new int[96];
         private int indexCount;
     private float planarTextureScale = 0;
+    private Placement placement;
+
+    /**
+     * Takes a vertex from the coordinates something is built in (its own frame) to the ones the
+     * builder stores, position and normal changed in place.
+     */
+    @FunctionalInterface
+    public interface Placement {
+        void place(float[] position, float[] normal);
+    }
+
+    /**
+     * Vertices added from now on are built in a frame of their own and placed by this (null to
+     * store them as given). Normals and planar texture coordinates are worked out before it, in
+     * the frame, so they are the same wherever the frame is.
+     */
+    public void setPlacement(Placement placement) {
+        this.placement = placement;
+    }
 
     /**
      * Gives faces added with addConvexFace texture coordinates in world units times this
@@ -24,6 +43,16 @@ public class MeshBuilder {
     }
 
     public int addVertex(float x, float y, float z, float nx, float ny, float nz, float u, float v) {
+        if (placement != null) {
+            float[] position = { x, y, z }, normal = { nx, ny, nz };
+            placement.place(position, normal);
+            x = position[0];
+            y = position[1];
+            z = position[2];
+            nx = normal[0];
+            ny = normal[1];
+            nz = normal[2];
+        }
         if (vertexFloatCount + STRIDE > vertices.length) {
             vertices = Arrays.copyOf(vertices, vertices.length * 2);
         }

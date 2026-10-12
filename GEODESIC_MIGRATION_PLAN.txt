@@ -90,6 +90,24 @@ D13 Chart bridges: while a system is still on the chart (buildings, roads,
     straightening), Settlement.chartX/chartZ, SettlementManager's (x, z)
     overloads, RoadNetworkBuilder.islandRichnessAt(x, z). Phase 3b deletes them
     (the maps' use of RoadPath.chart and the urbanness factor go in Phase 5).
+    Since the first part of 3b, segments and houses are built in their own frames
+    and the rest reaches them through InfrastructureManager's "chart bridge
+    (D13)" section (sphere, chartStretch, chartPoint/chartAt/chartDirection,
+    onChart placements), RoadSegment.chartStart/chartEnd and House.x/z/rotationY.
+    Gone: islandRichnessAt(x, z), SettlementManager's getCitySize/getHabitability/
+    dominantSettlementAt(x, z). Left: getUrbanness(x, z) (map wealth overlay,
+    Phase 5), Settlement.chartX/chartZ (settlementBetween, Phase 4).
+    Since the rest of 3b (parts 3 and 4) every lookup is on the sphere and the
+    listener's infrastructure bridges are gone (chartObstaclesNear, the road and
+    keep-out lambdas, groundHeightAt, the flora/grass clearing tests, the pod's
+    keep-clear). What is left, all marked "Chart bridge" in InfrastructureManager:
+    which chart chunk builds what (roadSegmentsByChunk, housesByChunk, booth/check
+    chartX/chartZ, across/shifted at the join) and the onChart placements, until
+    batching moves to geodesic cells (3b item 5); the (x, z) overloads and chart
+    results for people and vehicles (Phase 4: doorways, kerbSpot, roadAtPoint,
+    roadPointBetween, streetWalk, borderStopAhead/HoldAhead/Lights/Booths, the
+    chart Collision's obstaclesNear, walkingSurfaceY(x, z)); sign.position (sign
+    maps, Phase 5); the border fences traced on the nation map's chart grid (D12).
 
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
@@ -173,16 +191,21 @@ PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
 [x] Road network (RoadPath) as sequences of SpherePositions; segment lengths
     and smoothing by great-circle maths. Border straightening the same way.
 3b Building in frames
-[ ] RoadSegment gets a frame at its midpoint; offsetEdge/miterOffset/
+[x] RoadSegment gets a frame at its midpoint; offsetEdge/miterOffset/
     appendRoadSegment/paint/guard rails/culdesacs run in that frame. Junction
     tests convert the other segment into this segment's frame.
-[ ] House gets a frame at its position; localToWorld/worldToLocal/bake/
+[x] House gets a frame at its position; localToWorld/worldToLocal/bake/
     houseVertex become frame.toWorld/toLocal. House-building code itself
     should barely change.
-[ ] Fences, driveways, shop fronts, signs, flags, booths, traffic lights,
+[x] Fences, driveways, shop fronts, signs, flags, booths, traffic lights,
     crossover lines: frame of their own house/segment/check.
-[ ] Spatial queries (segmentsNear, housesNear, clearedAt, roadAt, roadDepth,
+    (Fences, driveways, shop windows and goods, wall flags, finery, flagpoles:
+    the house's frame. Signs: a frame each (house sign and wall boards: the
+    house's axes; roadside: carried from the segment). Booths, traffic lights,
+    crossover lines: the check's frame. Border fences: a frame per piece.)
+[x] Spatial queries (segmentsNear, housesNear, clearedAt, roadAt, roadDepth,
     walkingSurfaceY, doorways, border checks) on CellIndex (D5).
+    (Also: collision shapes, driveways, shops, booths, the pod's keep-clear.)
 [ ] Batching: NationBatch meshes built per geodesic cell in camera-relative
     world coordinates (follow how Copilot's terrain chunks do it).
 [ ] Delete GeodesicRoadMesh, GeodesicSettlementMesh and their fields/futures
@@ -489,3 +512,107 @@ LOG
   - Launch script used: PowerShell needs the -D arguments quoted
     ('-Dxenoguesser.seed=123'), else java reads ".seed=123" as the main class;
     Tee-Object writes the log as UTF-16 (read it with iconv -f UTF-16).
+2026-10-11  PHASE 3b PART 1 DONE (uncommitted): RoadSegment and House in frames.
+  - MeshBuilder.Placement: a builder can take vertices built in a frame and place
+    them (normals and planar uv worked out first, in the frame). NationBatch.place
+    sets it for the piece being built. Until batching moves to geodesic cells the
+    placement is a chart bridge (onChart): frame -> planet -> chart point, which
+    InfrastructureObject.sphereVertices lifts back exactly (level normal parts
+    scaled by cos latitude, which the lift undoes).
+  - RoadSegment: SphereFrame at its middle (east/up/south, datum), from/to = the
+    path's own points, start/end/tangents in the frame by fromSphere (x, z along
+    the ground, y the height above the datum), lifted with toSphere. Built from
+    RoadPath.points, not RoadPath.chart. Deck heights: roadSurfaceY(SpherePosition),
+    sampled round the place in its own east/south frame so junctions agree.
+    Junctions: Crossing = the other segment's ends put in this segment's frame.
+    Dirt tracks are textured by path distance and offset across (was chart x, z).
+  - House: frame at its middle (datum), turned so local +z (door) faces the road;
+    placed in the frontage segment's frame, heading carried with carryHeading.
+    Settling, plot tests, plotsOverlap (in a's frame), doorways, followKerb, the
+    fences, driveways, windows, shop fronts and wall flags all work in the frame.
+    House.x/z/rotationY remain as the chart bridge (buckets, signs, maps, people).
+  - Spatial queries still use the chart buckets (Phase 3b item 4), with their
+    search widened by the chart's stretch; the distance tests themselves are done
+    in each segment's / house's frame, so they match what is drawn.
+  - Everything is true size now: seed 123 has 10609 houses (was 16407: spacing
+    along roads is now true distance, so far fewer at high latitude).
+  - PlanningCheck also builds the infrastructure (~5 s more): every building
+    fills its footprint and stops at its back wall (true size), made roads are
+    their class's width, and the chunks round the two test towns build meshes on
+    their own chunks. 426270 checks pass. SphereToolkitCheck: 2928 pass.
+  - Launches (seed 123): equator town (3.297, 16.389): roads, paint, junctions,
+    houses, round tower, fences, person, 26 FPS. Town at 67.461 N 139.716 E:
+    full-size blocks, road paint, fences, door, people, 21 FPS. No exceptions,
+    world ready 84-85 s.
+  - Seen, not fixed: frame rate is down a little (3a: 29 equator / 27 at 67 N).
+    Likely the queries people/vehicles/grass make every frame: the chart buckets
+    searched grow with the stretch and each candidate is now a fromSphere. Item 4
+    (CellIndex) should take this back; measure after it. People and vehicles
+    still move on the chart (Phase 4), so kerbs, routes and doorways reach them
+    through the bridge in chart units.
+2026-10-12  PHASE 3b PARTS 3 AND 4 DONE (uncommitted): the rest in frames, lookups on CellIndex.
+  - Signs: InfrastructureObject.frame (D3): a sign's matrices are in its own frame
+    (foot at the origin, face towards local +z) and it is drawn on the sphere through
+    it (draw(): frame.modelMatrix x local, renderSphereNative); sign.position is now
+    only the chart bridge for the sign maps. House signs and wall boards (shop names,
+    posters) take the house's axes moved to where they are (flush with its walls);
+    roadside signs are laid out in the segment's frame, their facing carried to them.
+    The listener draws them again (renderSigns, in renderGeodesicInfrastructure);
+    they were not drawn at all on the sphere before. signShot works on the sphere.
+  - Flagpoles: in the house's frame, the world's wind put into it. Booths, traffic
+    lights, crossover lines: BorderCheck (frame at the crossing, local x along the
+    road, z towards the near booth) and Booth (own frame, axes carried from the
+    check), found on the sphere from RoadPath.points (no longer RoadPath.chart).
+    Vehicles' stop/hold tests run in the check's frame in true units; the results
+    go back to them in chart units. Border fences: still traced on the chart grid
+    (the nation map is the authority, D12), each piece built in a frame at its
+    middle, true size; posts thinned by the chart's stretch so they stand as far
+    apart everywhere (the grid is ~3x denser in true terms at 70 degrees).
+  - Lookups (D5): CellIndexes at level 7 for segments (middle, half length), houses
+    (middle, plot's far corner; filed once the plots are final), driveways, shops,
+    border checks and booths; a placement index (plot middles) while plots are laid
+    out and fenced. Collision shapes are Obstacles on SpherePositions in a level-8
+    CellIndex, filed the first time each chunk is built. The sphere versions are the
+    real ones (isRoadLocation, isBuildingLocation, isClearedForRoad, walkingSurfaceY,
+    roofAt, obstaclesNear, nearestShop); (x, z) overloads convert for Phase 4. The
+    map join (nearJoin/otherSide) no longer matters to any lookup.
+  - CellIndex: searches skip cells and items with a cheap dot-product bound
+    (cos x >= 1 - x^2/2) before the exact distance, and keep the cells seen in an
+    unboxed set. SphereToolkitCheck still matches brute force: 2928 pass.
+  - PlanningCheck (426502 pass): as before, plus round the two towns (each built over
+    the same true area): signs in right-handed upright frames, standing ones on the
+    ground off the road facing a road, wall boards against their building; every
+    front door has a solid wall by it; driveways cleared all along; the lookups'
+    cost (13.7 us a round of four at the equator, 10.0 at 67 N; about 1.3-2.7 us
+    each, the walking surface more for its terrain noise); booths off the road with
+    guards facing it, traffic lights in pairs, and a vehicle coming up to a fenced
+    crossing stopping level with its booth; at 12 fenced crossings the border fence
+    reaches the road (within 60) with a gatepost, pieces at most 7.8 long.
+    426506 pass. 10609 houses, as before.
+    (A first version tested fence within 80 of each booth: 2 of 12 failed, as booths
+    now stand a true 45 from the border, not a few chart units, and where the border
+    meets the road at a shallow angle the fence near the road is left out as road.
+    The last commit's code, built separately, had fence at all 12, so the test was
+    moved to the crossing itself, which is what matters.)
+  - Launches (seed 123): equator town (3.297, 16.389): signs on posts and shop name
+    boards and posters on walls, lettering the right way round (the glyphs match the
+    same glyphs printed on the packets in the shop window), people, cars, 22 FPS
+    (part 1: 26; signs are drawn again, which they were not on the sphere before,
+    each with its own uniforms and 512-letter text: likely the difference, not
+    profiled; batching them is for 3b item 5). Town at
+    67.461 N 139.716 E: houses, fences, a sign, paint, a car, 28 FPS (part 1: 21).
+    Border crossing at 70.3 S 0.2 E: booth true size beside the road, its guard
+    standing in it, town behind, 28 FPS. World ready 70-84 s. No exceptions.
+    Round change (hudtest=guess,shop,next, normal spawn): next round built in the
+    background in 10.9 s over 286 frames, started at once, no exceptions (Phase 1
+    logged 3.9 s at another spot; not compared like for like).
+  - The frame rates above are not a latitude comparison: the towns differ a lot in
+    density (846k vertices round the equator town, 43k over the same true area round
+    the 67 N one), and the chart chunks streamed (VIEW_DISTANCE rings) cover only
+    ~0.38 of the true ground at 67 degrees, so the north draws less. Item 5 (batches
+    per geodesic cell) removes that; measure latitude there, with like towns.
+  - Seen, not fixed: the people's and goods' pictures on signs show only their
+    backdrop colour (the textures from Inhabitants.renderPictures are blank:
+    Phase 4, which ports the people). A few booths (2 of 40) and lights (4 of 68)
+    stand within reach of another road passing a crossing (as before the port).
+    House placement takes ~2.2 s (was 1.7 s on the chart buckets).

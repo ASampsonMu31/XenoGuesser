@@ -66,6 +66,15 @@ public class InfrastructureObject {
     public boolean bothSides;
     public float boardWidth = 30f, boardHeight = 22f;
 
+    // --- WHERE A SIGN STANDS ---
+    // A sign is built in a frame of its own (D3 in GEODESIC_MIGRATION_PLAN.txt): its matrices
+    // are in that frame (its foot at the origin, the board's face towards local +z) and it is
+    // drawn on the sphere through it. position is then a chart bridge (D13): where it is on the
+    // Mercator chart, for the sign maps and developer aids still there. Null for a batch.
+    public SphereFrame frame;
+    // How far either side of a standing sign's middle its posts are
+    public static final float SIGN_POST_SPACING = 15.0f;
+
     public void addPicture(int kind, float[] rect, int variant) {
         if (pictureCount >= MAX_PICTURES) return;
         pictureKinds[pictureCount] = kind;
@@ -128,6 +137,11 @@ public class InfrastructureObject {
 
     private final List<BatchPart> batchParts = new ArrayList<>();
 
+    /** A batch's meshes, one per material (empty for a sign). */
+    List<BatchPart> batchParts() {
+        return batchParts;
+    }
+
     public InfrastructureObject(Type type, Vector3 position, int nationId, float rotationY, int[] textString) {
         this.type = type;
         this.position = position;
@@ -148,7 +162,7 @@ public class InfrastructureObject {
         this.modelMatrix = Matrix4.multiply(this.modelMatrix, Matrix4Transform.rotateAroundY(rotationY));
 
         if (this.type == Type.SIGN) {
-            float postSpacing = 15.0f;
+            float postSpacing = SIGN_POST_SPACING;
             float postHeight = 45.0f;
             Matrix4 postScale = Matrix4Transform.scale(1.0f, postHeight, 1.0f);
 
@@ -206,6 +220,25 @@ public class InfrastructureObject {
         Matrix4 face = Matrix4.multiply(Matrix4Transform.rotateAroundX(90.0f), Matrix4Transform.scale(width, 1.0f, height));
         sign.frontBoardMatrix = Matrix4.multiply(sign.modelMatrix, face);
         sign.backBoardMatrix = Matrix4.multiply(sign.modelMatrix, Matrix4.multiply(Matrix4Transform.rotateAroundY(180.0f), face));
+        return sign;
+    }
+
+    /** A standing sign in its own frame (origin at its foot, between the posts; text facing local +z), chartPosition its place on the chart. */
+    public static InfrastructureObject createSign(SphereFrame frame, Vector3 chartPosition, int nationId, int[] textString) {
+        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, new Vector3(0f, 0f, 0f), nationId, 0f, textString);
+        sign.frame = frame;
+        sign.position = chartPosition;
+        return sign;
+    }
+
+    /** As createWallSign, built in its own frame: the board centred on its origin, facing local +z. */
+    public static InfrastructureObject createWallSign(SphereFrame frame, Vector3 chartPosition, int nationId, float width, float height,
+                                                      boolean banner, boolean bothSides, int[] textString,
+                                                      float tiltDegrees, float curveRadius) {
+        InfrastructureObject sign = createWallSign(new Vector3(0f, 0f, 0f), nationId, 0f, width, height, banner, bothSides, textString,
+                tiltDegrees, curveRadius);
+        sign.frame = frame;
+        sign.position = chartPosition;
         return sign;
     }
 
@@ -468,11 +501,8 @@ public class InfrastructureObject {
             if (billboardModel != null && postModel != null) {
                 // Render Support Posts
                 if (!wallMounted) {
-                    postModel.setModelMatrix(this.leftPostMatrix);
-                    postModel.render(gl, ambientLight, nightProportion);
-
-                    postModel.setModelMatrix(this.rightPostMatrix);
-                    postModel.render(gl, ambientLight, nightProportion);
+                    draw(gl, postModel, this.leftPostMatrix, ambientLight, nightProportion);
+                    draw(gl, postModel, this.rightPostMatrix, ambientLight, nightProportion);
                 }
 
                 // Setup Billboard Shader
@@ -546,14 +576,12 @@ public class InfrastructureObject {
                 // --- 1. FRONT SIDE (Draws full text) ---
                 signShader.setFloat(gl, "bend", bend);
                 signShader.setInt(gl, "stringLength", this.stringLength);
-                billboardModel.setModelMatrix(this.frontBoardMatrix);
-                billboardModel.render(gl, ambientLight, nightProportion);
+                draw(gl, billboardModel, this.frontBoardMatrix, ambientLight, nightProportion);
 
                 if (wallMounted || bothSides) signShader.setFloat(gl, "bend", 0f);
                 if (bothSides) {
                     // Sticking out into the street: the same face both ways
-                    billboardModel.setModelMatrix(this.backBoardMatrix);
-                    billboardModel.render(gl, ambientLight, nightProportion);
+                    draw(gl, billboardModel, this.backBoardMatrix, ambientLight, nightProportion);
                     return;
                 }
                 if (wallMounted) return;
@@ -564,9 +592,22 @@ public class InfrastructureObject {
                 for (int i = 0; i < MAX_PICTURES; i++) signShader.setInt(gl, "pictureKind[" + i + "]", 0);
                 signShader.setInt(gl, "titleLength", 0);
                 signShader.setInt(gl, "bannerMode", 0);
-                billboardModel.setModelMatrix(this.backBoardMatrix);
-                billboardModel.render(gl, ambientLight, nightProportion);
+                draw(gl, billboardModel, this.backBoardMatrix, ambientLight, nightProportion);
             }
         }
+    }
+
+    /**
+     * Draws one piece of a sign: given in its frame, it is drawn on the sphere through it,
+     * camera-relative (see Renderer.renderSphereNative); a sign without a frame, as given.
+     */
+    private void draw(GL3 gl, Model model, Matrix4 local, Vector3 ambientLight, float nightProportion) {
+        if (frame == null) {
+            model.setModelMatrix(local);
+            model.render(gl, ambientLight, nightProportion);
+            return;
+        }
+        model.setModelMatrix(Matrix4.multiply(frame.modelMatrix(1f), local));
+        model.renderSphereNative(gl, ambientLight, nightProportion);
     }
 }

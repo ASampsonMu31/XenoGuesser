@@ -833,11 +833,6 @@ public class RoadNetworkBuilder {
         return islandRichness[(int) routingGrid.cellAt(place).id()];
     }
 
-    /** Chart bridge (D13) for InfrastructureManager until Phase 3b: islandRichnessAt a chart point. */
-    public float islandRichnessAt(float chartX, float chartZ) {
-        return islandRichnessAt(Planet.spherePosition(chartX, chartZ, 0.0));
-    }
-
     /**
      * Islands that the roads never reached (no town on them, or none linked) mostly still have
      * a few roads: each starts somewhere inland and wanders out both ways to the shore, and
