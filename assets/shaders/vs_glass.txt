@@ -1,6 +1,6 @@
 #version 330 core
 
-// Window glass, already in world space
+// Window glass, in world coordinates (planet-centred), drawn relative to the camera
 
 layout (location = 0) in vec3 position;
 layout (location = 1) in vec3 normal;
@@ -10,20 +10,11 @@ out vec3 aPos;
 out vec3 aNormal;
 
 uniform mat4 viewProjection;
-
-// The planet's curve (see Planet): lowered by curvature times the square of the distance
-// across the ground from curveCentre, along curveDown, the projection of a step up
-uniform vec2 curveCentre;
-uniform float curvature;
-uniform vec4 curveDown;
-
-vec4 planetDrop(vec3 world) {
-    vec2 d = world.xz - curveCentre;
-    return curveDown * (curvature * dot(d, d));
-}
+uniform vec3 sphereCamera;
 
 void main() {
-    aPos = position;
+    vec3 p = position - sphereCamera;
+    aPos = p;
     aNormal = normal;
-    gl_Position = viewProjection * vec4(position, 1.0) - planetDrop(position);
+    gl_Position = viewProjection * vec4(p, 1.0);
 }

@@ -9,8 +9,9 @@ import java.util.Random;
  * point is on the ground, evenly spaced, and carried onto the chart without a jump.
  * Phase 3b (building in frames): builds the houses and roads as the game does and checks they
  * are true size at every latitude (houses fill their footprints and no more, roads are as wide
- * as their class), and that two towns' chunks (at the equator and near 70 degrees) build
- * meshes that stay where they belong on the chart; that signs stand in right-handed frames of
+ * as their class), and that the geodesic cells round two towns (at the equator and near 70
+ * degrees) build batches in world coordinates on the ground in their own cell, with every
+ * vertex inside the batch's bounds and unit normals; that signs stand in right-handed frames of
  * their own, on the ground facing a road or flat on a wall; that walls are solid, driveways
  * cleared, border booths, lights and stops placed in their checks' frames; and that the
  * lookups on the sphere (D5) cost no more in the north.
@@ -168,38 +169,55 @@ public final class PlanningCheck {
                 }
             }
         });
-        // Two towns' chunks (as much true ground round each: the chart's chunks are smaller in the
-        // north) build meshes on the chart round the chunk (lifted back exactly as drawn), and
-        // signs in frames of their own, standing where they should and facing the right way
+        // The geodesic cells round two towns (the same true ground round each) build batches in
+        // world coordinates, and signs in frames of their own, standing where they should and
+        // facing the right way
         double[] lookupMicros = new double[2];
         double[][] towns = { { 3.297, 16.389 }, { 67.461, 139.716 } };
+        GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
         for (int t = 0; t < towns.length; t++) {
             double[] town = towns[t];
             SpherePosition centre = Planet.position(Math.toRadians(town[0]), Math.toRadians(town[1]), 0.0);
-            double[] m = Planet.mercatorPosition(centre);
-            int cx = (int) Math.floor((m[0] + chunk * 0.5) / chunk), cz = (int) Math.floor((m[2] + chunk * 0.5) / chunk);
-            int reach = (int) Math.round(4.0 / Math.cos(Math.toRadians(town[0])));
-            int vertices = 0, wide = 0;
+            List<GeodesicChunkGrid.Cell> cells = batchGrid.cellsWithin(SphereMath.direction(centre), 450.0 / Planet.radius());
+            int vertices = 0, wide = 0, offGround = 0, outside = 0, badNormals = 0;
             List<InfrastructureObject> signs = new java.util.ArrayList<>();
-            for (int dz = -reach; dz <= reach; dz++) {
-                for (int dx = -reach; dx <= reach; dx++) {
-                    for (InfrastructureObject object : infra.generateForChunk(cx + dx, cz + dz, chunk, width, sea, noise)) {
-                        if (object.type == InfrastructureObject.Type.SIGN) signs.add(object);
-                        for (InfrastructureObject.BatchPart part : object.batchParts()) {
-                            for (int v = 0; v + 7 < part.vertices.length; v += 8) {
-                                vertices++;
-                                float vx = part.vertices[v], vz = part.vertices[v + 2];
-                                if (Math.abs(vx - (cx + dx) * chunk) > 1500f || Math.abs(vz - (cz + dz) * chunk) > 1500f) wide++;
+            long building = 0L, slowest = 0L;
+            for (GeodesicChunkGrid.Cell cell : cells) {
+                SpherePosition cellMiddle = SphereMath.atAltitude(cell.centre(), 0.0);
+                double cellReach = cell.angularRadius() * Planet.radius();
+                long before = System.nanoTime();
+                List<InfrastructureObject> built = infra.generateForCell(cell.id(), chunk, width, sea, noise);
+                building += System.nanoTime() - before;
+                slowest = Math.max(slowest, System.nanoTime() - before);
+                for (InfrastructureObject object : built) {
+                    if (object.type == InfrastructureObject.Type.SIGN) signs.add(object);
+                    for (InfrastructureObject.BatchPart part : object.batchParts()) {
+                        for (int v = 0; v + 7 < part.vertices.length; v += 8) {
+                            vertices++;
+                            SpherePosition p = new SpherePosition(part.vertices[v], part.vertices[v + 1], part.vertices[v + 2]);
+                            // (each piece is built by the cell its middle is in, and reaches a plot's size from there)
+                            if (SphereMath.distance(p, cellMiddle) > cellReach + 200.0) wide++;
+                            double dx = p.x() - object.centre.x(), dy = p.y() - object.centre.y(), dz = p.z() - object.centre.z();
+                            if (Math.sqrt(dx * dx + dy * dy + dz * dz) > object.boundingRadius + 0.01) outside++;
+                            float nx = part.vertices[v + 3], ny = part.vertices[v + 4], nz = part.vertices[v + 5];
+                            if (Math.abs(Math.sqrt(nx * nx + ny * ny + nz * nz) - 1.0) > 1e-3) badNormals++;
+                            // (on the ground, give or take a tall building or a deck: not on the chart)
+                            if (v % (8 * 37) == 0) {
+                                double above = SphereMath.altitude(p) - TerrainMesh.getLayeredHeight(p, noise);
+                                if (above < -60.0 || above > 600.0) offGround++;
                             }
                         }
                     }
                 }
             }
             String where = String.format("round %.3f, %.3f", town[0], town[1]);
-            System.out.printf("Town at %.3f, %.3f: %d vertices and %d signs in its %d chunks%n", town[0], town[1], vertices, signs.size(),
-                    (2 * reach + 1) * (2 * reach + 1));
+            System.out.printf("Town at %.3f, %.3f: %d vertices and %d signs in its %d cells, built in %.1f ms (%.2f ms a cell, at most %.2f)%n",
+                    town[0], town[1], vertices, signs.size(), cells.size(), building / 1e6, building / 1e6 / cells.size(), slowest / 1e6);
             check(vertices > 10000, "town " + where + " built almost nothing: " + vertices + " vertices");
-            check(wide == 0, wide + " vertices built far from their chunk " + where);
+            check(wide == 0, wide + " vertices built far from their cell " + where);
+            check(outside == 0, outside + " vertices outside their batch's bounds " + where);
+            check(badNormals == 0, badNormals + " vertices with normals not of unit length " + where);
+            check(offGround == 0, offGround + " sampled vertices far off the ground " + where);
             checkSigns(infra, signs, noise, where);
             checkSolids(infra, centre, where);
             checkDriveways(infra, Planet.mercatorPosition(centre), where);
@@ -210,15 +228,52 @@ public final class PlanningCheck {
                 lookupMicros[0], lookupMicros[1]);
         check(lookupMicros[1] < lookupMicros[0] * 2.0 + 2.0, "lookups cost more in the north: " + lookupMicros[1] + " us against " + lookupMicros[0]);
         checkBorders(infra);
+        checkLandingSites(infra, noise, sea);
         checkBorderFences(infra, chunk, width, sea, noise);
     }
 
     /**
-     * Border fences at fenced crossings (built as their chunks are): reaching the road where it
+     * The pod's landing sites (chosen on the sphere): off the road and every plot, facing a road
+     * a true distance ahead, as far off at 55 degrees as at the equator.
+     */
+    private static void checkLandingSites(InfrastructureManager infra, PerlinNoise noise, float sea) {
+        Random rand = new Random(7L);
+        int sites = 0, facing = 0, north = 0, inRoad = 0;
+        double farthest = 0.0;
+        float standsAt = LandingPod.SPAWN_DISTANCE, reach = LandingPod.REACH;
+        for (int k = 0; k < 300; k++) {
+            Viewpoint site = infra.landingSite(rand, standsAt, reach,
+                    p -> TerrainMesh.getLayeredHeight(p, noise) > sea + 1.0f && Math.abs(Planet.latitude(p)) < Math.toRadians(60.0));
+            if (site == null) continue;
+            sites++;
+            if (Math.abs(Math.toDegrees(Planet.latitude(site.place()))) > 40.0) north++;
+            // (now and then another road passes where the player stands)
+            if (infra.isRoadLocation(site.place(), 0f)) inRoad++;
+            check(!infra.isBuildingLocation(site.place(), 0f), "landing site at " + site.place() + " in a building");
+            // (a road straight ahead, within the pod's reach and the most it is set back)
+            for (double ahead = 1.0; ahead <= reach + 60.0; ahead += 1.0) {
+                if (infra.isRoadLocation(SphereMath.move(site.place(), site.heading(), ahead), 0f)) {
+                    facing++;
+                    farthest = Math.max(farthest, ahead);
+                    break;
+                }
+            }
+        }
+        System.out.printf("Landing sites: %d of 300 found (%d above 40 degrees), %d facing a road, farthest %.1f ahead, %d standing in a road%n",
+                sites, north, facing, farthest, inRoad);
+        check(inRoad <= sites / 50, inRoad + " landing sites standing in a road");
+        check(sites > 250, "few landing sites: " + sites);
+        check(north > 10, "no landing sites in the north: " + north);
+        check(facing == sites, (sites - facing) + " landing sites not facing a road a true distance ahead");
+    }
+
+    /**
+     * Border fences at fenced crossings (built as their cells are): reaching the road where it
      * crosses the border, with a gatepost there, and true size (short pieces at 70 degrees too).
      */
     private static void checkBorderFences(InfrastructureManager infra, float chunk, float width, float sea, PerlinNoise noise) {
         List<float[]> booths = infra.borderBooths(), lights = infra.borderLights();
+        GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
         int crossings = 0, fenced = 0, gated = 0;
         double longest = 0.0, farthest = 0.0;
         for (int i = 0; i + 1 < lights.size() && crossings < 12; i += 2) {
@@ -229,11 +284,8 @@ public final class PlanningCheck {
             for (float[] booth : booths) hasBooth |= SphereMath.distance(Planet.spherePosition(booth[0], booth[1], 0.0), crossing) < 90.0;
             if (!hasBooth) continue;
             crossings++;
-            double[] m = Planet.mercatorPosition(crossing);
-            int cx = (int) Math.floor((m[0] + chunk * 0.5) / chunk), cz = (int) Math.floor((m[2] + chunk * 0.5) / chunk);
-            int reach = (int) Math.ceil(1.5 / Math.cos(Planet.latitude(crossing)));
-            for (int dz = -reach; dz <= reach; dz++) {
-                for (int dx = -reach; dx <= reach; dx++) infra.generateForChunk(cx + dx, cz + dz, chunk, width, sea, noise);
+            for (GeodesicChunkGrid.Cell cell : batchGrid.cellsWithin(SphereMath.direction(crossing), 150.0 / Planet.radius())) {
+                infra.generateForCell(cell.id(), chunk, width, sea, noise);
             }
             double[] nearest = { Double.MAX_VALUE, Double.MAX_VALUE }, most = { 0.0 };
             infra.obstaclesNear(crossing, 120.0, new GeodesicCollision.Sink() {
@@ -306,7 +358,7 @@ public final class PlanningCheck {
         check(againstWalls >= onWalls * 0.95, (onWalls - againstWalls) + " of " + onWalls + " boards on walls not against a building " + where);
     }
 
-    /** The walls of every building round a town are solid (filed on the sphere as their chunks are built). */
+    /** The walls of every building round a town are solid (filed on the sphere as their cells are built). */
     private static void checkSolids(InfrastructureManager infra, SpherePosition centre, String where) {
         int buildings = 0, solid = 0;
         for (InfrastructureManager.Doorway door : infra.doorwaysNear((float) Planet.mercatorPosition(centre)[0], (float) Planet.mercatorPosition(centre)[2], 250f)) {

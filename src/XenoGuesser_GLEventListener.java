@@ -36,28 +36,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Shader sphereWaterShader;
     private SphereSkyRenderer sphereSkyRenderer;
     private SphereWeather sphereWeather;
-    private Shader sphereStructureShader;
     private static final int GEODESIC_WATER_SEGMENTS = 8;
-    private Model geodesicRoadModel;
-    private java.util.concurrent.Future<GeodesicRoadMesh.Patch> geodesicRoadBuild;
-    private SpherePosition geodesicRoadBuildCentre;
-    private SpherePosition geodesicRoadActiveCentre;
-    private long geodesicRoadRetryAfterNanos;
-    private List<GeodesicRoadMesh.RouteSegment> geodesicRoadRoutes = List.of();
-    private final Material geodesicRoadMaterial = new Material(new Vector3(0.8f, 0.8f, 0.8f),
-            new Vector3(0.34f, 0.34f, 0.32f), new Vector3(0.02f, 0.02f, 0.02f), 2f);
-    private Model geodesicSettlementWallModel;
-    private Model geodesicSettlementRoofModel;
-    private java.util.concurrent.Future<GeodesicSettlementMesh.Patch> geodesicSettlementBuild;
-    private SpherePosition geodesicSettlementBuildCentre;
-    private SpherePosition geodesicSettlementActiveCentre;
-    private long geodesicSettlementRetryAfterNanos;
-    private List<GeodesicSettlementMesh.WallSegment> geodesicSettlementWalls = List.of();
     private final GeodesicCollision geodesicCollision = new GeodesicCollision();
-    private final Material geodesicWallMaterial = new Material(new Vector3(0.9f, 0.9f, 0.9f),
-            new Vector3(0.72f, 0.63f, 0.48f), new Vector3(0.01f, 0.01f, 0.01f), 2f);
-    private final Material geodesicRoofMaterial = new Material(new Vector3(0.8f, 0.8f, 0.8f),
-            new Vector3(0.32f, 0.28f, 0.23f), new Vector3(0.01f, 0.01f, 0.01f), 2f);
     /**
      * A tree or shrub on the sphere: where it stands, which model, and what's worked out once
      * for it (its model matrix, its leaves' colours there and its trunk's radius).
@@ -70,8 +50,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private CellStream<List<SphereFlora>> floraStream;
     private CellStream<float[]> grassStream;
     private final CellIndex<SphereFlora> trees = new CellIndex<>();
-    // The walls of Copilot's stand-in settlements, solid until they are replaced (Phase 3)
-    private final CellIndex<GeodesicSettlementMesh.WallSegment> settlementWalls = new CellIndex<>();
     private static final int GEODESIC_TERRAIN_SEGMENTS = 32;
     
 private static class SpeciesConfig {
@@ -155,8 +133,8 @@ private static class SpeciesConfig {
     // The pod the player landed in, standing where each round starts
     private final LandingPod landingPod = new LandingPod();
     private RockField rockField;
-    // Buildings, fences, rails and signs, and the people among them, on the chart until they are
-    // ported (Phases 3 and 4); everything on the sphere uses geodesicCollision
+    // The people and vehicles, on the chart until they are ported (Phase 4); everything on the
+    // sphere uses geodesicCollision
     private final Collision collision = new Collision();
     private static final Object PLAYER = "player";
     private static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
@@ -206,8 +184,6 @@ private static class SpeciesConfig {
 
     private float playerEyeHeight = 20.0f;
     
-    private int lastChunkX = Integer.MAX_VALUE;
-    private int lastChunkZ = Integer.MAX_VALUE;
 
     private MapPanel minimap;
     private GameHUD gameHUD; 
@@ -301,7 +277,14 @@ private static class SpeciesConfig {
 
     private InfrastructureManager infraManager;
     private SettlementManager settlementManager;
-    private Map<String, List<InfrastructureObject>> infraCache;
+    // The roads and buildings round the player, per geodesic cell at InfrastructureManager.BATCH_LEVEL
+    private Map<Long, List<InfrastructureObject>> infraCache;
+    private final GeodesicChunkGrid infraGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
+    // The cells wanted round the player's cell (nearest first, those ahead before those behind),
+    // worked out again only when the player changes cell, and where they were then
+    private long infraWantedFor = Long.MIN_VALUE;
+    private List<GeodesicChunkGrid.Cell> infraWanted = List.of();
+    private SpherePosition infraWantedFrom;
 
     // Bird's-eye minimap layers, rendered on a background thread at startup
     private static final int BIRDS_EYE_MAP_RESOLUTION = 750;
@@ -310,6 +293,8 @@ private static class SpeciesConfig {
     // Cities thin out trees and draw fewer distant details to pay for their extra buildings
     private static final float URBAN_FLORA_REDUCTION = 0.75f;
     private static final float SIGN_DRAW_DISTANCE = 1600.0f;
+    // Window glass has faded out by here (see fs_glass)
+    private static final float GLASS_DRAW_DISTANCE = 2200.0f;
     private Map<Integer, Model> signModelsByNation;
     // Per nation: GL texture ids of portraits then full-length pictures of its people
     private int[][] peoplePictures;
@@ -642,14 +627,12 @@ private static class SpeciesConfig {
         this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
         collision.addSource(infraManager::obstaclesNear);
         inhabitants.setCollision(collision);
-        // What's solid on the sphere: the pod, trees, rocks, the stand-in settlements' walls, and
-        // the real buildings, fences, rails and sign posts
+        // What's solid on the sphere: the pod, trees, rocks, and the buildings, fences, rails and
+        // sign posts
         geodesicCollision.addSource(landingPod::obstaclesNear);
         geodesicCollision.addSource((centre, reach, sink) ->
                 trees.forEachNear(centre, reach, tree -> sink.circle(tree.position(), tree.trunk())));
         geodesicCollision.addSource((centre, reach, sink) -> { if (rockField != null) rockField.obstaclesNear(centre, reach, sink); });
-        geodesicCollision.addSource((centre, reach, sink) ->
-                settlementWalls.forEachNear(centre, reach, wall -> sink.segment(wall.start(), wall.end(), 0.75, wall.top())));
         geodesicCollision.addSource((centre, reach, sink) -> { if (infraManager != null) infraManager.obstaclesNear(centre, reach, sink); });
         organismManager.setCollision(geodesicCollision);
         organismManager.setWild(p -> settlementManager.getUrbanness(p) < 0.12f);
@@ -1292,17 +1275,8 @@ private static class SpeciesConfig {
             geodesicTerrainModel.mesh.dispose(gl);
         }
         if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
-        if (geodesicRoadModel != null && geodesicRoadModel.mesh != null) geodesicRoadModel.mesh.dispose(gl);
-        if (geodesicSettlementWallModel != null && geodesicSettlementWallModel.mesh != null) {
-            geodesicSettlementWallModel.mesh.dispose(gl);
-        }
-        if (geodesicSettlementRoofModel != null && geodesicSettlementRoofModel.mesh != null) {
-            geodesicSettlementRoofModel.mesh.dispose(gl);
-        }
         if (geodesicTerrainBuild != null) geodesicTerrainBuild.cancel(true);
         if (geodesicWaterBuild != null) geodesicWaterBuild.cancel(true);
-        if (geodesicRoadBuild != null) geodesicRoadBuild.cancel(true);
-        if (geodesicSettlementBuild != null) geodesicSettlementBuild.cancel(true);
         floraStream.clear();
         grassStream.clear();
         
@@ -1426,8 +1400,6 @@ private static class SpeciesConfig {
         
 
         terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
-        sphereStructureShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt",
-                GamePaths.HOME + "assets/shaders/fs_sphere_structure.txt");
         depthPrePassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_solid.txt");
         glassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_glass.txt", GamePaths.HOME + "assets/shaders/fs_glass.txt");
@@ -1451,13 +1423,6 @@ private static class SpeciesConfig {
         for (String name : infraManager.textureJobs().keySet()) {
             textures.addWrap(gl, name, WorldArtGenerator.pathFor(name));
             enableAnisotropicFiltering(textures.get(name));
-        }
-        for (String name : infraManager.textureJobs().keySet()) {
-            if (!geodesicWallMaterial.diffuseMapExists() && name.startsWith("wall_variant")) {
-                geodesicWallMaterial.setDiffuseMap(textures.get(name));
-            } else if (!geodesicRoofMaterial.diffuseMapExists() && name.startsWith("roof_nation")) {
-                geodesicRoofMaterial.setDiffuseMap(textures.get(name));
-            }
         }
         infraManager.setNationTextures(textures::get);
         terrainRenderer = new Renderer();
@@ -1808,15 +1773,12 @@ private static class SpeciesConfig {
     private final java.util.Random spawnRandom = Long.getLong("xenoguesser.seed") != null
             ? new java.util.Random(Long.getLong("xenoguesser.seed")) : new java.util.Random();
 
-    /**
-     * Where a normal round's pod comes down: near a road, clear of houses, away from the poles
-     * (chosen by the road network, which is still laid out on the chart until Phase 3).
-     */
+    /** Where a normal round's pod comes down: near a road, clear of houses, away from the poles. */
     private Viewpoint landingSite(java.util.Random rand) {
-        return chartViewpoint(infraManager.landingSite(rand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
-                (px, pz) -> TerrainMesh.getLayeredHeight(px, pz, worldNoise) > seaLevelHeight + 1.0f
+        return infraManager.landingSite(rand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
+                p -> TerrainMesh.getLayeredHeight(p, worldNoise) > seaLevelHeight + 1.0f
                         // Rounds start away from the far north and south
-                        && Math.abs(Planet.latitude(pz)) < Math.toRadians(60.0)));
+                        && Math.abs(Planet.latitude(p)) < Math.toRadians(60.0));
     }
 
     /** A place and facing {x, z, east, south} on the chart (from a system not yet ported off it) as a Viewpoint; null stays null. */
@@ -1876,8 +1838,8 @@ private static class SpeciesConfig {
         String devView = System.getProperty("xenoguesser.view");
         // Rounds always start on a road, looking along it
         // Developer aid: -Dxenoguesser.view=house starts each round looking at a house
-        Viewpoint spawn = chartViewpoint("house".equals(devView)
-                ? infraManager.randomHouseViewpoint(dynamicRand) : infraManager.randomRoadPoint(dynamicRand));
+        Viewpoint spawn = "house".equals(devView)
+                ? infraManager.randomHouseViewpoint(dynamicRand) : infraManager.randomRoadPoint(dynamicRand);
         if (devView == null) {
             // A normal round: the pod has come down near a road, clear of houses and fences (where
             // it was chosen during the last round, so its surroundings could be got ready then)
@@ -1888,11 +1850,11 @@ private static class SpeciesConfig {
         }
         // Developer aids: on a town pavement among the inhabitants; across the street from a
         // shop, looking at its front; on a dirt track, looking along it; looking at a raised
-        // road's retaining wall from below (all laid out on the chart until Phases 3 and 4)
+        // road's retaining wall from below (the inhabitants on the chart until Phase 4)
         if ("street".equals(devView)) spawn = orElse(chartViewpoint(inhabitants.streetViewpoint(dynamicRand)), spawn);
-        if ("shop".equals(devView)) spawn = orElse(chartViewpoint(infraManager.shopViewpoint(dynamicRand)), spawn);
-        if ("track".equals(devView)) spawn = orElse(chartViewpoint(infraManager.trackViewpoint(dynamicRand)), spawn);
-        if ("raisedroad".equals(devView)) spawn = orElse(chartViewpoint(infraManager.raisedRoadViewpoint(dynamicRand)), spawn);
+        if ("shop".equals(devView)) spawn = orElse(infraManager.shopViewpoint(dynamicRand), spawn);
+        if ("track".equals(devView)) spawn = orElse(infraManager.trackViewpoint(dynamicRand), spawn);
+        if ("raisedroad".equals(devView)) spawn = orElse(infraManager.raisedRoadViewpoint(dynamicRand), spawn);
         // One of every animal side by side; some species' range with one of them just ahead
         if ("zoo".equals(devView)) spawn = orElse(organismManager.zooViewpoint(dynamicRand), spawn);
         if ("bug".equals(devView)) spawn = orElse(organismManager.showcaseViewpoint(dynamicRand), spawn);
@@ -2041,11 +2003,6 @@ private static class SpeciesConfig {
         airborne = false;
         jumpHeight = 0f;
 
-        // (the chunks the buildings and roads are still made in, on the chart: Phase 3)
-        Vector3 onMap = camera.getChartPosition();
-        lastChunkX = (int) Math.floor((onMap.x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-        lastChunkZ = (int) Math.floor((onMap.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-
         // (what's round the new place is worked out on the builder threads while the loading
         // screen, or the teleport's wait, keeps going)
         updateVisibleChunks(false);
@@ -2099,12 +2056,17 @@ private static class SpeciesConfig {
         jumpWanted = true;
     }
 
-    private void drawWindowGlass(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 eye, Vector3 sunPos, float[] sunColour,
+    /**
+     * The batches' window glass round the viewer, camera-relative: see-through, so drawn after
+     * everything solid, without hiding what's behind.
+     */
+    private void drawWindowGlass(GL3 gl, Matrix4 viewProjection, SpherePosition eye, Vector3 forward, Vector3 sunPos, float[] sunColour,
                                  Matrix4 skyRotation, Texture sky, float reach) {
         glassShader.use(gl);
         glassShader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+        glassShader.setVec3(gl, "sphereCamera", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(glassShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        glassShader.setVec3(gl, "viewPos", eye);
+        glassShader.setVec3(gl, "viewPos", new Vector3(0f, 0f, 0f));
         glassShader.setVec3(gl, "sunPos", sunPos);
         glassShader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
         glassShader.setVec3(gl, "ambientLight", ambientLight);
@@ -2121,10 +2083,9 @@ private static class SpeciesConfig {
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject obj : objects) {
                 if (obj.type != InfrastructureObject.Type.BATCH || !obj.hasTransparentParts()) continue;
-                float dx = obj.position.x - eye.x, dz = obj.position.z - eye.z;
-                float far = reach + obj.boundingRadius;
-                if (dx * dx + dz * dz > far * far
-                        || !frustum.intersectsSphere(obj.position.x, obj.position.y, obj.position.z, obj.boundingRadius)) continue;
+                double dx = obj.centre.x() - eye.x(), dy = obj.centre.y() - eye.y(), dz = obj.centre.z() - eye.z();
+                double far = reach + obj.boundingRadius;
+                if (dx * dx + dy * dy + dz * dz > far * far || dx * forward.x + dy * forward.y + dz * forward.z < -obj.boundingRadius) continue;
                 obj.renderTransparent(gl);
             }
         }
@@ -2187,33 +2148,12 @@ private static class SpeciesConfig {
             geodesicTerrainModel.mesh.dispose(gl);
         }
         if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
-        if (geodesicRoadModel != null && geodesicRoadModel.mesh != null) geodesicRoadModel.mesh.dispose(gl);
-        if (geodesicSettlementWallModel != null && geodesicSettlementWallModel.mesh != null) {
-            geodesicSettlementWallModel.mesh.dispose(gl);
-        }
-        if (geodesicSettlementRoofModel != null && geodesicSettlementRoofModel.mesh != null) {
-            geodesicSettlementRoofModel.mesh.dispose(gl);
-        }
         geodesicWaterMesh = null;
         geodesicWaterActiveCentre = null;
         if (geodesicWaterBuild != null) geodesicWaterBuild.cancel(true);
         geodesicWaterBuild = null;
         geodesicWaterBuildCentre = null;
-        geodesicRoadModel = null;
-        geodesicRoadActiveCentre = null;
-        geodesicRoadRoutes = List.of();
-        if (geodesicRoadBuild != null) geodesicRoadBuild.cancel(true);
-        geodesicRoadBuild = null;
-        geodesicRoadBuildCentre = null;
-        geodesicSettlementWallModel = null;
-        geodesicSettlementRoofModel = null;
-        geodesicSettlementActiveCentre = null;
-        geodesicSettlementWalls = List.of();
-        settlementWalls.clear();
         geodesicCollision.clear();
-        if (geodesicSettlementBuild != null) geodesicSettlementBuild.cancel(true);
-        geodesicSettlementBuild = null;
-        geodesicSettlementBuildCentre = null;
         geodesicTerrainModel = null;
         geodesicTerrainActiveCentre = null;
         if (geodesicTerrainBuild != null) geodesicTerrainBuild.cancel(true);
@@ -2223,8 +2163,8 @@ private static class SpeciesConfig {
         floraStream.clear();
         grassStream.clear();
 
-        lastChunkX = Integer.MAX_VALUE;
-        lastChunkZ = Integer.MAX_VALUE;
+        infraWantedFor = Long.MIN_VALUE;
+        infraWantedFrom = null;
                 totalGrassInstances = 0;
                 drawnGrassInstances = 0;
                 grassDirty = true;
@@ -2240,10 +2180,9 @@ private static class SpeciesConfig {
      * While the world is loading (at launch or between rounds), whether this frame's slice of
      * time is spent; nearby chunks always build. Slicing keeps the loading screen moving.
      */
-    private boolean overRoundBudget(int cx, int cz) {
-        int ring = Math.max(Math.abs(cx - lastChunkX), Math.abs(cz - lastChunkZ));
+    private boolean overRoundBudget(int ring) {
         // Right round the player is built at once; everything else waits for spare time, a
-        // slice of each frame (bigger while loading), so crossing into a new chunk never
+        // slice of each frame (bigger while loading), so crossing into a new cell never
         // stalls a frame building the whole of the next row
         if (ring <= 1) return false;
         if ((roundLoading || !worldReady) && ring <= 2) return false;
@@ -2258,8 +2197,6 @@ private static class SpeciesConfig {
     private static final int PREFETCH_RINGS = 1;
     // Some chunk work was left for later frames
     private boolean chunkWorkPending;
-    // Which way the player has lately been walking, for building ahead of them first
-    private float walkDirX, walkDirZ, lastWalkX = Float.NaN, lastWalkZ;
     private boolean grassDirty = true;
     private int framesSinceGrassBuffer;
     private boolean grassMovedChunk;
@@ -2293,54 +2230,21 @@ private static class SpeciesConfig {
     }
 
 
-    /** Notes which way the player is heading. */
-    private void trackWalking(Vector3 at) {
-        if (!Float.isNaN(lastWalkX)) {
-            float dx = at.x - lastWalkX, dz = at.z - lastWalkZ;
-            float length = (float) Math.hypot(dx, dz);
-            if (length > 0.01f && length < 50f) {
-                walkDirX += (dx / length - walkDirX) * 0.1f;
-                walkDirZ += (dz / length - walkDirZ) * 0.1f;
-            }
-        }
-        lastWalkX = at.x;
-        lastWalkZ = at.z;
-    }
-
-    /** Chunk coordinates within radius rings of the player, nearest first and those ahead of them before those behind. */
-    private List<int[]> chunksByPriority(int radius) {
-        List<int[]> order = new ArrayList<>((radius * 2 + 1) * (radius * 2 + 1));
-        float heading = (float) Math.hypot(walkDirX, walkDirZ);
-        for (int cz = lastChunkZ - radius; cz <= lastChunkZ + radius; cz++) {
-            for (int cx = lastChunkX - radius; cx <= lastChunkX + radius; cx++) {
-                int dx = cx - lastChunkX, dz = cz - lastChunkZ;
-                int ring = Math.max(Math.abs(dx), Math.abs(dz));
-                float ahead = 0f;
-                if (heading > 0.2f && ring > 0) ahead = (dx * walkDirX + dz * walkDirZ) / ((float) Math.hypot(dx, dz) * heading);
-                order.add(new int[] { cx, cz, ring, Math.round((ring - ahead * 2.5f) * 100f) });
-            }
-        }
-        order.sort((a, b) -> Integer.compare(a[3], b[3]));
-        return order;
-    }
-
     /**
      * Whether everything in view of where the player now stands is built: the ground, the
-     * plants and grass, and the buildings (in the chart's chunks until Phase 3).
+     * plants and grass, and the buildings and roads.
      */
     private boolean surroundingsLoadedHere() {
         if (!geodesicTerrainReadyHere() || !floraStream.complete() || !grassStream.complete()) return false;
-        for (int dz = -VIEW_DISTANCE; dz <= VIEW_DISTANCE; dz++) {
-            for (int dx = -VIEW_DISTANCE; dx <= VIEW_DISTANCE; dx++) {
-                if (!infraCache.containsKey((lastChunkX + dx) + "_" + (lastChunkZ + dz))) return false;
-            }
+        if (infraWantedFor != infraGrid.cellAt(camera.getSpherePosition()).id()) return false;
+        for (GeodesicChunkGrid.Cell cell : infraWanted) {
+            if (!infraCache.containsKey(cell.id())) return false;
         }
         return true;
     }
 
     private boolean surroundingsBuilt() {
-        int viewChunks = (VIEW_DISTANCE * 2 + 1) * (VIEW_DISTANCE * 2 + 1);
-        return geodesicTerrainReadyHere() && floraStream.complete() && grassStream.complete() && infraCache.size() >= viewChunks;
+        return surroundingsLoadedHere();
     }
 
     /** A geodesic cell's area in chunks' areas (a chunk being PHYSICAL_CHUNK_SIZE square). */
@@ -2637,66 +2541,6 @@ private static class SpeciesConfig {
                 geodesicTerrainGrid, current, angularRadius, GEODESIC_WATER_SEGMENTS, seaLevelHeight, worldNoise));
     }
 
-    private void updateGeodesicRoads(GL3 gl) {
-        if (geodesicRoadBuild != null && geodesicRoadBuild.isDone()) {
-            try {
-                GeodesicRoadMesh.Patch data = geodesicRoadBuild.get();
-                Model replacement = null;
-                if (data.indices().length > 0) {
-                    Mesh mesh = new Mesh(gl, data.vertices(), data.indices());
-                    replacement = new Model("geodesic_roads", mesh, new Matrix4(1), sphereStructureShader,
-                            geodesicRoadMaterial, terrainRenderer, lights, camera);
-                }
-                if (geodesicRoadModel != null && geodesicRoadModel.mesh != null) {
-                    geodesicRoadModel.mesh.dispose(gl);
-                }
-                geodesicRoadModel = replacement;
-                geodesicRoadRoutes = data.routes();
-                geodesicRoadActiveCentre = geodesicRoadBuildCentre;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.err.println("Interrupted while building geodesic roads: " + e.getMessage());
-            } catch (java.util.concurrent.ExecutionException e) {
-                System.err.println("Could not build geodesic roads: " + e.getCause());
-                geodesicRoadRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
-            } finally {
-                geodesicRoadBuild = null;
-                geodesicRoadBuildCentre = null;
-            }
-        }
-        if (geodesicRoadBuild != null || System.nanoTime() < geodesicRoadRetryAfterNanos
-                || geodesicTerrainModel == null || geodesicTerrainActiveCentre == null) return;
-
-        SpherePosition current = camera.getSpherePosition();
-        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
-        boolean needsPatch = geodesicRoadModel == null && geodesicRoadActiveCentre == null;
-        if (!needsPatch && geodesicRoadActiveCentre != null) {
-            double angle = SphereMath.angle(geodesicRoadActiveCentre, current);
-            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
-            needsPatch = angle > patchRadius * 0.35;
-        }
-        if (!needsPatch) return;
-
-        geodesicRoadBuildCentre = current;
-        double angularRadius = Math.min(Math.PI,
-                FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
-        geodesicRoadBuild = terrainBuilders.submit(() -> GeodesicRoadMesh.buildPatchData(
-                current, angularRadius, seaLevelHeight, worldSeed, worldNoise));
-    }
-
-    private void renderGeodesicRoads(GL3 gl) {
-        updateGeodesicRoads(gl);
-        if (geodesicRoadModel == null) return;
-        terrainShader.setFloat(gl, "useSoilRegions", 0f);
-        terrainShader.setFloat(gl, "snowCleared", 0f);
-        terrainShader.setFloat(gl, "trackGrit", 0f);
-        terrainShader.setFloat(gl, "weathering", 0f);
-        terrainShader.setFloat(gl, "bend", 0f);
-        gl.glDisable(GL.GL_CULL_FACE);
-        geodesicRoadModel.renderSphereNative(gl, ambientLight, nightProportion);
-        gl.glEnable(GL.GL_CULL_FACE);
-    }
-
     private void renderGeodesicInfrastructure(GL3 gl, Matrix4 skyRotation) {
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
@@ -2709,17 +2553,15 @@ private static class SpeciesConfig {
                     continue;
                 }
                 if (object.type != InfrastructureObject.Type.BATCH) continue;
-                SpherePosition anchor = Planet.spherePosition(
-                        object.position.x, object.position.z, object.position.y);
-                double dx = anchor.x() - eye.x();
-                double dy = anchor.y() - eye.y();
-                double dz = anchor.z() - eye.z();
+                double dx = object.centre.x() - eye.x();
+                double dy = object.centre.y() - eye.y();
+                double dz = object.centre.z() - eye.z();
                 double distanceSquared = dx * dx + dy * dy + dz * dz;
                 double radius = object.boundingRadius;
                 if (distanceSquared > (drawDistance + radius) * (drawDistance + radius)) continue;
                 if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
                 object.setViewerDistanceSquared((float) distanceSquared);
-                object.renderSphereNativeBatch(gl, ambientLight, nightProportion,
+                object.renderBatch(gl, ambientLight, nightProportion,
                         solidShader, terrainShader, terrainRenderer, lights, camera);
             }
         }
@@ -2751,89 +2593,6 @@ private static class SpeciesConfig {
                     textures.get(InfrastructureManager.nationTextureName("flag", sign.nationId)),
                     peoplePictures != null && sign.nationId > 0 && sign.nationId < peoplePictures.length ? peoplePictures[sign.nationId] : null);
         }
-    }
-
-    private void updateGeodesicSettlements(GL3 gl) {
-        if (geodesicSettlementBuild != null && geodesicSettlementBuild.isDone()) {
-            try {
-                GeodesicSettlementMesh.Patch data = geodesicSettlementBuild.get();
-                Model walls = null, roofs = null;
-                if (data.wallIndices().length > 0) {
-                    walls = new Model("geodesic_settlement_walls",
-                            new Mesh(gl, data.wallVertices(), data.wallIndices()), new Matrix4(1),
-                            sphereStructureShader, geodesicWallMaterial, terrainRenderer, lights, camera);
-                }
-                if (data.roofIndices().length > 0) {
-                    roofs = new Model("geodesic_settlement_roofs",
-                            new Mesh(gl, data.roofVertices(), data.roofIndices()), new Matrix4(1),
-                            sphereStructureShader, geodesicRoofMaterial, terrainRenderer, lights, camera);
-                }
-                if (geodesicSettlementWallModel != null && geodesicSettlementWallModel.mesh != null) {
-                    geodesicSettlementWallModel.mesh.dispose(gl);
-                }
-                if (geodesicSettlementRoofModel != null && geodesicSettlementRoofModel.mesh != null) {
-                    geodesicSettlementRoofModel.mesh.dispose(gl);
-                }
-                geodesicSettlementWallModel = walls;
-                geodesicSettlementRoofModel = roofs;
-                geodesicSettlementWalls = data.walls();
-                geodesicSettlementActiveCentre = geodesicSettlementBuildCentre;
-                indexSettlementWalls();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.err.println("Interrupted while building geodesic settlements: " + e.getMessage());
-            } catch (java.util.concurrent.ExecutionException e) {
-                System.err.println("Could not build geodesic settlements: " + e.getCause());
-                geodesicSettlementRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
-            } finally {
-                geodesicSettlementBuild = null;
-                geodesicSettlementBuildCentre = null;
-            }
-        }
-        if (geodesicSettlementBuild != null || System.nanoTime() < geodesicSettlementRetryAfterNanos
-                || geodesicTerrainModel == null || geodesicTerrainActiveCentre == null) return;
-
-        SpherePosition current = camera.getSpherePosition();
-        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
-        boolean needsPatch = geodesicSettlementActiveCentre == null;
-        if (!needsPatch) {
-            double angle = SphereMath.angle(geodesicSettlementActiveCentre, current);
-            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
-            needsPatch = angle > patchRadius * 0.35;
-        }
-        if (!needsPatch) return;
-
-        geodesicSettlementBuildCentre = current;
-        double angularRadius = Math.min(Math.PI,
-                FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
-        geodesicSettlementBuild = terrainBuilders.submit(() -> GeodesicSettlementMesh.buildPatchData(
-                geodesicTerrainGrid, current, angularRadius, seaLevelHeight, worldSeed, worldNoise));
-    }
-
-    /** The stand-in settlements' walls, solid until Phase 3 replaces them with the real buildings. */
-    private void indexSettlementWalls() {
-        settlementWalls.clear();
-        for (GeodesicSettlementMesh.WallSegment wall : geodesicSettlementWalls) {
-            settlementWalls.add(SphereMath.slerp(wall.start(), wall.end(), 0.5),
-                    SphereMath.distance(wall.start(), wall.end()) * 0.5 + 0.75, wall);
-        }
-    }
-
-    private void renderGeodesicSettlements(GL3 gl) {
-        updateGeodesicSettlements(gl);
-        terrainShader.setFloat(gl, "useSoilRegions", 0f);
-        terrainShader.setFloat(gl, "snowCleared", 0f);
-        terrainShader.setFloat(gl, "trackGrit", 0f);
-        terrainShader.setFloat(gl, "weathering", 0f);
-        terrainShader.setFloat(gl, "bend", 0f);
-        gl.glDisable(GL.GL_CULL_FACE);
-        if (geodesicSettlementWallModel != null) {
-            geodesicSettlementWallModel.renderSphereNative(gl, ambientLight, nightProportion);
-        }
-        if (geodesicSettlementRoofModel != null) {
-            geodesicSettlementRoofModel.renderSphereNative(gl, ambientLight, nightProportion);
-        }
-        gl.glEnable(GL.GL_CULL_FACE);
     }
 
     private void renderGeodesicWater(GL3 gl, Vector3 skyColour, float daylight, float time) {
@@ -2930,8 +2689,6 @@ private static class SpeciesConfig {
         infraManager.prepareRoadNetwork(
             PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
         );
-        int reach = VIEW_DISTANCE + PREFETCH_RINGS;
-        List<int[]> order = chunksByPriority(reach);
         boolean pending = false;
 
         // --- TERRAIN: the sphere's patch round the player (built off the GL thread, put up here)
@@ -2940,47 +2697,80 @@ private static class SpeciesConfig {
         // --- TREES AND GRASS: per geodesic cell round the player
         updateVegetation(forceImmediate);
 
-        // --- MULTI-SPECIES INFRASTRUCTURE SEEDING ---
-        Map<String, Boolean> activeInfraKeys = new HashMap<>();
-        for (int cz = lastChunkZ - VIEW_DISTANCE; cz <= lastChunkZ + VIEW_DISTANCE; cz++) {
-            for (int cx = lastChunkX - VIEW_DISTANCE; cx <= lastChunkX + VIEW_DISTANCE; cx++) {
-                activeInfraKeys.put(cx + "_" + cz, true);
-            }
-        }
-        Iterator<Map.Entry<String, List<InfrastructureObject>>> infraIterator = infraCache.entrySet().iterator();
-        while (infraIterator.hasNext()) {
-            Map.Entry<String, List<InfrastructureObject>> entry = infraIterator.next();
-            String[] infraCoords = entry.getKey().split("_");
-            if (Math.max(Math.abs(Integer.parseInt(infraCoords[0]) - lastChunkX), Math.abs(Integer.parseInt(infraCoords[1]) - lastChunkZ)) > reach + 1) {
-                for (InfrastructureObject obj : entry.getValue()) {
-                    obj.dispose(gl);
-                }
-                infraIterator.remove();
-            }
+        // --- ROADS AND BUILDINGS: per geodesic cell round the player
+        SpherePosition here = camera.getSpherePosition();
+        GeodesicChunkGrid.Cell hereCell = infraGrid.cellAt(here);
+        if (hereCell.id() != infraWantedFor) {
+            wantInfrastructureAround(here, hereCell);
         }
 
-        // Buildings and roads are quick to make (well under a millisecond a chunk), so they get a
-        // slice of the frame of their own rather than whatever the terrain and plants leave over;
+        // Buildings and roads are quick to make (a few milliseconds a cell in a dense town), so
+        // they get a slice of the frame of their own rather than whatever the terrain and plants leave over;
         // otherwise, walking on, towns ahead would only appear once already close
         long infraDeadline = System.nanoTime() + INFRA_CHUNK_BUDGET_NANOS;
-        for (int[] c : order) {
-            int cx = c[0], cz = c[1];
-            {
-                String key = cx + "_" + cz;
-                if (infraCache.containsKey(key)) continue;
-                if (overRoundBudget(cx, cz) && System.nanoTime() > infraDeadline) {
-                    pending = true;
-                    continue;
-                }
-                {
-                    List<InfrastructureObject> spawnedObjects = infraManager.generateForChunk(
-                        cx, cz, PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
-                    );
-                    infraCache.put(key, spawnedObjects);
-                }
+        for (GeodesicChunkGrid.Cell cell : infraWanted) {
+            if (infraCache.containsKey(cell.id())) continue;
+            // (how many chunks' widths out from the player its nearest edge is)
+            double edge = SphereMath.angle(SphereMath.direction(here), cell.centre()) - cell.angularRadius();
+            int ring = (int) (Math.max(0.0, edge) * Planet.radius() / PHYSICAL_CHUNK_SIZE);
+            if (overRoundBudget(ring) && System.nanoTime() > infraDeadline) {
+                pending = true;
+                continue;
             }
+            infraCache.put(cell.id(), infraManager.generateForCell(
+                    cell.id(), PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise));
         }
         chunkWorkPending = pending;
+    }
+
+    /**
+     * The cells whose roads and buildings are wanted round the player, in the cell given:
+     * within the view (and a ring beyond, ready ahead of time), nearest first and those the way
+     * the player has been going before those behind. Cells left well behind are dropped.
+     */
+    private void wantInfrastructureAround(SpherePosition here, GeodesicChunkGrid.Cell hereCell) {
+        GeodesicChunkGrid.Direction at = SphereMath.direction(here);
+        double reach = (VIEW_DISTANCE + PREFETCH_RINGS) * PHYSICAL_CHUNK_SIZE / Planet.radius();
+        // Which way the player has gone since the cells were last worked out
+        double wx = 0.0, wy = 0.0, wz = 0.0;
+        if (infraWantedFrom != null) {
+            wx = here.x() - infraWantedFrom.x();
+            wy = here.y() - infraWantedFrom.y();
+            wz = here.z() - infraWantedFrom.z();
+            double length = Math.sqrt(wx * wx + wy * wy + wz * wz);
+            // (a teleport or a new round is no direction)
+            if (length > 0.0 && length < 50.0 * PHYSICAL_CHUNK_SIZE) {
+                wx /= length;
+                wy /= length;
+                wz /= length;
+            } else {
+                wx = wy = wz = 0.0;
+            }
+        }
+        List<GeodesicChunkGrid.Cell> cells = infraGrid.cellsWithin(at, reach);
+        Map<Long, Double> priority = new HashMap<>();
+        for (GeodesicChunkGrid.Cell cell : cells) {
+            double angle = SphereMath.angle(at, cell.centre());
+            double ring = angle * Planet.radius() / PHYSICAL_CHUNK_SIZE;
+            GeodesicChunkGrid.Direction c = cell.centre();
+            double ax = c.x() - at.x(), ay = c.y() - at.y(), az = c.z() - at.z();
+            double length = Math.sqrt(ax * ax + ay * ay + az * az);
+            double ahead = length > 1e-12 ? (ax * wx + ay * wy + az * wz) / length : 0.0;
+            priority.put(cell.id(), ring - ahead * 2.5);
+        }
+        cells.sort(java.util.Comparator.comparingDouble(cell -> priority.get(cell.id())));
+        infraWanted = cells;
+        infraWantedFor = hereCell.id();
+        infraWantedFrom = here;
+
+        double keep = reach + 2.0 * hereCell.angularRadius();
+        Iterator<Map.Entry<Long, List<InfrastructureObject>>> it = infraCache.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, List<InfrastructureObject>> entry = it.next();
+            if (SphereMath.angle(at, infraGrid.cell(entry.getKey()).centre()) <= keep) continue;
+            for (InfrastructureObject obj : entry.getValue()) obj.dispose(gl);
+            it.remove();
+        }
     }
 
 
@@ -3147,13 +2937,8 @@ private static class SpeciesConfig {
         Vector3 sunDirection = SphereRender.sunDirection(eye, sunDir);
         lights[0].setPosition(SphereRender.sunPoint(sunDirection));
 
-        // The buildings and roads are made in the chart's chunks until Phase 3; the trees and
-        // grass come and go with the geodesic cell the player is in
-        Vector3 onMap = camera.getChartPosition();
-        int currentChunkX = (int) Math.floor((onMap.x + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-        int currentChunkZ = (int) Math.floor((onMap.z + (PHYSICAL_CHUNK_SIZE / 2.0f)) / PHYSICAL_CHUNK_SIZE);
-        trackWalking(onMap);
-        boolean movedChunk = currentChunkX != lastChunkX || currentChunkZ != lastChunkZ;
+        // The buildings, roads, trees and grass come and go with the geodesic cell the player is in
+        boolean movedChunk = infraGrid.cellAt(eye).id() != infraWantedFor;
         long vegetationCell = grassStream.grid().cellAt(eye).id();
         if (vegetationCell != lastVegetationCell) {
             lastVegetationCell = vegetationCell;
@@ -3166,8 +2951,6 @@ private static class SpeciesConfig {
         boolean waiting = chunkWorkPending || !floraStream.complete() || !grassStream.complete() || grassDirty || grassGather != null;
         if (movedChunk || (chunkScanCountdown <= 0 && waiting)) {
             chunkScanCountdown = 3;
-            lastChunkX = currentChunkX;
-            lastChunkZ = currentChunkZ;
             updateVisibleChunks(false);
         }
 
@@ -3277,8 +3060,6 @@ private static class SpeciesConfig {
         terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
 
         renderGeodesicInfrastructure(gl, skyRotation);
-        renderGeodesicRoads(gl);
-        renderGeodesicSettlements(gl);
         renderFlora(gl, skyRotation);
 
         // --- CREATURES AND PEOPLE ---
@@ -3335,6 +3116,10 @@ private static class SpeciesConfig {
         landingPod.render(gl, sphereViewProjection, eye, sunDirection, sunColour,
                 ambientLight, skyRotation, textures.get(skyTextureKey));
 
+        // --- WINDOW GLASS ---
+        drawWindowGlass(gl, sphereViewProjection, eye, camera.getSphereForwardDirection(), SphereRender.sunPoint(sunDirection),
+                sunColour, skyRotation, textures.get(skyTextureKey), GLASS_DRAW_DISTANCE);
+
         renderGeodesicWater(gl, skyColour, daylight, (float) elapsedTime);
         sphereWeather.render(gl, camera, sphereViewProjection, daylight);
 
@@ -3361,6 +3146,7 @@ private static class SpeciesConfig {
             playerBody.useKit();
         }
         // (the thermometer reads the temperature as the map shows it there, until Phase 5)
+        Vector3 onMap = camera.getChartPosition();
         playerBody.setReading(temperatureAt(onMap.x, onMap.z));
         // The altimeter reads the height of the ground underfoot (or the road) above the sea, in
         // metres: not the rock or roof stood on, so it agrees with the map

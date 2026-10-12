@@ -10,7 +10,7 @@ public class InfrastructureObject {
 
     // How much of the snow that would lie on a road has been cleared off it
     private static final float ROAD_SNOW_CLEARED = 0.5f;
-    /** SIGN is a single roadside or garden sign; BATCH is pre-merged world-space geometry (roads, rails, houses, fences). */
+    /** SIGN is a single roadside or garden sign; BATCH is pre-merged world-space geometry (roads, rails, houses, fences) for one geodesic cell. */
     public enum Type { SIGN, BATCH }
 
     public Type type;
@@ -29,7 +29,8 @@ public class InfrastructureObject {
     public boolean shaped;
     public Matrix4 backBoardMatrix;
 
-    // Extra reach beyond the object's anchor point, used for behind-camera culling
+    // A batch's middle in the world, and how far what it holds reaches from there (for culling)
+    public SpherePosition centre;
     public float boundingRadius;
 
     // --- TEXT DATA ---
@@ -109,7 +110,6 @@ public class InfrastructureObject {
         // How weathered (stained and streaked) a poor house's walls or roof are, 0 to 1
         public float weathering;
         Model model;
-        Model sphereModel;
 
         public BatchPart(float[] vertices, int[] indices, Material material, boolean doubleSided, boolean paint, boolean textured) {
             this(vertices, indices, material, doubleSided, paint, textured, false, "");
@@ -242,14 +242,16 @@ public class InfrastructureObject {
         return sign;
     }
 
-    public static InfrastructureObject createBatch(Vector3 position, int nationId, float boundingRadius, List<BatchPart> parts) {
-        InfrastructureObject batch = new InfrastructureObject(Type.BATCH, position, nationId, 0.0f, null);
+    /** A batch: its parts' vertices are in world coordinates (planet-centred), centre the middle of what they hold. */
+    public static InfrastructureObject createBatch(SpherePosition centre, int nationId, float boundingRadius, List<BatchPart> parts) {
+        InfrastructureObject batch = new InfrastructureObject(Type.BATCH, new Vector3(0f, 0f, 0f), nationId, 0.0f, null);
+        batch.centre = centre;
         batch.boundingRadius = boundingRadius;
         batch.batchParts.addAll(parts);
         return batch;
     }
 
-        /** Uploads the batch meshes; must run on the GL thread. Textured parts use the texturing shader. */
+    /** Uploads the batch's meshes the first time it is drawn; must run on the GL thread. Textured parts use the texturing shader. */
     public void initializeBatch(GL3 gl, Shader shader, Shader texturedShader, Renderer renderer, Light[] lights, Camera camera) {
         for (BatchPart part : batchParts) {
             if (part.model == null && part.indices.length > 0) {
@@ -260,48 +262,7 @@ public class InfrastructureObject {
         }
     }
 
-    /** Converts the legacy chart-baked batch mesh to sphere positions once, on the GL thread. */
-    public void initializeSphereNativeBatch(GL3 gl, Shader shader, Shader texturedShader,
-            Renderer renderer, Light[] lights, Camera camera) {
-        if (type != Type.BATCH) return;
-        for (BatchPart part : batchParts) {
-            if (part.sphereModel != null || part.indices.length == 0) continue;
-            // (the chart and the sphere have the same handedness, so the winding carries over)
-            float[] vertices = sphereVertices(part.vertices);
-            part.sphereModel = new Model("sphere_infrastructure_batch",
-                    new Mesh(gl, vertices, part.indices.clone()), new Matrix4(1), part.textured ? texturedShader : shader,
-                    part.material, renderer, lights, camera);
-        }
-    }
-
-    private static float[] sphereVertices(float[] source) {
-        float[] result = new float[source.length];
-        for (int i = 0; i + 7 < source.length; i += 8) {
-            double chartX = source[i], altitude = source[i + 1], chartZ = source[i + 2];
-            SpherePosition point = Planet.spherePosition(chartX, chartZ, altitude);
-            result[i] = (float) point.x();
-            result[i + 1] = (float) point.y();
-            result[i + 2] = (float) point.z();
-
-            // Lifting shrinks the chart across the ground by cos(latitude), so a normal's level
-            // parts grow by its inverse
-            double cosine = Math.max(1e-6, Math.cos(Planet.latitude(chartZ)));
-            double[] n = SphereFrame.at(point).worldDirection(source[i + 3] / cosine, source[i + 4],
-                    source[i + 5] / cosine);
-            double nx = n[0], ny = n[1], nz = n[2];
-            double length = Math.sqrt(nx * nx + ny * ny + nz * nz);
-            if (length > 1e-12) {
-                result[i + 3] = (float) (nx / length);
-                result[i + 4] = (float) (ny / length);
-                result[i + 5] = (float) (nz / length);
-            }
-            result[i + 6] = source[i + 6];
-            result[i + 7] = source[i + 7];
-        }
-        return result;
-    }
-
-    /** Draws the see-through parts (window glass) with whatever shader is in use. */
+    /** Draws the see-through parts (window glass) with whatever shader is in use, once uploaded. */
     public void renderTransparent(GL3 gl) {
         for (BatchPart part : batchParts) {
             if (part.transparent && part.model != null && part.model.getMesh() != null) part.model.getMesh().render(gl);
@@ -361,20 +322,16 @@ public class InfrastructureObject {
                 part.model.getMesh().dispose(gl);
                 part.model = null;
             }
-            if (part.sphereModel != null && part.sphereModel.getMesh() != null) {
-                part.sphereModel.getMesh().dispose(gl);
-                part.sphereModel = null;
-            }
         }
     }
 
-    /** Renders the legacy material-separated infrastructure meshes at their spherical positions. */
-    public void renderSphereNativeBatch(GL3 gl, Vector3 ambientLight, float nightProportion,
+    /** Draws a batch's solid parts, one per material, camera-relative (see Renderer.renderSphereNative). */
+    public void renderBatch(GL3 gl, Vector3 ambientLight, float nightProportion,
             Shader shader, Shader texturedShader, Renderer renderer, Light[] lights, Camera camera) {
         if (type != Type.BATCH) return;
-        initializeSphereNativeBatch(gl, shader, texturedShader, renderer, lights, camera);
+        initializeBatch(gl, shader, texturedShader, renderer, lights, camera);
         for (BatchPart part : batchParts) {
-            if (part.sphereModel == null || part.transparent) continue;
+            if (part.model == null || part.transparent) continue;
             if (part.drawDistance > 0f && beyond(part.drawDistance)) continue;
             if (part.doubleSided) gl.glDisable(GL3.GL_CULL_FACE);
             if (part.paint) {
@@ -383,7 +340,7 @@ public class InfrastructureObject {
             }
             boolean track = part.trackGrit > 0f;
             if (track) {
-                Shader trackShader = part.sphereModel.shader;
+                Shader trackShader = part.model.shader;
                 trackShader.use(gl);
                 if (soilRegions != null) {
                     gl.glActiveTexture(GL3.GL_TEXTURE6);
@@ -396,21 +353,21 @@ public class InfrastructureObject {
                 gl.glPolygonOffset(-2f, -8f);
             }
             if (part.weathering > 0f) {
-                part.sphereModel.shader.use(gl);
-                part.sphereModel.shader.setFloat(gl, "weathering", part.weathering);
+                part.model.shader.use(gl);
+                part.model.shader.setFloat(gl, "weathering", part.weathering);
             }
             boolean cleared = part.name.equals("asphalt") || part.name.equals("line")
                     || part.name.equals("dirt") || part.name.equals("driveway");
             if (cleared) {
-                part.sphereModel.shader.use(gl);
-                part.sphereModel.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
+                part.model.shader.use(gl);
+                part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
             }
-            part.sphereModel.renderSphereNative(gl, ambientLight, nightProportion);
-            if (cleared) part.sphereModel.shader.setFloat(gl, "snowCleared", 0f);
-            if (part.weathering > 0f) part.sphereModel.shader.setFloat(gl, "weathering", 0f);
+            part.model.renderSphereNative(gl, ambientLight, nightProportion);
+            if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
+            if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
             if (track) {
-                part.sphereModel.shader.setFloat(gl, "useSoilRegions", 0f);
-                part.sphereModel.shader.setFloat(gl, "trackGrit", 0f);
+                part.model.shader.setFloat(gl, "useSoilRegions", 0f);
+                part.model.shader.setFloat(gl, "trackGrit", 0f);
                 gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
             }
             if (part.paint) gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
@@ -437,64 +394,7 @@ public class InfrastructureObject {
                     Map<Integer, Model> signModelsByNation,
                     Map<Integer, Model> postModelsByNation,
                     Texture alphabetAtlas, int atlasSize, int writingDirection, Texture flag, int[] people) {
-        if (this.type == Type.BATCH) {
-            for (BatchPart part : batchParts) {
-                if (part.model == null || part.transparent) {
-                    continue;
-                }
-                if (part.drawDistance > 0f && beyond(part.drawDistance)) {
-                    continue;
-                }
-                if (part.doubleSided) {
-                    gl.glDisable(GL3.GL_CULL_FACE);
-                }
-                if (part.paint) {
-                    // Pull the paint towards the camera so it never z-fights the asphalt
-                    gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
-                    gl.glPolygonOffset(-1.0f, -2.0f);
-                }
-                boolean track = part.trackGrit > 0f;
-                if (track) {
-                    // The ground's own soil, from the regional soil map, with grit
-                    Shader shader = part.model.shader;
-                    shader.use(gl);
-                    if (soilRegions != null) {
-                        gl.glActiveTexture(GL3.GL_TEXTURE6);
-                        soilRegions.bind(gl);
-                        shader.setInt(gl, "soilRegionMap", 6);
-                    }
-                    shader.setFloat(gl, "useSoilRegions", 1f);
-                    shader.setFloat(gl, "trackGrit", part.trackGrit);
-                    // Drawn over the ground it lies on, even where the distant ground is drawn coarsely
-                    gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
-                    gl.glPolygonOffset(-2.0f, -8.0f);
-                }
-                if (part.weathering > 0f) {
-                    part.model.shader.use(gl);
-                    part.model.shader.setFloat(gl, "weathering", part.weathering);
-                }
-                // Roads (and their paint, tracks and driveways) are kept clearer of snow than the land round them
-                boolean cleared = part.name.equals("asphalt") || part.name.equals("line") || part.name.equals("dirt") || part.name.equals("driveway");
-                if (cleared) {
-                    part.model.shader.use(gl);
-                    part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
-                }
-                part.model.render(gl, ambientLight, nightProportion);
-                if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
-                if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
-                if (track) {
-                    part.model.shader.setFloat(gl, "useSoilRegions", 0f);
-                    part.model.shader.setFloat(gl, "trackGrit", 0f);
-                    gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
-                }
-                if (part.paint) {
-                    gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
-                }
-                if (part.doubleSided) {
-                    gl.glEnable(GL3.GL_CULL_FACE);
-                }
-            }
-        } else if (this.type == Type.SIGN) {
+        if (this.type == Type.SIGN) {
             Model billboardModel = signModelsByNation.get(this.nationId);
             Model postModel = postModelsByNation.get(this.nationId);
 

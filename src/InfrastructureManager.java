@@ -12,7 +12,7 @@ import com.xenoguesser.math.Vector3;
  * Turns the road network into renderable infrastructure: road surfaces and
  * markings, highway guard rails, cul-de-sacs, houses with their gardens and
  * fences, and signs. Houses are laid out once for the whole region along the
- * roads; everything is then baked per chunk into a handful of merged meshes.
+ * roads; everything is then baked per geodesic cell into a handful of merged meshes.
  */
 public class InfrastructureManager {
     private static final float ROAD_SURFACE_OFFSET = 0.6f;
@@ -104,9 +104,11 @@ public class InfrastructureManager {
     private final List<RoadPath.DeadEnd> deadEnds = new ArrayList<>();
     private final Map<Integer, List<RoadSegment>> segmentsByPath = new HashMap<>();
     private final List<RoadSegment> landSegments = new ArrayList<>();
-    // Chart bridge (D13): which chart chunk builds each segment and house, until the batches are
-    // built per geodesic cell; every lookup by place goes through the CellIndexes below
-    private final Map<Long, List<RoadSegment>> roadSegmentsByChunk = new HashMap<>();
+    // Which geodesic cell's batch builds each segment and house: the BATCH_LEVEL cell its middle
+    // is in (D5). Every lookup by place goes through the CellIndexes below.
+    public static final int BATCH_LEVEL = 7;
+    private final GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(BATCH_LEVEL);
+    private final Map<Long, List<RoadSegment>> roadSegmentsByCell = new HashMap<>();
     private final List<House> houses = new ArrayList<>();
     // Lookups by place on the sphere (D5): segments filed at their middle reaching half their
     // length; houses at their middle reaching the far corner of their plot (once the plots are
@@ -151,15 +153,14 @@ public class InfrastructureManager {
     private record Obstacle(SpherePosition a, SpherePosition b, float size, float top) {
     }
 
-    // Solid shapes recorded as each chunk is built, filed on the sphere. The world never
-    // changes, so a chunk's shapes stay valid after its meshes are dropped (and are only filed
+    // Solid shapes recorded as each cell is built, filed on the sphere. The world never
+    // changes, so a cell's shapes stay valid after its meshes are dropped (and are only filed
     // the first time it is built).
     private final CellIndex<Obstacle> obstacleIndex = new CellIndex<>(CellIndex.DEFAULT_LEVEL);
-    private final java.util.Set<Long> chunksRecorded = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final java.util.Set<Long> cellsRecorded = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private List<Obstacle> recording;
-    private final Map<Long, List<House>> housesByChunk = new HashMap<>();
+    private final Map<Long, List<House>> housesByCell = new HashMap<>();
     private volatile boolean roadNetworkInitialized;
-    private float roadChunkSize;
     private float regionWidth;
     private float seaLevel;
     private PerlinNoise terrainNoise;
@@ -185,7 +186,7 @@ public class InfrastructureManager {
         private final Vector3 startTangent;
         private final Vector3 endTangent;
         // Chart bridge (D13): its ends on the Mercator chart {x, height, z}, for what still works
-        // there (which chunk builds it, spawn points, people and vehicles)
+        // there (spawn points, people and vehicles)
         private final Vector3 chartStart, chartEnd;
         private final int nationId;
         private final int pathIndex;
@@ -228,15 +229,6 @@ public class InfrastructureManager {
         /** Chart bridge (D13): the middle on the chart. */
         private float chartMidX() {
             return (chartStart.x + chartEnd.x) * 0.5f;
-        }
-
-        private float chartMidZ() {
-            return (chartStart.z + chartEnd.z) * 0.5f;
-        }
-
-        /** Chart bridge (D13): the length on the chart (longer than the true length away from the equator). */
-        private float chartLength() {
-            return (float) Math.max(1e-4, Math.hypot(chartEnd.x - chartStart.x, chartEnd.z - chartStart.z));
         }
     }
 
@@ -748,7 +740,7 @@ public class InfrastructureManager {
         return house.doorway;
     }
 
-    /** Supplies the loaded nation textures; must be set before any chunk is generated. */
+    /** Supplies the loaded nation textures; must be set before any cell is generated. */
     public void setNationTextures(java.util.function.Function<String, Texture> lookup) {
         this.nationTextures = lookup;
     }
@@ -769,7 +761,6 @@ public class InfrastructureManager {
         if (roadNetworkInitialized) {
             return;
         }
-        roadChunkSize = chunkSize;
         regionWidth = totalRegionWidth;
         seaLevel = seaLevelHeight;
         terrainNoise = noise;
@@ -816,7 +807,7 @@ public class InfrastructureManager {
                 segment.railed = path.roadClass == RoadPath.RoadClass.HIGHWAY && railStyle != null && railStyle.enabled
                         && settlementManager.getUrbanness(middle) < RAIL_MAX_URBANNESS;
 
-                roadSegmentsByChunk.computeIfAbsent(chunkKeyAt(segment.chartMidX(), segment.chartMidZ()), ignored -> new ArrayList<>()).add(segment);
+                roadSegmentsByCell.computeIfAbsent(batchCell(middle), ignored -> new ArrayList<>()).add(segment);
                 segmentIndex.add(middle, length * 0.5, segment);
                 segmentsByPath.computeIfAbsent(pathIndex, ignored -> new ArrayList<>()).add(segment);
                 distanceAlongPath += length;
@@ -839,9 +830,10 @@ public class InfrastructureManager {
         }
         // The road graph for walking and for maps, got ready in the background
         SIGN_MAP_ARTIST.submit(this::routes);
-        for (List<RoadSegment> bucket : roadSegmentsByChunk.values()) {
+        for (List<RoadSegment> bucket : roadSegmentsByCell.values()) {
             for (RoadSegment segment : bucket) {
-                boolean playable = Math.abs(segment.chartStart.x) < regionWidth * 0.5f && Math.abs(segment.chartStart.z) < regionWidth * 0.5f;
+                // (within the map's top and bottom edges)
+                boolean playable = Math.abs(Planet.latitude(segment.from)) < Math.abs(Planet.latitude(regionWidth * 0.5));
                 if (playable && segment.start.y > seaLevel + 0.5f && segment.end.y > seaLevel + 0.5f) {
                     landSegments.add(segment);
                 }
@@ -861,28 +853,33 @@ public class InfrastructureManager {
     }
 
         /**
-     * A spot in the road in front of a random house, looking at it: {x, z, dirX, dirZ}.
-     * A developer aid for inspecting buildings; null if the world has no houses.
+     * A spot in the road in front of a random house, looking at it. A developer aid for
+     * inspecting buildings; null if the world has no houses.
      */
-    public float[] randomHouseViewpoint(Random rand) {
+    public Viewpoint randomHouseViewpoint(Random rand) {
         if (houses.isEmpty()) {
             return null;
         }
-                House house = houses.get(rand.nextInt(houses.size()));
-        for (int attempt = 0; attempt < 50 && (Math.abs(house.x) > regionWidth * 0.5f || Math.abs(house.z) > regionWidth * 0.5f); attempt++) {
+        House house = houses.get(rand.nextInt(houses.size()));
+        for (int attempt = 0; attempt < 50 && Math.abs(Planet.latitude(house.frame.origin())) > Math.abs(Planet.latitude(regionWidth * 0.5)); attempt++) {
             house = houses.get(rand.nextInt(houses.size()));
         }
         float distance = house.depth * 0.5f + house.setback + Math.max(house.width, house.depth) * 1.6f;
-        float[] eye = chartAt(house, house.width * 0.35f, distance);
-        float dx = house.x - eye[0], dz = house.z - eye[1];
-        float len = (float) Math.hypot(dx, dz);
-        return new float[] { eye[0], eye[1], dx / len, dz / len };
+        float x = house.width * 0.35f;
+        return viewpoint(house.frame, x, distance, -x, -distance);
     }
 
     /**
-     * A random point on a road over dry land, for spawning the player.
-     * Returns {x, z, directionX, directionZ}, or null if the world has no roads.
+     * Standing at (x, z) in a frame, on the ground, looking along (lookX, lookZ) in it: the
+     * place and its heading there (D10).
      */
+    private static Viewpoint viewpoint(SphereFrame frame, double x, double z, double lookX, double lookZ) {
+        SpherePosition at = frame.toSphere(x, 0.0, z);
+        double[] world = frame.worldDirection(lookX, 0.0, lookZ);
+        double[] local = SphereFrame.at(at).localDirection(world[0], world[1], world[2]);
+        return new Viewpoint(at, Math.atan2(local[2], local[0]));
+    }
+
     // Kept free of signs and flagpoles: where the landing pod stands this round, and how far round
     private record KeepClear(SpherePosition centre, double radius) {
     }
@@ -902,70 +899,67 @@ public class InfrastructureManager {
     /**
      * Somewhere for the landing pod to have come down: near a road (on it now and then, but
      * usually a little way off to one side), clear of every house, garden and fence, on dry
-     * land. Returns {spawnX, spawnZ, dirX, dirZ}: where the player stands on its stairs and
-     * the way the stairs face, towards the road. Null if nowhere suitable turns up.
+     * land. Returns where the player stands on its stairs and the way the stairs face,
+     * towards the road; null if nowhere suitable turns up. Laid out in the segment's frame.
      *
      * @param standsAt   distance from the pod's middle to where the player stands
      * @param reach      how far the pod and its stairs reach from its middle
      * @param dryLand    whether a point is above the sea
      */
-    public float[] landingSite(Random rand, float standsAt, float reach, java.util.function.BiPredicate<Float, Float> dryLand) {
+    public Viewpoint landingSite(Random rand, float standsAt, float reach, java.util.function.Predicate<SpherePosition> dryLand) {
         if (landSegments.isEmpty()) return null;
         for (int attempt = 0; attempt < 400; attempt++) {
             RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
             if (segment.railed) continue;   // not over a guard rail
             float t = rand.nextFloat();
-            // (picked on the chart, where the spawn still lands: its true distances stretched to the chart's)
-            float rx = segment.chartStart.x + (segment.chartEnd.x - segment.chartStart.x) * t;
-            float rz = segment.chartStart.z + (segment.chartEnd.z - segment.chartStart.z) * t;
-            float stretch = chartStretch(rz);
-            float alongX = (segment.chartEnd.x - segment.chartStart.x) / segment.chartLength();
-            float alongZ = (segment.chartEnd.z - segment.chartStart.z) / segment.chartLength();
+            float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
+            float length = (float) Math.hypot(dx, dz);
+            if (length < 1e-3f) continue;
+            float rx = segment.start.x + dx * t, rz = segment.start.z + dz * t;
+            float alongX = dx / length, alongZ = dz / length;
             float side = rand.nextBoolean() ? 1f : -1f;
             float acrossX = -alongZ * side, acrossZ = alongX * side;
             // Off to one side (never on the road, where it would be in the traffic's way), stairs towards it
-            float off = (segment.width * 0.5f + reach + 4f + rand.nextFloat() * 45f) * stretch;
+            float off = segment.width * 0.5f + reach + 4f + rand.nextFloat() * 45f;
             float cx = rx + acrossX * off, cz = rz + acrossZ * off;
             float dirX = -acrossX, dirZ = -acrossZ;
-            float sx = cx + dirX * standsAt * stretch, sz = cz + dirZ * standsAt * stretch;
-            float fx = cx + dirX * reach * stretch, fz = cz + dirZ * reach * stretch;
-            if (isPlotLocation(cx, cz, reach) || isPlotLocation(sx, sz, 8f) || isPlotLocation(fx, fz, 8f)) continue;
-            if (!dryLand.test(cx, cz) || !dryLand.test(sx, sz) || !dryLand.test(fx, fz)) continue;
+            SpherePosition centre = world(segment, cx, cz);
+            SpherePosition stands = world(segment, cx + dirX * standsAt, cz + dirZ * standsAt);
+            SpherePosition foot = world(segment, cx + dirX * reach, cz + dirZ * reach);
+            if (isPlotLocation(centre, reach) || isPlotLocation(stands, 8f) || isPlotLocation(foot, 8f)) continue;
+            if (!dryLand.test(centre) || !dryLand.test(stands) || !dryLand.test(foot)) continue;
             boolean feetDry = true;
             for (int leg = 0; leg < 4 && feetDry; leg++) {
                 double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
-                feetDry = dryLand.test(cx + (float) Math.cos(a) * 36f * stretch, cz + (float) Math.sin(a) * 36f * stretch);
+                feetDry = dryLand.test(world(segment, cx + (float) Math.cos(a) * 36f, cz + (float) Math.sin(a) * 36f));
             }
             if (!feetDry) continue;
             // Clear of every road, legs and all
-            boolean offRoad = !isRoadLocation(cx, cz, 30f);
+            boolean offRoad = !isRoadLocation(centre, 30f);
             for (int leg = 0; leg < 4 && offRoad; leg++) {
                 double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
-                offRoad = !isRoadLocation(cx + (float) Math.cos(a) * 36f * stretch, cz + (float) Math.sin(a) * 36f * stretch, 6f);
+                offRoad = !isRoadLocation(world(segment, cx + (float) Math.cos(a) * 36f, cz + (float) Math.sin(a) * 36f), 6f);
             }
             if (!offRoad) continue;
-            return new float[] { sx, sz, dirX, dirZ };
+            return viewpoint(segment.frame, cx + dirX * standsAt, cz + dirZ * standsAt, dirX, dirZ);
         }
         return null;
     }
 
-    public float[] randomRoadPoint(Random rand) {
+    /** A random point on a road over dry land, looking along it, for spawning the player; null if the world has no roads. */
+    public Viewpoint randomRoadPoint(Random rand) {
         if (landSegments.isEmpty()) {
             return null;
         }
         RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
         float t = rand.nextFloat();
-        float dirX = (segment.chartEnd.x - segment.chartStart.x) / segment.chartLength();
-        float dirZ = (segment.chartEnd.z - segment.chartStart.z) / segment.chartLength();
+        float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
         if (rand.nextBoolean()) {
-            dirX = -dirX;
-            dirZ = -dirZ;
+            dx = -dx;
+            dz = -dz;
         }
-        return new float[] {
-            segment.chartStart.x + (segment.chartEnd.x - segment.chartStart.x) * t,
-            segment.chartStart.z + (segment.chartEnd.z - segment.chartStart.z) * t,
-            dirX, dirZ
-        };
+        return viewpoint(segment.frame, segment.start.x + (segment.end.x - segment.start.x) * t,
+                segment.start.z + (segment.end.z - segment.start.z) * t, dx, dz);
     }
 
     /** Visits every shop's building (without its extension). */
@@ -1156,7 +1150,7 @@ public class InfrastructureManager {
         candidates.addAll(endHouses);
         System.out.printf("[ROADS] %d dead ends: %d finished with a house, %d cut back to a junction%n",
                 deadEnds.size(), endHouses.size(), deadEnds.size() - endHouses.size());
-        for (List<RoadSegment> bucket : roadSegmentsByChunk.values()) {
+        for (List<RoadSegment> bucket : roadSegmentsByCell.values()) {
             for (RoadSegment segment : bucket) {
                 // (dirt tracks have no houses, except on islands the main roads never reached)
                 if (!segment.culDeSac && !segment.railed && (segment.roadClass != RoadPath.RoadClass.DIRT || roadNetwork.get(segment.pathIndex).island)) {
@@ -1184,7 +1178,7 @@ public class InfrastructureManager {
             }
             plotIndex.add(centre, candidate.plotRadius(), candidate);
             houses.add(candidate);
-            housesByChunk.computeIfAbsent(chunkKeyAt(candidate.x, candidate.z), ignored -> new ArrayList<>()).add(candidate);
+            housesByCell.computeIfAbsent(batchCell(candidate.frame.origin()), ignored -> new ArrayList<>()).add(candidate);
         }
     }
 
@@ -1319,7 +1313,7 @@ public class InfrastructureManager {
             }
             // Nothing fits here: cut the last stretch of road off and try further back
             pathSegments.remove(terminal);
-            List<RoadSegment> bucket = roadSegmentsByChunk.get(chunkKeyAt(terminal.chartMidX(), terminal.chartMidZ()));
+            List<RoadSegment> bucket = roadSegmentsByCell.get(batchCell(terminal.frame.origin()));
             if (bucket != null) {
                 bucket.remove(terminal);
             }
@@ -1528,24 +1522,27 @@ public class InfrastructureManager {
     //          CHUNK GENERATION
     // ==========================================
 
-    /** Geometry accumulated for one nation within one chunk, one builder per material. */
+    /**
+     * Geometry accumulated for one nation within one geodesic cell, one builder per material,
+     * in world coordinates (planet-centred; drawn camera-relative, as the terrain is).
+     */
     private final class NationBatch {
         private final int nationId;
         private final Map<String, MeshBuilder> builders = new LinkedHashMap<>();
-        private float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE;
-        private float maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-        private float maxY = -Float.MAX_VALUE;
-        // What is being built now is in a frame of its own, placed by this (null: on the chart)
-        private MeshBuilder.Placement placement;
+        // The box round what's been built, in the world
+        private double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
+        private double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+        // What is being built now is in a frame of its own (D3), placed in the world by this
+        private MeshBuilder.Placement placement = OUTSIDE_FRAME;
 
         private NationBatch(int nationId) {
             this.nationId = nationId;
         }
 
-        /** Builds from now on in a frame of its own, placed by placement (null: chart coordinates as given). */
+        /** Builds from now on in a frame of its own, placed in the world by placement (null: between pieces). */
         private void place(MeshBuilder.Placement placement) {
-            this.placement = placement;
-            for (MeshBuilder builder : builders.values()) builder.setPlacement(placement);
+            this.placement = placement == null ? OUTSIDE_FRAME : placement;
+            for (MeshBuilder builder : builders.values()) builder.setPlacement(this.placement);
         }
 
         private MeshBuilder builder(String part) {
@@ -1554,19 +1551,16 @@ public class InfrastructureManager {
             return builder;
         }
 
+        /** Takes in a point in the frame being built in, and room round it, for the batch's bounds. */
         private void include(float x, float y, float z, float margin) {
-            if (placement != null) {
-                float[] p = { x, y, z };
-                placement.place(p, new float[] { 0f, 1f, 0f });
-                x = p[0];
-                y = p[1];
-                z = p[2];
-            }
-            minX = Math.min(minX, x - margin);
-            maxX = Math.max(maxX, x + margin);
-            minZ = Math.min(minZ, z - margin);
-            maxZ = Math.max(maxZ, z + margin);
-            maxY = Math.max(maxY, y);
+            float[] p = { x, y, z };
+            placement.place(p, new float[] { 0f, 1f, 0f });
+            minX = Math.min(minX, p[0] - margin);
+            maxX = Math.max(maxX, p[0] + margin);
+            minY = Math.min(minY, p[1] - margin);
+            maxY = Math.max(maxY, p[1] + margin);
+            minZ = Math.min(minZ, p[2] - margin);
+            maxZ = Math.max(maxZ, p[2] + margin);
         }
 
         private InfrastructureObject build() {
@@ -1591,12 +1585,10 @@ public class InfrastructureManager {
             if (parts.isEmpty() || minX > maxX) {
                 return null;
             }
-            float centreX = (minX + maxX) * 0.5f;
-            float centreZ = (minZ + maxZ) * 0.5f;
-            float centreY = TerrainMesh.getLayeredHeight(centreX, centreZ, terrainNoise);
-            float halfDiagonal = 0.5f * (float) Math.sqrt((maxX - minX) * (maxX - minX) + (maxZ - minZ) * (maxZ - minZ));
-            float radius = Math.max(halfDiagonal, maxY - centreY);
-            InfrastructureObject batch = InfrastructureObject.createBatch(new Vector3(centreX, centreY, centreZ), nationId, radius, parts);
+            SpherePosition centre = new SpherePosition((minX + maxX) * 0.5, (minY + maxY) * 0.5, (minZ + maxZ) * 0.5);
+            double dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+            float radius = (float) (0.5 * Math.sqrt(dx * dx + dy * dy + dz * dz));
+            InfrastructureObject batch = InfrastructureObject.createBatch(centre, nationId, radius, parts);
             // The goods on shop shelves and small flags vanish into the distance before the buildings
             // do; what's seen through windows (curtains, rooms, shop interiors) lasts nearly as long
             batch.setDetailDistance(p -> p.name.equals("goods") || p.name.equals("shelf") || p.name.equals("flag"), 700f);
@@ -1605,22 +1597,31 @@ public class InfrastructureManager {
         }
     }
 
-    public List<InfrastructureObject> generateForChunk(int cx, int cz, float chunkSize, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
+    /** The batch cell (a geodesic cell at BATCH_LEVEL) a place is in. */
+    public long batchCell(SpherePosition place) {
+        return batchGrid.cellAt(place).id();
+    }
+
+    /**
+     * Builds what stands in one geodesic cell at BATCH_LEVEL (the houses, road segments, booths
+     * and crossings whose middles are in it, and the border fence traced through it): a batch
+     * per nation in world coordinates, and the signs.
+     */
+    public List<InfrastructureObject> generateForCell(long cell, float chunkSize, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
         List<InfrastructureObject> objects = new ArrayList<>();
         prepareRoadNetwork(chunkSize, totalRegionWidth, seaLevelHeight, noise);
 
-        Random signRand = new Random((long)cx * 8912L + (long)cz * 4123L);
+        Random signRand = new Random(cell * 8912L + 4123L);
         List<SpherePosition> signPositions = new ArrayList<>();
         Map<Integer, NationBatch> batches = new HashMap<>();
-        long key = chunkKey(cx, cz);
         recording = new ArrayList<>();
 
-        List<House> chunkHouses = across(cx, cz, housesByChunk, this::shifted);
-        if (!chunkHouses.isEmpty()) {
-            for (House house : chunkHouses) {
+        List<House> cellHouses = housesByCell.getOrDefault(cell, List.of());
+        if (!cellHouses.isEmpty()) {
+            for (House house : cellHouses) {
                 NationBatch batch = batches.computeIfAbsent(house.nationId, NationBatch::new);
                 // Built in the house's own frame (D3)
-                batch.place(onChart(house));
+                batch.place(inWorld(house));
                 bakeHouse(batch, house, objects);
                 if (house.fenced) {
                     bakeFence(batch, house);
@@ -1649,16 +1650,16 @@ public class InfrastructureManager {
             }
         }
 
-        borderFences(batches, cx, cz);
-        borderBooths(batches, cx, cz);
-        crossoverLines(batches, cx, cz);
+        borderFences(batches, cell);
+        borderBooths(batches, cell);
+        crossoverLines(batches, cell);
 
-        List<RoadSegment> segments = across(cx, cz, roadSegmentsByChunk, this::shifted);
+        List<RoadSegment> segments = roadSegmentsByCell.getOrDefault(cell, List.of());
         if (!segments.isEmpty()) {
             for (RoadSegment segment : segments) {
                 NationBatch batch = batches.computeIfAbsent(segment.nationId, NationBatch::new);
                 // Built in the segment's own frame (D3)
-                batch.place(onChart(segment));
+                batch.place(inWorld(segment));
                 if (segment.culDeSac) {
                     appendCulDeSac(batch, segment);
                     batch.place(null);
@@ -1682,8 +1683,8 @@ public class InfrastructureManager {
                 objects.add(object);
             }
         }
-        // (a chunk built again, after its meshes were dropped, has its shapes filed already)
-        if (chunksRecorded.add(key)) {
+        // (a cell built again, after its meshes were dropped, has its shapes filed already)
+        if (cellsRecorded.add(cell)) {
             for (Obstacle obstacle : recording) {
                 if (obstacle.b() == null) {
                     obstacleIndex.add(obstacle.a(), obstacle.size(), obstacle);
@@ -1718,7 +1719,7 @@ public class InfrastructureManager {
         if (recording != null) recording.add(new Obstacle(SphereMath.atAltitude(centre, 0.0), null, radius, Float.POSITIVE_INFINITY));
     }
 
-    /** Walls, fences, guard rails and sign posts reaching within reach of a place, from the chunks built so far. */
+    /** Walls, fences, guard rails and sign posts reaching within reach of a place, from the cells built so far. */
     public void obstaclesNear(SpherePosition centre, double reach, GeodesicCollision.Sink sink) {
         obstacleIndex.forEachNear(SphereMath.atAltitude(centre, 0.0), reach, obstacle -> {
             if (obstacle.b() == null) sink.circle(obstacle.a(), obstacle.size(), obstacle.top());
@@ -3171,26 +3172,22 @@ public class InfrastructureManager {
         return length;
     }
 
-    /** A developer aid: {x, z, lookX, lookZ} out in the road in front of a random shop, facing it; null if none. */
-    public float[] shopViewpoint(Random rand) {
+    /** A developer aid: out in the road in front of a random shop, facing it (in its frame, door towards +z); null if none. */
+    public Viewpoint shopViewpoint(Random rand) {
         if (shops.isEmpty()) return null;
         Shop shop = shops.get(rand.nextInt(shops.size()));
-        Doorway door = doorwayOf(shop.house);
-        float dx = door.kerbX - door.doorX, dz = door.kerbZ - door.doorZ;
-        float length = Math.max(1e-3f, (float) Math.hypot(dx, dz));
-        dx /= length;
-        dz /= length;
+        House house = shop.house;
         float back = Float.parseFloat(System.getProperty("xenoguesser.shopdistance", "50"));
         float side = Float.parseFloat(System.getProperty("xenoguesser.shopside", "0"));
-        return new float[] { door.kerbX + dx * back + door.roadDirX * side, door.kerbZ + dz * back + door.roadDirZ * side, -dx, -dz };
+        return viewpoint(house.frame, side, house.depth * 0.5f + house.setback + back, 0.0, -1.0);
     }
 
     /**
      * Developer aid: beside a raised stretch of road, on its lower side some way off,
-     * looking at its retaining wall, as {x, z, lookX, lookZ}; null if there's none.
+     * looking at its retaining wall; null if there's none.
      */
-    public float[] raisedRoadViewpoint(Random rand) {
-        float[] best = null;
+    public Viewpoint raisedRoadViewpoint(Random rand) {
+        Viewpoint best = null;
         float bestDrop = 3f;
         for (int attempt = 0; attempt < 4000 && !landSegments.isEmpty(); attempt++) {
             RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
@@ -3207,21 +3204,19 @@ public class InfrastructureManager {
                 if (drop > bestDrop && drop < 12f) {
                     bestDrop = drop;
                     float out = 70f;
-                    float[] eye = chartAt(segment, ex + sideX * sign * out, ez + sideZ * sign * out);
-                    best = new float[] { eye[0], eye[1], -sideX * sign, -sideZ * sign };
+                    best = viewpoint(segment.frame, ex + sideX * sign * out, ez + sideZ * sign * out, -sideX * sign, -sideZ * sign);
                 }
             }
         }
         return best;
     }
 
-    /** Developer aid: standing on a dirt track looking along it, as {x, z, lookX, lookZ}; null if there's none. */
-    public float[] trackViewpoint(Random rand) {
+    /** Developer aid: standing on a dirt track looking along it; null if there's none. */
+    public Viewpoint trackViewpoint(Random rand) {
         for (int attempt = 0; attempt < 20000 && !landSegments.isEmpty(); attempt++) {
             RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
             if (segment.roadClass != RoadPath.RoadClass.DIRT || segment.length < 1f) continue;
-            float dx = (segment.chartEnd.x - segment.chartStart.x) / segment.chartLength(), dz = (segment.chartEnd.z - segment.chartStart.z) / segment.chartLength();
-            return new float[] { segment.chartStart.x, segment.chartStart.z, dx, dz };
+            return viewpoint(segment.frame, segment.start.x, segment.start.z, segment.end.x - segment.start.x, segment.end.z - segment.start.z);
         }
         return null;
     }
@@ -4467,8 +4462,8 @@ public class InfrastructureManager {
         // Traffic lights (the two sides drive on different sides of the road), and a fenced
         // border's checks and booths
         private final boolean lights, fenced;
-        // Chart bridge (D13): the crossing on the chart, for which chunk builds its markings
-        private final float chartX, chartZ;
+        // Chart bridge (D13) for the people (Phase 4): the crossing's x on the chart
+        private final float chartX;
 
         private BorderCheck(int index, SphereFrame frame, double heading, float half, int nearNation, int farNation,
                             boolean lights, boolean fenced) {
@@ -4480,9 +4475,7 @@ public class InfrastructureManager {
             this.farNation = farNation;
             this.lights = lights;
             this.fenced = fenced;
-            double[] chart = Planet.mercatorPosition(frame.origin());
-            this.chartX = (float) chart[0];
-            this.chartZ = (float) chart[2];
+            this.chartX = (float) Planet.mercatorPosition(frame.origin())[0];
         }
 
         /**
@@ -4503,7 +4496,7 @@ public class InfrastructureManager {
         private final double heading;
         private final int nation;
         private final float guard;
-        // Chart bridge (D13): where it is on the chart, for which chunk builds it
+        // Chart bridge (D13) for the people (Phase 4): where it is on the chart
         private final float chartX, chartZ;
 
         private Booth(SphereFrame frame, double heading, int nation, float guard) {
@@ -4765,20 +4758,20 @@ public class InfrastructureManager {
     }
 
     /**
-     * The booths of any border checks in this chunk, each built in its own frame: a small
+     * The booths of any border checks in this cell, each built in its own frame: a small
      * concrete box beside the road, waist high, with a pillar at each corner holding up a flat
      * roof (its guard stands in it: see Inhabitants).
      */
-    private void borderBooths(Map<Integer, NationBatch> batches, int cx, int cz) {
+    private void borderBooths(Map<Integer, NationBatch> batches, long cell) {
         for (Booth booth : booths) {
-            if (chunkIndex(booth.chartX) != cx || chunkIndex(booth.chartZ) != cz) continue;
+            if (batchCell(booth.frame.origin()) != cell) continue;
             NationBatch batch = batches.computeIfAbsent(booth.nation, NationBatch::new);
             SpherePosition origin = booth.frame.origin();
             // Built of the plain local material (the nation's walls there), seen from inside and out
             int variant = chooseWallVariant(origin, booth.nation, (long) (origin.x() * 31.0) ^ (long) (origin.z() * 17.0));
             MeshBuilder concrete = batch.builder(BOOTH_PART + variant);
             concrete.setPlanarTextureScale(1.0f / wallVariants.get(variant).tileWidth);
-            batch.place(onChart(booth.frame, false, booth.chartX));
+            batch.place(inWorld(booth.frame, false));
             float ground = TerrainMesh.getLayeredHeight(origin, terrainNoise);
             float half = BOOTH_HALF, wall = BOOTH_WALL, roof = BOOTH_ROOF;
             // Four thin walls round its floor, chest high to the guard standing inside (local x
@@ -4813,13 +4806,13 @@ public class InfrastructureManager {
      * The crossovers' road markings, in the check's frame: two lines crossing in an X over the
      * middle, from each side's lane at one end to the other side of the road at the other.
      */
-    private void crossoverLines(Map<Integer, NationBatch> batches, int cx, int cz) {
+    private void crossoverLines(Map<Integer, NationBatch> batches, long cell) {
         for (BorderCheck c : borderChecks) {
-            if (!c.lights || chunkIndex(c.chartX) != cx || chunkIndex(c.chartZ) != cz) continue;
+            if (!c.lights || batchCell(c.frame.origin()) != cell) continue;
             NationBatch batch = batches.computeIfAbsent(c.nearNation, NationBatch::new);
             MeshBuilder paint = batch.builder("line");
             // (laid along the ground: local x along the road, z across it)
-            batch.place(onChart(c.frame, true, c.chartX));
+            batch.place(inWorld(c.frame, true));
             float lane = c.half * 0.5f, reach = CROSS_HALF - 8f, w = 0.9f;
             int steps = 16;
             for (float flip = -1f; flip <= 1f; flip += 2f) {
@@ -4856,20 +4849,39 @@ public class InfrastructureManager {
     private static final float BORDER_STEP = 6f, BORDER_FENCE_HEIGHT = 26f, BORDER_GATE_CLEARANCE = 4f;
 
     /**
-     * The fence along any border in this chunk between nations at odds (see
+     * The fence along any border in this cell between nations at odds (see
      * NationKinship.hostile): tall chain-link on steel posts, barbed wire strung along arms
      * leaning out at the top, and where a road crosses, a gap between heavy gateposts with
      * the gates swung open back along the fence. The border is traced on a grid fixed to the
-     * world (marching squares, each crossing found closely by halving), so neighbouring chunks
-     * meet; under water there is none.
+     * chart, as the nation map it follows is (D12; marching squares, each crossing found
+     * closely by halving); each square is built by the cell its middle is in, so neighbouring
+     * cells meet. Under water there is none, nor past the map's top and bottom.
      */
-    private void borderFences(Map<Integer, NationBatch> batches, int cx, int cz) {
-        float size = roadChunkSize;
-        float x0 = (cx - 0.5f) * size, z0 = (cz - 0.5f) * size;
+    private void borderFences(Map<Integer, NationBatch> batches, long cellId) {
+        GeodesicChunkGrid.Cell cell = batchGrid.cell(cellId);
+        // The cell's extent on the chart, its x kept beside its middle's across the map's join
+        double[] middle = Planet.mercatorPosition(SphereMath.atAltitude(cell.centre(), 0.0));
+        double minX = middle[0], maxX = middle[0], minZ = middle[2], maxZ = middle[2];
+        for (GeodesicChunkGrid.Direction corner : new GeodesicChunkGrid.Direction[] { cell.a(), cell.b(), cell.c() }) {
+            double[] p = Planet.mercatorPosition(SphereMath.atAltitude(corner, 0.0));
+            double x = middle[0] + Planet.wrapX(p[0] - middle[0]);
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minZ = Math.min(minZ, p[2]);
+            maxZ = Math.max(maxZ, p[2]);
+        }
+        // (its sides bow a little on the chart)
+        double pad = 0.1 * Math.max(maxX - minX, maxZ - minZ) + 2.0 * BORDER_STEP;
+        float edge = Planet.width() * 0.5f;
+        float x0 = (float) (minX - pad), x1 = (float) (maxX + pad);
+        float z0 = (float) Math.max(-edge, minZ - pad), z1 = (float) Math.min(edge, maxZ + pad);
+        if (z0 >= z1) return;
         // Far from any such border (the borders wander up to a couple of cells from the map's)
-        if (borderGapAt(x0 + size * 0.5f, z0 + size * 0.5f) > 3.5f) return;
-        int i0 = (int) Math.ceil(x0 / BORDER_STEP), i1 = (int) Math.ceil((x0 + size) / BORDER_STEP);
-        int j0 = (int) Math.ceil(z0 / BORDER_STEP), j1 = (int) Math.ceil((z0 + size) / BORDER_STEP);
+        float mapCell = Planet.width() / nationManager.nationMap.length;
+        float reach = (float) Math.hypot(x1 - x0, z1 - z0) * 0.5f / mapCell;
+        if (borderGapAt((x0 + x1) * 0.5f, (z0 + z1) * 0.5f) > 3.5f + reach) return;
+        int i0 = (int) Math.ceil(x0 / BORDER_STEP), i1 = (int) Math.ceil(x1 / BORDER_STEP);
+        int j0 = (int) Math.ceil(z0 / BORDER_STEP), j1 = (int) Math.ceil(z1 / BORDER_STEP);
         int w = i1 - i0 + 1, h = j1 - j0 + 1;
         int[] owner = new int[w * h];
         boolean any = false;
@@ -4896,6 +4908,8 @@ public class InfrastructureManager {
                     b = id[n];
                 }
                 if (crossings.isEmpty()) continue;
+                // (built by the cell the square's middle is in)
+                if (batchCell(sphere(ax + BORDER_STEP * 0.5f, az + BORDER_STEP * 0.5f)) != cellId) continue;
                 NationBatch batch = batches.computeIfAbsent(Math.min(a, b), NationBatch::new);
                 if (crossings.size() == 2) {
                     borderFencePiece(batch, crossings.get(0), crossings.get(1));
@@ -4904,8 +4918,8 @@ public class InfrastructureManager {
                     borderFencePiece(batch, crossings.get(2), crossings.get(3));
                 } else {
                     // Three nations meet: each crossing runs in to the middle
-                    float[] middle = { ax + BORDER_STEP * 0.5f, az + BORDER_STEP * 0.5f };
-                    for (float[] crossing : crossings) borderFencePiece(batch, crossing, middle);
+                    float[] meet = { ax + BORDER_STEP * 0.5f, az + BORDER_STEP * 0.5f };
+                    for (float[] crossing : crossings) borderFencePiece(batch, crossing, meet);
                 }
             }
         }
@@ -4977,7 +4991,7 @@ public class InfrastructureManager {
         float hgt = BORDER_FENCE_HEIGHT;
         if (roadA && roadB) return;
         // (laid along the ground: y is the height above the datum)
-        batch.place(onChart(frame, true, fromChart[0]));
+        batch.place(inWorld(frame, true));
         if (roadA || roadB) {
             // The gateway: a heavy post at the road's side, and the gate swung back along the fence
             float[] post = roadA ? b : a;
@@ -5011,11 +5025,12 @@ public class InfrastructureManager {
         addPrism(mesh, a, b, 0.3f, hgt * 0.5f - 0.3f, hgt * 0.5f + 0.3f);
         addPrism(mesh, a, b, 0.3f, hgt - 0.6f, hgt);
         uprights(mesh, a, b, dirX, dirZ, 0.9f, 0.06f, 0.2f, hgt);
-        // A post at some of the grid points (fixed to the world, so it's the same from both
-        // chunks), fewer where the chart's grid is drawn tighter, so they stand as far apart in
+        // A post at some of the grid points (fixed to the chart, so it's the same from both
+        // cells), fewer where the chart's grid is drawn tighter, so they stand as far apart in
         // true distance everywhere
         int every = 2 * Math.max(1, Math.round(chartStretch(fromChart[1])));
-        if (Math.floorMod(Math.round(fromChart[0] * 0.37f) + Math.round(fromChart[1] * 0.61f), every) == 0) {
+        float postX = (float) Planet.wrapX(fromChart[0]);
+        if (Math.floorMod(Math.round(postX * 0.37f) + Math.round(fromChart[1] * 0.61f), every) == 0) {
             addBox(mesh, a[0], a[1] - 1.5f, a[2], dirX, dirZ, 0.45f, 0.45f, hgt + 1.5f);
             // Its arm leaning out at the top, carrying the wire
             float[] foot = { a[0], a[1] + hgt, a[2] };
@@ -5190,7 +5205,7 @@ public class InfrastructureManager {
         if (maxGlyphs <= 0) maxGlyphs = 1;
         int[] textString = randomText(rand, maxGlyphs, 80, 200);
         InfrastructureObject sign = InfrastructureObject.createSign(frame, chart, nationId, textString);
-        // Separate streams, so the pictures and title don't change what else the chunk holds
+        // Separate streams, so the pictures and title don't change what else the cell holds
         Random design = new Random(rand.nextLong());
         decorateSign(sign, design, maxGlyphs, false);
         return sign;
@@ -5549,10 +5564,47 @@ public class InfrastructureManager {
         house.rotationY = (float) Math.toDegrees(Math.atan2(Math.cos(facing), Math.sin(facing)));
     }
 
+    // ------------------------------------------------------------------ placing in the world
+
+    private static MeshBuilder.Placement inWorld(House house) {
+        return inWorld(house.frame, false);
+    }
+
+    private static MeshBuilder.Placement inWorld(RoadSegment segment) {
+        return inWorld(segment.frame, true);
+    }
+
+    // What a batch holds between pieces: anything built then would have no frame to be in
+    private static final MeshBuilder.Placement OUTSIDE_FRAME = (position, normal) -> {
+        throw new IllegalStateException("Infrastructure built outside a frame");
+    };
+
+    /**
+     * Places what is built in a frame in the world (D3): rigidly for a house or a booth, or
+     * along the ground for a road or fence (x and z follow the planet's curve, y is the height
+     * above the datum). Normals turn with the frame.
+     */
+    private static MeshBuilder.Placement inWorld(SphereFrame frame, boolean alongGround) {
+        return (position, normal) -> {
+            SpherePosition at = alongGround ? frame.toSphere(position[0], position[1], position[2])
+                    : frame.toWorld(position[0], position[1], position[2]);
+            position[0] = (float) at.x();
+            position[1] = (float) at.y();
+            position[2] = (float) at.z();
+            double[] world = frame.worldDirection(normal[0], normal[1], normal[2]);
+            double length = Math.sqrt(world[0] * world[0] + world[1] * world[1] + world[2] * world[2]);
+            if (length > 1e-12) {
+                normal[0] = (float) (world[0] / length);
+                normal[1] = (float) (world[1] / length);
+                normal[2] = (float) (world[2] / length);
+            }
+        };
+    }
+
     // ------------------------------------------------------------------ chart bridge (D13)
-    // The batches, collision shapes, signs, doorways, maps and the grass's keep-off checks are
-    // still on the Mercator chart until the rest of Phase 3b (and Phase 4 for people and
-    // vehicles, Phase 5 for the maps). Everything they get from the frames goes through here.
+    // The people and vehicles (Phase 4), sign maps and the maps (Phase 5) and the border fences'
+    // tracing (D12) are still on the Mercator chart. Everything they get from the frames goes
+    // through here.
 
     /** Chart bridge: the place under a chart point, on the datum. */
     private static SpherePosition sphere(float chartX, float chartZ) {
@@ -5599,103 +5651,6 @@ public class InfrastructureManager {
         double[] local = SphereFrame.at(house.frame.origin()).localDirection(world[0], world[1], world[2]);
         double length = Math.max(1e-9, Math.hypot(local[0], local[2]));
         return new float[] { (float) (local[0] / length), (float) (local[2] / length) };
-    }
-
-    private static MeshBuilder.Placement onChart(House house) {
-        return onChart(house.frame, false, house.x);
-    }
-
-    private static MeshBuilder.Placement onChart(RoadSegment segment) {
-        return onChart(segment.frame, true, segment.chartMidX());
-    }
-
-    /**
-     * Chart bridge: places what is built in a frame (rigidly for a house, along the ground for a
-     * road) on the chart, where the batches stay until they are built per geodesic cell: each
-     * vertex goes onto the planet and then to its chart point, which the batch lifts back exactly
-     * (see InfrastructureObject.sphereVertices). A normal's level part is shrunk by the chart's
-     * stretch there, which that lifting undoes.
-     */
-    private static MeshBuilder.Placement onChart(SphereFrame frame, boolean alongGround, float nearX) {
-        return (position, normal) -> {
-            SpherePosition at = alongGround ? frame.toSphere(position[0], position[1], position[2])
-                    : frame.toWorld(position[0], position[1], position[2]);
-            double[] chart = Planet.mercatorPosition(at);
-            position[0] = nearX + (float) Planet.wrapX(chart[0] - nearX);
-            position[1] = (float) chart[1];
-            position[2] = (float) chart[2];
-            double[] world = frame.worldDirection(normal[0], normal[1], normal[2]);
-            double[] local = SphereFrame.at(at).localDirection(world[0], world[1], world[2]);
-            double cosine = Math.hypot(at.x(), at.z()) / at.length();
-            normal[0] = (float) (local[0] * cosine);
-            normal[1] = (float) local[1];
-            normal[2] = (float) (local[2] * cosine);
-        };
-    }
-
-    // ------------------------------------------------------------------ the map's join
-
-    /**
-     * What stands in a chunk: its own, plus whatever was built a whole way round the planet
-     * east or west of it, in the margin past the other edge of the map (a town near the
-     * join spreads over it), moved round to here. So both sides of the join show the same.
-     */
-    private <T> List<T> across(int cx, int cz, Map<Long, List<T>> byChunk, java.util.function.BiFunction<T, Float, T> move) {
-        List<T> found = new ArrayList<>();
-        List<T> own = byChunk.get(chunkKey(cx, cz));
-        if (own != null) found.addAll(own);
-        int round = Math.round(Planet.width() / roadChunkSize);
-        for (int k : new int[] { round, -round }) {
-            List<T> other = byChunk.get(chunkKey(cx + k, cz));
-            if (other == null) continue;
-            for (T thing : other) found.add(move.apply(thing, -k * roadChunkSize));
-        }
-        return found;
-    }
-
-    private final Map<House, House> shiftedHouses = new java.util.concurrent.ConcurrentHashMap<>();
-
-    /** A house moved a whole way round the planet (dx is plus or minus the map's width). */
-    private House shifted(House house, float dx) {
-        return shiftedHouses.computeIfAbsent(house, original -> {
-            try {
-                House copy = new House();
-                for (java.lang.reflect.Field field : House.class.getDeclaredFields()) {
-                    if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
-                    field.setAccessible(true);
-                    field.set(copy, field.get(original));
-                }
-                copy.x += dx;
-                copy.doorway = null;
-                return copy;
-            } catch (ReflectiveOperationException e) {
-                throw new IllegalStateException(e);
-            }
-        });
-    }
-
-    private RoadSegment shifted(RoadSegment segment, float dx) {
-        // (the same place: only its chart copy moves)
-        RoadSegment copy = new RoadSegment(segment.frame, segment.from, segment.to, segment.start, segment.end,
-                segment.startTangent, segment.endTangent,
-                new Vector3(segment.chartStart.x + dx, segment.chartStart.y, segment.chartStart.z),
-                new Vector3(segment.chartEnd.x + dx, segment.chartEnd.y, segment.chartEnd.z),
-                segment.nationId, segment.pathIndex, segment.roadClass, segment.startDistance, segment.length, segment.width, segment.culDeSac);
-        copy.deck = segment.deck;
-        copy.railed = segment.railed;
-        return copy;
-    }
-
-    private int chunkIndex(float coordinate) {
-        return (int) Math.floor((coordinate + roadChunkSize * 0.5f) / roadChunkSize);
-    }
-
-    private long chunkKeyAt(float x, float z) {
-        return chunkKey(chunkIndex(x), chunkIndex(z));
-    }
-
-    private static long chunkKey(int cx, int cz) {
-        return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
     }
 
     private static float dot(float[] a, float[] b) {

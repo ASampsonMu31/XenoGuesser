@@ -100,14 +100,17 @@ D13 Chart bridges: while a system is still on the chart (buildings, roads,
     Since the rest of 3b (parts 3 and 4) every lookup is on the sphere and the
     listener's infrastructure bridges are gone (chartObstaclesNear, the road and
     keep-out lambdas, groundHeightAt, the flora/grass clearing tests, the pod's
-    keep-clear). What is left, all marked "Chart bridge" in InfrastructureManager:
-    which chart chunk builds what (roadSegmentsByChunk, housesByChunk, booth/check
-    chartX/chartZ, across/shifted at the join) and the onChart placements, until
-    batching moves to geodesic cells (3b item 5); the (x, z) overloads and chart
+    keep-clear). Since 3b items 5 and 6 the batches are built per geodesic cell in
+    world coordinates (which chart chunk builds what, the onChart placements and the
+    map join's across/shifted are gone), and the spawn places the road network picks
+    (landingSite, randomRoadPoint, the house/shop/track/raised-road views) are Viewpoints
+    worked out in the segment's or house's frame. What is left, all marked "Chart
+    bridge" in InfrastructureManager: the (x, z) overloads and chart
     results for people and vehicles (Phase 4: doorways, kerbSpot, roadAtPoint,
     roadPointBetween, streetWalk, borderStopAhead/HoldAhead/Lights/Booths, the
-    chart Collision's obstaclesNear, walkingSurfaceY(x, z)); sign.position (sign
-    maps, Phase 5); the border fences traced on the nation map's chart grid (D12).
+    chart Collision's obstaclesNear, walkingSurfaceY(x, z), booth/check chartX);
+    sign.position (sign maps, Phase 5); the border fences traced on the nation map's
+    chart grid (D12; each grid square built by the geodesic cell its middle is in).
 
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
@@ -206,13 +209,15 @@ PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
 [x] Spatial queries (segmentsNear, housesNear, clearedAt, roadAt, roadDepth,
     walkingSurfaceY, doorways, border checks) on CellIndex (D5).
     (Also: collision shapes, driveways, shops, booths, the pod's keep-clear.)
-[ ] Batching: NationBatch meshes built per geodesic cell in camera-relative
+[x] Batching: NationBatch meshes built per geodesic cell in camera-relative
     world coordinates (follow how Copilot's terrain chunks do it).
-[ ] Delete GeodesicRoadMesh, GeodesicSettlementMesh and their fields/futures
+    (Level 7 cells, InfrastructureManager.BATCH_LEVEL; window glass drawn again.)
+[x] Delete GeodesicRoadMesh, GeodesicSettlementMesh and their fields/futures
     in XenoGuesser_GLEventListener.
 CHECK: a town at the equator and one at ~70 degrees; roads, houses, paint,
 fences, signs, borders all present and true size; no gaps at cell borders.
 Shop sign lettering reads the right way round (moved here from Phase 1).
+[x] Passed 2026-10-13 (see LOG). Phase 3 is complete; Phase 4 can start.
 
 -------------------------------------------------------------------------------
 PHASE 4  VEHICLES AND PEOPLE
@@ -616,3 +621,60 @@ LOG
     Phase 4, which ports the people). A few booths (2 of 40) and lights (4 of 68)
     stand within reach of another road passing a crossing (as before the port).
     House placement takes ~2.2 s (was 1.7 s on the chart buckets).
+2026-10-13  PHASE 3b PARTS 5 AND 6 DONE (uncommitted): batches per geodesic cell; stand-ins deleted.
+  - Batching: InfrastructureManager.generateForCell(cell) builds what stands in one level-7
+    geodesic cell (BATCH_LEVEL, the vegetation's level): the houses, segments, booths and
+    crossover lines whose middles are in it (roadSegmentsByCell, housesByCell). NationBatch
+    places every piece straight into world coordinates (inWorld(frame): rigid, or along the
+    ground for roads/fences; normals turned by the frame) and keeps a 3D box for its bounds;
+    InfrastructureObject.createBatch takes the box's centre as a SpherePosition. Drawn
+    camera-relative as the terrain is (vs_standard subtracts sphereCamera). Anything built
+    between pieces (no frame) throws. Gone: chunkKey/chunkIndex, across/shifted (map join),
+    the onChart placements, sphereVertices (the chart lift), roadChunkSize, the chart branch
+    of InfrastructureObject.render.
+  - Border fences: still traced on the chart's 6-unit grid (D12), over the cell's chart
+    extent (its corners, kept beside its middle across the join, padded); each grid square
+    is built by the cell its middle is in, so cells meet with no gap or double. None past
+    the map's top and bottom (~85 degrees). Post spacing uses the wrapped chart x.
+  - Listener: infraCache keyed by cell id; wantInfrastructureAround (on a change of cell)
+    lists the cells within VIEW_DISTANCE + 1 chunks' reach, nearest first and those the way
+    the player went since last time first, and drops those well behind. lastChunkX/Z,
+    chunksByPriority, trackWalking/walkDir gone. Loaded = every wanted cell built.
+  - Window glass drawn again (it was not drawn on the sphere at all): vs_glass is
+    camera-relative (curve uniforms gone), drawWindowGlass culls by the batches' centres.
+  - Deleted (D2): GeodesicRoadMesh, GeodesicSettlementMesh, fs_sphere_structure, their
+    models/futures/materials, the stand-in walls' CellIndex and collision source. They
+    were still being drawn on top of the real roads and houses until now.
+  - PlanningCheck (426524 pass): the cells within 450 of each test town (52 at the equator,
+    51 at 67 N: the same true area) build; every vertex is within 200 of its cell, inside
+    its batch's bounds, with a unit normal, and sampled vertices are on the ground (none on
+    the chart); border fences as before through cells. Cost: 5.2 ms a cell in the dense
+    equator town (worst 71 ms, the first, cold), 0.6 ms at 67 N. SphereToolkitCheck 2928.
+    Seed 123 still 10609 houses.
+  - Launches (seed 123): equator town (3.297, 16.389): roads, paint, junctions, houses,
+    round tower, shop signs, people, cars, 24 FPS (part 3/4: 22). Town at 67.461 N
+    139.716 E: full-size blocks, fences, paint, posters and a sign, person, car, 25 FPS.
+    Border crossing at 70.3 S 0.2 E: booths, guard, crossover lines, fence with barbed wire
+    and gatepost, town, 24 FPS. World ready 88-99 s. No exceptions. (A game window left
+    behind others renders but slowly; bring it to the front before reading its frames.)
+  - Not done: the full latitude frame-time comparison with like towns (the two test towns
+    differ ~20x in vertices); window glass not looked at closely in a launch. A dense cell
+    is built on the GL thread in one go (~5 ms): if walking through big towns hitches,
+    build cells on the builder threads (needs recording/obstacleIndex made thread-safe).
+2026-10-13  PHASE 3 REVIEW before Phase 4.
+  - Found still on the chart: the spawn places the road network picks. landingSite (every
+    normal round's pod) worked on RoadSegment.chartStart/End with distances times the
+    chart's stretch (method 1 style); randomRoadPoint, randomHouseViewpoint, shop/track/
+    raisedRoadViewpoint returned chart {x, z, dir}. All now return a Viewpoint laid out in
+    the segment's or house's frame (InfrastructureManager.viewpoint); dryLand takes a
+    SpherePosition; landSegments' "on the map" test is by latitude. chartLength gone.
+    shopViewpoint stands in front of the shop in its frame (was: from its chart doorway).
+  - PlanningCheck: 300 landing sites (54 above 40 degrees): all facing a road within 59
+    true units ahead, none in a building; 1 standing where another road passes (the
+    method allows it now and then; checked rare). 426828 pass.
+  - Launch (seed 123, normal spawn, hudtest=guess,shop,next): pod on dry land facing the
+    road, next round built in 12.1 s over 310 frames, no exceptions.
+  - Left on purpose (later phases, listed in D13): people/vehicle bridges and their
+    chartStretch uses (Phase 4), the minimap/sign maps/forEachBuilding (Phase 5), the
+    thermometer (Phase 5), the border fence tracing on the chart (D12), Frustum (used by
+    people/vehicles only), vs_water + waterPlaneModel (dead, Phase 6).
