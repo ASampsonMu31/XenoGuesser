@@ -26,7 +26,7 @@ public final class PlanningCheck {
 
     public static void main(String[] args) {
         long seed = 123L;
-        float width = 150_000f, chunk = 100f;
+        float width = 150_000f;
         Planet.setWidth(width);
         PerlinNoise noise = new PerlinNoise(seed);
         float sea = XenoGuesser_GLEventListener.precalculateSeaLevel(seed, noise);
@@ -37,15 +37,15 @@ public final class PlanningCheck {
         System.out.printf("Water distance field built in %d ms%n", System.currentTimeMillis() - fieldStart);
         checkWaves(regional, noise, sea);
         regional.setMoistureMap(regional.createWaterPreference(0f, 8000f));
-        NationGenerationManager nations = new NationGenerationManager(seed, 6 + new Random(seed).nextInt(9), 384, sea, noise);
-        nations.generateTerritories(seed, width);
+        NationGenerationManager nations = new NationGenerationManager(seed, 6 + new Random(seed).nextInt(9), sea, noise);
+        nations.generateTerritories(seed);
         SettlementManager settlements = new SettlementManager(seed, sea, noise, regional, nations);
 
         checkClimate(regional, noise, sea);
         checkNations(nations, width);
         checkSettlements(settlements);
         checkRoads(new RoadNetworkBuilder(seed, sea, noise, settlements, nations).build(), noise, width);
-        checkInfrastructure(new InfrastructureManager(seed, nations.numNations, nations, settlements, null), chunk, width, sea, noise);
+        checkInfrastructure(new InfrastructureManager(seed, nations.numNations, nations, settlements, null), width, sea, noise);
 
         System.out.printf("%d checks, %d failed%n", checks, failures);
         if (failures > 0) System.exit(1);
@@ -108,8 +108,17 @@ public final class PlanningCheck {
         for (int i = 0; i < 2000; i++) {
             SpherePosition p = SphereMath.randomPlace(rand, Math.toRadians(74));
             double[] m = MapProjection.toMap(p);
-            int byDirection = nations.getNationAt(p), byMap = nations.getNationAtWorld((float) m[0], (float) m[1], width);
+            int byDirection = nations.getNationAt(p), byMap = nations.getNationAtMap((float) m[0], (float) m[1]);
             check(byDirection == byMap, "nation at " + p + ": " + byDirection + " by direction, " + byMap + " on the map");
+        }
+        // The territories are on the sphere (no chart): every nation holds some of it, in true
+        // area, and the nations near the poles are no smaller for being there
+        SphereRaster raster = nations.raster();
+        double[] area = new double[nations.numNations + 1];
+        for (int t = 0; t < raster.size(); t++) area[nations.territory()[t]] += raster.solidAngle(t);
+        for (int n = 1; n <= nations.numNations; n++) {
+            check(area[n] > 0.0, "nation " + n + " holds none of the sphere");
+            System.out.printf("Nation %d: %.1f%% of the sphere%n", n, area[n] / (4.0 * Math.PI) * 100.0);
         }
         // Past the map's top and bottom, and at the poles themselves, there is still a nation
         for (double lat : new double[] { 80, 89.9999, 90, -80, -90 }) {
@@ -193,9 +202,9 @@ public final class PlanningCheck {
         return SphereMath.atAltitude(frame.toWorld(x, 0.0, z), 0.0);
     }
 
-    private static void checkInfrastructure(InfrastructureManager infra, float chunk, float width, float sea, PerlinNoise noise) {
+    private static void checkInfrastructure(InfrastructureManager infra, float width, float sea, PerlinNoise noise) {
         long start = System.currentTimeMillis();
-        infra.prepareRoadNetwork(chunk, width, sea, noise);
+        infra.prepareRoadNetwork(sea, noise);
         System.out.printf("Infrastructure built in %d ms%n", System.currentTimeMillis() - start);
         // Every building (and extension) fills its footprint, true size, and stops at its back wall
         int[] byBand = new int[10];
@@ -247,7 +256,7 @@ public final class PlanningCheck {
                 SpherePosition cellMiddle = SphereMath.atAltitude(cell.centre(), 0.0);
                 double cellReach = cell.angularRadius() * Planet.radius();
                 long before = System.nanoTime();
-                List<InfrastructureObject> built = infra.generateForCell(cell.id(), chunk, width, sea, noise);
+                List<InfrastructureObject> built = infra.generateForCell(cell.id(), sea, noise);
                 building += System.nanoTime() - before;
                 slowest = Math.max(slowest, System.nanoTime() - before);
                 for (InfrastructureObject object : built) {
@@ -290,9 +299,9 @@ public final class PlanningCheck {
         check(lookupMicros[1] < lookupMicros[0] * 2.0 + 2.0, "lookups cost more in the north: " + lookupMicros[1] + " us against " + lookupMicros[0]);
         checkBorders(infra);
         checkLandingSites(infra, noise, sea);
-        checkBorderFences(infra, chunk, width, sea, noise);
+        checkBorderFences(infra, width, sea, noise);
         checkVehicles(infra, noise, towns);
-        checkPeople(infra, chunk, width, sea, noise, towns);
+        checkPeople(infra, width, sea, noise, towns);
     }
 
     /**
@@ -301,7 +310,34 @@ public final class PlanningCheck {
      * true speed (as fast in the north as at the equator) without jumping about, and get where
      * they're going (some go in, some come out).
      */
-    private static void checkPeople(InfrastructureManager infra, float chunk, float width, float sea, PerlinNoise noise, double[][] towns) {
+    /**
+     * Whether a place is inside a building's own outline, more than margin from its walls
+     * (round and many-sided buildings too, not just within the rectangle round them).
+     */
+    private static boolean insideBuilding(InfrastructureManager infra, SpherePosition at, float margin) {
+        boolean[] in = { false };
+        infra.forEachBuildingNear(at, 1f, (frame, outline, nation) -> {
+            double[] local = frame.fromSphere(at);
+            float x = (float) local[0], z = (float) local[2];
+            boolean odd = false;
+            for (int i = 0, j = outline.length - 1; i < outline.length; j = i++) {
+                float[] a = outline[i], b = outline[j];
+                if ((a[1] > z) != (b[1] > z) && x < (b[0] - a[0]) * (z - a[1]) / (b[1] - a[1]) + a[0]) odd = !odd;
+            }
+            if (!odd) return;
+            for (int i = 0, j = outline.length - 1; i < outline.length; j = i++) {
+                float[] a = outline[i], b = outline[j];
+                float ex = b[0] - a[0], ez = b[1] - a[1], length2 = ex * ex + ez * ez;
+                float t = length2 > 0f ? Math.max(0f, Math.min(1f, ((x - a[0]) * ex + (z - a[1]) * ez) / length2)) : 0f;
+                float dx = x - a[0] - ex * t, dz = z - a[1] - ez * t;
+                if (dx * dx + dz * dz < margin * margin) return;
+            }
+            in[0] = true;
+        });
+        return in[0];
+    }
+
+    private static void checkPeople(InfrastructureManager infra, float width, float sea, PerlinNoise noise, double[][] towns) {
         GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
         double[] paces = new double[towns.length];
         for (int t = 0; t < towns.length; t++) {
@@ -309,7 +345,7 @@ public final class PlanningCheck {
             String where = "round " + towns[t][0] + ", " + towns[t][1];
             // (walls are solid once their cells are built)
             for (GeodesicChunkGrid.Cell cell : batchGrid.cellsWithin(SphereMath.direction(centre), 1100.0 / Planet.radius())) {
-                infra.generateForCell(cell.id(), chunk, width, sea, noise);
+                infra.generateForCell(cell.id(), sea, noise);
             }
             Inhabitants people = new Inhabitants(123L, 20, infra, noise);
             GeodesicCollision collision = new GeodesicCollision();
@@ -332,7 +368,7 @@ public final class PlanningCheck {
                     SpherePosition was = before.get(p);
                     if (!street || was == null || SphereMath.distance(at, centre) > 900.0) return;
                     moves[0]++;
-                    if (infra.isBuildingLocation(at, 0f)) moves[1]++;
+                    if (insideBuilding(infra, at, 1f)) moves[1]++;
                     double moved = SphereMath.distance(was, at);
                     if (moved > speed * dt * 3.0 + 2.0) moves[2]++;
                     sums[0] += moved;
@@ -424,15 +460,18 @@ public final class PlanningCheck {
         int steps = 0, onRoad = 0;
         while (!arrived[0] && seconds < 1500f) {
             SpherePosition before = car.position;
+            float speedBefore = car.speed;
+            int legBefore = car.next;
             vehicles.update(all, dt, viewer);
             seconds += dt;
             double moved = SphereMath.distance(before, car.position);
             // (a step that only moves on to the next point of its way doesn't move it)
             if (car.speed > 5f && moved > 1e-6) worst = Math.max(worst, (float) Math.abs(moved - car.speed * dt) / (car.speed * dt));
             double lat = Math.abs(Math.toDegrees(Planet.latitude(car.position)));
-            // (by the road it's driving, as its speed limit is)
+            // (by the road it's driving, as its speed limit is: a step on one leg of its way, not
+            // one where it moves on to the next, nor while it brakes down to a slower road's limit)
             Vehicles.Stop road = car.route.isEmpty() ? null : car.route.get(Math.min(car.next, car.route.size() - 1));
-            if (road != null && road.dirt() == 0f && (lat < 42.0 || lat > 55.0)) {
+            if (road != null && road.dirt() == 0f && (lat < 42.0 || lat > 55.0) && car.next == legBefore && car.speed >= speedBefore) {
                 int rank = road.rank() >= 2f ? 1 : 0, band = lat < 42.0 ? 0 : 1;
                 fastest[rank][band] = Math.max(fastest[rank][band], car.speed);
             }
@@ -499,12 +538,14 @@ public final class PlanningCheck {
      * Border fences at fenced crossings (built as their cells are): reaching the road where it
      * crosses the border, with a gatepost there, and true size (short pieces at 70 degrees too).
      */
-    private static void checkBorderFences(InfrastructureManager infra, float chunk, float width, float sea, PerlinNoise noise) {
+    private static void checkBorderFences(InfrastructureManager infra, float width, float sea, PerlinNoise noise) {
         List<InfrastructureManager.Guard> booths = infra.borderGuards();
         List<InfrastructureManager.TrafficLight> lights = infra.borderLights();
         GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
         int crossings = 0, fenced = 0, gated = 0;
         double longest = 0.0, farthest = 0.0;
+        // Every fence piece's ends, to see that the pieces join up (across cells too)
+        java.util.Map<String, SpherePosition[]> pieces = new java.util.HashMap<>();
         for (int i = 0; i + 1 < lights.size() && crossings < 12; i += 2) {
             // (the crossing is half way between its two traffic lights)
             SpherePosition crossing = SphereMath.slerp(lights.get(i).foot(), lights.get(i + 1).foot(), 0.5);
@@ -513,14 +554,20 @@ public final class PlanningCheck {
             if (!hasBooth) continue;
             crossings++;
             for (GeodesicChunkGrid.Cell cell : batchGrid.cellsWithin(SphereMath.direction(crossing), 150.0 / Planet.radius())) {
-                infra.generateForCell(cell.id(), chunk, width, sea, noise);
+                infra.generateForCell(cell.id(), sea, noise);
             }
             double[] nearest = { Double.MAX_VALUE, Double.MAX_VALUE }, most = { 0.0 };
             infra.obstaclesNear(crossing, 120.0, new GeodesicCollision.Sink() {
                 @Override
                 public void segment(SpherePosition a, SpherePosition b, double halfWidth, double top) {
                     if (top < 29.0 || top > 31.0) return;   // (a border fence stands 30 high)
+                    pieces.put(a + " " + b, new SpherePosition[] { a, b });
                     nearest[0] = Math.min(nearest[0], SphereMath.distanceToArc(crossing, a, b));
+                    // (true size: as long as a side of the lattice it's traced on, but for those
+                    // bent round a booth)
+                    for (InfrastructureManager.Guard booth : booths) {
+                        if (SphereMath.distance(booth.place(), a) < 25.0 || SphereMath.distance(booth.place(), b) < 25.0) return;
+                    }
                     most[0] = Math.max(most[0], SphereMath.distance(a, b));
                 }
 
@@ -534,8 +581,20 @@ public final class PlanningCheck {
             farthest = Math.max(farthest, Math.min(nearest[0], nearest[1]));
             longest = Math.max(longest, most[0]);
         }
+        // A piece's end with no other piece's end at it: a gateway (the gate, not a fence piece,
+        // carries on from there), a booth's bend, or a gap
+        int ends = 0, loose = 0;
+        List<SpherePosition> all = new java.util.ArrayList<>();
+        for (SpherePosition[] piece : pieces.values()) { all.add(piece[0]); all.add(piece[1]); }
+        for (SpherePosition end : all) {
+            int at = 0;
+            for (SpherePosition other : all) if (SphereMath.distance(end, other) < 0.05) at++;
+            ends++;
+            if (at < 2) loose++;
+        }
         System.out.printf("Border fences: %d of %d fenced crossings have fence within 60 of the road's crossing, %d a gatepost; "
-                + "longest piece %.1f%n", fenced, crossings, gated, longest);
+                + "longest piece %.1f; %d of %d piece ends meet no other%n", fenced, crossings, gated, longest, loose, ends);
+        check(loose * 10 < ends, loose + " of " + ends + " border fence piece ends meet no other piece (gaps in the fence)");
         check(crossings > 0, "no fenced crossings");
         check(fenced == crossings, (crossings - fenced) + " of " + crossings + " fenced crossings with no fence near the road");
         check(gated == crossings, (crossings - gated) + " of " + crossings + " fenced crossings with no gatepost");

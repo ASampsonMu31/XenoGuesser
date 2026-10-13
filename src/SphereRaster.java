@@ -96,26 +96,42 @@ public final class SphereRaster {
     }
 
     public float sample(float[] values, double x, double y, double z) {
+        int[] texels = new int[4];
+        float[] weights = new float[4];
+        corners(x, y, z, texels, weights);
+        float sum = 0f;
+        for (int k = 0; k < 4; k++) if (weights[k] != 0f) sum += values[texels[k]] * weights[k];
+        return sum;
+    }
+
+    /**
+     * The four texels nearest a direction and how much each counts in a blend between them
+     * (bilinear on the face; past a face's edge, the texel on the next face), into texels and
+     * weights (four each; the weights sum to 1).
+     */
+    public void corners(double x, double y, double z, int[] texels, float[] weights) {
         int at = index(x, y, z), face = at / (n * n);
         double[] st = faceCoordinates(face, x, y, z);
         double gx = (st[0] + 1.0) * 0.5 * n - 0.5, gy = (st[1] + 1.0) * 0.5 * n - 0.5;
         int i0 = (int) Math.floor(gx), j0 = (int) Math.floor(gy);
         float fx = (float) (gx - i0), fy = (float) (gy - j0);
-        float sum = 0f;
         for (int k = 0; k < 4; k++) {
             int i = i0 + (k & 1), j = j0 + (k >> 1);
-            float w = ((k & 1) == 0 ? 1f - fx : fx) * ((k >> 1) == 0 ? 1f - fy : fy);
-            if (w == 0f) continue;
-            int texel;
-            if (i >= 0 && i < n && j >= 0 && j < n) texel = (face * n + j) * n + i;
+            weights[k] = ((k & 1) == 0 ? 1f - fx : fx) * ((k >> 1) == 0 ? 1f - fy : fy);
+            if (i >= 0 && i < n && j >= 0 && j < n) texels[k] = (face * n + j) * n + i;
             else {
                 double[] d = new double[3];
                 faceDirection(face, (2.0 * i + 1.0) / n - 1.0, (2.0 * j + 1.0) / n - 1.0, d);
-                texel = index(d[0], d[1], d[2]);
+                texels[k] = index(d[0], d[1], d[2]);
             }
-            sum += values[texel] * w;
         }
-        return sum;
+    }
+
+    /** The share of the whole sphere's surface (4 pi steradians) a texel covers, in steradians. */
+    public double solidAngle(int index) {
+        int i = index % n, j = (index / n) % n;
+        double s = (2.0 * i + 1.0) / n - 1.0, t = (2.0 * j + 1.0) / n - 1.0, step = 2.0 / n;
+        return step * step / Math.pow(1.0 + s * s + t * t, 1.5);
     }
 
     /** A face's (sc, tc), -1 to 1 across it, for a direction on that face. */

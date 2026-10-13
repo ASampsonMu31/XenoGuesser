@@ -1092,7 +1092,6 @@ public class Inhabitants {
     private final List<Vehicles.Vehicle> roamingCars = new ArrayList<>();
     private final List<Person> travellers = new ArrayList<>();
     private final List<Vehicles.Vehicle> throughCars = new ArrayList<>();
-    private float trafficTimer;
     // Vehicles passing through that have got where they were going, to go once out of sight
     private final java.util.Set<Vehicles.Vehicle> arrived = new java.util.HashSet<>();
     private final Random trafficRand = new Random(0x7AFF1CL);
@@ -1258,7 +1257,16 @@ public class Inhabitants {
             }
             int start = 1 + rand.nextInt(Math.max(1, p.route.size() - 2));
             Waypoint at = p.route.get(start - 1), to = p.route.get(start);
-            p.position = SphereMath.slerp(at.place(), to.place(), rand.nextFloat());
+            // (a long leg can cut across a building's corner: never start inside one, where the
+            // walls would keep them; the leg's start is out on the street)
+            p.position = at.place();
+            for (int attempt = 0; attempt < 8; attempt++) {
+                SpherePosition along = SphereMath.slerp(at.place(), to.place(), rand.nextFloat());
+                if (!infrastructure.isBuildingLocation(along, 1f)) {
+                    p.position = along;
+                    break;
+                }
+            }
             p.heading = SphereMath.heading(p.position, to.place());
             p.next = start;
         }

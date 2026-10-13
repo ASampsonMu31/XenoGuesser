@@ -38,7 +38,6 @@ public class BirdsEyeMaps {
     private static final Color TRACK_COLOUR = new Color(205, 178, 128);
     private static final float TRACK_STROKE = 0.8f;
 
-    private static final Color BUILDING_LAND = new Color(44, 48, 52);
 
     private final int outputResolution;
     private final int detailResolution;
@@ -217,11 +216,19 @@ public class BirdsEyeMaps {
      * at the chart's top or bottom edge included). Each is {nationId, worldX, worldZ, area in
      * world units squared, 1 for the main name or 0}.
      */
-    // The smallest island (in territory cells, each a few hundred units across) given its own small name
+    // The smallest island (in label grid cells, each a few hundred units across) given its own small name
     private static final int MIN_NAMED_ISLAND_CELLS = 12;
+    // The grid on the map the nations' land is worked out on for their names
+    private static final int LABEL_GRID = 384;
 
     public List<float[]> nationLabelPlaces(NationGenerationManager nations) {
-        int res = nations.nationMap.length;
+        int res = LABEL_GRID;
+        // Which nation holds each grid cell's middle on the map
+        int[][] grid = new int[res][res];
+        java.util.stream.IntStream.range(0, res).parallel().forEach(cy -> {
+            float worldZ = (cy + 0.5f) * totalRegionWidth / res - totalRegionWidth * 0.5f;
+            for (int cx = 0; cx < res; cx++) grid[cx][cy] = nations.getNationAtMap((cx + 0.5f) * totalRegionWidth / res - totalRegionWidth * 0.5f, worldZ);
+        });
         // Only dry land on the map counts: a nation's territory reaches out over its waters,
         // and the chart is cut off short of the poles
         float[] heights = getDetailHeights();
@@ -252,7 +259,7 @@ public class BirdsEyeMaps {
         int[] stack = new int[res * res];
         for (int start = 0; start < res * res; start++) {
             int sx = start % res, sy = start / res;
-            int id = nations.nationMap[sx][sy];
+            int id = grid[sx][sy];
             if (id == 0 || region[start] != 0 || !land[start]) continue;
             regionCount++;
             // Flood fill (wrapping east to west), summing the cells' positions as angles so a
@@ -275,7 +282,7 @@ public class BirdsEyeMaps {
                 for (int[] q : next) {
                     if (q[1] < 0 || q[1] >= res) continue;
                     int k = q[1] * res + q[0];
-                    if (region[k] == 0 && land[k] && nations.nationMap[q[0]][q[1]] == id) {
+                    if (region[k] == 0 && land[k] && grid[q[0]][q[1]] == id) {
                         region[k] = regionCount;
                         stack[top++] = k;
                     }
@@ -350,7 +357,7 @@ public class BirdsEyeMaps {
                 if (heights[y * n + x] <= seaLevelHeight) {
                     pixels[y * n + x] = WATER.getRGB();
                 } else {
-                    int id = nations.getNationAtWorld(pixelToWorld(x + 0.5f), worldZ, totalRegionWidth);
+                    int id = nations.getNationAtMap(pixelToWorld(x + 0.5f), worldZ);
                     pixels[y * n + x] = nations.getNationColor(id).getRGB() | 0xFF000000;
                 }
             }
@@ -724,7 +731,7 @@ public class BirdsEyeMaps {
                     if (h[(y + 1) * w + x + 1] <= seaLevelHeight) {
                         tile.setRGB(x, y, WATER.getRGB());
                     } else {
-                        int id = nations.getNationAtWorld(tileWorld(level, tx, x, size), worldZ, totalRegionWidth);
+                        int id = nations.getNationAtMap(tileWorld(level, tx, x, size), worldZ);
                         tile.setRGB(x, y, nations.getNationColor(id).getRGB());
                     }
                 }
@@ -896,19 +903,11 @@ public class BirdsEyeMaps {
         return (pixel / detailResolution) * totalRegionWidth - halfRegion;
     }
 
-    private float worldToPixel(float world) {
-        return ((world + halfRegion) / totalRegionWidth) * detailResolution;
-    }
-
     private static int lerpColour(Color from, Color to, float t) {
         t = Math.max(0.0f, Math.min(1.0f, t));
         int r = Math.round(from.getRed() + (to.getRed() - from.getRed()) * t);
         int g = Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * t);
         int b = Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * t);
         return (r << 16) | (g << 8) | b;
-    }
-
-    private static int clampChannel(float value) {
-        return Math.max(0, Math.min(255, Math.round(value * 255.0f)));
     }
 }

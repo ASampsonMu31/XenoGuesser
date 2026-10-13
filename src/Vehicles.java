@@ -177,7 +177,6 @@ public final class Vehicles {
     // The mesh of each kind's variations, and where each wheel's hub is and how big it is
     private final OrganismMesh.Builder[][] builders = new OrganismMesh.Builder[KINDS][VARIANTS];
     private final OrganismMesh[][] meshes = new OrganismMesh[KINDS][VARIANTS];
-    private final float[][][][] wheels = new float[KINDS][VARIANTS][][];
     // Each nation's taste in vehicles, how many of its households have one, and its side of the road
     private final Map<Integer, float[]> kindWeights = new HashMap<>();
     private final Map<Integer, Float> ownership = new HashMap<>();

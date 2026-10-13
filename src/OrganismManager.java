@@ -319,11 +319,6 @@ public class OrganismManager {
         return mine / Math.max(1f, total) * species.get(i).rarity * PEAK_PER_CHUNK;
     }
 
-    /** The most of species i a chunk can expect (where it's at its best, alone). */
-    public float peakPerChunk(int i) {
-        return species.get(i).rarity * PEAK_PER_CHUNK;
-    }
-
     private List<Creature> populate(GeodesicChunkGrid.Cell cell) {
         List<Creature> list = new ArrayList<>();
         Random rand = new Random(seed ^ roundSalt ^ (cell.id() * 0x9E3779B97F4A7C15L) ^ 0x0B6L);

@@ -22,7 +22,6 @@ uniform vec3 snowColour;
 uniform float snowCleared;   // how much of the snow has been cleared off this (roads: see InfrastructureObject)
 uniform float snowToday;     // how much warmer (Celsius) today is than usual round the player
 uniform float planetRadius;
-uniform int sphereNativeTerrain;
 // (an exact hash of whole-numbered cells: a sine hash loses precision far from the origin and
 // smears into stripes)
 float hash3d(ivec3 c) {
@@ -64,7 +63,7 @@ float snowAt(vec3 world, vec3 n) {
 
 
 in vec3 aPos;
-in vec3 aWorldPos;
+in vec3 aWorldPos;   // planet-centred (aPos: the same, relative to the eyes)
 in vec3 aNormal;
 in vec2 aTexCoord;
 in float PlanarDepth;
@@ -129,8 +128,21 @@ float cellNoise(vec2 p) {
 // and with pale patches of lichen and flaking
 uniform float weathering;
 
-vec3 weather(vec3 c, vec3 p) {
+// Two coordinates along the ground at a planet-centred place, in world units: the two world
+// axes furthest from the local up (they switch where two axes are equally near it, a line
+// rarely under anything small enough to notice)
+vec2 alongGround(vec3 world) {
+    vec3 a = abs(world);
+    if (a.y >= a.x && a.y >= a.z) return world.xz;
+    if (a.x >= a.z) return world.zy;
+    return world.xy;
+}
+
+vec3 weather(vec3 c, vec3 world) {
     if (weathering <= 0.0) return c;
+    // (x and z along the ground, y the height: as on a wall standing on flat ground)
+    vec2 g = alongGround(world);
+    vec3 p = vec3(g.x, length(world) - planetRadius, g.y);
     float w = weathering;
     c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.45 * w);
     float across = cellNoise(vec2(p.x * 0.45, p.y * 0.03)) * cellNoise(vec2(p.z * 0.45 + 31.0, p.y * 0.03 + 17.0));
@@ -143,7 +155,7 @@ vec3 weather(vec3 c, vec3 p) {
 }
 
 void main() {
-    vec3 materialPos = sphereNativeTerrain != 0 ? aWorldPos : aPos;
+    vec3 materialPos = aWorldPos;
     vec2 scaledUV = aTexCoord * scale; 
 
     // Sample the base texture color
@@ -151,17 +163,17 @@ void main() {
 
         vec3 texColor = sampledColor;
     if (useSoilRegions > 0.5) {
-        if (sphereNativeTerrain != 0) texColor *= texture(soilRegionMap, normalize(aWorldPos)).rgb * 2.0;
+        texColor *= texture(soilRegionMap, normalize(aWorldPos)).rgb * 2.0;
 
         // Steep slopes are bare rock, banded in strata (by height above the datum) and broken up
         // by grain and cracks: 3D noise of the place, exact however far it is from the planet's
         // centre, and the same whichever way the ground faces
-        vec3 surfaceUp = sphereNativeTerrain != 0 ? normalize(aWorldPos) : vec3(0.0, 1.0, 0.0);
+        vec3 surfaceUp = normalize(aWorldPos);
         float steep = 1.0 - dot(normalize(aNormal), surfaceUp);
         float patchy = noise3d(materialPos * 0.05);
         float rockAmount = smoothstep(0.26, 0.48, steep + (patchy - 0.5) * 0.12);
         if (rockAmount > 0.0) {
-            float height = sphereNativeTerrain != 0 ? length(aWorldPos) - planetRadius : materialPos.y;
+            float height = length(aWorldPos) - planetRadius;
             float strata = 0.82 + 0.18 * sin(height * 0.45 + noise3d(materialPos * 0.015) * 7.0);
             float grain = noise3d(materialPos * 0.7) * 0.5 + noise3d(materialPos * 2.3 + 17.0) * 0.5;
             float crack = smoothstep(0.08, 0.0, abs(noise3d(materialPos * 0.12 + 5.0) - 0.5));
@@ -173,7 +185,7 @@ void main() {
 
     if (trackGrit > 0.0) {
         // Worn a little paler than the ground beside it, in soft patches
-        vec2 gritPosition = sphereNativeTerrain != 0 ? aWorldPos.xz : aPos.xz;
+        vec2 gritPosition = alongGround(aWorldPos);
         texColor *= 1.08 + 0.07 * cellNoise(gritPosition * 0.35);
         // Grit: small stones of their own sizes and lumpy shapes, each sitting somewhere in
         // its own unit cell (more cells holding one the grittier the track), lit a

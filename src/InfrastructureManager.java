@@ -20,8 +20,6 @@ public class InfrastructureManager {
     private static final int LINE_SAMPLES_PER_SEGMENT = 24;
     private static final float ROAD_LINE_SURFACE_OFFSET = 0.35f;
     private static final float MAX_ROAD_HALF_WIDTH = RoadPath.RoadClass.HIGHWAY.width * 0.5f;
-    // Resampled paths space their points up to about 1.5 road steps apart
-    private static final float MAX_ROAD_SEGMENT_HALF_LENGTH = 60.0f;
 
     // Wide roads get dashed lane dividers between the nation's own markings
     private static final float LANE_DIVIDER_MIN_WIDTH = 40.0f;
@@ -91,8 +89,8 @@ public class InfrastructureManager {
     private final Map<Integer, FenceStyle> fenceStyles;
     private final Map<String, Material> materials = new HashMap<>();
     private final NationGenerationManager nationManager;
-    // Which nations are at odds (see NationKinship.hostile), and how far each cell of the
-    // nation map is from a border between two that are, in cells (see hostileBorderDistance)
+    // Which nations are at odds (see NationKinship.hostile), and how far each texel of the
+    // nations' territory is from a border between two that are, in cells (see hostileBorderDistance)
     private final NationKinship kinship;
     private final float[] borderGap;
     // Islands the main roads never reached have a wealth of their own (see RoadNetworkBuilder.buildIslandTracks)
@@ -161,7 +159,6 @@ public class InfrastructureManager {
     private List<Obstacle> recording;
     private final Map<Long, List<House>> housesByCell = new HashMap<>();
     private volatile boolean roadNetworkInitialized;
-    private float regionWidth;
     private float seaLevel;
     private PerlinNoise terrainNoise;
 
@@ -255,7 +252,6 @@ public class InfrastructureManager {
         // already runs along a side, and any extra fenced paddock (local minX, maxX, minZ, maxZ)
         private boolean secure;
         private int fenceShape;
-        private boolean sharedLeft;
         private boolean sharedRight;
         private float[] paddock;
         private Doorway doorway;
@@ -758,11 +754,10 @@ public class InfrastructureManager {
     //          NETWORK PREPARATION
     // ==========================================
 
-    public void prepareRoadNetwork(float chunkSize, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
+    public void prepareRoadNetwork(float seaLevelHeight, PerlinNoise noise) {
         if (roadNetworkInitialized) {
             return;
         }
-        regionWidth = totalRegionWidth;
         seaLevel = seaLevelHeight;
         terrainNoise = noise;
 
@@ -831,7 +826,7 @@ public class InfrastructureManager {
         for (List<RoadSegment> bucket : roadSegmentsByCell.values()) {
             for (RoadSegment segment : bucket) {
                 // (within the map's top and bottom edges)
-                boolean playable = Math.abs(Planet.latitude(segment.from)) < Math.abs(MapProjection.latitude(regionWidth * 0.5));
+                boolean playable = Math.abs(Planet.latitude(segment.from)) < MapProjection.CLIP_LATITUDE;
                 if (playable && segment.start.y > seaLevel + 0.5f && segment.end.y > seaLevel + 0.5f) {
                     landSegments.add(segment);
                 }
@@ -869,7 +864,7 @@ public class InfrastructureManager {
             return null;
         }
         House house = houses.get(rand.nextInt(houses.size()));
-        for (int attempt = 0; attempt < 50 && Math.abs(Planet.latitude(house.frame.origin())) > Math.abs(MapProjection.latitude(regionWidth * 0.5)); attempt++) {
+        for (int attempt = 0; attempt < 50 && Math.abs(Planet.latitude(house.frame.origin())) > MapProjection.CLIP_LATITUDE; attempt++) {
             house = houses.get(rand.nextInt(houses.size()));
         }
         float distance = house.depth * 0.5f + house.setback + Math.max(house.width, house.depth) * 1.6f;
@@ -1597,9 +1592,9 @@ public class InfrastructureManager {
      * and crossings whose middles are in it, and the border fence traced through it): a batch
      * per nation in world coordinates, and the signs.
      */
-    public List<InfrastructureObject> generateForCell(long cell, float chunkSize, float totalRegionWidth, float seaLevelHeight, PerlinNoise noise) {
+    public List<InfrastructureObject> generateForCell(long cell, float seaLevelHeight, PerlinNoise noise) {
         List<InfrastructureObject> objects = new ArrayList<>();
-        prepareRoadNetwork(chunkSize, totalRegionWidth, seaLevelHeight, noise);
+        prepareRoadNetwork(seaLevelHeight, noise);
 
         Random signRand = new Random(cell * 8912L + 4123L);
         List<SpherePosition> signPositions = new ArrayList<>();
@@ -2087,9 +2082,6 @@ public class InfrastructureManager {
 
     // How far a track lies above the ground (with a depth offset as well, so it never flickers into it)
     private static final float TRACK_LIFT = 0.45f;
-
-    // How long a stretch of track one repeat of its texture covers
-    private static final float TRACK_TEXTURE_LENGTH = 15f;
 
     /** Where the deck stands on pillars, the slab's underside, so it can be seen from beneath. */
     private void appendDeckUnderside(NationBatch batch, RoadSegment segment, float[][] left, float[][] right) {
@@ -3959,86 +3951,44 @@ public class InfrastructureManager {
         float base = Float.isNaN(island) ? nationRichness(nationId) : island;
         // (big cities draw the money: the bigger the city, the richer its people)
         float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, settlementManager.getCitySize(SphereMath.direction(place)));
-        // (the fenced borders are measured on the nation map, D12)
-        double[] onMap = MapProjection.toMap(place);
         return Math.min(1f, base * (0.55f + 0.9f * urbanness) * (1f + BIG_CITY_WEALTH * big))
-                * (1f - BORDER_POVERTY * borderBlight((float) onMap[0], (float) onMap[1]));
+                * (1f - BORDER_POVERTY * borderBlight(place));
     }
 
     // How much of their wealth people right on a fenced border have lost, and how far (in
-    // nation-map cells, each a few hundred metres) the loss reaches either side
+    // territory cells, NationGenerationManager.cellSize(), each a few hundred metres) the loss
+    // reaches either side
     private static final float BORDER_POVERTY = 0.75f, BORDER_POVERTY_REACH = 5f;
 
     /** 1 right on a fenced border between nations at odds, fading to 0 BORDER_POVERTY_REACH cells away. */
-    public float borderBlight(float x, float z) {
-        float gap = borderGapAt(x, z);
+    public float borderBlight(SpherePosition place) {
+        float gap = borderGapAt(place);
         if (gap >= BORDER_POVERTY_REACH) return 0f;
         float t = 1f - gap / BORDER_POVERTY_REACH;
         return t * t * (3f - 2f * t);
     }
 
-    /** The distance from a place to the nearest fenced border, in nation-map cells (D12). */
+    /** The distance from a place to the nearest fenced border, in territory cells, blended between texels. */
     private float borderGapAt(SpherePosition place) {
-        double[] onMap = MapProjection.toMap(place);
-        return borderGapAt((float) onMap[0], (float) onMap[1]);
-    }
-
-    /** The distance to the nearest fenced border, in nation-map cells, blended between cells. */
-    private float borderGapAt(float x, float z) {
-        int res = nationManager.nationMap.length;
-        float width = Planet.width(), cell = width / res;
-        float gx = (x + width * 0.5f) / cell - 0.5f, gz = (z + width * 0.5f) / cell - 0.5f;
-        int x0 = (int) Math.floor(gx), z0 = (int) Math.floor(gz);
-        float fx = gx - x0, fz = gz - z0;
-        float sum = 0f;
-        for (int k = 0; k < 4; k++) {
-            int dx = k & 1, dz = k >> 1;
-            int i = Math.floorMod(x0 + dx, res), j = Math.max(0, Math.min(res - 1, z0 + dz));
-            sum += borderGap[j * res + i] * (dx == 0 ? 1f - fx : fx) * (dz == 0 ? 1f - fz : fz);
-        }
-        return sum;
+        return nationManager.raster().sample(borderGap, place.x(), place.y(), place.z());
     }
 
     /**
-     * How far each cell of the nation map is from a border between nations at odds, in cells
-     * (0 on such a border, counted out to a little past where it matters).
+     * How far each texel of the nations' territory raster is from a border between nations
+     * at odds, in territory cells along the ground (0 on such a border; no more than a little
+     * past where it matters).
      */
     private float[] hostileBorderDistance() {
-        int[][] map = nationManager.nationMap;
-        int res = map.length;
-        float[] gap = new float[res * res];
-        java.util.Arrays.fill(gap, Float.MAX_VALUE);
-        java.util.ArrayDeque<int[]> queue = new java.util.ArrayDeque<>();
-        for (int x = 0; x < res; x++) {
-            for (int z = 0; z < res; z++) {
-                int id = map[x][z];
-                boolean edge = kinship.hostile(id, map[(x + 1) % res][z]) || kinship.hostile(id, map[Math.floorMod(x - 1, res)][z])
-                        || (z + 1 < res && kinship.hostile(id, map[x][z + 1])) || (z > 0 && kinship.hostile(id, map[x][z - 1]));
-                if (edge) {
-                    gap[z * res + x] = 0f;
-                    queue.add(new int[] { x, z });
-                }
-            }
+        SphereRaster raster = nationManager.raster();
+        int[] territory = nationManager.territory();
+        boolean[] edge = new boolean[territory.length];
+        for (int t = 0; t < territory.length; t++) {
+            for (int k = 0; k < 4 && !edge[t]; k++) edge[t] = kinship.hostile(territory[t], territory[raster.neighbour(t, k)]);
         }
-        // Out from the borders, a step at a time (diagonals the longer way)
-        while (!queue.isEmpty()) {
-            int[] c = queue.poll();
-            float here = gap[c[1] * res + c[0]];
-            if (here > BORDER_POVERTY_REACH + 2f) continue;
-            for (int dz = -1; dz <= 1; dz++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    int nz = c[1] + dz;
-                    if ((dx == 0 && dz == 0) || nz < 0 || nz >= res) continue;
-                    int nx = Math.floorMod(c[0] + dx, res);
-                    float step = dx != 0 && dz != 0 ? 1.41421f : 1f;
-                    if (here + step < gap[nz * res + nx]) {
-                        gap[nz * res + nx] = here + step;
-                        queue.add(new int[] { nx, nz });
-                    }
-                }
-            }
-        }
-        for (int i = 0; i < gap.length; i++) gap[i] = Math.min(gap[i], BORDER_POVERTY_REACH + 3f);
+        float[] angle = raster.distanceTo(edge);
+        float[] gap = new float[angle.length];
+        float perRadian = (float) (Planet.radius() / NationGenerationManager.cellSize());
+        for (int t = 0; t < gap.length; t++) gap[t] = Math.min(angle[t] * perRadian, BORDER_POVERTY_REACH + 3f);
         return gap;
     }
 
@@ -4538,7 +4488,9 @@ public class InfrastructureManager {
                 if (!fenced && drivingSide(na) == drivingSide(nb)) continue;
                 if (SphereMath.distance(a, b) < 1e-3) continue;
                 SpherePosition p = SphereMath.atAltitude(borderCrossing(a, b, na), 0.0);
-                if (checkIndex.nearest(p, 40.0) != null) continue;
+                // (a road wandering back and forth across the border gets one check, its crossover
+                // and guard rails clear of the next)
+                if (checkIndex.nearest(p, 2.0 * RAIL_CLEAR_OF_BORDER) != null) continue;
                 double heading = SphereFrame.at(p).headingOf(b.x() - a.x(), b.y() - a.y(), b.z() - a.z());
                 float half = path.roadClass.width * 0.5f;
                 // Where the two sides drive on different sides of the road, a crossover: traffic
@@ -4791,84 +4743,59 @@ public class InfrastructureManager {
         }
     }
 
-    // Border fences: how often the border is sampled (and so the length of each stretch of
-    // fence), how tall the fence is, the gap for a road through it, and how far the
-    // gateposts stand from the road's middle
-    private static final float BORDER_STEP = 6f, BORDER_FENCE_HEIGHT = 26f, BORDER_GATE_CLEARANCE = 4f;
+    // Border fences: the lattice the border is traced on (BORDER_LEVEL geodesic triangles, about
+    // 7 units a side, BORDER_LEVEL - BATCH_LEVEL levels below the batch cells so each batch cell
+    // holds exactly its own), how tall the fence is, the gap for a road through it, and how far
+    // the gateposts stand from the road's middle
+    private static final int BORDER_LEVEL = BATCH_LEVEL + 5;
+    private static final float BORDER_FENCE_HEIGHT = 26f, BORDER_GATE_CLEARANCE = 4f;
+    private final GeodesicChunkGrid borderGrid = new GeodesicChunkGrid(BORDER_LEVEL);
 
     /**
      * The fence along any border in this cell between nations at odds (see
      * NationKinship.hostile): tall chain-link on steel posts, barbed wire strung along arms
      * leaning out at the top, and where a road crosses, a gap between heavy gateposts with
-     * the gates swung open back along the fence. The border is traced on a grid fixed to the
-     * chart, as the nation map it follows is (D12; marching squares, each crossing found
-     * closely by halving); each square is built by the cell its middle is in, so neighbouring
-     * cells meet. Under water there is none, nor past the map's top and bottom.
+     * the gates swung open back along the fence. Where the border runs is
+     * NationGenerationManager.getNationAt's; it is traced on the geodesic lattice at BORDER_LEVEL (marching triangles, each
+     * crossing found closely by halving along the triangle's side), the same size everywhere.
+     * The lattice's triangles nest in the batch cells, and a side two cells share is crossed at
+     * the same place from both, so neighbouring cells meet. Under water there is none.
      */
     private void borderFences(Map<Integer, NationBatch> batches, long cellId) {
         GeodesicChunkGrid.Cell cell = batchGrid.cell(cellId);
-        // The cell's extent on the chart, its x kept beside its middle's across the map's join
-        double[] middle = MapProjection.toMap(cell.centre());
-        double minX = middle[0], maxX = middle[0], minZ = middle[1], maxZ = middle[1];
-        for (GeodesicChunkGrid.Direction corner : new GeodesicChunkGrid.Direction[] { cell.a(), cell.b(), cell.c() }) {
-            double[] p = MapProjection.toMap(corner);
-            double x = middle[0] + MapProjection.wrapX(p[0] - middle[0]);
-            minX = Math.min(minX, x);
-            maxX = Math.max(maxX, x);
-            minZ = Math.min(minZ, p[1]);
-            maxZ = Math.max(maxZ, p[1]);
-        }
-        // (its sides bow a little on the chart)
-        double pad = 0.1 * Math.max(maxX - minX, maxZ - minZ) + 2.0 * BORDER_STEP;
-        float edge = Planet.width() * 0.5f;
-        float x0 = (float) (minX - pad), x1 = (float) (maxX + pad);
-        float z0 = (float) Math.max(-edge, minZ - pad), z1 = (float) Math.min(edge, maxZ + pad);
-        if (z0 >= z1) return;
-        // Far from any such border (the borders wander up to a couple of cells from the map's)
-        float mapCell = Planet.width() / nationManager.nationMap.length;
-        float reach = (float) Math.hypot(x1 - x0, z1 - z0) * 0.5f / mapCell;
-        if (borderGapAt((x0 + x1) * 0.5f, (z0 + z1) * 0.5f) > 3.5f + reach) return;
-        int i0 = (int) Math.ceil(x0 / BORDER_STEP), i1 = (int) Math.ceil(x1 / BORDER_STEP);
-        int j0 = (int) Math.ceil(z0 / BORDER_STEP), j1 = (int) Math.ceil(z1 / BORDER_STEP);
-        int w = i1 - i0 + 1, h = j1 - j0 + 1;
-        int[] owner = new int[w * h];
-        boolean any = false;
-        for (int j = 0; j < h; j++) {
-            for (int i = 0; i < w; i++) {
-                owner[j * w + i] = nationAt((i0 + i) * BORDER_STEP, (j0 + j) * BORDER_STEP);
-                if (owner[j * w + i] != owner[0]) any = true;
+        SpherePosition middle = SphereMath.atAltitude(cell.centre(), 0.0);
+        // Far from any such border (the borders wander up to a couple of territory cells from
+        // the raster's)
+        double reach = cell.angularRadius() * Planet.radius() / NationGenerationManager.cellSize();
+        if (borderGapAt(middle) > 3.5 + reach) return;
+        long first = cellId << (2 * (BORDER_LEVEL - BATCH_LEVEL));
+        int count = 1 << (2 * (BORDER_LEVEL - BATCH_LEVEL));
+        // Each lattice point's nation, looked up once (points are shared by up to six triangles)
+        Map<GeodesicChunkGrid.Direction, Integer> owners = new HashMap<>();
+        for (int k = 0; k < count; k++) {
+            GeodesicChunkGrid.Cell t = borderGrid.cell(first + k);
+            GeodesicChunkGrid.Direction[] corner = { t.a(), t.b(), t.c() };
+            int[] id = new int[3];
+            for (int c = 0; c < 3; c++) id[c] = owners.computeIfAbsent(corner[c], d -> nationAt(SphereMath.atAltitude(d, 0.0)));
+            List<SpherePosition> crossings = new ArrayList<>();
+            int a = 0, b = 0;
+            for (int c = 0; c < 3; c++) {
+                int n = (c + 1) % 3;
+                if (!kinship.hostile(id[c], id[n])) continue;
+                crossings.add(borderCrossing(corner[c], id[c], corner[n], id[n]));
+                a = id[c];
+                b = id[n];
             }
-        }
-        if (!any) return;
-        for (int j = 0; j + 1 < h; j++) {
-            for (int i = 0; i + 1 < w; i++) {
-                // Corners round the square, and the crossings on its sides between nations at odds
-                float ax = (i0 + i) * BORDER_STEP, az = (j0 + j) * BORDER_STEP;
-                float[][] corner = { { ax, az }, { ax + BORDER_STEP, az }, { ax + BORDER_STEP, az + BORDER_STEP }, { ax, az + BORDER_STEP } };
-                int[] id = { owner[j * w + i], owner[j * w + i + 1], owner[(j + 1) * w + i + 1], owner[(j + 1) * w + i] };
-                List<float[]> crossings = new ArrayList<>();
-                int a = 0, b = 0;
-                for (int k = 0; k < 4; k++) {
-                    int n = (k + 1) % 4;
-                    if (!kinship.hostile(id[k], id[n])) continue;
-                    crossings.add(borderCrossing(corner[k], corner[n], id[k]));
-                    a = id[k];
-                    b = id[n];
-                }
-                if (crossings.isEmpty()) continue;
-                // (built by the cell the square's middle is in)
-                if (batchCell(sphere(ax + BORDER_STEP * 0.5f, az + BORDER_STEP * 0.5f)) != cellId) continue;
-                NationBatch batch = batches.computeIfAbsent(Math.min(a, b), NationBatch::new);
-                if (crossings.size() == 2) {
-                    borderFencePiece(batch, crossings.get(0), crossings.get(1));
-                } else if (crossings.size() == 4) {
-                    borderFencePiece(batch, crossings.get(0), crossings.get(1));
-                    borderFencePiece(batch, crossings.get(2), crossings.get(3));
-                } else {
-                    // Three nations meet: each crossing runs in to the middle
-                    float[] meet = { ax + BORDER_STEP * 0.5f, az + BORDER_STEP * 0.5f };
-                    for (float[] crossing : crossings) borderFencePiece(batch, crossing, meet);
-                }
+            if (crossings.isEmpty()) continue;
+            NationBatch batch = batches.computeIfAbsent(Math.min(a, b), NationBatch::new);
+            // (a post every other triangle or so, by the triangle, so the same from any cell)
+            boolean post = Long.hashCode((first + k) * 0x9E3779B97F4A7C15L) % 2 == 0;
+            if (crossings.size() == 2) {
+                borderFencePiece(batch, crossings.get(0), crossings.get(1), post);
+            } else {
+                // Three nations meet: each crossing runs in to the middle
+                SpherePosition meet = SphereMath.atAltitude(t.centre(), 0.0);
+                for (SpherePosition crossing : crossings) borderFencePiece(batch, crossing, meet, post);
             }
         }
     }
@@ -4888,10 +4815,6 @@ public class InfrastructureManager {
         return false;
     }
 
-    private int nationAt(float x, float z) {
-        return nationManager.getNationAtWorld(x, z, Planet.width());
-    }
-
     private int nationAt(SpherePosition place) {
         return nationManager.getNationAt(place);
     }
@@ -4906,26 +4829,26 @@ public class InfrastructureManager {
         return SphereMath.slerp(a, b, (lo + hi) * 0.5);
     }
 
-    /** Where between two points the border lies, found by halving (a belongs to nation first). */
-    private float[] borderCrossing(float[] a, float[] b, int first) {
-        float lo = 0f, hi = 1f;
-        for (int k = 0; k < 4; k++) {
-            float mid = (lo + hi) * 0.5f;
-            if (nationAt(a[0] + (b[0] - a[0]) * mid, a[1] + (b[1] - a[1]) * mid) == first) lo = mid; else hi = mid;
-        }
-        float t = (lo + hi) * 0.5f;
-        return new float[] { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t };
+    /**
+     * Where the border crosses a side of the lattice between p (nation np's) and q (nq's), on
+     * the datum: the side is always taken from the same end, so the two triangles either side
+     * of it find the same place.
+     */
+    private SpherePosition borderCrossing(GeodesicChunkGrid.Direction p, int np, GeodesicChunkGrid.Direction q, int nq) {
+        boolean swap = p.x() != q.x() ? p.x() > q.x() : p.y() != q.y() ? p.y() > q.y() : p.z() > q.z();
+        return swap ? borderCrossing(SphereMath.atAltitude(q, 0.0), SphereMath.atAltitude(p, 0.0), nq)
+                : borderCrossing(SphereMath.atAltitude(p, 0.0), SphereMath.atAltitude(q, 0.0), np);
     }
 
     /**
      * One stretch of border fence between two points on the border (with a gatepost where a
-     * road begins), built in a frame of its own at its middle (D4). The border is traced on the
-     * chart, as the nation map it follows is (D12): from and to are its ends there.
+     * road begins), built in a frame of its own at its middle (D4), with a post at its start if
+     * withPost.
      */
-    private void borderFencePiece(NationBatch batch, float[] fromChart, float[] toChart) {
+    private void borderFencePiece(NationBatch batch, SpherePosition start, SpherePosition end, boolean withPost) {
         // (bending back round any booth beside the gateway)
-        SpherePosition from = clearOfBooths(sphere(fromChart[0], fromChart[1]));
-        SpherePosition to = clearOfBooths(sphere(toChart[0], toChart[1]));
+        SpherePosition from = clearOfBooths(start);
+        SpherePosition to = clearOfBooths(end);
         if (SphereMath.distance(from, to) < 0.05) return;
         SphereFrame frame = SphereFrame.at(SphereMath.slerp(from, to, 0.5));
         double[] fa = frame.fromSphere(from), fb = frame.fromSphere(to);
@@ -4973,12 +4896,7 @@ public class InfrastructureManager {
         addPrism(mesh, a, b, 0.3f, hgt * 0.5f - 0.3f, hgt * 0.5f + 0.3f);
         addPrism(mesh, a, b, 0.3f, hgt - 0.6f, hgt);
         uprights(mesh, a, b, dirX, dirZ, 0.9f, 0.06f, 0.2f, hgt);
-        // A post at some of the grid points (fixed to the chart, so it's the same from both
-        // cells), fewer where the chart's grid is drawn tighter, so they stand as far apart in
-        // true distance everywhere
-        int every = 2 * Math.max(1, Math.round(chartStretch(fromChart[1])));
-        float postX = (float) MapProjection.wrapX(fromChart[0]);
-        if (Math.floorMod(Math.round(postX * 0.37f) + Math.round(fromChart[1] * 0.61f), every) == 0) {
+        if (withPost) {
             addBox(mesh, a[0], a[1] - 1.5f, a[2], dirX, dirZ, 0.45f, 0.45f, hgt + 1.5f);
             // Its arm leaning out at the top, carrying the wire
             float[] foot = { a[0], a[1] + hgt, a[2] };
@@ -5547,20 +5465,6 @@ public class InfrastructureManager {
                 normal[2] = (float) (world[2] / length);
             }
         };
-    }
-
-    // ------------------------------------------------------------------ the nation map (D12)
-    // The border fences are traced on the nation map's grid, which is on the Mercator chart
-    // (MapProjection): the authority for borders. Only that tracing uses these.
-
-    /** The place under a chart point, on the datum. */
-    private static SpherePosition sphere(float chartX, float chartZ) {
-        return MapProjection.place(chartX, chartZ, 0.0);
-    }
-
-    /** How many chart units a true unit spans at chart z (1 / cos latitude). */
-    private static float chartStretch(float chartZ) {
-        return (float) (1.0 / Math.max(0.05, Math.cos(MapProjection.latitude(chartZ))));
     }
 
     private static float dot(float[] a, float[] b) {

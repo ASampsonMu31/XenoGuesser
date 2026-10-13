@@ -11,17 +11,16 @@ out vec2 aTexCoord;
 out float PlanarDepth;
 
 uniform mat4 model;
-uniform mat4 mvpMatrix;
+// The view and projection, camera-relative: the model matrix puts the mesh on the planet
+// (planet-centred) and the eyes' place, sphereCamera, is taken off before it, so precision
+// holds however far the place is from the planet's centre. A picture of something on its own
+// has a view-projection of its own and sphereCamera at the origin.
+uniform mat4 viewProjection;
+uniform vec3 sphereCamera;
 // Posters on round walls: the board's edges curve back by bend times the square of the
 // distance across it (in the board's own units, -0.5 to 0.5), round a cylinder
 uniform float bend;
 
-// Planet-centred meshes (sphereNativeTerrain): the model matrix puts them in the world, and
-// the camera's position is taken off before the camera-relative view-projection; otherwise
-// mvpMatrix takes the mesh all the way (a picture drawn on its own, or a mesh placed relative
-// to the camera)
-uniform int sphereNativeTerrain;
-uniform vec3 sphereCamera;
 
 void main() {
     vec3 p = position;
@@ -33,17 +32,13 @@ void main() {
     vec3 world = vec3(model * vec4(p, 1.0));
     aWorldPos = world;
     vec3 worldNormal = mat3(transpose(inverse(model))) * n;
-    if (sphereNativeTerrain != 0) {
-        world -= sphereCamera;
-        gl_Position = mvpMatrix * vec4(world, 1.0);
-    } else {
-        gl_Position = mvpMatrix * vec4(p, 1.0);
-    }
+    vec3 eyeRelative = world - sphereCamera;
+    gl_Position = viewProjection * vec4(eyeRelative, 1.0);
 
     // Exact forward-facing depth used by water screen-space thickness calculations
     PlanarDepth = gl_Position.w;
 
-    aPos = world;
+    aPos = eyeRelative;
     aNormal = worldNormal;
     aTexCoord = texCoord;
 }

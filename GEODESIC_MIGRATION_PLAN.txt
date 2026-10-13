@@ -49,7 +49,9 @@ D7  Noise and region factors are sampled from 3D unit directions (no seams, no
     pole pinching). Keep the old 2D sampling only where the map needs it.
 D8  One render path. When a system is ported, delete its flat-world branch in
     the shaders and GLEventListener in the same change. No dual flags left over
-    at the end (sphereNativeTerrain etc. go).
+    at the end (sphereNativeTerrain etc. go). Since Phase 6 vs_standard has one path:
+    model (planet-centred) then minus sphereCamera then viewProjection; a picture of
+    something on its own passes its own view-projection and sphereCamera = 0 (Renderer).
 D9  Units: true metres everywhere (PlayerBody.METRE = 10 game units/metre stays).
 D10 Axes (Phase 1): y = north pole, longitude 0 along +x, longitude 90 E along -z
     (Planet.position/latitude/longitude are the only place this is written down).
@@ -74,9 +76,14 @@ D12 Regional factors (RegionalFactor: species habitats and abundance, grass,
     leaf colour, climate, wealth) are sampled by direction since Phase 5
     (Sampler.sample(Direction); evaluate(direction), evaluateAt(position)); the
     map's heatmaps sample the same factors at each pixel's direction, so what
-    grows where still matches the overlays. The nation map (borders, and the
-    border fences and border poverty traced on its grid) stays the map's raster
-    and is the authority for borders, read through MapProjection. Counts per cell come
+    grows where still matches the overlays. Since the Phase 6 audit the nations are on
+    the sphere too: NationGenerationManager grows them over a SphereRaster (128 a side,
+    ~190-370 units a texel; costs in true distance, measured in the old chart's 390-unit
+    cells), getNationAt(direction) warps along the ground and votes the 4 nearest texels;
+    kinship (bordering, centres as mean directions) and border poverty (distanceTo on the
+    raster) read it; the map draws it per pixel direction (getNationAtMap). The border
+    fences are traced on the geodesic lattice (BORDER_LEVEL = BATCH_LEVEL + 5, ~7-unit
+    triangles nested in the batch cells), reading getNationAt at each lattice point. Counts per cell come
     from the factor at the cell and the cell's own area (Cell.area(): level 7
     cells differ by up to ~1.6x, so no per-level constant). Copilot's separate
     sphere habitat model (OrganismSpecies native presence) is deleted.
@@ -123,8 +130,11 @@ D13 Chart bridges: while a system is still on the chart (buildings, roads,
     getUrbanness(x, z), Camera.getChartPosition and the listener's chart() are gone too.
     Since Phase 5 part 2 the maps and sign maps are drawn from world shapes too (sign.position,
     chartRoute, chartMidX, House.x/z/rotationY, chartAt/chartPoint/onChart and RoadPath.chart
-    are gone). All that is left on the chart is D12: the border fences traced on the nation
-    map's grid and the border poverty read from it (InfrastructureManager's "nation map" section).
+    are gone). Since the Phase 6 audit nothing is left on the chart outside the map: the
+    border fences and then the nations themselves went onto the sphere (D12). MapProjection
+    is used only by the map classes, heatmap/overlay images, the map's own terrain heights,
+    choosing the map's join, the map-to-nation lookup, guesses and the developer teleport;
+    CLIP_LATITUDE also keeps spawns and planning within the map's top and bottom edges.
 D14 Map and rasters (Phase 5). MapProjection holds the Mercator chart (moved out of
     Planet) and the one conversion pair: toMap(direction | place) -> map {x, z}
     (world units from the map's middle; image (u, v) = x / width + 1/2, z / width
@@ -292,12 +302,14 @@ CHECK: map layers, sign maps, sea and a round change in launches.
 -------------------------------------------------------------------------------
 PHASE 6  CLEAN-UP
 -------------------------------------------------------------------------------
-[ ] Delete every remaining chart use outside the map (D6 list from Phase 0).
-[ ] Delete flat-world shader uniforms and flags (D8).
-[ ] Remove dead classes/fields; update code comments; replace Planet's method 1
+[x] Delete every remaining chart use outside the map (D6 list from Phase 0).
+    (Also the border fences: the last chart cost that grew with latitude; see LOG.)
+[x] Delete flat-world shader uniforms and flags (D8).
+[x] Remove dead classes/fields; update code comments; replace Planet's method 1
     note with a short note describing the geodesic design and D1-D9.
-[ ] Final tests: equator, 70 degrees, near a pole, crossing an icosahedron
+[x] Final tests: equator, 70 degrees, near a pole, crossing an icosahedron
     face edge; check frame rate is the same everywhere.
+[x] Passed 2026-10-13 (see LOG). Phase 6 is complete: the migration is done.
 
 -------------------------------------------------------------------------------
 EFFICIENCY RULES (to stretch the weekly allowance)
@@ -939,3 +951,91 @@ LOG
     wide strips along the ground. Shortest grass now 7 cm (GRASS_SHORTEST), and blades under ~30 cm
     are narrowed in proportion (vs_grass_instanced, down to a quarter). Seen at 70 N looking down:
     upright tufts.
+2026-10-13  PHASE 6 DONE (uncommitted): clean-up and final tests; the migration is complete.
+  - D8: sphereNativeTerrain gone. vs_standard draws everything one way (D8 note); Renderer has
+    one draw (render: on the planet, camera-relative; render with a view-projection: a picture),
+    no lights (numLights was 0 on both paths already); Model.renderSphereNative, the old
+    camera-relative render, renderWithShader and the chart depth pass gone (renderDepthPass sets
+    the camera itself); the listener's setSphereTerrainTransform gone. Signs always have a frame,
+    so InfrastructureObject.draw's no-frame branch and the position/rotation wall-sign factories
+    went. The poster "bend" uniform stays (it curves posters, not the world).
+  - Found by the D8 pass: fs_solid read aPos (camera-relative) for snow and weathering, so roofs
+    and walls never had snow and their grime slid with the camera; both use aWorldPos now. The
+    weathering streaks (fs_solid, fs_standard_d) and the track grit used world y / x,z as if the
+    world were flat: now height above the datum and alongGround(world) (the two world axes
+    furthest from local up). Track grit was in the D6 "seen, not fixed" list.
+  - Dead code: shader files fs/vs_cloud, fs/vs_rain, fs/vs_snow, fs_terrain, fs_single_sky (with
+    InsideSphere, skyModel, makeSkybox); TerrainMesh's chart chunk builder (buildChunkData,
+    generateTerrainChunk, calculateNormal); fs_grass_instanced's never-called chart snowAt;
+    unused listener fields (healthyColour, totalGrassInstances, grassStaging...), the grass
+    instance buffer renamed from grassChunkCoordVBO; prepareRoadNetwork/generateForCell lose
+    their unused chunkSize/totalRegionWidth; a few dead fields elsewhere. "Per chunk's area
+    (100 by 100)" stays as a density unit (counts, heatmaps), not a grid.
+  - Spawn picks (landSegments, randomHouseViewpoint) kept within MapProjection.CLIP_LATITUDE (75):
+    they compared against latitude(width/2), about 85, so a round could start off the map.
+  - Planet's header now describes the design (frames, cells, directions, camera-relative, the map
+    only on the chart). Code comments still cite D-numbers: keep this file as the design record.
+  - FOUND AND FIXED by the pole test: world ready took 286 s at 89.9 N (terrain stage 250 s,
+    against ~24 s elsewhere). jstack: borderFences, on the GL thread, tracing the chart's 6-unit
+    grid over each batch cell's chart extent, ~(1/cos lat)^2 times more points near the pole. The
+    fences are now traced on the geodesic lattice (D12): each batch cell's 1024 level-12
+    triangles, marching triangles, crossings halved along the side from a fixed end so both
+    triangles find the same point; a post on about every other triangle (by its id). Pole: world
+    ready 74 s, terrain stage 3.4 s. Probe (scratch, not kept): cells round 36 fenced crossings
+    1-8 ms a cell from 70 S to 32 N; cells at 0/60/80/84/89.9 degrees 1.3/2.4/0.2/0.2/0.2 ms.
+  - Checks: SphereToolkitCheck 43988 pass. PlanningCheck 336142 pass (adds: border fence pieces
+    join up: 50 of 1416 ends meet no other piece, the gateways and booth bends).
+  - Launches (seed 123): 70 N 27.5 E 30 FPS (as Phase 2); equator town 4.841, 78.397 25 FPS
+    (houses, signs with pictures, people); 67.461 N 139.716 E 29 FPS (town, people, sea, snow);
+    89.9 N 0 E (open sea; the pole is on an icosahedron edge) 30 FPS, level horizon, no seam;
+    face edge midpoint 30 N 20.905 W (land) 24 FPS, grass, rocks, a creature, rain, no seam;
+    fenced crossing 66.974 S 22.532 W 26 FPS, booth, town, world ready 94 s. World ready 72-82 s
+    elsewhere. No exceptions, no shader errors. Frame rate follows what is in view, not latitude.
+  - Seen, not fixed (also in the last commit, built separately and launched at 70 N 27.5 E: the
+    same frame pixel for pixel): the lying snow shows as near-black patches at 70 N and at the
+    67 S crossing (pale pink at 67.461 N 139.716 E). Roofs now get the same snow as the ground,
+    so they show it too. Not looked into.
+2026-10-13  PHASE 6 AUDIT (uncommitted; user asked: is the migration finished? chart only for the
+            map, every legacy feature restored).
+  - Audit against the pre-migration commit c3482c9: dev options and key bindings identical; every
+    shader uniform set; every render pass and draw call has a sphere counterpart; no method lost
+    but chart/chunk ones and renamed ones (tree collision, parking reservations, animals kept out
+    of towns, look-ahead loading, the map's hover values all present).
+  - LOST LEGACY FEATURE, restored: sunlight. Before the migration every terrain, tree, leaf,
+    building and sign draw passed lights[0] (the sun) to its shader (Renderer.doLights); Copilot's
+    sphere path set numLights 0 everywhere, so since Phase 1 the world was lit by ambient only (no
+    sun shading on slopes or walls). Renderer.setLights(lights) on the world's renderer; the sun's
+    position is relative to the eyes (SphereRender.sunPoint), as the fragments' aPos is. Pictures
+    drawn on their own stay unlit, as before.
+  - LAST CHART SYSTEM, ported: the nations (D12, D13). They were grown on a 384 x 384 Mercator
+    grid (each nation's spacing and every cost in chart cells, so stretched towards the poles) and
+    looked up through toMap. Now a SphereRaster: NationGenerationManager (new constructor without a
+    resolution; generateTerritories(seed)), SphereRaster.corners/solidAngle, NationKinship
+    (bordering by raster neighbours, centres as area-weighted mean directions, gradient as a slope
+    along a random direction), InfrastructureManager border poverty (distance raster),
+    BirdsEyeMaps' nation names (a 384 map grid sampled from the sphere lookup). getNationAtWorld
+    is getNationAtMap. The world changed: 11471 houses (was 10674), 14 nations 2.4-11.7% of the
+    sphere each.
+  - Chart-era restriction removed: normal rounds started below 60 degrees "where the map stretches
+    most" (the reason was lost from the comment in Phase 3); they now start anywhere on the map
+    (CLIP_LATITUDE, 75).
+  - The new layout exposed old weaknesses, fixed: (1) a road wandering along a border got border
+    checks 60 units apart (one with its guard facing off the road, one 63 from any fence): checks
+    now keep 2 x RAIL_CLEAR_OF_BORDER apart. (2) Walkers already out at the start were put at a
+    random point on a straight leg of their way, which can cut through a building (the walls then
+    kept them in; same in c3482c9): now never inside one (Inhabitants.create).
+    PlanningCheck made exact where the new layout showed it measured the wrong thing: people "in a
+    building" by the building's real outline (round and many-sided buildings counted their
+    bounding rectangle's corners); top speeds only on steps within one leg of the way, not
+    braking (a highway-to-street step counted as a street at 58); fence pieces bent round a
+    booth left out of the true-size length. New: every nation holds some of the sphere.
+  - Not a bug after all (the task flagged earlier withdrawn): the "near-black snow" at 70 N. A TEMP
+    red snow colour (removed) showed the snow is the brownish 80% cover (its colour carries this
+    world's dark maroon sea tint) and the dark patches are the bare ground in its gaps.
+  - Checks: SphereToolkitCheck 43988 pass. PlanningCheck 346952 pass (borders 12 of 12 fenced and
+    gated, longest piece 7.2; street speed 40 south and north; 0 street steps in a building).
+  - Launches (seed 123): 70 N with the nations map open: nations, borders, names and flags drawn
+    from the sphere; equator town 26 FPS and 67.461 N 139.716 E 28 FPS with sun shading on walls
+    and snow on roofs; pole; normal spawn + guess, shop, next: next round built in 7.4 s over 166
+    frames. World ready 70-78 s. No exceptions, no shader errors.
+  - The migration is complete: nothing outside the map uses the chart.

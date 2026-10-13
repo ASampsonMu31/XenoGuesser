@@ -1,8 +1,23 @@
 /**
- * The world is a sphere, and everything in it is built on the sphere directly (SpherePosition,
- * SphereFrame, SphereMath, the geodesic grid; see GEODESIC_MIGRATION_PLAN.txt). This class
- * holds the planet's size, the one definition of its axes (position, latitude, longitude), the
- * sun and the celestial pole. The map's Mercator chart is MapProjection's.
+ * The planet's size, the one definition of its axes (position, latitude, longitude), the sun
+ * and the celestial pole.
+ * <p>
+ * The world is a sphere and nothing in it depends on latitude:
+ * <ul>
+ *   <li>Places are planet-centred SpherePositions (doubles); distances are true, in world
+ *       units (PlayerBody.METRE to a metre), measured along great circles (SphereMath).</li>
+ *   <li>Each object is built in a local tangent frame of its own (SphereFrame: x east, y up,
+ *       z south) as if on flat ground, and lifted onto the sphere through it; no piece reaches
+ *       more than a few hundred metres from its frame's origin. Networks (roads, settlements)
+ *       are planned on the sphere and built piece by piece in frames.</li>
+ *   <li>Streaming, populations and lookups go by cells of the icosahedral GeodesicChunkGrid
+ *       (CellIndex, CellStream), counts by each cell's own area; noise and regional factors
+ *       are sampled by 3D direction, and whole-sphere fields are cube maps (SphereRaster).</li>
+ *   <li>Everything is drawn camera-relative: planet-centred meshes have the eyes' place taken
+ *       off before the view-projection (see vs_standard), so precision holds everywhere.</li>
+ *   <li>The Mercator chart (MapProjection) is only for the map: drawing it and turning a
+ *       click into a guess.</li>
+ * </ul>
  */
 public final class Planet {
 

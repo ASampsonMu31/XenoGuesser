@@ -61,7 +61,8 @@ float snowAt(vec3 world, vec3 n) {
     return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
 }
 
-in vec3 aPos;
+in vec3 aPos;        // relative to the eyes
+in vec3 aWorldPos;   // planet-centred
 in vec3 aNormal;
 
 out vec4 fragColour;
@@ -111,16 +112,29 @@ float cellNoise(vec2 p) {
 // and with pale patches of lichen and flaking
 uniform float weathering;
 
+// Two coordinates along the ground at a planet-centred place, in world units: the two world
+// axes furthest from the local up (they switch where two axes are equally near it, a line
+// rarely under anything small enough to notice)
+vec2 alongGround(vec3 world) {
+    vec3 a = abs(world);
+    if (a.y >= a.x && a.y >= a.z) return world.xz;
+    if (a.x >= a.z) return world.zy;
+    return world.xy;
+}
+
 vec3 weather(vec3 c) {
     if (weathering <= 0.0) return c;
+    // (x and z along the ground, y the height: as on a wall standing on flat ground)
+    vec2 g = alongGround(aWorldPos);
+    vec3 p = vec3(g.x, length(aWorldPos) - planetRadius, g.y);
     float w = weathering;
     c = mix(c, vec3(dot(c, vec3(0.3, 0.59, 0.11))), 0.45 * w);
-    float across = cellNoise(vec2(aPos.x * 0.45, aPos.y * 0.03)) * cellNoise(vec2(aPos.z * 0.45 + 31.0, aPos.y * 0.03 + 17.0));
+    float across = cellNoise(vec2(p.x * 0.45, p.y * 0.03)) * cellNoise(vec2(p.z * 0.45 + 31.0, p.y * 0.03 + 17.0));
     c *= 1.0 - 0.55 * w * smoothstep(0.18, 0.5, across);
-    float grime = smoothstep(0.45, 0.75, cellNoise(aPos.xz * 0.07 + vec2(aPos.y * 0.09, 0.0)) * 0.65
-            + cellNoise(aPos.xz * 0.33 - vec2(0.0, aPos.y * 0.3)) * 0.35);
+    float grime = smoothstep(0.45, 0.75, cellNoise(p.xz * 0.07 + vec2(p.y * 0.09, 0.0)) * 0.65
+            + cellNoise(p.xz * 0.33 - vec2(0.0, p.y * 0.3)) * 0.35);
     c = mix(c, vec3(0.16, 0.14, 0.1), 0.6 * w * grime);
-    float lichen = smoothstep(0.62, 0.8, cellNoise(aPos.xz * 0.21 + vec2(aPos.y * 0.17, 3.0)));
+    float lichen = smoothstep(0.62, 0.8, cellNoise(p.xz * 0.21 + vec2(p.y * 0.17, 3.0)));
     return mix(c, vec3(0.62, 0.66, 0.5), 0.55 * w * lichen);
 }
 
@@ -131,7 +145,7 @@ void main() {
     
     vec3 norm = normalize(aNormal);
     // Snow lying on roofs and anything else facing up
-    float snow = snowAt(aPos, norm);
+    float snow = snowAt(aWorldPos, norm);
     ambient = mix(ambient, ambientLight * min(snowColour * 1.4, vec3(1.0)), snow);
     surface = mix(surface, min(snowColour * 1.4, vec3(1.0)), snow);
     vec3 viewDir = normalize(viewPos - aPos);

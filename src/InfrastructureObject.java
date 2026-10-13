@@ -191,23 +191,16 @@ public class InfrastructureObject {
     }
 
     /**
-     * A board fixed to a wall: centred on position, facing the way rotationY turns a standing
-     * sign to face, width by height. bothSides draws the same face on the back too, for a sign
-     * that sticks out from a wall into the street.
+     * A board fixed to a wall, in its own frame: centred on its origin, facing local +z, width by
+     * height. bothSides draws the same face on the back too, for a sign that sticks out from a
+     * wall into the street. For a wall that leans (its face tipped up by tiltDegrees) or curves
+     * (round a cylinder of the given radius, 0 for flat), the poster leans and curves with it.
      */
-    public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
-                                                      boolean banner, boolean bothSides, int[] textString) {
-        return createWallSign(position, nationId, rotationY, width, height, banner, bothSides, textString, 0f, 0f);
-    }
-
-    /**
-     * As createWallSign, for a wall that leans (its face tipped up by tiltDegrees) or curves
-     * (round a cylinder of the given radius, 0 for flat): the poster leans and curves with it.
-     */
-    public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
+    public static InfrastructureObject createWallSign(SphereFrame frame, int nationId, float width, float height,
                                                       boolean banner, boolean bothSides, int[] textString,
                                                       float tiltDegrees, float curveRadius) {
-        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, position, nationId, rotationY, textString);
+        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, new Vector3(0f, 0f, 0f), nationId, 0f, textString);
+        sign.frame = frame;
         sign.bend = curveRadius > 0f ? width * width / (2f * curveRadius) : 0f;
         sign.shaped = curveRadius > 0f || tiltDegrees != 0f;
         if (tiltDegrees != 0f) sign.modelMatrix = Matrix4.multiply(sign.modelMatrix, Matrix4Transform.rotateAroundX(-tiltDegrees));
@@ -229,16 +222,6 @@ public class InfrastructureObject {
         return sign;
     }
 
-    /** As createWallSign, built in its own frame: the board centred on its origin, facing local +z. */
-    public static InfrastructureObject createWallSign(SphereFrame frame, int nationId, float width, float height,
-                                                      boolean banner, boolean bothSides, int[] textString,
-                                                      float tiltDegrees, float curveRadius) {
-        InfrastructureObject sign = createWallSign(new Vector3(0f, 0f, 0f), nationId, 0f, width, height, banner, bothSides, textString,
-                tiltDegrees, curveRadius);
-        sign.frame = frame;
-        return sign;
-    }
-
     /** A batch: its parts' vertices are in world coordinates (planet-centred), centre the middle of what they hold. */
     public static InfrastructureObject createBatch(SpherePosition centre, int nationId, float boundingRadius, List<BatchPart> parts) {
         InfrastructureObject batch = new InfrastructureObject(Type.BATCH, new Vector3(0f, 0f, 0f), nationId, 0.0f, null);
@@ -249,12 +232,12 @@ public class InfrastructureObject {
     }
 
     /** Uploads the batch's meshes the first time it is drawn; must run on the GL thread. Textured parts use the texturing shader. */
-    public void initializeBatch(GL3 gl, Shader shader, Shader texturedShader, Renderer renderer, Light[] lights, Camera camera) {
+    public void initializeBatch(GL3 gl, Shader shader, Shader texturedShader, Renderer renderer, Camera camera) {
         for (BatchPart part : batchParts) {
             if (part.model == null && part.indices.length > 0) {
                 Mesh mesh = new Mesh(gl, part.vertices, part.indices);
                 part.model = new Model("infrastructure_batch", mesh, new Matrix4(1), part.textured ? texturedShader : shader,
-                        part.material, renderer, lights, camera);
+                        part.material, renderer, camera);
             }
         }
     }
@@ -322,11 +305,11 @@ public class InfrastructureObject {
         }
     }
 
-    /** Draws a batch's solid parts, one per material, camera-relative (see Renderer.renderSphereNative). */
+    /** Draws a batch's solid parts, one per material, camera-relative (see Renderer). */
     public void renderBatch(GL3 gl, Vector3 ambientLight, float nightProportion,
-            Shader shader, Shader texturedShader, Renderer renderer, Light[] lights, Camera camera) {
+            Shader shader, Shader texturedShader, Renderer renderer, Camera camera) {
         if (type != Type.BATCH) return;
-        initializeBatch(gl, shader, texturedShader, renderer, lights, camera);
+        initializeBatch(gl, shader, texturedShader, renderer, camera);
         for (BatchPart part : batchParts) {
             if (part.model == null || part.transparent) continue;
             if (part.drawDistance > 0f && beyond(part.drawDistance)) continue;
@@ -360,7 +343,7 @@ public class InfrastructureObject {
                 part.model.shader.use(gl);
                 part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
             }
-            part.model.renderSphereNative(gl, ambientLight, nightProportion);
+            part.model.render(gl, ambientLight, nightProportion);
             if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
             if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
             if (track) {
@@ -495,17 +478,9 @@ public class InfrastructureObject {
         }
     }
 
-    /**
-     * Draws one piece of a sign: given in its frame, it is drawn on the sphere through it,
-     * camera-relative (see Renderer.renderSphereNative); a sign without a frame, as given.
-     */
+    /** Draws one piece of a sign: given in its frame, it is drawn on the sphere through it, camera-relative (see Renderer). */
     private void draw(GL3 gl, Model model, Matrix4 local, Vector3 ambientLight, float nightProportion) {
-        if (frame == null) {
-            model.setModelMatrix(local);
-            model.render(gl, ambientLight, nightProportion);
-            return;
-        }
         model.setModelMatrix(Matrix4.multiply(frame.modelMatrix(1f), local));
-        model.renderSphereNative(gl, ambientLight, nightProportion);
+        model.render(gl, ambientLight, nightProportion);
     }
 }

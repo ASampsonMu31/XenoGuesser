@@ -7,15 +7,13 @@ public class Renderer {
 
   public Vector2 scale = new Vector2(1, 1);
 
+  // The lights the world is lit by (the sun), as the camera sees it: their positions relative to the eyes
+  private Light[] lights = new Light[0];
+
   public Renderer() {}
 
-  private void doVertexShaderMatrices(GL3 gl, Shader shader, Matrix4 modelMatrix,
-                                     Matrix4 viewProjection, Vector3 viewPosition, boolean modelAppliedInVertexShader) {
-    shader.setFloatArray(gl, "model", modelMatrix.toFloatArrayForGLSL());
-    Matrix4 mvpMatrix = modelAppliedInVertexShader
-            ? viewProjection : Matrix4.multiply(viewProjection, modelMatrix);
-    shader.setFloatArray(gl, "mvpMatrix", mvpMatrix.toFloatArrayForGLSL());
-    shader.setVec3(gl, "viewPos", viewPosition);
+  public void setLights(Light[] lights) {
+    this.lights = lights;
   }
 
   // Uniform names for each light, made once
@@ -123,45 +121,38 @@ public class Renderer {
   }
 
   /**
-   * Draws a mesh whose model matrix places it relative to the camera (the eyes at the origin,
-   * as the sphere world is drawn).
+   * Draws a mesh whose model matrix places it on the planet (planet-centred), seen by the
+   * camera: camera-relative, the eyes' place taken off in the vertex shader (see vs_standard).
    */
-  public void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, 
-                     Material material, Light[] lights, Vector3 ambientLight, 
-                     float nightProportion, Camera camera) {
-    render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion,
-            camera, camera.getSphereViewProjection(), new Vector3(0f, 0f, 0f), false);
+  public void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, Material material,
+                     Vector3 ambientLight, float nightProportion, Camera camera) {
+    SpherePosition eye = camera.getSpherePosition();
+    draw(gl, mesh, modelMatrix, shader, material, ambientLight, nightProportion, camera.getSphereViewProjection(),
+            new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()), new Vector3(0f, 0f, 0f), lights);
   }
 
   /** Draws a mesh through a view-projection of its own (a picture of something on its own), seen from viewPosition. */
   public void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, Material material, Vector3 ambientLight,
                      Matrix4 viewProjection, Vector3 viewPosition) {
-    render(gl, mesh, modelMatrix, shader, material, new Light[0], ambientLight, 0f, null, viewProjection, viewPosition, false);
+    draw(gl, mesh, modelMatrix, shader, material, ambientLight, 0f, viewProjection, new Vector3(0f, 0f, 0f), viewPosition, new Light[0]);
   }
 
-  public void renderSphereNative(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader,
-                                 Material material, Light[] lights, Vector3 ambientLight,
-                                 float nightProportion, Camera camera) {
-    SpherePosition spherePosition = camera.getSpherePosition();
+  /** Sets the vertex shader's matrices (see vs_standard): the eyes at origin, the view-projection from there. */
+  public static void setView(GL3 gl, Shader shader, Matrix4 modelMatrix, Matrix4 viewProjection, Vector3 origin) {
+    shader.setFloatArray(gl, "model", modelMatrix.toFloatArrayForGLSL());
+    shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+    shader.setVec3(gl, "sphereCamera", origin);
+  }
+
+  private void draw(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, Material material,
+                    Vector3 ambientLight, float nightProportion, Matrix4 viewProjection,
+                    Vector3 origin, Vector3 viewPosition, Light[] lights) {
     shader.use(gl);
-    shader.setInt(gl, "sphereNativeTerrain", 1);
-    shader.setVec3(gl, "sphereCamera", new Vector3((float) spherePosition.x(),
-            (float) spherePosition.y(), (float) spherePosition.z()));
+    setView(gl, shader, modelMatrix, viewProjection, origin);
+    shader.setVec3(gl, "viewPos", viewPosition);
     shader.setFloat(gl, "planetRadius", (float) Planet.radius());
-    render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion,
-            camera, camera.getSphereViewProjection(), new Vector3(0f, 0f, 0f), true);
-  }
-
-  private void render(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader,
-                      Material material, Light[] lights, Vector3 ambientLight,
-                      float nightProportion, Camera camera, Matrix4 viewProjection,
-                      Vector3 viewPosition, boolean sphereNative) {
-    shader.use(gl);
-    shader.setInt(gl, "sphereNativeTerrain", sphereNative ? 1 : 0);
-    doVertexShaderMatrices(gl, shader, modelMatrix, viewProjection, viewPosition, sphereNative);
     doAmbientLight(gl, shader, ambientLight);
-    if (sphereNative) shader.setInt(gl, "numLights", 0);
-    else doLights(gl, shader, lights);
+    doLights(gl, shader, lights);
     doBasicMaterial(gl, shader, material);
     shader.setInt(gl, "useDiffuseTexture", material.diffuseMapExists() ? 1 : 0);
     

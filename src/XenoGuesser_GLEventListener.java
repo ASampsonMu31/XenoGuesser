@@ -145,8 +145,6 @@ private static class SpeciesConfig {
     private static final float NEAR_PLANE = 2.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
     private float currentNearPlane = NEAR_PLANE;
 
-    private Model skyModel;
-    // The clouds and rain
     // Grass dies back from this many degrees above the water's freezing point, and is gone by
     // this many below it
     private static final float GRASS_FROST_START = 6f, GRASS_FROST_DEATH = 6f;
@@ -197,8 +195,7 @@ private static class SpeciesConfig {
     private Shader grassShader;
     private int grassVAO = 0;
     private int grassVBO = 0;
-    private int grassChunkCoordVBO = 0; 
-    private int totalGrassInstances = 0;
+    private int grassInstanceVBO = 0; 
     // How many grass blades are in the instance buffer (thinned with distance), as drawn
     private int drawnGrassInstances = 0;
     
@@ -232,7 +229,6 @@ private static class SpeciesConfig {
         // Regional soil colour: where the ground drifts toward each of the palette's soil variants
     private RegionalFactor soilVariantAFactor;
     private RegionalFactor soilVariantBFactor;
-    private static final int SOIL_REGION_MAP_SIZE = 256;
 
     private RegionalFactor grassAbundanceFactor;
     private RegionalFactor grassHeightFactor;
@@ -257,9 +253,6 @@ private static class SpeciesConfig {
     private GeodesicChunkGrid.Direction teleportTo;
 
     private GL3 gl;
-
-    private Vector3 healthyColour;
-    private Vector3 dyingColour;
 
     private NationGenerationManager nationManager;
     private int totalNationsCount;
@@ -299,7 +292,6 @@ private static class SpeciesConfig {
     private int framesRenderedSinceReady = 0;
     // While loading, grass seeding may keep going for this long per frame; in play it seeds one far chunk per frame
     private static final long LOADING_GRASS_BUDGET_NANOS = 45_000_000L;
-        private long grassBudgetNanos = 0;
     // Between rounds the new surroundings are built in slices of this long per frame
     private static final long ROUND_LOADING_BUDGET_NANOS = 45_000_000L;
     private boolean roundLoading = false;
@@ -596,11 +588,11 @@ private static class SpeciesConfig {
 
         // Map resolution matched safely to 512x512 grids to match MapPanel specs
         // Map resolution matched safely to 384 grids for fast CA simulation
-        this.nationManager = new NationGenerationManager(this.worldSeed, this.totalNationsCount, 384, seaLevelHeight, worldNoise);
+        this.nationManager = new NationGenerationManager(this.worldSeed, this.totalNationsCount, seaLevelHeight, worldNoise);
 
         // Run the spreading calculation using your environment configuration data parameters
         // Assuming 'terrainAbundanceFactor' or standard height maps are accessible inside your initialization path
-        this.nationManager.generateTerritories(this.worldSeed, TOTAL_REGION_WIDTH);
+        this.nationManager.generateTerritories(this.worldSeed);
 
         // Settlements decide where cities grow; the road network and buildings follow from them
         this.settlementManager = new SettlementManager(worldSeed,
@@ -609,7 +601,7 @@ private static class SpeciesConfig {
                 this.settlementManager, this);
         this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, worldNoise);
         System.out.println("[INHABITANTS] " + inhabitants.describe());
-                this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
+                this.infraManager.prepareRoadNetwork(seaLevelHeight, worldNoise);
         // (low frequencies: the soil's colour drifts over many kilometres)
         this.soilVariantAFactor = this.regionalManager.createNoiseMap(0.7e-5f);
         this.soilVariantBFactor = this.regionalManager.createNoiseMap(1.05e-5f);
@@ -1309,7 +1301,7 @@ private static class SpeciesConfig {
 
         if (grassVAO != 0) {
             gl.glDeleteVertexArrays(1, new int[]{grassVAO}, 0);
-            gl.glDeleteBuffers(2, new int[]{grassVBO, grassChunkCoordVBO}, 0);
+            gl.glDeleteBuffers(2, new int[]{grassVBO, grassInstanceVBO}, 0);
         }
         
         gl.glDeleteFramebuffers(1, depthFBO, 0);
@@ -1406,7 +1398,6 @@ private static class SpeciesConfig {
         l.setMaterial(m);
         lights[0] = l;
 
-        skyModel = makeSkybox(gl, GamePaths.HOME + "assets/shaders/fs_single_sky.txt", textures.get("sky"));
         sphereSkyRenderer = new SphereSkyRenderer(gl);
         sphereWeather = new SphereWeather(gl, worldSeed);
         
@@ -1438,6 +1429,8 @@ private static class SpeciesConfig {
         }
         infraManager.setNationTextures(textures::get);
         terrainRenderer = new Renderer();
+        // (the sun lights the world: its position is kept relative to the eyes, see render)
+        terrainRenderer.setLights(lights);
         globalModelMatrix = new Matrix4(1);
 
 
@@ -1470,7 +1463,7 @@ private static class SpeciesConfig {
         for (int n = 1; n <= totalNationsCount; n++) {
             int chosenSlices = sliceOptions[postRand.nextInt(sliceOptions.length)];
             Mesh postMesh = postMeshesBySlice.get(chosenSlices);
-            Model postModel = new Model("post_nation_" + n, postMesh, new Matrix4(1), solidShader, postMat, terrainRenderer, lights, camera);
+            Model postModel = new Model("post_nation_" + n, postMesh, new Matrix4(1), solidShader, postMat, terrainRenderer, camera);
             postModelsByNation.put(n, postModel);
         }
 
@@ -1481,8 +1474,6 @@ private static class SpeciesConfig {
         this.nationAtlases = new HashMap<>();
         this.nationAtlasSizes = new HashMap<>();
         this.nationDirections = new HashMap<>();
-        
-        java.util.Random signConfigRand = new java.util.Random(this.worldSeed + 999L);
         
         // Dynamically count subdirectories inside generated_alphabets
         java.io.File alphabetsDir = new java.io.File(RunFiles.ALPHABETS_DIR);
@@ -1513,10 +1504,7 @@ private static class SpeciesConfig {
                 }
             }
             
-            java.awt.Color awtColor = nationManager.getNationColor(n);
-            Vector3 nationRGB = new Vector3(awtColor.getRed() / 255.0f, awtColor.getGreen() / 255.0f, awtColor.getBlue() / 255.0f);
-            
-            // Fix: Replaced nationRGB with raw white values so the shader gets a clean canvas 
+            // White, so the sign's own picture shows as it is
             Material signMaterial = new Material(
                 new Vector3(1.0f, 1.0f, 1.0f),                     
                 new Vector3(1.0f, 1.0f, 1.0f),                     
@@ -1525,7 +1513,7 @@ private static class SpeciesConfig {
             );
             
             // Note: We are using the new signboardShader here instead of solidShader
-            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Matrix4(1), signboardShader, signMaterial, terrainRenderer, lights, camera);
+            Model signModel = new Model("sign_nation_" + n, signMeshBase, new Matrix4(1), signboardShader, signMaterial, terrainRenderer, camera);
             signModelsByNation.put(n, signModel);
         }
         
@@ -1581,8 +1569,8 @@ private static class SpeciesConfig {
                     );
                     
                     floraOutlines[s][i] = fBundle.outline;
-                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Matrix4(1), terrainShader, floraMat, terrainRenderer, lights, camera);
-                    floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Matrix4(1), leafShader, leafMat, terrainRenderer, lights, camera);
+                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Matrix4(1), terrainShader, floraMat, terrainRenderer, camera);
+                    floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Matrix4(1), leafShader, leafMat, terrainRenderer, camera);
                 }
             }
         }
@@ -1681,8 +1669,8 @@ private static class SpeciesConfig {
         gl.glVertexAttribPointer(1, 2, GL3.GL_FLOAT, false, 5 * 4, 3 * 4);
 
         gl.glGenBuffers(1, tempBuffers, 0);
-        grassChunkCoordVBO = tempBuffers[0];
-        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+        grassInstanceVBO = tempBuffers[0];
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassInstanceVBO);
         
         int instanceStride = 5 * 4; 
 
@@ -1757,13 +1745,6 @@ private static class SpeciesConfig {
         hud.initialise(gl);
         spawnPlayerAtRandomLocation();
         createDepthFramebuffer(gl, currentWidth, currentHeight);
-
-        java.util.Random rand = new java.util.Random(worldSeed);
-        float r = 0.35f + rand.nextFloat() * 0.5f;
-        float g = 0.35f + rand.nextFloat() * 0.5f;
-        float b = 0.35f + rand.nextFloat() * 0.5f;
-        healthyColour = new Vector3(r, g, b);
-        dyingColour = new Vector3(0.4f, 0.25f, 0.15f);
     }
 
     /**
@@ -1782,12 +1763,12 @@ private static class SpeciesConfig {
     private final java.util.Random spawnRandom = Long.getLong("xenoguesser.seed") != null
             ? new java.util.Random(Long.getLong("xenoguesser.seed")) : new java.util.Random();
 
-    /** Where a normal round's pod comes down: near a road, clear of houses, away from the poles. */
+    /** Where a normal round's pod comes down: near a road, clear of houses, somewhere on the map. */
     private Viewpoint landingSite(java.util.Random rand) {
         return infraManager.landingSite(rand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
                 p -> TerrainMesh.getLayeredHeight(p, worldNoise) > seaLevelHeight + 1.0f
-                        // Rounds start away from the far north and south
-                        && Math.abs(Planet.latitude(p)) < Math.toRadians(60.0));
+                        // (within the map's top and bottom edges, so the place can be guessed)
+                        && Math.abs(Planet.latitude(p)) < MapProjection.CLIP_LATITUDE);
     }
 
     // ------------------------------------------------------------------ the next round, got ready ahead
@@ -2147,7 +2128,6 @@ private static class SpeciesConfig {
 
         infraWantedFor = Long.MIN_VALUE;
         infraWantedFrom = null;
-                totalGrassInstances = 0;
                 drawnGrassInstances = 0;
                 grassDirty = true;
                 organismManager.clear();
@@ -2183,8 +2163,6 @@ private static class SpeciesConfig {
     private int framesSinceGrassBuffer;
     private boolean grassMovedChunk;
     private int chunkScanCountdown;
-    private float[] grassStaging;
-    private boolean nearGrassArrived;
     // Terrain chunks are worked out on these threads and only uploaded on the GL thread
     private final java.util.concurrent.ExecutorService terrainBuilders = java.util.concurrent.Executors.newFixedThreadPool(
             Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 2 - 1)), r -> {
@@ -2417,13 +2395,13 @@ private static class SpeciesConfig {
         if (persistentGrassBuffer == null || floats > currentGrassGPUCapacityFloats) {
             currentGrassGPUCapacityFloats = (int) (Math.max(floats, 5) * 1.2f);
             persistentGrassBuffer = com.jogamp.common.nio.Buffers.newDirectFloatBuffer(currentGrassGPUCapacityFloats);
-            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+            gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassInstanceVBO);
             gl.glBufferData(GL3.GL_ARRAY_BUFFER, currentGrassGPUCapacityFloats * 4L, null, GL3.GL_DYNAMIC_DRAW);
         }
         persistentGrassBuffer.clear();
         persistentGrassBuffer.put(data, 0, floats);
         persistentGrassBuffer.flip();
-        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassChunkCoordVBO);
+        gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, grassInstanceVBO);
         gl.glBufferSubData(GL3.GL_ARRAY_BUFFER, 0, floats * 4L, persistentGrassBuffer);
         gl.glBindBuffer(GL3.GL_ARRAY_BUFFER, 0);
         drawnGrassInstances = count;
@@ -2455,7 +2433,7 @@ private static class SpeciesConfig {
                 Object[] data = geodesicTerrainBuild.get();
                 Mesh mesh = new Mesh(gl, (float[]) data[0], (int[]) data[1]);
                 Model replacement = new Model("geodesic_terrain", mesh, globalModelMatrix, terrainShader,
-                        terrainMaterial, terrainRenderer, lights, camera);
+                        terrainMaterial, terrainRenderer, camera);
                 if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
                     geodesicTerrainModel.mesh.dispose(gl);
                 }
@@ -2506,7 +2484,7 @@ private static class SpeciesConfig {
                 if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
                 object.setViewerDistanceSquared((float) distanceSquared);
                 object.renderBatch(gl, ambientLight, nightProportion,
-                        solidShader, terrainShader, terrainRenderer, lights, camera);
+                        solidShader, terrainShader, terrainRenderer, camera);
             }
         }
         renderSigns(gl, signs, eye, forward, skyRotation);
@@ -2637,7 +2615,7 @@ private static class SpeciesConfig {
             SphereFlora plant = visibleFlora.get(i);
             Model branch = floraBranchModelsLOD[plant.speciesIndex()][visibleLods.get(i)][plant.modelIndex()];
             branch.setModelMatrix(plant.model());
-            branch.renderSphereNative(gl, ambientLight, nightProportion);
+            branch.render(gl, ambientLight, nightProportion);
         }
         leafShader.use(gl);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(leafShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
@@ -2652,26 +2630,17 @@ private static class SpeciesConfig {
             leafShader.setVec3(gl, "u_LeafLightColor", plant.leafLight());
             Model leaves = floraLeafModelsLOD[plant.speciesIndex()][visibleLods.get(i)][plant.modelIndex()];
             leaves.setModelMatrix(plant.model());
-            leaves.renderSphereNative(gl, ambientLight, nightProportion);
+            leaves.render(gl, ambientLight, nightProportion);
         }
         gl.glEnable(GL.GL_CULL_FACE);
     }
 
     private final List<Integer> visibleLods = new ArrayList<>();
 
-    private void setSphereTerrainTransform(Shader shader, boolean enabled) {
-        shader.setInt(gl, "sphereNativeTerrain", enabled ? 1 : 0);
-        if (!enabled) return;
-        SpherePosition position = camera.getSpherePosition();
-        shader.setVec3(gl, "sphereCamera", new Vector3((float) position.x(), (float) position.y(), (float) position.z()));
-    }
-
     private void updateVisibleChunks(boolean forceImmediate) {
         boolean loadingNow = roundLoading || teleportLoading || !worldReady;
         roundChunkDeadline = System.nanoTime() + (loadingNow ? ROUND_LOADING_BUDGET_NANOS : PLAY_CHUNK_BUDGET_NANOS);
-        infraManager.prepareRoadNetwork(
-            PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise
-        );
+        infraManager.prepareRoadNetwork(seaLevelHeight, worldNoise);
         boolean pending = false;
 
         // --- TERRAIN: the sphere's patch round the player (built off the GL thread, put up here)
@@ -2701,7 +2670,7 @@ private static class SpeciesConfig {
                 continue;
             }
             infraCache.put(cell.id(), infraManager.generateForCell(
-                    cell.id(), PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise));
+                    cell.id(), seaLevelHeight, worldNoise));
         }
         chunkWorkPending = pending;
     }
@@ -2797,7 +2766,6 @@ private static class SpeciesConfig {
             strides.add(stride);
             required += (data.length / 5 + stride - 1) / stride * 5;
         }
-        totalGrassInstances = required / 5;
         int size = required;
         java.util.concurrent.Callable<Object[]> gather = () -> {
             float[] staging = new float[size];
@@ -2975,9 +2943,7 @@ private static class SpeciesConfig {
         updateGeodesicTerrain(gl);
 
         depthPrePassShader.use(gl);
-        setSphereTerrainTransform(depthPrePassShader, true);
-        geodesicTerrainModel.renderSphereNativeDepthPass(gl, depthPrePassShader, sphereViewProjection);
-        setSphereTerrainTransform(depthPrePassShader, false);
+        geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
 
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);   // (back to where the world is drawn)
 
@@ -3041,9 +3007,7 @@ private static class SpeciesConfig {
         terrainShader.setInt(gl, "soilRegionMap", 6);
         terrainShader.setFloat(gl, "useSoilRegions", 1.0f);
         terrainShader.setVec3(gl, "rockColour", worldRockColour());
-        setSphereTerrainTransform(terrainShader, true);
-        geodesicTerrainModel.renderSphereNative(gl, ambientLight, nightProportion);
-        setSphereTerrainTransform(terrainShader, false);
+        geodesicTerrainModel.render(gl, ambientLight, nightProportion);
         terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
 
         renderGeodesicInfrastructure(gl, skyRotation);
@@ -4572,18 +4536,6 @@ private static class SpeciesConfig {
     /** While the settings are open the view behind them is darkened. */
     public void setMenuOpen(boolean open) {
         menuOpen = open;
-    }
-
-    private Model makeSkybox(GL3 gl, String fragmentPath, Texture skyTexture) {
-        String name = "skybox";
-        Mesh mesh = new Mesh(gl, InsideSphere.vertices.clone(), InsideSphere.indices.clone());
-        Matrix4 modelMatrix = Matrix4Transform.scale(2400.0f, 2400.0f, 2400.0f);
-        Shader shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", fragmentPath);
-        Material material = new Material(new Vector3(0f, 0f, 0f), new Vector3(0f, 0f, 0f));
-        material.setDiffuseMap(skyTexture);
-        
-        Renderer renderer = new Renderer();
-        return new Model(name, mesh, modelMatrix, shader, material, renderer, lights, camera);
     }
 
     /**
