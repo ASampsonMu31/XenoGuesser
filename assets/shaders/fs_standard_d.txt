@@ -38,27 +38,39 @@ float noise3d(vec3 p) {
     float b = mix(mix(hash3d(i + ivec3(0, 0, 1)), hash3d(i + ivec3(1, 0, 1)), f.x), mix(hash3d(i + ivec3(0, 1, 1)), hash3d(i + ivec3(1, 1, 1)), f.x), f.y);
     return mix(a, b, f.z);
 }
-float snowAt(vec3 world, vec3 n) {
+// Smooth noise along a line
+float noise1d(float x) {
+    float i = floor(x), f = x - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(hash3d(ivec3(int(i), 17, 29)), hash3d(ivec3(int(i) + 1, 17, 29)), f);
+}
+// How much of the surface snow covers where it faces a given way, before it's laid down as flakes
+float snowLying(vec3 world, float facing) {
     float r = length(world);
     if (snowState.x < 0.5 || r < planetRadius * 0.5) return 0.0;
-    vec3 up = world / r;
-    vec2 climate = texture(snowCover, up).rg;
+    vec2 climate = texture(snowCover, world / r).rg;
     float celsius = climate.r * 100.0 - 60.0 - max(0.0, r - planetRadius - snowClimate.w) * snowClimate.z;
     float falls = clamp((climate.g - 0.05) / 0.3, 0.0, 1.0);
     float lying = smoothstep(0.0, 1.0, (snowClimate.x - celsius) / snowClimate.y) * falls;
     // Fresh snow: flakes dotted about, then patches, then a full covering as it piles up
     float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
-    // How much of the surface is under snow, less on steep faces...
     // (never quite all: there are always gaps where the surface shows through)
-    float amount = min(0.8, max(lying, snowState.y * snowy)) * smoothstep(0.45, 0.8, dot(n, up)) * (1.0 - snowCleared);
+    return min(0.8, max(lying, snowState.y * snowy)) * facing * (1.0 - snowCleared);
+}
+// Lays an amount of snow down as flakes and clumps over the surface as it is (fine dots, then
+// patches, then drifts), each either snow or not, so a light dusting is scattered flakes and a
+// heavy fall covers all but a few gaps
+float snowFlakes(vec3 world, float amount) {
     if (amount <= 0.0) return 0.0;
-    // ...laid down as flakes and clumps of snow over the surface as it is (fine dots, then
-    // patches, then drifts), each either snow or not, so a light dusting is scattered flakes
-    // and a heavy fall covers all but a few gaps
     float speckle = noise3d(world * 5.3) * 0.38 + noise3d(world * 1.1) * 0.34 + noise3d(world * 0.19) * 0.28;
     // (spread out evenly, as the sum bunches round the middle, so the amount is the share covered)
     speckle = smoothstep(0.22, 0.78, speckle);
     return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
+}
+float snowAt(vec3 world, vec3 n) {
+    // Less on steep faces
+    vec3 up = normalize(world);
+    return snowFlakes(world, snowLying(world, smoothstep(0.45, 0.8, dot(n, up))));
 }
 
 
@@ -161,25 +173,63 @@ void main() {
     // Sample the base texture color
     vec3 sampledColor = texture(diffuse_texture, scaledUV).rgb;
 
-        vec3 texColor = sampledColor;
+    vec3 texColor = sampledColor;
+    float rockAmount = 0.0, rockBump = 0.0, cliffSnow = 0.0;
     if (useSoilRegions > 0.5) {
         texColor *= texture(soilRegionMap, normalize(aWorldPos)).rgb * 2.0;
 
-        // Steep slopes are bare rock, banded in strata (by height above the datum) and broken up
-        // by grain and cracks: 3D noise of the place, exact however far it is from the planet's
-        // centre, and the same whichever way the ground faces
+        // Steep slopes are bare cliff: the same stone as the loose rocks, rough and speckled,
+        // with fine bedding lines running across it (by height above the datum, wandering only a
+        // little) and a few cracks. 3D noise of the place, exact however far it is from the
+        // planet's centre, and the same whichever way the ground faces
         vec3 surfaceUp = normalize(aWorldPos);
         float steep = 1.0 - dot(normalize(aNormal), surfaceUp);
         float patchy = noise3d(materialPos * 0.05);
-        float rockAmount = smoothstep(0.26, 0.48, steep + (patchy - 0.5) * 0.12);
+        rockAmount = smoothstep(0.14, 0.32, steep + (patchy - 0.5) * 0.12);
+        // How far the height changes across a pixel (taken here, outside the branch below, where
+        // the neighbouring pixels' values are all there; from the eye-relative place, which
+        // keeps its precision)
+        float heightStep = length(vec2(dot(dFdx(aPos), surfaceUp), dot(dFdy(aPos), surfaceUp)));
         if (rockAmount > 0.0) {
+            float near = 1.0 - smoothstep(150.0, 400.0, length(viewPos - aPos));
             float height = length(aWorldPos) - planetRadius;
-            float strata = 0.82 + 0.18 * sin(height * 0.45 + noise3d(materialPos * 0.015) * 7.0);
-            float grain = noise3d(materialPos * 0.7) * 0.5 + noise3d(materialPos * 2.3 + 17.0) * 0.5;
-            float crack = smoothstep(0.08, 0.0, abs(noise3d(materialPos * 0.12 + 5.0) - 0.5));
-            vec3 tint = rockColour * (0.9 + 0.2 * noise3d(materialPos * 0.002));
-            vec3 rock = tint * strata * (0.75 + 0.45 * grain) * (1.0 - 0.45 * crack);
+            // Bedding: thin lines, some beds thin and some thick, some lines fainter or missing,
+            // faded out before they're too fine to draw. They rise and fall across the cliff by
+            // an amount that depends only on where it is (the place straight down on the datum),
+            // so every line at a place is lifted alike and they run on together: broad tilts of
+            // several metres, folds, and jagged kinks (ridged noise, sharp where it turns)
+            vec3 under = surfaceUp * planetRadius;
+            float dip = (noise3d(under * 0.006) - 0.5) * 60.0
+                    + (noise3d(under * 0.025 + 31.0) - 0.5) * 20.0
+                    + abs(noise3d(under * 0.09 + 57.0) - 0.5) * 12.0
+                    + abs(noise3d(under * 0.3 + 83.0) - 0.5) * 3.0;
+            // (the beds' thicknesses: the height stretched and squeezed, the same everywhere at a
+            // height, so lines bunch together in places and spread apart in others)
+            float t = height + dip;
+            float bedded = t + (noise1d(t * 0.07) - 0.5) * 9.0 + (noise1d(t * 0.31 + 13.0) - 0.5) * 2.0;
+            float layer = bedded * 0.42;
+            float across = abs(fract(layer) - 0.5) * 2.0;   // 1 on a line, 0 between
+            // (how far the lines move across a pixel: the height's step, more where they slope)
+            float layerStep = heightStep * 0.42 * 2.5;
+            float lineWidth = max(0.12, layerStep * 2.0);
+            float lineFade = 1.0 - smoothstep(0.25, 0.6, layerStep);
+            float line = smoothstep(1.0 - lineWidth, 1.0, across) * lineFade;
+            float layerHash = hash3d(ivec3(int(floor(layer)), 7, 3));
+            line *= smoothstep(0.15, 0.5, layerHash) * (0.6 + 0.4 * noise3d(materialPos * 0.04 + 9.0));
+            // Grain as on the loose rocks, at the cliff's larger scale too
+            float grain = 0.84 + 0.2 * noise3d(materialPos * 0.9) + 0.12 * noise3d(materialPos * 4.3) * near;
+            float blotch = noise3d(materialPos * 0.13 + 3.0);
+            float crack = smoothstep(0.035, 0.0, abs(noise3d(materialPos * 0.1 + 5.0) - 0.5)) * (0.4 + 0.6 * near);
+            vec3 tint = rockColour * (0.9 + 0.2 * noise3d(materialPos * 0.002)) * (0.92 + 0.12 * layerHash);
+            vec3 rock = tint * grain * (0.88 + 0.24 * blotch) * (1.0 - 0.22 * line) * (1.0 - 0.35 * crack);
             texColor = mix(texColor, rock, rockAmount);
+            // Rough to the light: knobbly, with the bedding standing out as small ledges
+            rockBump = rockAmount * near * (noise3d(materialPos * 0.45) * 0.5 + noise3d(materialPos * 1.6) * 0.25 - line * 0.15);
+            // Snow catches on the ledges and in hollows even where it's steep
+            float ledge = smoothstep(0.55, 0.9, fract(layer + 0.12)) * smoothstep(0.3, 0.6, noise3d(materialPos * 0.3 + 11.0));
+            float hollow = smoothstep(0.62, 0.8, noise3d(materialPos * 0.08 + 21.0));
+            cliffSnow = rockAmount * snowFlakes(materialPos, snowLying(materialPos, smoothstep(0.15, 0.6, dot(normalize(aNormal), surfaceUp)))
+                    * max(ledge, hollow) * 1.2);
         }
     }
 
@@ -228,12 +278,23 @@ void main() {
 
     // Snow lying on the ground, roofs and anything else facing up
     // (snow is brighter than the ground it covers, so it reads as snow once lit)
-    texColor = mix(texColor, min(snowColour * 1.4, vec3(1.0)), snowAt(aWorldPos, normalize(aNormal)));
+    float snow = max(snowAt(aWorldPos, normalize(aNormal)), cliffSnow);
+    texColor = mix(texColor, min(snowColour * 1.4, vec3(1.0)), snow);
 
     // Multiplicative blending for ambient lighting
     vec3 ambient = ambientLight * material.ambient * texColor;
     
     vec3 norm = normalize(aNormal);
+    if (useSoilRegions > 0.5) {
+        // The cliff's roughness tilts the normal by the bump's slope across the screen (taken
+        // here, outside the branch above, as with heightStep); flat under snow
+        vec3 dpdx = dFdx(aPos), dpdy = dFdy(aPos);
+        float bx = dFdx(rockBump), by = dFdy(rockBump);
+        vec3 r1 = cross(dpdy, norm), r2 = cross(norm, dpdx);
+        float det = dot(dpdx, r1);
+        vec3 grad = sign(det) * (bx * r1 + by * r2) * (1.0 - snow);
+        if (abs(det) > 1e-8) norm = normalize(abs(det) * norm - grad);
+    }
     vec3 viewDir = normalize(viewPos - aPos);
 
     vec3 totalDiffuse = vec3(0.0);
@@ -255,18 +316,22 @@ void main() {
 
     // --- SEAMLESS INSIDE-SPHERE FOG COORD MAPPING ---
     float radialDistance = length(viewPos - aPos);
-    vec3 worldLookDir = normalize(aPos - viewPos);
-    mat3 invSkyRot = transpose(mat3(skyRotation));
-    vec3 localSkyDir = invSkyRot * worldLookDir;
+    // (the sky's own colour is only the haze until the fog's colour is set: not worked out otherwise)
+    vec3 dynamicSkyColour = fogColour;
+    if (fogReady < 0.5) {
+        vec3 worldLookDir = normalize(aPos - viewPos);
+        mat3 invSkyRot = transpose(mat3(skyRotation));
+        vec3 localSkyDir = invSkyRot * worldLookDir;
     
-    float theta = atan(localSkyDir.x, localSkyDir.z);
-    if (theta < 0.0) {
-        theta += 2.0 * PI;
+        float theta = atan(localSkyDir.x, localSkyDir.z);
+        if (theta < 0.0) {
+            theta += 2.0 * PI;
+        }
+        float u = theta / (2.0 * PI);
+        float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+    
+        dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
     }
-    float u = theta / (2.0 * PI);
-    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
-    
-    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
 
     // --- CUBIC DISTANCE BLENDING ---
     float fogStart = 1000.0;

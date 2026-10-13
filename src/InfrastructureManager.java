@@ -2930,11 +2930,10 @@ public class InfrastructureManager {
         }
     }
 
-    /** A glass pane, with an optional frame behind it, set into a wall at fraction s along it. */
     /**
      * A window: a hole through the wall, lined (sides, sill and head) back to a dark panel,
-     * with drawn curtains hanging in folds just in front of that, a pane of glass set a
-     * little back from the wall's face, and a frame round the outside.
+     * the drawn curtains painted on that flat panel, and a frame round the outside. No glass
+     * (only shop windows have it): the lining all round hides the inside.
      */
     private void addWindow(NationBatch batch, House house, BuildingStyle style, HouseWall wall, float s, float centreY) {
         float halfW = Math.min(style.windowWidth * house.sizeScale, wall.length * 0.8f) * 0.5f;

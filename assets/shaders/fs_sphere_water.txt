@@ -194,7 +194,8 @@ void main() {
 
     // Into the distance it fades to the haze (or the sky behind it)
     float radialDistance = length(viewPosition);
-    vec3 dynamicSkyColour = skyAlong(normalize(viewPosition));
+    // (the sky's own colour is only the haze until the fog's colour is set: not worked out otherwise)
+    vec3 dynamicSkyColour = fogReady > 0.5 ? fogColour : skyAlong(normalize(viewPosition));
     float fogStart = 1000.0;
     float fogEnd = 2200.0;
     float fogFactor = clamp((fogEnd - radialDistance) / (fogEnd - fogStart), 0.0, 1.0);

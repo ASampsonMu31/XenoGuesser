@@ -2054,7 +2054,8 @@ private static class SpeciesConfig {
                 if (obj.type != InfrastructureObject.Type.BATCH || !obj.hasTransparentParts()) continue;
                 double dx = obj.centre.x() - eye.x(), dy = obj.centre.y() - eye.y(), dz = obj.centre.z() - eye.z();
                 double far = reach + obj.boundingRadius;
-                if (dx * dx + dy * dy + dz * dz > far * far || dx * forward.x + dy * forward.y + dz * forward.z < -obj.boundingRadius) continue;
+                double distanceSquared = dx * dx + dy * dy + dz * dz;
+                if (distanceSquared > far * far || !mayBeInView(dx, dy, dz, distanceSquared, obj.boundingRadius, forward)) continue;
                 obj.renderTransparent(gl);
             }
         }
@@ -2463,11 +2464,33 @@ private static class SpeciesConfig {
                         GEODESIC_TERRAIN_SEGMENTS, worldNoise));
     }
 
+    /**
+     * Whether a ball (its centre dx, dy, dz from the eyes, of a radius) may be in view: within the
+     * cone round the way the camera looks that holds the whole picture, corners and all.
+     */
+    private boolean mayBeInView(double dx, double dy, double dz, double distanceSquared, double radius, Vector3 forward) {
+        if (distanceSquared <= radius * radius) return true;
+        double distance = Math.sqrt(distanceSquared);
+        double along = (dx * forward.x + dy * forward.y + dz * forward.z) / distance;
+        double angle = Math.acos(Math.max(-1.0, Math.min(1.0, along)));
+        return angle - Math.asin(radius / distance) <= viewConeHalfAngle();
+    }
+
+    /** Half the angle across the picture's diagonal (the perspective is 45 degrees up and down), a little over. */
+    private double viewConeHalfAngle() {
+        double up = Math.tan(Math.toRadians(45.0 / 2.0)), across = up * currentWidth / Math.max(1, currentHeight);
+        return Math.atan(Math.hypot(up, across)) + Math.toRadians(3.0);
+    }
+
+    // The building batches in view this frame, nearest first (see renderGeodesicInfrastructure)
+    private final List<InfrastructureObject> visibleBatches = new ArrayList<>();
+
     private void renderGeodesicInfrastructure(GL3 gl, Matrix4 skyRotation) {
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
         float drawDistance = Math.max(VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE, FAR_PLANE);
         List<InfrastructureObject> signs = new ArrayList<>();
+        visibleBatches.clear();
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject object : objects) {
                 if (object.type == InfrastructureObject.Type.SIGN) {
@@ -2481,11 +2504,16 @@ private static class SpeciesConfig {
                 double distanceSquared = dx * dx + dy * dy + dz * dz;
                 double radius = object.boundingRadius;
                 if (distanceSquared > (drawDistance + radius) * (drawDistance + radius)) continue;
-                if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
+                if (!mayBeInView(dx, dy, dz, distanceSquared, radius, forward)) continue;
                 object.setViewerDistanceSquared((float) distanceSquared);
-                object.renderBatch(gl, ambientLight, nightProportion,
-                        solidShader, terrainShader, terrainRenderer, camera);
+                visibleBatches.add(object);
             }
+        }
+        // Nearest first, so what's hidden behind them fails the depth test before it's shaded
+        visibleBatches.sort((a, b) -> Float.compare(a.viewerDistanceSquared(), b.viewerDistanceSquared()));
+        for (InfrastructureObject object : visibleBatches) {
+            object.renderBatch(gl, ambientLight, nightProportion,
+                    solidShader, terrainShader, terrainRenderer, camera);
         }
         renderSigns(gl, signs, eye, forward, skyRotation);
     }
@@ -2604,7 +2632,7 @@ private static class SpeciesConfig {
                 double distanceSquared = dx * dx + dy * dy + dz * dz;
                 if (distanceSquared > reach * reach) continue;
                 float radius = FLORA_CULL_RADIUS * plant.scale();
-                if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
+                if (!mayBeInView(dx, dy, dz, distanceSquared, radius, forward)) continue;
                 visibleFlora.add(plant);
                 visibleLods.add(distanceSquared > 135.0 * 135.0 ? 2 : (distanceSquared > 65.0 * 65.0 ? 1 : 0));
             }
@@ -2980,10 +3008,6 @@ private static class SpeciesConfig {
         float[] sunColour = { sunTintNow[0] * daylight, sunTintNow[1] * daylight, sunTintNow[2] * daylight };
         // The fog everything fades into with distance
         float[] fog = fogColour(skyColour);
-        // --- CLOUDS, over the sky and the sun and behind everything else ---
-        sphereWeather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, daylight,
-                (float) elapsedTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
-                sunTintNow, fog, seaLevelHeight);
         Shader.setFog(gl, fog[0], fog[1], fog[2]);
         // The snow lying on the ground, once it's been worked out
         bindSnowCover(gl);
@@ -3066,6 +3090,11 @@ private static class SpeciesConfig {
         // --- THE LANDING POD ---
         landingPod.render(gl, sphereViewProjection, eye, sunDirection, sunColour,
                 ambientLight, skyRotation, textures.get(skyTextureKey));
+
+        // --- CLOUDS, over the sky and the sun: only where nothing solid stands in front ---
+        sphereWeather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, daylight,
+                (float) elapsedTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
+                sunTintNow, fog, seaLevelHeight);
 
         // --- WINDOW GLASS ---
         drawWindowGlass(gl, sphereViewProjection, eye, camera.getSphereForwardDirection(), SphereRender.sunPoint(sunDirection),
@@ -4522,7 +4551,12 @@ private static class SpeciesConfig {
     }
 
     private float temperatureAt(SpherePosition place) {
-        float warmth = regionalManager.temperatureMap.evaluateAt(place);
+        // (the map's chill is for the height of the ground round about: swapped for the
+        // ground's own height here, so a peak reads colder than the valley beside it)
+        GeodesicChunkGrid.Direction d = SphereMath.direction(place);
+        float ground = Math.max(0f, TerrainMesh.getLayeredHeight(place, worldNoise) - seaLevelHeight);
+        float warmth = regionalManager.temperatureMap.evaluate(d) + regionalManager.altitudeChill(d)
+                - ground * RegionalGenerationManager.ALTITUDE_CHILL;
         float celsius = -30f + 70f * warmth;
         double latitude = Planet.latitude(place);
         double tilt = Math.toRadians(Math.max(1.0, planetAxialTiltDegrees));

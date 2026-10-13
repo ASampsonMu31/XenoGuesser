@@ -75,7 +75,7 @@ public class RegionalGenerationManager {
                 float inland = Math.min(1f, distance / FULLY_INLAND);
                 temp += 0.14f * inland * (warmth - 0.55f) * 2f;
             }
-            // About a third of the scale colder for every thousand units up
+            // Over half the scale colder for every thousand units up
             temp -= altitudeChill(d);
         }
         float[] surface = surface(d);
@@ -135,8 +135,9 @@ public class RegionalGenerationManager {
         return Math.max(0f, field.sample(altitude, d)) * ALTITUDE_CHILL;
     }
 
-    // How much colder it gets for each unit of height, on the temperature map's scale
-    public static final float ALTITUDE_CHILL = 0.00033f;
+    // How much colder it gets for each unit of height, on the temperature map's scale (about
+    // 40 Celsius colder a thousand units up, so the high peaks are frozen even near the equator)
+    public static final float ALTITUDE_CHILL = 0.00057f;
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
         return new RegionalFactor(1.0f, d -> {

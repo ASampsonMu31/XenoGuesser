@@ -417,16 +417,20 @@ public class RockField {
             float[] src = (coarse ? coarseVertices : variantVertices).get(variant);
             float cos = (float) Math.cos(yaw), sin = (float) Math.sin(yaw);
             float sink = r * squash * 0.25f;
-            // Built in the rock's own tangent frame, standing on the ground there
+            // Built in the rock's own tangent frame, standing on the ground there, its up along
+            // the ground's normal so on a slope it sits into the hillside rather than upright
             SpherePosition foot = SphereMath.atAltitude(at, ground);
             SphereFrame frame = SphereFrame.at(foot);
+            double[][] lie = groundBasis(frame, Math.max(1.0, r));
             for (int v = 0; v < src.length; v += 6) {
                 float lx = src[v] * r, ly = src[v + 1] * r * squash, lz = src[v + 2] * r;
                 // A slight lean, then turned
                 ly += lx * tiltX + lz * tiltZ;
-                SpherePosition world = frame.toWorld(lx * cos + lz * sin, -sink + ly + r * squash * 0.35f, -lx * sin + lz * cos);
+                double[] p = onGround(lie, lx * cos + lz * sin, -sink + ly + r * squash * 0.35f, -lx * sin + lz * cos);
+                SpherePosition world = frame.toWorld(p[0], p[1], p[2]);
                 float nx = src[v + 3], ny = src[v + 4] / Math.max(0.3f, squash), nz = src[v + 5];
-                double[] n = frame.worldDirection(nx * cos + nz * sin, ny, -nx * sin + nz * cos);
+                double[] ln = onGround(lie, nx * cos + nz * sin, ny, -nx * sin + nz * cos);
+                double[] n = frame.worldDirection(ln[0], ln[1], ln[2]);
                 float len = (float) Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
                 // Darker low down where soil and shadow gather
                 float low = 0.65f + 0.35f * Math.max(0f, Math.min(1f, (src[v + 1] + 0.35f) / 1.0f));
@@ -439,6 +443,36 @@ public class RockField {
             float top = r * squash * 1.1f;
             if (!coarse && top > STEP_HEIGHT) solidRocks.add(new Solid(foot, r * 0.85f, top));
         }
+    }
+
+    /**
+     * The ground's own axes at a frame's origin, in that frame: {across, the ground's normal,
+     * along}, the frame's x and z laid onto the slope (from the heights step either way).
+     */
+    private double[][] groundBasis(SphereFrame frame, double step) {
+        double gx = (TerrainMesh.getLayeredHeight(frame.toSphere(step, 0.0, 0.0), terrain)
+                - TerrainMesh.getLayeredHeight(frame.toSphere(-step, 0.0, 0.0), terrain)) / (2.0 * step);
+        double gz = (TerrainMesh.getLayeredHeight(frame.toSphere(0.0, 0.0, step), terrain)
+                - TerrainMesh.getLayeredHeight(frame.toSphere(0.0, 0.0, -step), terrain)) / (2.0 * step);
+        double[] up = normalise(-gx, 1.0, -gz);
+        // (x along the slope, then z square to both, by Gram-Schmidt, so the handedness stays the frame's)
+        double[] x = normalise(1.0 - up[0] * up[0], -up[0] * up[1], -up[0] * up[2]);
+        double xz = x[2], uz = up[2];
+        double[] z = normalise(-uz * up[0] - xz * x[0], -uz * up[1] - xz * x[1], 1.0 - uz * up[2] - xz * x[2]);
+        return new double[][] { x, up, z };
+    }
+
+    /** A point or direction in a ground basis's axes, in the frame's. */
+    private static double[] onGround(double[][] basis, double x, double y, double z) {
+        return new double[] {
+                basis[0][0] * x + basis[1][0] * y + basis[2][0] * z,
+                basis[0][1] * x + basis[1][1] * y + basis[2][1] * z,
+                basis[0][2] * x + basis[1][2] * y + basis[2][2] * z };
+    }
+
+    private static double[] normalise(double x, double y, double z) {
+        double length = Math.sqrt(x * x + y * y + z * z);
+        return new double[] { x / length, y / length, z / length };
     }
 
     private void dispose(GL3 gl, Tile tile) {

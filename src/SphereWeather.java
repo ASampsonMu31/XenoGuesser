@@ -114,6 +114,7 @@ public final class SphereWeather {
      * once for wherever the player is next, rather than easing.
      */
     public void newDay(java.util.Random dayRand, SpherePosition here) {
+        groundCache.clear();
         SphereFrame frame = SphereFrame.at(here, dayRand.nextDouble() * Math.PI * 2);
         axisA = frame.up();
         axisB = frame.xAxis();
@@ -333,7 +334,7 @@ public final class SphereWeather {
                 float span = 2f * RAIN_REACH;
                 dropU[i] = eye[0] + (du - span * (float) Math.floor((du + RAIN_REACH) / span));
                 dropV[i] = eye[1] + (dv - span * (float) Math.floor((dv + RAIN_REACH) / span));
-                dropGround[i] = (float) ground.heightAt(placeAt(dropU[i], dropV[i]));
+                dropGround[i] = groundAt(ground, dropU[i], dropV[i]);
                 if (dropY[i] <= dropGround[i]) spawn(i, eye, eyeHeight, ground, false);
                 continue;
             }
@@ -355,9 +356,28 @@ public final class SphereWeather {
         return SNOW_SWAY * (float) Math.sin(swayTime * (0.8f + (i % 5) * 0.15f) + i * 1.7f);
     }
 
+    // What the drops land on, kept for small squares of the ground this many units across (finding
+    // it can mean searching for a road's deck: far too slow for thousands of drops a second), and
+    // how many squares are kept before starting afresh
+    private static final float GROUND_CELL = 1.5f;
+    private static final int GROUND_CACHE_LIMIT = 40_000;
+    private final java.util.HashMap<Long, Float> groundCache = new java.util.HashMap<>();
+
+    /** The height a drop at (u, v) lands at: what's under the middle of its square. */
+    private float groundAt(Ground ground, float u, float v) {
+        long iu = (long) Math.floor(u / GROUND_CELL), iv = (long) Math.floor(v / GROUND_CELL);
+        Long key = (iu << 32) ^ (iv & 0xFFFFFFFFL);
+        Float known = groundCache.get(key);
+        if (known != null) return known;
+        if (groundCache.size() >= GROUND_CACHE_LIMIT) groundCache.clear();
+        float g = (float) ground.heightAt(placeAt((iu + 0.5) * GROUND_CELL, (iv + 0.5) * GROUND_CELL));
+        groundCache.put(key, g);
+        return g;
+    }
+
     private void spawn(int i, float[] eye, float eyeHeight, Ground ground, boolean anywhere) {
         float u = eye[0] + (rand.nextFloat() * 2f - 1f) * RAIN_REACH, v = eye[1] + (rand.nextFloat() * 2f - 1f) * RAIN_REACH;
-        float g = (float) ground.heightAt(placeAt(u, v));
+        float g = groundAt(ground, u, v);
         float top = eyeHeight + RAIN_TOP;
         dropU[i] = u;
         dropV[i] = v;
@@ -370,9 +390,10 @@ public final class SphereWeather {
     // ------------------------------------------------------------------ drawing
 
     /**
-     * The clouds, over the sky (drawn straight after it and the sun, before anything that stands
-     * in front). skyColour tints them at dusk and by night; daylight is 0 at night to 1 by day;
-     * sunDirection is towards the sun in the world; fog is what the distance fades into.
+     * The clouds, over the sky and the sun (drawn after everything solid, only where nothing
+     * stands in front, and before anything see-through). skyColour tints them at dusk and by
+     * night; daylight is 0 at night to 1 by day; sunDirection is towards the sun in the world;
+     * fog is what the distance fades into.
      */
     public void renderClouds(GL3 gl, Camera camera, float aspect, Vector3 skyColour, float daylight, float time,
                              Vector3 sunDirection, float[] sunTint, float[] fog, float seaLevel) {
@@ -395,7 +416,11 @@ public final class SphereWeather {
         double[] sun = { sunDirection.x, sunDirection.y, sunDirection.z };
         float sunU = alongLength > 1e-9 ? (float) (dot(sun, along) / alongLength) : 0f, sunV = (float) dot(sun, axisW);
 
-        gl.glDisable(GL.GL_DEPTH_TEST);
+        // (drawn at the far plane, after everything solid, so only where the sky still shows:
+        // the noise is costly, and most of the screen is usually in front of it)
+        gl.glEnable(GL.GL_DEPTH_TEST);
+        gl.glDepthFunc(GL.GL_LEQUAL);
+        gl.glDepthMask(false);
         gl.glDisable(GL.GL_CULL_FACE);
         gl.glEnable(GL.GL_BLEND);
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
@@ -435,8 +460,9 @@ public final class SphereWeather {
         gl.glDrawArrays(GL.GL_TRIANGLES, 0, 3);
         gl.glBindVertexArray(0);
         gl.glDisable(GL.GL_BLEND);
+        gl.glDepthMask(true);
+        gl.glDepthFunc(GL.GL_LESS);
         gl.glEnable(GL.GL_CULL_FACE);
-        gl.glEnable(GL.GL_DEPTH_TEST);
     }
 
     /**

@@ -277,6 +277,10 @@ public class InfrastructureObject {
         this.viewerDistanceSquared = distanceSquared;
     }
 
+    public float viewerDistanceSquared() {
+        return viewerDistanceSquared;
+    }
+
     private boolean beyond(float distance) {
         float reach = distance + boundingRadius;
         return viewerDistanceSquared > reach * reach;

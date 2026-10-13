@@ -202,14 +202,21 @@ public final class GeodesicChunkGrid {
         Triangle triangle = root;
         long path = 0L;
         for (int depth = 0; depth < level; depth++) {
+            // (the edges' midpoints once, shared by the four children: exactly as child() makes them)
+            Direction ab = add(triangle.a(), triangle.b()).normalized();
+            Direction bc = add(triangle.b(), triangle.c()).normalized();
+            Direction ca = add(triangle.c(), triangle.a()).normalized();
+            Triangle[] children = {
+                new Triangle(triangle.a(), ab, ca), new Triangle(ab, triangle.b(), bc),
+                new Triangle(ca, bc, triangle.c()), new Triangle(ab, bc, ca)
+            };
             int selected = 0;
             for (; selected < 4; selected++) {
-                Triangle candidate = child(triangle, selected);
-                if (contains(candidate, point)) break;
+                if (contains(children[selected], point)) break;
             }
             if (selected == 4) selected = 3;
             path = (path << 2) | selected;
-            triangle = child(triangle, selected);
+            triangle = children[selected];
         }
         long id = ((long) face << (2 * level)) | path;
         return cell(id, level, triangle);
