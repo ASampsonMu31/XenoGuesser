@@ -34,15 +34,6 @@ public class Camera {
     return position;
   }
 
-  /**
-   * Where the camera is on the Mercator chart, {x, altitude, z}: for the map and for systems
-   * not yet ported off the chart (each such use is to go, D6), never for the camera itself.
-   */
-  public Vector3 getChartPosition() {
-    double[] chart = Planet.mercatorPosition(position);
-    return new Vector3((float) chart[0], (float) chart[1], (float) chart[2]);
-  }
-
   /** Altitude above the spherical datum. */
   public float getAltitude() {
     return (float) (position.length() - Planet.radius());

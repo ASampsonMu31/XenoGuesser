@@ -3,9 +3,10 @@ import java.util.List;
 
 public class RegionalFactor {
 
+    /** A factor's value in a direction from the planet's centre (D7: sampled in 3D, no seams, no pinching at the poles). */
     @FunctionalInterface
     public interface Sampler {
-        float sample(int cx, int cz, float worldX, float worldZ);
+        float sample(GeodesicChunkGrid.Direction direction);
     }
 
     // Stores a sub-factor alongside its specific weight for this composition
@@ -77,27 +78,19 @@ public class RegionalFactor {
         }
     }
 
-    /**
-     * The factor at a place on the planet, as the map shows it there. The samplers still take
-     * map coordinates (the map's chunk and point), so this is the one place the world turns a
-     * place into them for the regional factors, until they are sampled on the sphere
-     * themselves (D7 in GEODESIC_MIGRATION_PLAN.txt); the map stays the authority meanwhile,
-     * so what the world grows matches what its overlays show.
-     */
-    public float evaluateAt(SpherePosition position, float chunkSize) {
-        double[] map = Planet.mercatorPosition(position);
-        float x = (float) map[0], z = (float) map[2];
-        return evaluate((int) Math.floor(x / chunkSize), (int) Math.floor(z / chunkSize), x, z);
+    /** The factor at a place on the planet (its height makes no difference). */
+    public float evaluateAt(SpherePosition position) {
+        return evaluate(SphereMath.direction(position));
     }
 
     /**
      * Recursive Evaluation Process. Evaluates itself if atomic, 
      * or dynamically computes a weighted, normalized blended value across its children.
      */
-    public float evaluate(int cx, int cz, float worldX, float worldZ) {
+    public float evaluate(GeodesicChunkGrid.Direction direction) {
         // Path A: Evaluation loop encounters a baseline Leaf sampler node
         if (baseSampler != null) {
-            float rawSample = baseSampler.sample(cx, cz, worldX, worldZ);
+            float rawSample = baseSampler.sample(direction);
             return Math.max(0.0f, Math.min(1.0f, rawSample * weight));
         }
 
@@ -107,7 +100,7 @@ public class RegionalFactor {
             float totalWeightAccumulator = 0.0f;
 
             for (FactorEntry entry : subFactors) {
-                float val = entry.factor.evaluate(cx, cz, worldX, worldZ);
+                float val = entry.factor.evaluate(direction);
                 // Apply the composition-specific weight to this sub-factor's output
                 totalValueAccumulator += val * entry.compositionWeight;
                 totalWeightAccumulator += entry.compositionWeight;

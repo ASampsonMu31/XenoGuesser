@@ -229,8 +229,8 @@ public class OrganismManager {
     public Viewpoint showcaseViewpoint(Random rand) {
         for (int attempt = 0; attempt < 40000; attempt++) {
             OrganismSpecies s = species.get(attempt % species.size());
-            SpherePosition p = SphereMath.randomPlace(rand, Planet.CLIP_LATITUDE);
-            if (TerrainMesh.getLayeredHeight(p, terrainNoise) <= seaLevel + 2f || s.presenceAt(p, chunkSize) < 0.5f || !wild.test(p)) continue;
+            SpherePosition p = SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE);
+            if (TerrainMesh.getLayeredHeight(p, terrainNoise) <= seaLevel + 2f || s.presenceAt(p) < 0.5f || !wild.test(p)) continue;
             double heading = rand.nextDouble() * Math.PI * 2.0;
             SpherePosition at = SphereMath.move(p, heading, 30.0 + s.halfLength() * 3.0);
             if (TerrainMesh.getLayeredHeight(at, terrainNoise) <= seaLevel + 2f) continue;
@@ -248,7 +248,7 @@ public class OrganismManager {
      */
     public Viewpoint zooViewpoint(Random rand) {
         for (int attempt = 0; attempt < 20000; attempt++) {
-            SpherePosition p = SphereMath.randomPlace(rand, Planet.CLIP_LATITUDE);
+            SpherePosition p = SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE);
             if (!wild.test(p)) continue;
             SphereFrame frame = SphereFrame.at(p);
             float lowest = Float.MAX_VALUE, highest = -Float.MAX_VALUE;
@@ -304,15 +304,15 @@ public class OrganismManager {
     }
 
     /**
-     * How many of species i would be expected in a chunk's area (100 by 100) round a point on
-     * the map were it wild (as populate works it out, sharing the ground with the other
+     * How many of species i would be expected in a chunk's area (100 by 100) round a place were
+     * it wild (as populate works it out, sharing the ground with the other
      * species there); towns, which none of them live in, are left out (populate keeps them out
      * of towns itself).
      */
-    public float expectedPerChunk(int i, float mapX, float mapZ) {
+    public float expectedPerChunk(int i, SpherePosition place) {
         float total = 0f, mine = 0f;
         for (int k = 0; k < species.size(); k++) {
-            float p = species.get(k).presenceAt(mapX, mapZ, chunkSize);
+            float p = species.get(k).presenceAt(place);
             total += p;
             if (k == i) mine = p;
         }
@@ -333,7 +333,7 @@ public class OrganismManager {
         float[] presences = new float[species.size()];
         float total = 0f;
         for (int i = 0; i < species.size(); i++) {
-            presences[i] = wildHere ? species.get(i).presenceAt(middle, chunkSize) : 0f;
+            presences[i] = wildHere ? species.get(i).presenceAt(middle) : 0f;
             total += presences[i];
         }
         for (int k = 0; k < species.size(); k++) {

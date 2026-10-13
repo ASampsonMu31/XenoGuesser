@@ -1,0 +1,10 @@
+#version 330 core
+
+// Rain, in the colour of the planet's oceans
+in float alpha;
+out vec4 fragColour;
+uniform vec3 colour;
+
+void main() {
+    fragColour = vec4(colour, alpha);
+}

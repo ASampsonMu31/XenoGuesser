@@ -122,11 +122,11 @@ public class RockField {
     }
 
     /**
-     * How many rocks a chunk's area (100 by 100) round a point on the map is expected to have
-     * (as they're spawned, before any on water or roads are dropped), for the map's overlay.
+     * How many rocks a chunk's area (100 by 100) round a place is expected to have (as they're
+     * spawned, before any on water or roads are dropped), for the map's overlay.
      */
-    public float expectedPerChunk(float mapX, float mapZ) {
-        return rockinessAt(Planet.spherePosition(mapX, mapZ, 0.0)) * MAX_PER_CHUNK;
+    public float expectedPerChunk(SpherePosition place) {
+        return rockinessAt(place) * MAX_PER_CHUNK;
     }
 
     /** 0..1: how rocky the land is here. */
@@ -143,14 +143,9 @@ public class RockField {
     public static final float SMALLEST_TYPICAL = 1.5f, LARGEST_TYPICAL = 11f;
 
     /** How big the rocks are round a point: their typical radius (most are smaller, a few bigger). */
-    private float typicalSizeAt(SpherePosition p) {
+    public float typicalSizeAt(SpherePosition p) {
         float n = 0.5f + 0.5f * size.onSphere(surface(p), 0.00008f, 3.1f, -1.7f);
         return SMALLEST_TYPICAL + (LARGEST_TYPICAL - SMALLEST_TYPICAL) * n * n;
-    }
-
-    /** The typical rock radius round a point on the map, for the map's overlay. */
-    public float typicalSizeAt(float mapX, float mapZ) {
-        return typicalSizeAt(Planet.spherePosition(mapX, mapZ, 0.0));
     }
 
     /** The colour of the stone here: this world's bedrock, shifted in hue and shade across regions. */
@@ -485,7 +480,6 @@ public class RockField {
         // (for the snow)
         shader.setVec3(gl, "sphereCamera", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
         shader.setFloat(gl, "planetRadius", (float) Planet.radius());
-        shader.setFloat(gl, "sphereLongitudeOffset", (float) Planet.centreLongitude());
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             sky.bind(gl);

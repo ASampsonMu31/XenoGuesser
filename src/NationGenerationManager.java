@@ -85,7 +85,7 @@ public class NationGenerationManager {
             for (int x = 0; x < resolution; x++) {
                 float worldX = ((x + 0.5f) / resolution) * totalRegionWidth - halfRegion;
                 float worldZ = ((z + 0.5f) / resolution) * totalRegionWidth - halfRegion;
-                float[] surface = Planet.surface(worldX, worldZ);
+                float[] surface = MapProjection.surface(worldX, worldZ);
                 float height = globalHeightSamplerFallback != null ? TerrainMesh.getLayeredHeight(worldX, worldZ, globalHeightSamplerFallback) : 0f;
                 float cost;
                 land[z * resolution + x] = height > seaLevelHeight;
@@ -222,7 +222,7 @@ public class NationGenerationManager {
             PerlinNoise noise = nationNoiseMaps.get(nation);
             float worldX = ((cell % resolution + 0.5f) / resolution) * totalRegionWidth - totalRegionWidth * 0.5f;
             float worldZ = ((cell / resolution + 0.5f) / resolution) * totalRegionWidth - totalRegionWidth * 0.5f;
-            float value = noise == null ? 0f : noise.onSphere(Planet.surface(worldX, worldZ), COUNTRY_NOISE_SCALE * resolution / totalRegionWidth, 0f, 0f);
+            float value = noise == null ? 0f : noise.onSphere(MapProjection.surface(worldX, worldZ), COUNTRY_NOISE_SCALE * resolution / totalRegionWidth, 0f, 0f);
             own[cell] = (float) Math.exp(1.05f * value);
         }
         return own[cell];
@@ -262,7 +262,7 @@ public class NationGenerationManager {
      * cells rather than stepping along them: zooming in never shows the grid.
      */
     public int getNationAtWorld(float worldX, float worldZ, float totalRegionWidth) {
-        return nationAt(Planet.surface(worldX, worldZ), worldX, worldZ, totalRegionWidth);
+        return nationAt(MapProjection.surface(worldX, worldZ), worldX, worldZ, totalRegionWidth);
     }
 
     /**
@@ -276,9 +276,9 @@ public class NationGenerationManager {
 
     public int getNationAt(SpherePosition place) {
         SpherePosition onDatum = SphereMath.atAltitude(place, 0.0);
-        double[] map = Planet.mercatorPosition(onDatum);
+        double[] map = MapProjection.toMap(onDatum);
         float half = savedTotalRegionWidth * 0.5f;
-        float mapZ = (float) Math.max(-half, Math.min(half, map[2]));
+        float mapZ = (float) Math.max(-half, Math.min(half, map[1]));
         float[] surface = { (float) onDatum.x(), (float) onDatum.y(), (float) onDatum.z() };
         return nationAt(surface, (float) map[0], mapZ, savedTotalRegionWidth);
     }

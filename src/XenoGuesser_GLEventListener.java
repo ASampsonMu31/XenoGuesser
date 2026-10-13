@@ -28,15 +28,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private SpherePosition geodesicTerrainBuildCentre;
     private SpherePosition geodesicTerrainActiveCentre;
     private long geodesicTerrainRetryAfterNanos;
-    private Mesh geodesicWaterMesh;
-    private java.util.concurrent.Future<Object[]> geodesicWaterBuild;
-    private SpherePosition geodesicWaterBuildCentre;
-    private SpherePosition geodesicWaterActiveCentre;
-    private long geodesicWaterRetryAfterNanos;
+    // The sea: a grid round the viewer, wrapped onto the sea's sphere and given its waves in
+    // vs_sphere_water; the land hides it where it is higher (see renderSea)
+    private Mesh seaGrid;
     private Shader sphereWaterShader;
     private SphereSkyRenderer sphereSkyRenderer;
     private SphereWeather sphereWeather;
-    private static final int GEODESIC_WATER_SEGMENTS = 8;
     private final GeodesicCollision geodesicCollision = new GeodesicCollision();
     /**
      * A tree or shrub on the sphere: where it stands, which model, and what's worked out once
@@ -121,8 +118,6 @@ private static class SpeciesConfig {
     private float timeOfDay;
 
     private float seaLevelHeight;
-    private Model waterPlaneModel;
-    private Shader waterShader;
     private Material waterMaterial;
         // Bugs and, in time, other creatures; their ranges follow the land, not nation borders
         private OrganismManager organismManager;
@@ -149,7 +144,6 @@ private static class SpeciesConfig {
     // view, up to 21:9 screens), inside PLAYER_RADIUS, so nothing can be cut away in front
     private static final float NEAR_PLANE = 2.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
     private float currentNearPlane = NEAR_PLANE;
-    private int waveMapTexture;
 
     private Model skyModel;
     // The clouds and rain
@@ -260,8 +254,7 @@ private static class SpeciesConfig {
     // Developer teleport: loading everything round the new place before play goes on
     private boolean teleportLoading;
     private long teleportStarted;
-    private float teleportX = 0f;
-    private float teleportZ = 0f;
+    private GeodesicChunkGrid.Direction teleportTo;
 
     private GL3 gl;
 
@@ -390,14 +383,15 @@ private static class SpeciesConfig {
         java.util.Random seedRand = new java.util.Random(worldSeed);
         this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
         
-        this.regionalManager = new RegionalGenerationManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
+        this.regionalManager = new RegionalGenerationManager(worldSeed, seaLevelHeight);
         this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
-        this.regionalManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE);
+        this.regionalManager.precalculateWaterDistanceField(this.worldNoise);
 
         float GRASS_TEMP_MEAN = 0.4f;
         float GRASS_TEMP_STD_DEV = 0.5f;
-        int GRASS_WATER_MEAN = 0;
-        float GRASS_WATER_STD_DEV = 80.0f;
+        // (world units from the sea)
+        float GRASS_WATER_MEAN = 0f;
+        float GRASS_WATER_STD_DEV = 8000.0f;
         float GRASS_DENSITY_SCALE = 2e-5f;
         float GRASS_VARIATION_SCALE = 1e-5f;
                 this.GRASS_BASE_ABUNDANCE = 1050f;
@@ -406,10 +400,10 @@ private static class SpeciesConfig {
         // above the water's freezing point down to several below, it thins out to almost nothing
         // (and what's left is dry and dead, see grassColourFactor)
         RegionalFactor mildness = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
-        this.grassTemperateFactor = new RegionalFactor(1.0f, (cx, cz, x, z) -> {
-            float celsius = -30f + 70f * regionalManager.temperatureMap.evaluate(cx, cz, x, z);
+        this.grassTemperateFactor = new RegionalFactor(1.0f, d -> {
+            float celsius = -30f + 70f * regionalManager.temperatureMap.evaluate(d);
             float t = Math.max(0f, Math.min(1f, (celsius - (freezingPoint - GRASS_FROST_DEATH)) / (GRASS_FROST_DEATH + GRASS_FROST_START)));
-            return mildness.evaluate(cx, cz, x, z) * t * t * (3f - 2f * t);
+            return mildness.evaluate(d) * t * t * (3f - 2f * t);
         });
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
         this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
@@ -589,10 +583,10 @@ private static class SpeciesConfig {
             RegionalFactor home = this.regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW
                     + new Random(worldSeed * 613L + s).nextFloat() * OrganismSpecies.HOME_SCALE_RANGE);
             float homeStrength = OrganismSpecies.homeStrength(new Random(worldSeed * 1993L + s));
-            sc.abundanceFactor = new RegionalFactor(1.0f, (cx, cz, x, z) -> {
-                float t = Math.max(0f, Math.min(1f, (home.evaluate(cx, cz, x, z) - OrganismSpecies.HOME_FROM)
+            sc.abundanceFactor = new RegionalFactor(1.0f, d -> {
+                float t = Math.max(0f, Math.min(1f, (home.evaluate(d) - OrganismSpecies.HOME_FROM)
                         / (OrganismSpecies.HOME_TO - OrganismSpecies.HOME_FROM)));
-                return suited.evaluate(cx, cz, x, z) * (1f - homeStrength + homeStrength * t * t * (3f - 2f * t));
+                return suited.evaluate(d) * (1f - homeStrength + homeStrength * t * t * (3f - 2f * t));
             });
         }
 
@@ -609,7 +603,7 @@ private static class SpeciesConfig {
         this.nationManager.generateTerritories(this.worldSeed, TOTAL_REGION_WIDTH);
 
         // Settlements decide where cities grow; the road network and buildings follow from them
-        this.settlementManager = new SettlementManager(worldSeed, PHYSICAL_CHUNK_SIZE,
+        this.settlementManager = new SettlementManager(worldSeed,
                                 seaLevelHeight, worldNoise, regionalManager, nationManager);
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
@@ -920,7 +914,7 @@ private static class SpeciesConfig {
             setBuilderThreads(false);
             queueNextRound();
             rainSound.start();
-            Thread scale = new Thread(() -> playerBody.setAltimeterTop(roundUp(highestGround()[2])), "altimeter-scale");
+            Thread scale = new Thread(() -> playerBody.setAltimeterTop(roundUp(highestGround())), "altimeter-scale");
             // April's message: the planet's ocean cover worked out and its sentence said, well before it's needed
             Thread ocean = new Thread(() -> {
                 double percent = oceanPercent();
@@ -962,7 +956,7 @@ private static class SpeciesConfig {
         }
         if (IS_DEBUG_MODE_ACTIVE && isToTeleport && !roundLoading) {
             isToTeleport = false;
-            moveToLocation(teleportX, teleportZ);
+            moveToLocation(new Viewpoint(SphereMath.atAltitude(teleportTo, 0.0), -Math.PI * 0.5));
             teleportLoading = true;
             teleportStarted = System.currentTimeMillis();
             setBuilderThreads(true);
@@ -973,7 +967,8 @@ private static class SpeciesConfig {
             if (surroundingsLoadedHere() || System.currentTimeMillis() - teleportStarted > 30_000) {
                 teleportLoading = false;
                 setBuilderThreads(false);
-                System.out.printf("[TELEPORT] Loaded round %.0f, %.0f in %d ms%n", teleportX, teleportZ, System.currentTimeMillis() - teleportStarted);
+                System.out.printf("[TELEPORT] Loaded round %.3f, %.3f in %d ms%n", Math.toDegrees(Math.asin(teleportTo.y())),
+                        Math.toDegrees(Math.atan2(-teleportTo.z(), teleportTo.x())), System.currentTimeMillis() - teleportStarted);
             }
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
             return;
@@ -1161,66 +1156,91 @@ private static class SpeciesConfig {
         this.onWorldReady = onWorldReady;
     }
 
-        /**
-     * A whole-region map of how far the soil's colour departs from the base soil texture,
-     * stored as a per-channel ratio (halved to fit in [0, 1]). The terrain shader multiplies
-     * the soil texture by it, so the ground shifts gradually between the palette's base soil
-     * and its two regional variants over tens of kilometres.
+    /**
+     * How far the soil's colour departs from the base soil texture over the whole sphere, as a
+     * cube map (see SphereRaster) of per-channel ratios, halved to fit in [0, 1], three bytes a
+     * texel. The terrain shader multiplies the soil texture by it in each place's direction, so
+     * the ground shifts gradually between the palette's base soil and its two regional
+     * variants over tens of kilometres. Kept until the GL thread uploads it (see soilRegionTexture).
      */
-    public java.awt.image.BufferedImage buildSoilRegionMap(WorldPalette palette) {
-        int n = SOIL_REGION_MAP_SIZE;
-        java.awt.image.BufferedImage map = new java.awt.image.BufferedImage(n, n, java.awt.image.BufferedImage.TYPE_INT_RGB);
-                float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
-        float half = TOTAL_REGION_WIDTH / 2.0f;
-        float[] fa = new float[n * n], fb = new float[n * n];
-        for (int py = 0; py < n; py++) {
-            for (int px = 0; px < n; px++) {
-                float worldX = (px + 0.5f) / n * TOTAL_REGION_WIDTH - half;
-                float worldZ = (py + 0.5f) / n * TOTAL_REGION_WIDTH - half;
-                int cx = (int) Math.floor(worldX / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(worldZ / PHYSICAL_CHUNK_SIZE);
-                fa[py * n + px] = soilVariantAFactor.evaluate(cx, cz, worldX, worldZ);
-                fb[py * n + px] = soilVariantBFactor.evaluate(cx, cz, worldX, worldZ);
-            }
-        }
+    public void buildSoilRegions(WorldPalette palette) {
+        SphereRaster raster = new SphereRaster(SOIL_REGION_SIDE);
+        float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
+        int size = raster.size();
+        float[] fa = new float[size], fb = new float[size];
+        java.util.stream.IntStream.range(0, size).parallel().forEach(t -> {
+            GeodesicChunkGrid.Direction d = raster.direction(t);
+            fa[t] = soilVariantAFactor.evaluate(d);
+            fb[t] = soilVariantBFactor.evaluate(d);
+        });
         // Noise values bunch around the middle, so thresholds come from their actual spread:
         // each variant fades in over a wide band of its factor, so the change is gradual
         float[] rangeA = percentiles(fa, 0.3f, 0.85f), rangeB = percentiles(fb, 0.3f, 0.85f);
         soilBlendRanges = new float[][] { rangeA, rangeB };
-        for (int py = 0; py < n; py++) {
-            for (int px = 0; px < n; px++) {
-                float wa = ProceduralTextures.smoothstep(rangeA[0], rangeA[1], fa[py * n + px]);
-                float wb = ProceduralTextures.smoothstep(rangeB[0], rangeB[1], fb[py * n + px]);
-                int rgb = 0;
-                for (int c = 0; c < 3; c++) {
-                    float colour = base[c] + (a[c] - base[c]) * wa;
-                    colour += (b[c] - colour) * wb;
-                    float ratio = Math.min(2.0f, colour / Math.max(0.02f, base[c]));
-                    rgb = (rgb << 8) | Math.round(ratio * 0.5f * 255f);
-                }
-                map.setRGB(px, py, rgb);
+        byte[] texels = new byte[size * 3];
+        for (int t = 0; t < size; t++) {
+            float wa = ProceduralTextures.smoothstep(rangeA[0], rangeA[1], fa[t]);
+            float wb = ProceduralTextures.smoothstep(rangeB[0], rangeB[1], fb[t]);
+            for (int c = 0; c < 3; c++) {
+                float colour = base[c] + (a[c] - base[c]) * wa;
+                colour += (b[c] - colour) * wb;
+                float ratio = Math.min(2.0f, colour / Math.max(0.02f, base[c]));
+                texels[t * 3 + c] = (byte) Math.round(ratio * 0.5f * 255f);
             }
         }
-        return map;
+        soilRegionTexels = texels;
     }
 
-        /** Wave size over every body of water; see RegionalGenerationManager.buildWaveMap. */
-        public void buildWaveMap() {
-        regionalManager.buildWaveMap(PHYSICAL_CHUNK_SIZE);
-    }
+    // The soil colour cube map: texels a face's side, its texels until uploaded, and the texture
+    private static final int SOIL_REGION_SIDE = 64;
+    private volatile byte[] soilRegionTexels;
+    private int soilRegionTexture;
+    // The sea's wave map (RegionalGenerationManager.waveFieldTexels) as a cube map
+    private int waveFieldTexture;
 
-    /** Uploads the wave map: wave size and distance to shore, as a two-channel float texture. */
-    private int createWaveMapTexture() {
-        int n = regionalManager.waveMapResolution();
+    /**
+     * Uploads a SphereRaster's texels (channels bytes each, in its order) as a cube map,
+     * linearly filtered and seamless across the faces' edges; returns the texture.
+     */
+    private int uploadCubeMap(int side, int channels, byte[] texels) {
         int[] id = new int[1];
         gl.glGenTextures(1, id, 0);
-        gl.glBindTexture(GL3.GL_TEXTURE_2D, id[0]);
-        gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RG32F, n, n, 0, GL3.GL_RG, GL3.GL_FLOAT,
-                com.jogamp.common.nio.Buffers.newDirectFloatBuffer(regionalManager.waveMapTexels()));
-        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
-        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
-        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_CLAMP_TO_EDGE);
-        gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE);
-        gl.glBindTexture(GL3.GL_TEXTURE_2D, 0);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, id[0]);
+        gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 1);
+        int internal = channels == 2 ? GL3.GL_RG8 : GL3.GL_RGB8, format = channels == 2 ? GL3.GL_RG : GL3.GL_RGB;
+        int faceBytes = side * side * channels;
+        for (int face = 0; face < 6; face++) {
+            gl.glTexImage2D(GL3.GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, internal, side, side, 0, format, GL3.GL_UNSIGNED_BYTE,
+                    java.nio.ByteBuffer.wrap(texels, face * faceBytes, faceBytes));
+        }
+        gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 4);
+        gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
+        gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+        for (int wrap : new int[] { GL3.GL_TEXTURE_WRAP_S, GL3.GL_TEXTURE_WRAP_T, GL3.GL_TEXTURE_WRAP_R }) {
+            gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, wrap, GL3.GL_CLAMP_TO_EDGE);
+        }
+        gl.glEnable(GL3.GL_TEXTURE_CUBE_MAP_SEAMLESS);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, 0);
+        return id[0];
+    }
+
+    /** As uploadCubeMap, for a SphereRaster of pairs of floats per texel (kept as floats, RG). */
+    private int uploadCubeMap(int side, float[] texels) {
+        int[] id = new int[1];
+        gl.glGenTextures(1, id, 0);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, id[0]);
+        int faceFloats = side * side * 2;
+        for (int face = 0; face < 6; face++) {
+            gl.glTexImage2D(GL3.GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0, GL3.GL_RG32F, side, side, 0, GL3.GL_RG, GL3.GL_FLOAT,
+                    java.nio.FloatBuffer.wrap(texels, face * faceFloats, faceFloats));
+        }
+        gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
+        gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
+        for (int wrap : new int[] { GL3.GL_TEXTURE_WRAP_S, GL3.GL_TEXTURE_WRAP_T, GL3.GL_TEXTURE_WRAP_R }) {
+            gl.glTexParameteri(GL3.GL_TEXTURE_CUBE_MAP, wrap, GL3.GL_CLAMP_TO_EDGE);
+        }
+        gl.glEnable(GL3.GL_TEXTURE_CUBE_MAP_SEAMLESS);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, 0);
         return id[0];
     }
 
@@ -1267,9 +1287,8 @@ private static class SpeciesConfig {
         if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
             geodesicTerrainModel.mesh.dispose(gl);
         }
-        if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
+        if (seaGrid != null) seaGrid.dispose(gl);
         if (geodesicTerrainBuild != null) geodesicTerrainBuild.cancel(true);
-        if (geodesicWaterBuild != null) geodesicWaterBuild.cancel(true);
         floraStream.clear();
         grassStream.clear();
         
@@ -1405,12 +1424,12 @@ private static class SpeciesConfig {
         );
         terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
                 enableAnisotropicFiltering(textures.get("dirt_diffuse"));
-        textures.add(gl, "soil_regions", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS));
-        InfrastructureObject.soilRegions = textures.get("soil_regions");
-        // East and west edges of the map are the same place on the planet
-        if (textures.get("soil_regions") != null) {
-            textures.get("soil_regions").setTexParameteri(gl, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
-        }
+        soilRegionTexture = uploadCubeMap(SOIL_REGION_SIDE, 3, soilRegionTexels);
+        soilRegionTexels = null;
+        InfrastructureObject.soilRegions = soilRegionTexture;
+        // The sea's waves: how big they are and the distance to the shore, by direction
+        float[] waves = regionalManager.waveFieldTexels();
+        if (waves != null) waveFieldTexture = uploadCubeMap(regionalManager.waveFieldSide(), waves);
 
         // Each nation's wall, roof and fence textures repeat across surfaces
         for (String name : infraManager.textureJobs().keySet()) {
@@ -1569,12 +1588,15 @@ private static class SpeciesConfig {
         }
     }
 
-        // Vertices along each side of the water grid; spacing grows from about 2 units under the
+    // Vertices along each side of the sea's grid; spacing grows from about 2 units under the
     // viewer to about 30 at the edge, fine enough for the waves where they can be seen
     private static final int WATER_GRID_SIZE = 256;
+    // How far the grid reaches along the ground either side of the viewer (as the old water
+    // plane did: past the sea's horizon from any usual height, and the fog is total by then)
+    private static final float SEA_GRID_REACH = 2200f;
     private static final float WATER_GRID_CENTRE_DENSITY = 0.12f;
 
-    /** A unit square of water, densest at its centre, for the wave shader to displace. */
+    /** A unit square of water (x, z from -1/2 to 1/2), densest at its centre, for vs_sphere_water to wrap onto the sea and displace. */
     private static Mesh createWaterGrid(GL3 gl) {
         int n = WATER_GRID_SIZE;
         float[] coordinate = new float[n + 1];
@@ -1609,10 +1631,8 @@ private static class SpeciesConfig {
     }
 
     private void initialiseWaterAndGrass() {
-                waterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_water.txt", GamePaths.HOME + "assets/shaders/fs_water.txt");
         sphereWaterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_water.txt",
                 GamePaths.HOME + "assets/shaders/fs_sphere_water.txt");
-                waveMapTexture = createWaveMapTexture();
         
         waterMaterial = new Material(
             new Vector3(0.01f, 0.31f, 0.55f),  
@@ -1621,11 +1641,7 @@ private static class SpeciesConfig {
             2048f                                                                                                                                                                                
         );
         waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
-
-        Renderer waterRenderer = new Renderer(); 
-        Matrix4 waterModelMatrix = new Matrix4(1);
-                Mesh waterMesh = createWaterGrid(gl);  
-        waterPlaneModel = new Model("ocean_surface", waterMesh, waterModelMatrix, waterShader, waterMaterial, waterRenderer, lights, camera);
+        seaGrid = createWaterGrid(gl);
 
         textures.add(gl, "grass_atlas", WorldArtGenerator.pathFor(WorldArtGenerator.GRASS_ATLAS));
         
@@ -1774,12 +1790,6 @@ private static class SpeciesConfig {
                         && Math.abs(Planet.latitude(p)) < Math.toRadians(60.0));
     }
 
-    /** A place as {x, altitude, z} on the Mercator chart, for the systems not yet ported off it (D6). */
-    private static Vector3 chart(SpherePosition p) {
-        double[] m = Planet.mercatorPosition(p);
-        return new Vector3((float) m[0], (float) m[1], (float) m[2]);
-    }
-
     // ------------------------------------------------------------------ the next round, got ready ahead
 
     // The next round's landing site, chosen as soon as this round is under way, and where its
@@ -1863,7 +1873,7 @@ private static class SpeciesConfig {
             SpherePosition best = null;
             float highest = -Float.MAX_VALUE;
             for (int attempt = 0; attempt < 6000; attempt++) {
-                SpherePosition p = SphereMath.randomPlace(dynamicRand, Planet.CLIP_LATITUDE);
+                SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
                 float h = TerrainMesh.getLayeredHeight(p, worldNoise);
                 if (h > highest) { highest = h; best = p; }
             }
@@ -1879,22 +1889,22 @@ private static class SpeciesConfig {
             }
         }
         if ("shore".equals(devView) || "swim".equals(devView)) {
-            // Developer aid: stand on a coast facing the open sea, to watch the waves (the wave
-            // map and the distance to water are kept on the chart, as the map has them)
+            // Developer aid: stand on a coast facing the open sea, to watch the waves: dry land a
+            // couple of hundred units from the sea, looking out where it's sea all the way out
             for (int attempt = 0; attempt < 200000; attempt++) {
-                SpherePosition p = SphereMath.randomPlace(dynamicRand, Planet.CLIP_LATITUDE);
+                SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
                 if (TerrainMesh.getLayeredHeight(p, worldNoise) <= seaLevelHeight + 2.0f) continue;
-                Vector3 m = chart(p);
-                int cx = (int) Math.floor(m.x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(m.z / PHYSICAL_CHUNK_SIZE);
-                if (regionalManager.getChunkDistanceToWater(cx, cz) != 2) continue;
-                float best = 0f;
-                double look = 0.0;
-                for (int a = 0; a < 16; a++) {
-                    Vector3 out = chart(SphereMath.move(p, a * Math.PI / 8, 900.0));
-                    float strength = regionalManager.waveStrengthAt(out.x, out.z, PHYSICAL_CHUNK_SIZE);
-                    if (strength > best) { best = strength; look = a * Math.PI / 8; }
+                float shore = regionalManager.distanceToWater(p);
+                if (shore < 150f || shore > 250f) continue;
+                double look = Double.NaN;
+                for (int a = 0; a < 16 && Double.isNaN(look); a++) {
+                    boolean open = true;
+                    for (double out = 600.0; out <= 3000.0 && open; out += 600.0) {
+                        open = TerrainMesh.getLayeredHeight(SphereMath.move(p, a * Math.PI / 8, out), worldNoise) <= seaLevelHeight;
+                    }
+                    if (open) look = a * Math.PI / 8;
                 }
-                if (best > 0.75f) {
+                if (!Double.isNaN(look)) {
                     spawn = new Viewpoint(p, look);
                     if ("swim".equals(devView)) {
                         // Out in the water, looking back at the waves rolling in
@@ -1907,7 +1917,7 @@ private static class SpeciesConfig {
         }
 
         while (spawn == null) {
-            SpherePosition p = SphereMath.randomPlace(dynamicRand, Planet.CLIP_LATITUDE);
+            SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
             if (TerrainMesh.getLayeredHeight(p, worldNoise) > seaLevelHeight) spawn = new Viewpoint(p, dynamicRand.nextDouble() * Math.PI * 2);
         }
 
@@ -1918,14 +1928,11 @@ private static class SpeciesConfig {
         float seasonalPhase = dynamicRand.nextFloat() * (float)(2.0 * Math.PI);
         this.sunDeclination = Math.asin(Math.sin(Math.toRadians(planetAxialTiltDegrees)) * Math.sin(seasonalPhase));
 
-        if (this.minimap != null) {
-            Vector3 onMap = chart(spawn.place());
-            this.minimap.setPlayerSpawnLocation(onMap.x, onMap.z);
-        }
+        if (this.minimap != null) this.minimap.setPlayerSpawnLocation(SphereMath.direction(spawn.place()));
 
         chooseTimeOfDay(spawn.place(), dynamicRand);
         // A new day: new clouds and weather
-        if (sphereWeather != null) sphereWeather.newDay(dynamicRand);
+        if (sphereWeather != null) sphereWeather.newDay(dynamicRand, spawn.place());
         landingPod.place(spawn.place(), spawn.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.frame().origin(), Math.max(40f, LandingPod.REACH) + 6f);
@@ -1971,11 +1978,6 @@ private static class SpeciesConfig {
         }
         noonLongitude = lon - hour;
         timeOfDay = (float) (0.5 + hour / (2 * Math.PI));
-    }
-
-    /** Moves the player to a place on the map (the developer teleport), facing north. */
-    public void moveToLocation(float mapX, float mapZ) {
-        moveToLocation(new Viewpoint(Planet.spherePosition(mapX, mapZ, 0.0), -Math.PI * 0.5));
     }
 
     /**
@@ -2133,12 +2135,6 @@ private static class SpeciesConfig {
         if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
             geodesicTerrainModel.mesh.dispose(gl);
         }
-        if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
-        geodesicWaterMesh = null;
-        geodesicWaterActiveCentre = null;
-        if (geodesicWaterBuild != null) geodesicWaterBuild.cancel(true);
-        geodesicWaterBuild = null;
-        geodesicWaterBuildCentre = null;
         geodesicCollision.clear();
         geodesicTerrainModel = null;
         geodesicTerrainActiveCentre = null;
@@ -2253,7 +2249,7 @@ private static class SpeciesConfig {
             java.util.Random cRand = new java.util.Random(worldSeed ^ (id * 492876847L) ^ ((long) s * 9012431L));
             // As many a chunk's area as the species' abundance here asks for, up to its ceiling
             int maxCeiling = Math.max(1, (int) (5 * sc.baseAbundance));
-            double attempts = Math.min(maxCeiling, sc.abundanceFactor.evaluateAt(middle, PHYSICAL_CHUNK_SIZE) * sc.baseAbundance)
+            double attempts = Math.min(maxCeiling, sc.abundanceFactor.evaluateAt(middle) * sc.baseAbundance)
                     * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
             int count = (int) attempts;
             if (cRand.nextFloat() < attempts - count) count++;
@@ -2275,7 +2271,7 @@ private static class SpeciesConfig {
     /** A plant stood at a place: its model matrix, its leaves' colour there and its trunk, worked out once. */
     private SphereFlora plant(SpherePosition position, int species, int model, float scale, float rotation) {
         SpeciesConfig sc = speciesConfigs[species];
-        float climate = leafColourFactor.evaluateAt(position, PHYSICAL_CHUNK_SIZE);
+        float climate = leafColourFactor.evaluateAt(position);
         Vector3 regional = new Vector3(
                 sc.dyingColor.x + (sc.healthyColor.x - sc.dyingColor.x) * climate,
                 sc.dyingColor.y + (sc.healthyColor.y - sc.dyingColor.y) * climate,
@@ -2296,7 +2292,7 @@ private static class SpeciesConfig {
     private float[] buildGrassCell(long id) {
         GeodesicChunkGrid.Cell cell = grassStream.grid().cell(id);
         SpherePosition middle = SphereMath.atAltitude(cell.centre(), 0.0);
-        float perChunk = Math.min(MAX_GRASS_LIMIT, Math.round(grassAbundanceFactor.evaluateAt(middle, PHYSICAL_CHUNK_SIZE) * GRASS_BASE_ABUNDANCE));
+        float perChunk = Math.min(MAX_GRASS_LIMIT, Math.round(grassAbundanceFactor.evaluateAt(middle) * GRASS_BASE_ABUNDANCE));
         int attempts = Math.round(perChunk * areaInChunks(cell));
         if (attempts <= 0) return new float[0];
 
@@ -2316,8 +2312,8 @@ private static class SpeciesConfig {
         SpherePosition[] corners = { SphereMath.atAltitude(cell.a(), 0.0), SphereMath.atAltitude(cell.b(), 0.0), SphereMath.atAltitude(cell.c(), 0.0) };
         float[] colourAt = new float[3], heightAt = new float[3];
         for (int k = 0; k < 3; k++) {
-            colourAt[k] = grassColourFactor.evaluateAt(corners[k], PHYSICAL_CHUNK_SIZE);
-            heightAt[k] = grassHeightFactor.evaluateAt(corners[k], PHYSICAL_CHUNK_SIZE);
+            colourAt[k] = grassColourFactor.evaluateAt(corners[k]);
+            heightAt[k] = grassHeightFactor.evaluateAt(corners[k]);
         }
         float[] heightSpan = grassHeightSpan(), colourSpan = grassColourSpan();
 
@@ -2489,44 +2485,6 @@ private static class SpeciesConfig {
                         GEODESIC_TERRAIN_SEGMENTS, worldNoise));
     }
 
-    private void updateGeodesicWater(GL3 gl) {
-        if (geodesicWaterBuild != null && geodesicWaterBuild.isDone()) {
-            try {
-                Object[] data = geodesicWaterBuild.get();
-                Mesh replacement = new Mesh(gl, (float[]) data[0], (int[]) data[1]);
-                if (geodesicWaterMesh != null) geodesicWaterMesh.dispose(gl);
-                geodesicWaterMesh = replacement;
-                geodesicWaterActiveCentre = geodesicWaterBuildCentre;
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.err.println("Interrupted while building geodesic water: " + e.getMessage());
-            } catch (java.util.concurrent.ExecutionException e) {
-                System.err.println("Could not build geodesic water: " + e.getCause());
-                geodesicWaterRetryAfterNanos = System.nanoTime() + 1_000_000_000L;
-            } finally {
-                geodesicWaterBuild = null;
-                geodesicWaterBuildCentre = null;
-            }
-        }
-        if (geodesicWaterBuild != null || System.nanoTime() < geodesicWaterRetryAfterNanos) return;
-        if (geodesicTerrainModel == null || geodesicTerrainActiveCentre == null) return;
-
-        SpherePosition current = camera.getSpherePosition();
-        GeodesicChunkGrid.Cell currentCell = geodesicTerrainGrid.cellAt(current);
-        boolean needsPatch = geodesicWaterMesh == null;
-        if (!needsPatch && geodesicWaterActiveCentre != null) {
-            double angle = SphereMath.angle(geodesicWaterActiveCentre, current);
-            double patchRadius = FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius();
-            needsPatch = angle > patchRadius * 0.35;
-        }
-        if (!needsPatch) return;
-
-        geodesicWaterBuildCentre = current;
-        double angularRadius = Math.min(Math.PI, FAR_PLANE / Planet.radius() + 3.0 * currentCell.angularRadius());
-        geodesicWaterBuild = terrainBuilders.submit(() -> TerrainMesh.buildGeodesicWaterPatchData(
-                geodesicTerrainGrid, current, angularRadius, GEODESIC_WATER_SEGMENTS, seaLevelHeight, worldNoise));
-    }
-
     private void renderGeodesicInfrastructure(GL3 gl, Matrix4 skyRotation) {
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
@@ -2581,35 +2539,74 @@ private static class SpeciesConfig {
         }
     }
 
-    private void renderGeodesicWater(GL3 gl, Vector3 skyColour, float daylight, float time) {
-        if (geodesicTerrainModel == null) return;
-        updateGeodesicWater(gl);
-        if (geodesicWaterMesh == null || geodesicWaterMesh.getIndexCount() == 0) return;
-
-        SpherePosition cameraPosition = camera.getSpherePosition();
-        Vector3 sunDirection = SphereRender.sunDirection(cameraPosition,
-                Planet.sunDirection(cameraPosition, sunDeclination, noonLongitude));
+    /**
+     * The sea: the grid laid along the ground round the viewer (out to SEA_GRID_REACH), wrapped
+     * onto the sea's sphere and waved by vs_sphere_water; wherever the land is higher it hides
+     * the water, so the coast is where the sea's surface meets the ground. Shallows let the
+     * ground show through, by how much water lies over it (the depth pre-pass's terrain).
+     */
+    private void renderSea(GL3 gl, Matrix4 skyRotation, Texture sky, float time) {
+        if (geodesicTerrainModel == null || seaGrid == null) return;
+        SpherePosition eye = camera.getSpherePosition();
+        SphereFrame here = SphereFrame.at(eye);
+        Vector3 sunDirection = SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude));
 
         gl.glEnable(GL.GL_DEPTH_TEST);
+        // Wave crests can be seen from either side
         gl.glDisable(GL.GL_CULL_FACE);
         gl.glEnable(GL.GL_BLEND);
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
-        gl.glDepthMask(false);
-        sphereWaterShader.use(gl);
-        sphereWaterShader.setFloatArray(gl, "viewProjection", camera.getSphereViewProjection().toFloatArrayForGLSL());
-        sphereWaterShader.setVec3(gl, "sphereCamera", new Vector3((float) cameraPosition.x(),
-                (float) cameraPosition.y(), (float) cameraPosition.z()));
-        sphereWaterShader.setFloat(gl, "planetRadius", (float) Planet.radius());
-        sphereWaterShader.setFloat(gl, "seaLevel", seaLevelHeight);
-        sphereWaterShader.setFloat(gl, "time", time);
-        sphereWaterShader.setVec3(gl, "waterColour", waterMaterial.getDiffuse());
-        sphereWaterShader.setVec3(gl, "skyColour", skyColour);
-        sphereWaterShader.setVec3(gl, "sunDirection", sunDirection);
-        sphereWaterShader.setFloat(gl, "daylight", daylight);
-        geodesicWaterMesh.render(gl);
+        gl.glDepthMask(true);   // (writing its depth, as the old water plane did, so a far crest never draws over a nearer one)
+        Shader s = sphereWaterShader;
+        s.use(gl);
+        s.setFloatArray(gl, "viewProjection", camera.getSphereViewProjection().toFloatArrayForGLSL());
+        s.setVec3(gl, "sphereCamera", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
+        s.setVec3(gl, "centreUp", vector(here.up()));
+        s.setVec3(gl, "centreEast", vector(here.xAxis()));
+        s.setVec3(gl, "centreSouth", vector(here.zAxis()));
+        s.setFloat(gl, "eyeAboveSea", (float) (SphereMath.altitude(eye) - seaLevelHeight));
+        s.setFloat(gl, "gridSize", SEA_GRID_REACH * 2f);
+        s.setFloat(gl, "planetRadius", (float) Planet.radius());
+        s.setFloat(gl, "seaLevel", seaLevelHeight);
+        s.setFloat(gl, "time", time);
+        s.setFloat(gl, "waveTexel", regionalManager.waveFieldTexel());
+        gl.glActiveTexture(GL3.GL_TEXTURE0 + Shader.WAVE_UNIT);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, waveFieldTexture);
+
+        s.setVec2(gl, "windowSize", new Vector2((float) currentWidth, (float) currentHeight));
+        s.setFloat(gl, "nearPlane", currentNearPlane);
+        s.setFloat(gl, "farPlane", FAR_PLANE);
+        s.setVec3(gl, "sunDirection", sunDirection);
+        // The glint on the water is the sun's own colour
+        float[] sunTint = worldArt.palette().sunTint;
+        s.setVec3(gl, "lightSpecular", new Vector3(sunTint[0], sunTint[1], sunTint[2]));
+        s.setVec3(gl, "matSpecular", waterMaterial.getSpecular());
+        s.setFloat(gl, "matShininess", waterMaterial.getShininess());
+        float[] shallow = worldArt.palette().seaShallowTint();
+        float[] deepOcean = worldArt.palette().seaDeepOcean();
+        s.setVec3(gl, "u_ShallowTint", new Vector3(shallow[0], shallow[1], shallow[2]));
+        s.setVec3(gl, "u_DeepOceanColour", new Vector3(deepOcean[0], deepOcean[1], deepOcean[2]));
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(s.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        if (sky != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            sky.bind(gl);
+            s.setInt(gl, "skyTexture", 2);
+        }
+        gl.glActiveTexture(GL3.GL_TEXTURE1);
+        gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
+        s.setInt(gl, "terrainDepthTexture", 1);
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
+        textures.get("water_diffuse").bind(gl);
+        s.setInt(gl, "diffuse_texture", 0);
+
+        seaGrid.render(gl);
         gl.glDepthMask(true);
         gl.glDisable(GL.GL_BLEND);
         gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    private static Vector3 vector(double[] v) {
+        return new Vector3((float) v[0], (float) v[1], (float) v[2]);
     }
 
     /**
@@ -2873,7 +2870,7 @@ private static class SpeciesConfig {
         float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
         // Too deep to stand: swim, eyes just above the water
-        waterSurfaceHere = seaLevelHeight;
+        waterSurfaceHere = regionalManager.waveSurfaceAt(camera.getSpherePosition(), (float) elapsedTime, seaLevelHeight);
         swimming = targetCameraHeight < waterSurfaceHere + SWIM_EYE_HEIGHT;
         if (swimming) {
             targetCameraHeight = waterSurfaceHere + SWIM_EYE_HEIGHT;
@@ -2990,10 +2987,8 @@ private static class SpeciesConfig {
         gl.glDisable(GL.GL_DEPTH_TEST);
         gl.glDisable(GL.GL_CULL_FACE);
 
-        // (the rainfall and temperature maps are read on the chart until Phase 5: D12)
-        Vector3 onChart = camera.getChartPosition();
-        sphereWeather.update((float) deltaTime, (float) elapsedTime, camera, worldNoise, seaLevelHeight,
-                () -> rainfallAt(onChart.x, onChart.z), freezingPoint - temperatureAt(onChart.x, onChart.z));
+        sphereWeather.update((float) deltaTime, (float) elapsedTime, eye, () -> rainfallAt(eye),
+                p -> Math.max(groundHeightAt(p), seaLevelHeight), freezingPoint - temperatureAt(eye));
         rainSound.setRain(sphereWeather.snowing() ? 0f : sphereWeather.intensity());
 
         // The sky's turn: in the local frame here (for the player's body, posed in it), and
@@ -3002,8 +2997,7 @@ private static class SpeciesConfig {
         Matrix4 skyRotation = Matrix4.multiply(SphereFrame.at(eye).rotationMatrix(), localSkyRotation);
 
         sphereSkyRenderer.render(gl, camera, textures.get("sky"), skyColour,
-                (float) currentWidth / Math.max(1, currentHeight), (float) elapsedTime,
-                sphereWeather.cloudiness());
+                (float) currentWidth / Math.max(1, currentHeight), skyRotation);
 
         gl.glEnable(GL.GL_CULL_FACE);
         gl.glEnable(GL.GL_DEPTH_TEST);
@@ -3020,6 +3014,10 @@ private static class SpeciesConfig {
         float[] sunColour = { sunTintNow[0] * daylight, sunTintNow[1] * daylight, sunTintNow[2] * daylight };
         // The fog everything fades into with distance
         float[] fog = fogColour(skyColour);
+        // --- CLOUDS, over the sky and the sun and behind everything else ---
+        sphereWeather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, daylight,
+                (float) elapsedTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
+                sunTintNow, fog, seaLevelHeight);
         Shader.setFog(gl, fog[0], fog[1], fog[2]);
         // The snow lying on the ground, once it's been worked out
         bindSnowCover(gl);
@@ -3035,12 +3033,13 @@ private static class SpeciesConfig {
             terrainShader.setInt(gl, "skyTexture", 2);
         }
 
-        // Only the ground takes the regional soil colour; trunks and walls share this shader
+        // Only the ground takes the regional soil colour (and bare rock on steep slopes); trunks
+        // and walls share this shader
         gl.glActiveTexture(GL3.GL_TEXTURE6);
-        textures.get("soil_regions").bind(gl);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, soilRegionTexture);
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
         terrainShader.setInt(gl, "soilRegionMap", 6);
-        terrainShader.setFloat(gl, "regionWidth", TOTAL_REGION_WIDTH);
-        terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
+        terrainShader.setFloat(gl, "useSoilRegions", 1.0f);
         terrainShader.setVec3(gl, "rockColour", worldRockColour());
         setSphereTerrainTransform(terrainShader, true);
         geodesicTerrainModel.renderSphereNative(gl, ambientLight, nightProportion);
@@ -3108,8 +3107,10 @@ private static class SpeciesConfig {
         drawWindowGlass(gl, sphereViewProjection, eye, camera.getSphereForwardDirection(), SphereRender.sunPoint(sunDirection),
                 sunColour, skyRotation, textures.get(skyTextureKey), GLASS_DRAW_DISTANCE);
 
-        renderGeodesicWater(gl, skyColour, daylight, (float) elapsedTime);
-        sphereWeather.render(gl, camera, sphereViewProjection, daylight);
+        renderSea(gl, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+        // --- RAIN, under dark clouds ---
+        sphereWeather.renderRain(gl, sphereViewProjection, eye, worldArt.palette().seaShallowTint(), daylight,
+                (float) (currentHeight * 0.5 / Math.tan(Math.toRadians(45.0 / 2.0))));
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         captureLensDepth(gl);
@@ -3133,9 +3134,7 @@ private static class SpeciesConfig {
             kitWanted = false;
             playerBody.useKit();
         }
-        // (the thermometer reads the temperature as the map shows it there, until Phase 5)
-        Vector3 onMap = camera.getChartPosition();
-        playerBody.setReading(temperatureAt(onMap.x, onMap.z));
+        playerBody.setReading(temperatureAt(eye));
         // The altimeter reads the height of the ground underfoot (or the road) above the sea, in
         // metres: not the rock or roof stood on, so it agrees with the map
         playerBody.setAltitude(((float) groundHeightAt(eye) - seaLevelHeight) / PlayerBody.METRE);
@@ -3238,23 +3237,17 @@ private static class SpeciesConfig {
         return System.currentTimeMillis() / 1000.0;
     }
 
-    public static float precalculateSeaLevel(long seed, float totalRegionWidth, PerlinNoise noise) {
+    public static float precalculateSeaLevel(long seed, PerlinNoise noise) {
         java.util.Random rand = new java.util.Random(seed);
         float waterProportion = 0.6f + rand.nextFloat() * 0.1f; 
-        // Over the part of the planet the chart shows
-        float halfRegion = totalRegionWidth / 2.0f;
-        float halfHeight = Planet.clipHalfHeight();
-        
+        // Evenly over the part of the planet the map shows
         int totalSamples = 4000;
         java.util.ArrayList<Float> heightSamples = new java.util.ArrayList<>(totalSamples);
 
         for (int i = 0; i < totalSamples; i++) {
-            float sampleX = (rand.nextFloat() * totalRegionWidth) - halfRegion;
-            // Evenly over the sphere's surface, not the map, which stretches the far north and south
-            float sampleZ = (float) Planet.chartZ(Math.asin((rand.nextFloat() * 2f - 1f) * Math.sin(Planet.CLIP_LATITUDE)));
-            
-            float h = TerrainMesh.getLayeredHeight(sampleX, sampleZ, noise);
-            heightSamples.add(h);
+            double longitude = rand.nextFloat() * 2 * Math.PI - Math.PI;
+            double latitude = Math.asin((rand.nextFloat() * 2f - 1f) * Math.sin(MapProjection.CLIP_LATITUDE));
+            heightSamples.add(TerrainMesh.getLayeredHeight(Planet.position(latitude, longitude, 0.0), noise));
         }
 
         java.util.Collections.sort(heightSamples);
@@ -3739,11 +3732,10 @@ private static class SpeciesConfig {
         int size = maxChunkX - minChunkX + 1;
         BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
         java.util.stream.IntStream.range(0, size).parallel().forEach(z -> {
-            int cz = minChunkX + z;
+            float mapZ = (minChunkX + z + 0.5f) * PHYSICAL_CHUNK_SIZE;
             for (int x = 0; x < size; x++) {
-                int cx = minChunkX + x;
-                float worldX = (cx + 0.5f) * PHYSICAL_CHUNK_SIZE, worldZ = (cz + 0.5f) * PHYSICAL_CHUNK_SIZE;
-                float fa = soilVariantAFactor.evaluate(cx, cz, worldX, worldZ), fb = soilVariantBFactor.evaluate(cx, cz, worldX, worldZ);
+                GeodesicChunkGrid.Direction d = MapProjection.direction((minChunkX + x + 0.5f) * PHYSICAL_CHUNK_SIZE, mapZ);
+                float fa = soilVariantAFactor.evaluate(d), fb = soilVariantBFactor.evaluate(d);
                 float wa = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[0][0], ranges[0][1], fa);
                 float wb = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[1][0], ranges[1][1], fb);
                 int rgb = 0xFF;
@@ -3829,56 +3821,51 @@ private static class SpeciesConfig {
     private RegionalFactor factorFor(Overlay overlay) {
         if (overlay.factor() == FactorName.GRASS_COLOUR) {
             float[] span = grassColourSpan();
-            return new RegionalFactor(1f, (cx, cz, x, z) -> grassShare(span, grassColourFactor.evaluate(cx, cz, x, z)));
+            return new RegionalFactor(1f, d -> grassShare(span, grassColourFactor.evaluate(d)));
         }
-        java.util.function.BiFunction<Float, Float, Float> measure = heatmapMeasure(overlay);
+        RegionalFactor.Sampler measure = heatmapMeasure(overlay);
         if (measure == null) return null;
         float[] range = heatmapRange(overlay);
         float span = Math.max(1e-6f, range[1] - range[0]);
-        return new RegionalFactor(1f, (cx, cz, x, z) -> Math.max(0f, Math.min(1f, (measure.apply(x, z) - range[0]) / span)));
+        return new RegionalFactor(1f, d -> Math.max(0f, Math.min(1f, (measure.sample(d) - range[0]) / span)));
     }
 
     /**
-     * What a heatmap measures at a place, in the units its key gives: a plant's or animal's
-     * count in the chunk there (as they're spawned: a plant's is its abundance times its base;
-     * an animal's, see expectedPerChunk), the rocks' (count and typical width in metres), the
-     * grass's height in centimetres, degrees Celsius, millimetres of rain a year; or for the
-     * grass's abundance and wealth, their own 0 to 1. Null for the maps not on a scale.
+     * What a heatmap measures in a direction, in the units its key gives: a plant's or animal's
+     * count in a chunk's area (100 by 100) there (as they're spawned: a plant's is its abundance
+     * times its base; an animal's, see expectedPerChunk), the rocks' (count and typical width in
+     * metres), the grass's height in centimetres, degrees Celsius, millimetres of rain a year; or
+     * for the grass's abundance and wealth, their own 0 to 1. Null for the maps not on a scale.
      */
-    private java.util.function.BiFunction<Float, Float, Float> heatmapMeasure(Overlay overlay) {
+    private RegionalFactor.Sampler heatmapMeasure(Overlay overlay) {
         if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
             SpeciesConfig config = speciesConfigs[overlay.species()];
-            return (x, z) -> factorAt(config.abundanceFactor, x, z) * config.baseAbundance;
+            return d -> config.abundanceFactor.evaluate(d) * config.baseAbundance;
         }
         if (overlay.species() >= 0) {
             int i = overlay.species();
-            return (x, z) -> organismManager.expectedPerChunk(i, x, z);
+            return d -> organismManager.expectedPerChunk(i, SphereMath.atAltitude(d, 0.0));
         }
         return switch (overlay.factor()) {
-            case ROCKS -> (x, z) -> rocks().expectedPerChunk(x, z);
+            case ROCKS -> d -> rocks().expectedPerChunk(SphereMath.atAltitude(d, 0.0));
             // (a unit being ten centimetres, and the size a radius)
-            case ROCK_SIZE -> (x, z) -> rocks().typicalSizeAt(x, z) * 2f / PlayerBody.METRE;
-            case GRASS_ABUNDANCE -> (x, z) -> factorAt(grassAbundanceFactor, x, z);
+            case ROCK_SIZE -> d -> rocks().typicalSizeAt(SphereMath.atAltitude(d, 0.0)) * 2f / PlayerBody.METRE;
+            case GRASS_ABUNDANCE -> grassAbundanceFactor::evaluate;
             // (as the blades are given their heights, see the grass's gathering)
-            case GRASS_HEIGHT -> (x, z) -> bladeHeight(grassShare(grassHeightSpan(), factorAt(grassHeightFactor, x, z))) * GRASS_BLADE_HEIGHT / PlayerBody.METRE * 100f;
-            case TEMPERATURE -> (x, z) -> -30f + 70f * factorAt(regionalManager.temperatureMap, x, z);
-            case RAINFALL -> (x, z) -> factorAt(regionalManager.rainfallMap, x, z) * RAINFALL_FULL_MM;
+            case GRASS_HEIGHT -> d -> bladeHeight(grassShare(grassHeightSpan(), grassHeightFactor.evaluate(d))) * GRASS_BLADE_HEIGHT / PlayerBody.METRE * 100f;
+            case TEMPERATURE -> d -> -30f + 70f * regionalManager.temperatureMap.evaluate(d);
+            case RAINFALL -> d -> regionalManager.rainfallMap.evaluate(d) * RAINFALL_FULL_MM;
             case WEALTH -> {
                 if (wealthOverlay == null) {
-                    wealthOverlay = new RegionalFactor(1f, (cx, cz, x, z) -> {
-                        int nation = nationManager.getNationAtWorld(x, z, TOTAL_REGION_WIDTH);
-                        return nation <= 0 ? 0f : infraManager.areaRichness(nation, settlementManager.getUrbanness(x, z), x, z);
+                    wealthOverlay = new RegionalFactor(1f, d -> {
+                        int nation = nationManager.getNationAt(d);
+                        return nation <= 0 ? 0f : infraManager.areaRichness(nation, settlementManager.getUrbanness(d), SphereMath.atAltitude(d, 0.0));
                     });
                 }
-                RegionalFactor wealth = wealthOverlay;
-                yield (x, z) -> factorAt(wealth, x, z);
+                yield wealthOverlay::evaluate;
             }
             default -> null;
         };
-    }
-
-    private float factorAt(RegionalFactor factor, float x, float z) {
-        return factor.evaluate((int) Math.floor(x / PHYSICAL_CHUNK_SIZE), (int) Math.floor(z / PHYSICAL_CHUNK_SIZE), x, z);
     }
 
     /** A value of a heatmap's measure for its key, with its units. */
@@ -3924,7 +3911,7 @@ private static class SpeciesConfig {
     // A grass blade's height in world units, before each blade's own height scales it
     private static final float GRASS_BLADE_HEIGHT = 4.8f;
     // The grass's height where it grows shortest and tallest, in metres (before each blade's own variation)
-    private static final float GRASS_SHORTEST = 0.025f, GRASS_TALLEST = 1.0f;
+    private static final float GRASS_SHORTEST = 0.07f, GRASS_TALLEST = 1.0f;
     // The lowest and highest the grass's height and colour factors reach on the land, once worked out
     private volatile float[] grassHeightSpan, grassColourSpan;
 
@@ -3952,20 +3939,28 @@ private static class SpeciesConfig {
 
     /** The lowest and highest a factor reaches on the land the map shows, sampled across it. */
     private float[] landSpan(RegionalFactor factor) {
-        float lowest = Float.MAX_VALUE, highest = -Float.MAX_VALUE;
-        int n = 240;
-        for (int a = 0; a < n; a++) {
-            for (int b = 0; b < n / 2; b++) {
-                float x = (a + 0.5f) / n * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
-                float z = ((b + 0.5f) / (n / 2) * 2f - 1f) * Planet.clipHalfHeight();
-                if (TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight) continue;
-                float v = factorAt(factor, x, z);
-                lowest = Math.min(lowest, v);
-                highest = Math.max(highest, v);
-            }
-        }
-        return lowest > highest ? new float[] { 0f, 1f } : new float[] { lowest, highest };
+        float[] span = { Float.MAX_VALUE, -Float.MAX_VALUE };
+        forEachMapLand(28_800, d -> {
+            float v = factor.evaluate(d);
+            span[0] = Math.min(span[0], v);
+            span[1] = Math.max(span[1], v);
+        });
+        return span[0] > span[1] ? new float[] { 0f, 1f } : span;
     }
+
+    /**
+     * Each of about count places spread evenly over the planet between the map's northern and
+     * southern edges (MapProjection.CLIP_LATITUDE) that is on land, in turn.
+     */
+    private void forEachMapLand(int count, java.util.function.Consumer<GeodesicChunkGrid.Direction> visit) {
+        double golden = Math.PI * (3 - Math.sqrt(5)), top = Math.sin(MapProjection.CLIP_LATITUDE);
+        for (int i = 0; i < count; i++) {
+            double y = top * (1 - 2 * (i + 0.5) / count), across = Math.sqrt(1 - y * y), longitude = golden * i;
+            GeodesicChunkGrid.Direction d = new GeodesicChunkGrid.Direction(across * Math.cos(longitude), y, -across * Math.sin(longitude));
+            if (TerrainMesh.getLayeredHeight(d, worldNoise) > seaLevelHeight) visit.accept(d);
+        }
+    }
+
     // Points round each plant model {x, y, z, ...} (species, then variation), as generated
     private float[][][] floraOutlines;
     // The scene's last view-projection (column major), for finding what's seen through the magnifying glass
@@ -3973,51 +3968,51 @@ private static class SpeciesConfig {
     private boolean bookPicturesGiven;
 
     /**
-     * The highest ground on the map: {x, z, metres above the sea}. Found on a coarse grid, then
-     * climbed to the top of the hill there in finer and finer steps.
+     * The highest ground on the map, in metres above the sea. Found at places spread evenly
+     * over it, then each of the highest few dozen climbed to the top of its hill in finer and
+     * finer steps.
      */
-    private float[] highestGround() {
-        // A fine grid first, keeping the highest few dozen spots (each a likely different hill)...
-        int n = 1400, keep = 40;
-        float cellX = TOTAL_REGION_WIDTH / n, cellZ = 2f * Planet.clipHalfHeight() / (n / 2);
-        java.util.PriorityQueue<float[]> tops = new java.util.PriorityQueue<>((p, q) -> Float.compare(p[2], q[2]));
-        for (int a = 0; a < n; a++) {
-            for (int b = 0; b < n / 2; b++) {
-                float x = (a + 0.5f) * cellX - TOTAL_REGION_WIDTH * 0.5f;
-                float z = (b + 0.5f) * cellZ - Planet.clipHalfHeight();
-                float h = TerrainMesh.getLayeredHeight(x, z, worldNoise);
-                if (tops.size() < keep) tops.add(new float[] { x, z, h });
-                else if (h > tops.peek()[2]) {
-                    tops.poll();
-                    tops.add(new float[] { x, z, h });
-                }
+    private float highestGround() {
+        // Many places first, keeping the highest few dozen (each a likely different hill)...
+        int keep = 40, count = 1_000_000;
+        java.util.PriorityQueue<Object[]> tops = new java.util.PriorityQueue<>((p, q) -> Float.compare((Float) p[1], (Float) q[1]));
+        double golden = Math.PI * (3 - Math.sqrt(5)), top = Math.sin(MapProjection.CLIP_LATITUDE);
+        for (int i = 0; i < count; i++) {
+            double y = top * (1 - 2 * (i + 0.5) / count);
+            SpherePosition p = Planet.position(Math.asin(y), golden * i, 0.0);
+            float h = TerrainMesh.getLayeredHeight(p, worldNoise);
+            if (tops.size() < keep) tops.add(new Object[] { p, h });
+            else if (h > (Float) tops.peek()[1]) {
+                tops.poll();
+                tops.add(new Object[] { p, h });
             }
         }
-        // ...then each climbed to the top of its hill, in finer and finer steps
-        float[] best = { 0f, 0f, -Float.MAX_VALUE };
-        for (float[] top : tops) {
-            float x0 = top[0], z0 = top[1], h0 = top[2];
-            for (float step = Math.max(cellX, cellZ); step > 0.5f; step *= 0.5f) {
+        // ...then each climbed to the top of its hill, in finer and finer steps (from about the
+        // spacing of the places looked at)
+        double spacing = Math.sqrt(4 * Math.PI * top / count) * Planet.radius();
+        float best = -Float.MAX_VALUE;
+        for (Object[] start : tops) {
+            SpherePosition at = (SpherePosition) start[0];
+            float height = (Float) start[1];
+            for (double step = spacing; step > 0.5; step *= 0.5) {
                 boolean moved = true;
                 while (moved) {
                     moved = false;
                     for (int k = 0; k < 16; k++) {
-                        double a = k * Math.PI / 8;
-                        float x = x0 + (float) Math.cos(a) * step, z = z0 + (float) Math.sin(a) * step;
-                        if (Math.abs(z) > Planet.clipHalfHeight()) continue;
-                        float h = TerrainMesh.getLayeredHeight(x, z, worldNoise);
-                        if (h > h0) {
-                            h0 = h;
-                            x0 = x;
-                            z0 = z;
+                        SpherePosition p = SphereMath.move(at, k * Math.PI / 8, step);
+                        if (Math.abs(Planet.latitude(p)) > MapProjection.CLIP_LATITUDE) continue;
+                        float h = TerrainMesh.getLayeredHeight(p, worldNoise);
+                        if (h > height) {
+                            height = h;
+                            at = p;
                             moved = true;
                         }
                     }
                 }
             }
-            if (h0 > best[2]) best = new float[] { x0, z0, h0 };
+            best = Math.max(best, height);
         }
-        return new float[] { best[0], best[1], Math.max(0f, best[2] - seaLevelHeight) / PlayerBody.METRE };
+        return Math.max(0f, best - seaLevelHeight) / PlayerBody.METRE;
     }
 
     /** The altimeter's top: the next multiple of 10 metres at or above x (128 gives 130, 109 gives 110). */
@@ -4347,8 +4342,7 @@ private static class SpeciesConfig {
             double y = 1 - 2 * (i + 0.5) / n;
             double latitude = Math.max(-limit, Math.min(limit, Math.asin(y)));
             double longitude = (golden * i) % (2 * Math.PI) - Math.PI;
-            float x = (float) Planet.chartX(longitude), z = (float) Planet.chartZ(latitude);
-            return TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight;
+            return TerrainMesh.getLayeredHeight(Planet.position(latitude, longitude, 0.0), worldNoise) <= seaLevelHeight;
         }).count();
         return 100.0 * sea / n;
     }
@@ -4400,51 +4394,45 @@ private static class SpeciesConfig {
      * its winter (the more so the further from the equator), and warmest in the mid afternoon,
      * coolest round dawn, by this round's sun.
      */
-    // The climate for the snow over the whole world (see snowClimate): a pixel per this many to
-    // a side, its texture unit, and how many degrees below freezing it takes for snow to lie thickly
-    private static final int SNOW_COVER_SIZE = 512, SNOW_UNIT = 11;
+    // The climate for the snow over the whole world (see snowClimate): a cube map (SphereRaster)
+    // this many texels a face's side, its texture unit, and how many degrees below freezing it
+    // takes for snow to lie thickly
+    private static final int SNOW_COVER_SIDE = 256, SNOW_UNIT = Shader.SNOW_UNIT;
     private static final float SNOW_LIES_THICK = 5f;
     private java.util.concurrent.Future<byte[]> snowCoverJob;
     private int snowCoverTexture;
 
     /**
-     * The climate at a place as the snow needs it, each 0 to 1 for the texture: the temperature
-     * as it would be at sea level (from -60 to 40 Celsius; the shader takes off for height), and
-     * how much rain or snow falls.
+     * The climate in a direction as the snow needs it, each 0 to 1 for the texture: the
+     * temperature as it would be at sea level (from -60 to 40 Celsius; the shader takes off for
+     * height), and how much rain or snow falls.
      */
-    private float[] snowClimate(float x, float z) {
-        int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
-        float warmth = regionalManager.temperatureMap.evaluate(cx, cz, x, z) + regionalManager.altitudeChill(cx, cz);
+    private float[] snowClimate(GeodesicChunkGrid.Direction d) {
+        float warmth = regionalManager.temperatureMap.evaluate(d) + regionalManager.altitudeChill(d);
         float celsius = -30f + 70f * warmth;
-        return new float[] { Math.max(0f, Math.min(1f, (celsius + 60f) / 100f)), regionalManager.rainfallMap.evaluate(cx, cz, x, z) };
+        return new float[] { Math.max(0f, Math.min(1f, (celsius + 60f) / 100f)), regionalManager.rainfallMap.evaluate(d) };
     }
 
-    // How far either way the snow's climate is averaged over, in texture pixels (each a few chunks)
-    private static final int SNOW_SMOOTHING = 3;
+    // How many times the snow's climate is averaged with its neighbours' (each texel a couple of hundred units)
+    private static final int SNOW_SMOOTHING = 9;
 
-    /** Averages the snow's climate (both channels) over its neighbours, east-west then north-south, twice over. */
-    private static void smoothSnowClimate(byte[] cover) {
-        int n = SNOW_COVER_SIZE;
-        float[] a = new float[n * n * 2], b = new float[n * n * 2];
-        for (int k = 0; k < a.length; k++) a[k] = cover[k] & 0xFF;
-        for (int pass = 0; pass < 4; pass++) {
-            boolean across = pass % 2 == 0;
-            for (int j = 0; j < n; j++) {
-                for (int i = 0; i < n; i++) {
-                    for (int c = 0; c < 2; c++) {
-                        float sum = 0f;
-                        for (int d = -SNOW_SMOOTHING; d <= SNOW_SMOOTHING; d++) {
-                            // (round the world east and west; held at the edge north and south)
-                            int x = across ? Math.floorMod(i + d, n) : i, y = across ? j : Math.max(0, Math.min(n - 1, j + d));
-                            sum += a[(y * n + x) * 2 + c];
-                        }
-                        b[(j * n + i) * 2 + c] = sum / (2 * SNOW_SMOOTHING + 1);
-                    }
+    /** Averages the snow's climate (both channels, two floats a texel) with each texel's four neighbours, SNOW_SMOOTHING times over. */
+    private static float[] smoothSnowClimate(SphereRaster raster, float[] climate) {
+        int size = raster.size();
+        float[] a = climate, b = new float[climate.length];
+        for (int pass = 0; pass < SNOW_SMOOTHING; pass++) {
+            float[] from = a, to = b;
+            java.util.stream.IntStream.range(0, size).parallel().forEach(t -> {
+                for (int c = 0; c < 2; c++) {
+                    float sum = from[t * 2 + c];
+                    for (int k = 0; k < 4; k++) sum += from[raster.neighbour(t, k) * 2 + c];
+                    to[t * 2 + c] = sum / 5f;
                 }
-            }
-            float[] t = a; a = b; b = t;
+            });
+            a = to;
+            b = from;
         }
-        for (int k = 0; k < a.length; k++) cover[k] = (byte) Math.round(Math.max(0f, Math.min(255f, a[k])));
+        return a;
     }
 
     /** The colour of snow: mostly white, with something of the planet's oceans in it. */
@@ -4457,53 +4445,38 @@ private static class SpeciesConfig {
     private void bindSnowCover(GL3 gl) {
         if (snowCoverJob == null) {
             snowCoverJob = java.util.concurrent.ForkJoinPool.commonPool().submit(() -> {
-                byte[] cover = new byte[SNOW_COVER_SIZE * SNOW_COVER_SIZE * 2];
-                java.util.stream.IntStream.range(0, SNOW_COVER_SIZE).parallel().forEach(j -> {
-                    for (int i = 0; i < SNOW_COVER_SIZE; i++) {
-                        float x = (i + 0.5f) / SNOW_COVER_SIZE * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
-                        float z = (j + 0.5f) / SNOW_COVER_SIZE * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
-                        float[] climate = snowClimate(x, z);
-                        cover[(j * SNOW_COVER_SIZE + i) * 2] = (byte) Math.round(climate[0] * 255f);
-                        cover[(j * SNOW_COVER_SIZE + i) * 2 + 1] = (byte) Math.round(climate[1] * 255f);
-                    }
+                SphereRaster raster = new SphereRaster(SNOW_COVER_SIDE);
+                float[] climate = new float[raster.size() * 2];
+                java.util.stream.IntStream.range(0, raster.size()).parallel().forEach(t -> {
+                    float[] here = snowClimate(raster.direction(t));
+                    climate[t * 2] = here[0];
+                    climate[t * 2 + 1] = here[1];
                 });
-                smoothSnowClimate(cover);
+                float[] smoothed = smoothSnowClimate(raster, climate);
+                byte[] cover = new byte[smoothed.length];
+                for (int k = 0; k < cover.length; k++) cover[k] = (byte) Math.round(Math.max(0f, Math.min(1f, smoothed[k])) * 255f);
                 return cover;
             });
         }
         if (snowCoverTexture == 0) {
             if (!snowCoverJob.isDone()) return;
-            byte[] cover;
             try {
-                cover = snowCoverJob.get();
+                snowCoverTexture = uploadCubeMap(SNOW_COVER_SIDE, 2, snowCoverJob.get());
             } catch (Exception e) {
                 return;
             }
-            int[] id = new int[1];
-            gl.glGenTextures(1, id, 0);
-            snowCoverTexture = id[0];
-            gl.glActiveTexture(GL3.GL_TEXTURE0 + SNOW_UNIT);
-            gl.glBindTexture(GL3.GL_TEXTURE_2D, snowCoverTexture);
-            gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 1);
-            gl.glTexImage2D(GL3.GL_TEXTURE_2D, 0, GL3.GL_RG8, SNOW_COVER_SIZE, SNOW_COVER_SIZE, 0, GL3.GL_RG, GL3.GL_UNSIGNED_BYTE,
-                    java.nio.ByteBuffer.wrap(cover));
-            gl.glPixelStorei(GL3.GL_UNPACK_ALIGNMENT, 4);
-            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MIN_FILTER, GL3.GL_LINEAR);
-            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_MAG_FILTER, GL3.GL_LINEAR);
-            // (round the world east and west; at the poles, the edge carries on)
-            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
-            gl.glTexParameteri(GL3.GL_TEXTURE_2D, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE);
-            gl.glActiveTexture(GL3.GL_TEXTURE0);
         }
         gl.glActiveTexture(GL3.GL_TEXTURE0 + SNOW_UNIT);
-        gl.glBindTexture(GL3.GL_TEXTURE_2D, snowCoverTexture);
+        gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, snowCoverTexture);
         gl.glActiveTexture(GL3.GL_TEXTURE0);
         // (every frame, so shaders made since pick it up too)
         // (today's temperature here against the usual, so fresh snow lies all round wherever it's snowing)
-        Vector3 here = camera.getChartPosition();
-        float usual = snowClimate(here.x, here.z)[0] * 100f - 60f - Math.max(0f, here.y - seaLevelHeight) * 70f * RegionalGenerationManager.ALTITUDE_CHILL;
-        Shader.setSnowCover(gl, SNOW_UNIT, 1f / TOTAL_REGION_WIDTH, TOTAL_REGION_WIDTH * 0.5f, sphereWeather.freshSnow(), temperatureAt(here.x, here.z) - usual,
-                new float[] { freezingPoint, SNOW_LIES_THICK, 70f * RegionalGenerationManager.ALTITUDE_CHILL, seaLevelHeight }, snowColour());
+        SpherePosition here = camera.getSpherePosition();
+        float usual = snowClimate(SphereMath.direction(here))[0] * 100f - 60f
+                - Math.max(0f, camera.getAltitude() - seaLevelHeight) * 70f * RegionalGenerationManager.ALTITUDE_CHILL;
+        Shader.setSnowCover(gl, SNOW_UNIT, sphereWeather.freshSnow(), temperatureAt(here) - usual,
+                new float[] { freezingPoint, SNOW_LIES_THICK, 70f * RegionalGenerationManager.ALTITUDE_CHILL, seaLevelHeight }, snowColour(),
+                (float) Planet.radius());
     }
 
     /**
@@ -4535,21 +4508,14 @@ private static class SpeciesConfig {
      */
     private float[] heatmapRange(Overlay overlay) {
         return heatmapRanges.computeIfAbsent(overlay, o -> {
-            java.util.function.BiFunction<Float, Float, Float> measure = heatmapMeasure(o);
-            float lowest = Float.MAX_VALUE, highest = -Float.MAX_VALUE;
-            int n = 300;
-            for (int a = 0; a < n; a++) {
-                for (int b = 0; b < n; b++) {
-                    float x = (a + 0.5f) / n * TOTAL_REGION_WIDTH - TOTAL_REGION_WIDTH * 0.5f;
-                    // (over the part of the planet the map shows, not the polar caps beyond it)
-                    float z = ((b + 0.5f) / n * 2f - 1f) * Planet.clipHalfHeight();
-                    if (TerrainMesh.getLayeredHeight(x, z, worldNoise) <= seaLevelHeight) continue;
-                    float v = measure.apply(x, z);
-                    lowest = Math.min(lowest, v);
-                    highest = Math.max(highest, v);
-                }
-            }
-            return lowest > highest ? new float[] { 0f, 1f } : new float[] { lowest, highest };
+            RegionalFactor.Sampler measure = heatmapMeasure(o);
+            float[] span = { Float.MAX_VALUE, -Float.MAX_VALUE };
+            forEachMapLand(90_000, d -> {
+                float v = measure.sample(d);
+                span[0] = Math.min(span[0], v);
+                span[1] = Math.max(span[1], v);
+            });
+            return span[0] > span[1] ? new float[] { 0f, 1f } : span;
         });
     }
 
@@ -4587,19 +4553,17 @@ private static class SpeciesConfig {
     }
 
     /** How much rain falls at a place, 0 driest to 1 wettest (see RegionalGenerationManager.rainfallMap). */
-    private float rainfallAt(float x, float z) {
-        int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
-        return regionalManager.rainfallMap.evaluate(cx, cz, x, z);
+    private float rainfallAt(SpherePosition place) {
+        return regionalManager.rainfallMap.evaluateAt(place);
     }
 
-    private float temperatureAt(float x, float z) {
-        int cx = (int) Math.floor(x / PHYSICAL_CHUNK_SIZE), cz = (int) Math.floor(z / PHYSICAL_CHUNK_SIZE);
-        float warmth = regionalManager.temperatureMap.evaluate(cx, cz, x, z);
+    private float temperatureAt(SpherePosition place) {
+        float warmth = regionalManager.temperatureMap.evaluateAt(place);
         float celsius = -30f + 70f * warmth;
-        double latitude = Planet.latitude(z);
+        double latitude = Planet.latitude(place);
         double tilt = Math.toRadians(Math.max(1.0, planetAxialTiltDegrees));
         celsius += 14f * (float) (Math.sin(sunDeclination) / Math.sin(tilt) * Math.sin(latitude));
-        double hour = Planet.longitude(x) - noonLongitude;
+        double hour = Planet.longitude(place) - noonLongitude;
         hour = Math.atan2(Math.sin(hour), Math.cos(hour));
         celsius += 7f * (float) Math.cos(hour - 0.6);
         return celsius;
@@ -4650,10 +4614,10 @@ private static class SpeciesConfig {
         return this.totalNationsCount;
     }
 
-    public void setTelepot(float teleportX, float teleportZ) {
+    /** Developer mode: sends the player to a place (picked on the map), once the frame comes round. */
+    public void setTelepot(GeodesicChunkGrid.Direction place) {
+        this.teleportTo = place;
         this.isToTeleport = true;
-        this.teleportX = teleportX;
-        this.teleportZ = teleportZ;
     }
 
     private Texture createAlphabetAtlas(GL3 gl, int alphabetId) {

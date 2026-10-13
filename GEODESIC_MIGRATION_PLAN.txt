@@ -71,10 +71,12 @@ D11 Toolkit (Phase 1): SphereFrame (rigid toWorld/toLocal for one object;
     java -cp "target/classes;lib/jogamp-fat.jar" SphereToolkitCheck
     (exit 1 on failure).
 D12 Regional factors (RegionalFactor: species habitats and abundance, grass,
-    leaf colour, urbanness) stay sampled in map coordinates until Phase 5 moves
-    them to 3D (D7); the world reads them only through
-    RegionalFactor.evaluateAt(position, chunkSize), so the map remains the
-    authority and what grows where matches its overlays. Counts per cell come
+    leaf colour, climate, wealth) are sampled by direction since Phase 5
+    (Sampler.sample(Direction); evaluate(direction), evaluateAt(position)); the
+    map's heatmaps sample the same factors at each pixel's direction, so what
+    grows where still matches the overlays. The nation map (borders, and the
+    border fences and border poverty traced on its grid) stays the map's raster
+    and is the authority for borders, read through MapProjection. Counts per cell come
     from the factor at the cell and the cell's own area (Cell.area(): level 7
     cells differ by up to ~1.6x, so no per-level constant). Copilot's separate
     sphere habitat model (OrganismSpecies native presence) is deleted.
@@ -117,10 +119,25 @@ D13 Chart bridges: while a system is still on the chart (buildings, roads,
     Since Phase 4 part 2 the people are on the sphere too and every people/vehicle bridge is
     gone (with the chart Collision, Frustum, SphereRender.chartAnchor, RoadSegment.chartStart/
     End, the (x, z) overloads of isRoadLocation/isBuildingLocation/isPlotLocation/
-    walkingSurfaceY/roadSurfaceY/obstaclesNear). What is left on the chart, all Phase 5 or
-    D12: sign.position and the sign maps (chartRoute, chartMidX, the shop door put on the
-    chart in scheduleMap), forEachBuilding/chartAt(house) for the maps, areaRichness(x, z),
-    getUrbanness(x, z), the border fences traced on the nation map's grid.
+    walkingSurfaceY/roadSurfaceY/obstaclesNear). Since Phase 5 part 1 areaRichness(x, z),
+    getUrbanness(x, z), Camera.getChartPosition and the listener's chart() are gone too.
+    Since Phase 5 part 2 the maps and sign maps are drawn from world shapes too (sign.position,
+    chartRoute, chartMidX, House.x/z/rotationY, chartAt/chartPoint/onChart and RoadPath.chart
+    are gone). All that is left on the chart is D12: the border fences traced on the nation
+    map's grid and the border poverty read from it (InfrastructureManager's "nation map" section).
+D14 Map and rasters (Phase 5). MapProjection holds the Mercator chart (moved out of
+    Planet) and the one conversion pair: toMap(direction | place) -> map {x, z}
+    (world units from the map's middle; image (u, v) = x / width + 1/2, z / width
+    + 1/2) and direction(x, z). Only the map classes, guess placement, the developer
+    teleport and the nation map (D12) use it. Fields precomputed over the whole sphere
+    are SphereRasters: cube maps in OpenGL's layout, looked up by direction, sampled
+    bilinearly across face edges (no seams, no pole), and the same texels upload as a
+    GL_TEXTURE_CUBE_MAP (seamless) for shaders: the distance to the sea and ground
+    height (RegionalGenerationManager, 512 a side) and the sea's wave field on the same texels
+    (wave size, distance to shore; RG32F), the snow climate (256), the soil
+    colour (64). Distances are true distances along the ground (nearest-seed
+    propagation), in world units, not chunk steps. Cube samplers have fixed texture
+    units (Shader.SNOW_UNIT 11, SOIL_REGION_UNIT 6, WAVE_UNIT 12), set at link time.
 
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
@@ -251,15 +268,26 @@ CHECK: a car driving between two latitudes keeps its size and speed.
 -------------------------------------------------------------------------------
 PHASE 5  MAP, HEATMAPS, GAME FLOW
 -------------------------------------------------------------------------------
-[ ] One conversion pair: direction <-> map (u, v) (Mercator), used only by
-    BirdsEyeMaps/MapPanel/MapTiles and guess placement.
-[ ] Heatmaps sampled from the 3D world functions at each map pixel's direction.
-[ ] Buildings/roads layers drawn by projecting world shapes to the map.
-[ ] Guess scoring by great-circle distance; pin/goal stored as directions.
-[ ] Items: altimeter (height above sea level at the player), compass
+Parts: (1) the conversion pair; the regional factors, water distance and climate on
+directions (D12 ends, D14); heatmaps per map pixel; the snow climate and soil maps as
+cube maps; thermometer, weather, sea level and April's ocean on the sphere.
+(2) map layers and sign maps from world shapes; guess, pin and goal as directions;
+items; round flow.
+[x] One conversion pair: direction <-> map (u, v) (Mercator), used only by
+    BirdsEyeMaps/MapPanel/MapTiles and guess placement. (MapProjection, D14.)
+[x] Heatmaps sampled from the 3D world functions at each map pixel's direction.
+    (And the regional factors themselves by direction: D12, D14.)
+[x] Buildings/roads layers drawn by projecting world shapes to the map.
+    (And the sign maps: laid out north up round the sign in true distances, see LOG.)
+[x] Guess scoring by great-circle distance; pin/goal stored as directions.
+[x] Items: altimeter (height above sea level at the player), compass
     (north = local frame's north), identification kit lens projection.
-[ ] Shop/round flow, spawn per round, April ocean percentage (computed on the
-    sphere).
+    (Reviewed in part 2: nothing left on the chart; see LOG.)
+[x] Shop/round flow, spawn per round, April ocean percentage (computed on the
+    sphere). (Reviewed in part 2 and a round change launched; see LOG.)
+[x] Added in part 2: the sea as it was before the migration (see LOG).
+CHECK: map layers, sign maps, sea and a round change in launches.
+[x] Passed 2026-10-13 (see LOG). Phase 5 is complete; Phase 6 can start.
 
 -------------------------------------------------------------------------------
 PHASE 6  CLEAN-UP
@@ -791,3 +819,123 @@ LOG
     window glass up close. Frame rate in the dense equator town 18-19 FPS (24-29 in Phases
     2-3, with fewer things drawn: doors, lights, people's sphere collision are new); 29-30 at
     70 N. Profile in Phase 6's frame-rate check if it holds.
+2026-10-13  PHASE 5 PART 1 DONE (uncommitted): the map's conversion pair; factors and climate by direction.
+  - MapProjection (D14): the Mercator chart moved out of Planet (CLIP_LATITUDE, chartX/Z, the
+    join, wrapX, aspect...) with the one pair toMap / direction. Planet keeps the size, axes, sun.
+    Planet.surfaceDistance, Planet.mercatorPosition/spherePosition, Camera.getChartPosition and the
+    listener's chart() are gone.
+  - SphereRaster (new, D14): cube-map raster by direction; distanceTo = true great-circle distance
+    to marked texels. RegionalGenerationManager on it: the distance to the sea and ground height
+    over the whole sphere (512 a side, 0.5 s), replacing the chart chunk BFS (which counted 4-way
+    chart steps: Manhattan, and 2-4 times too many above 50 degrees). The dead wave map (texture
+    never bound) and buildWaveMap are deleted; the shore/swim dev views look for open sea instead.
+  - RegionalFactor.Sampler takes a Direction (D12 ended): temperature, rainfall, noise maps, water
+    preference (now in world units: grass 8000, species' own, settlements' coast 1500 / moisture
+    9000), species habitats, flora abundance, wealth. Heatmaps sample each map pixel's direction
+    (in parallel); their ranges, the grass spans and the altimeter's top sample evenly over the
+    sphere within the map's latitudes. The thermometer and the weather read the climate by
+    direction (two chart bridges gone). Sea level and April's ocean sample by direction.
+  - Guess: MapPanel keeps the goal and pin as directions (pixels only for drawing); score from the
+    great-circle angle. The developer teleport passes a direction.
+  - Shaders: the snow climate is a cube map (256) read in the place's direction in fs_standard_d,
+    fs_rock and fs_solid (fs_solid, the walls and roofs, still read the chart texture with chart
+    x/z and world y as up: roofs got the wrong climate since Phase 3); sphereLongitudeOffset and
+    the chart maths in shaders gone. The soil colour map is a cube map (64) and the terrain uses it
+    again: Copilot's sphere path had set useSoilRegions 0, which also turned off the bare rock on
+    steep slopes (found here; pre-migration feature no phase owned). The rock's noise was a sine
+    hash on planet-centred x, z (smeared, flat along x): now exact 3D value noise. Cube samplers get
+    their units at link time (else validation fails: two sampler types on unit 0).
+  - Towns moved a little (habitability now uses true distances): 340 towns, by band 42 58 85 60
+    52 21 15 7 0 (was 45 60 87 64 45 22 13 4 0), 10674 houses (was 10609). The old equator test
+    town (3.297, 16.389) is now a village; PlanningCheck uses 4.841, 78.397 (radius 482) against
+    67.461, 139.716 (radius 457): like-sized towns at last. Parked-car floor 15 (18 found, none
+    in a building or off the road).
+  - Checks: SphereToolkitCheck 43988 pass (adds the map pair round trips, east/north on the map,
+    and the raster: texels, neighbours across faces, seamless sampling, distances vs brute force).
+    PlanningCheck 423012 pass (adds: distance to the sea within 81 units of a search at 60 places,
+    30 beyond 50 degrees; climate defined at the poles and equal across the map's join).
+  - Launches (seed 123): 70 N 27.5 E: temperature, rainfall and wealth maps right (cold south,
+    towns bright, borders poorer); ground and rocks under (pink: this world's sea tint) snow with
+    gaps, confirmed with a TEMP red snow colour, removed; guess, shop, next: 138 points, next round
+    built in 2.0 s. Equator town 4.841, 78.397: houses, signs, people, grass, roofs bare, 27 FPS.
+    67.461 N 139.716 E: snow, cleared roads, houses, fence, people, open door, 18 FPS (a close
+    view of buildings and people, against an open one at the equator: not like for like yet).
+    World ready 75-97 s. No exceptions, no shader errors.
+  - Left for part 2: map layers (roads, buildings, shops) and sign maps from world shapes (the
+    D13 bridges listed there), compass and identification kit lens, shop/round flow review.
+    Seen, not fixed: track grit still uses planet-centred x, z (like the old rock noise);
+    fs_grass_instanced and fs_terrain keep dead chart snow code (Phase 6).
+2026-10-13  PHASE 5 PART 2 DONE (uncommitted): map layers and sign maps from world shapes; the sea; Phase 5 complete.
+  - Maps: InfrastructureManager.BuildingVisitor gives each footprint's frame and outline (frame x, z);
+    forEachBuildingNear / forEachRoadPathNear search the CellIndexes. BirdsEyeMaps projects every road
+    point and footprint corner with MapProjection.toMap once per world (MapShapes; x run on unbroken
+    from the first point, drawn again a whole way round where a shape crosses the join); the shop
+    glow is a true 120 units (times 1/cos latitude on the map). Layers and zoomed tiles share it.
+  - Sign maps (SignMap.render): laid out north up in SphereFrame.at(the map's middle), true distances
+    along the ground (fromSphere / toSphere), so the same at every latitude. Found: the land on them
+    was the old 2D chart noise (getLayeredHeight(x, z)), not the sphere's ground; now sampled on the
+    sphere. Footprints in their own shapes (were rectangles); the route from routes().route direct.
+  - Gone: RoadPath.chart/toChart, House.x/z/rotationY, sign.position (createSign/createWallSign lose
+    the chart argument), chartMidX, chartRoute, chartVector, chartAt, chartPoint, onChart.
+    borderGapAt(SpherePosition) reads the nation map (D12) for a house.
+  - Items reviewed: the compass needle is held in the local frame (north = local -z, its pull
+    cos latitude); the lens projects through the camera's local frame (lastSceneViewProjection =
+    localViewProjection) with trees and creatures put in it by toLocal, hidden-by-land test along
+    the true line of sight; the altimeter reads groundHeightAt minus the sea level. Nothing to change.
+  - Round flow reviewed: the goal is the spawn's direction (held back until the results close), the
+    next pod spot is chosen and prefetched on the sphere, resetToNextRound clears every sphere stream;
+    April's ocean on the sphere since part 1. Nothing to change.
+  - The sea (pre-migration feature no phase owned; user report: jagged angular coast, wrong look).
+    Copilot's geodesic water patch (level-6 cells, 8 segments, ~56 units; triangles dropped where any
+    vertex was on land, hence the zigzag coast and the sky sliver from Phase 1) and its stand-in shader
+    are gone, with the dead flat vs_water/fs_water and waterPlaneModel. The old way is back on the
+    sphere: a camera-centred grid (256 a side, ~3 units apart underfoot, out to FAR_PLANE) laid along
+    the ground in the eye's frame and wrapped onto the sea's sphere in vs_sphere_water (relative to
+    the eyes for precision); the terrain hides it where higher, so the coast is the sea surface meeting
+    the noisy ground. fs_sphere_water is fs_water ported: depth-tinted shallows from the terrain depth
+    pre-pass, the sea texture's ripples (triplanar on planet-centred position), sky reflection, glitter,
+    whitecaps and shore foam. Gerstner waves in each point's east/up/south frame from a wave map on the
+    field's SphereRaster (RegionalGenerationManager.buildWaveField: body sizes by flood fill over
+    texels, true distance to shore, 20 four-neighbour blur passes), uploaded as an RG32F cube map
+    (Shader.WAVE_UNIT 12). The swimmer bobs on waveSurfaceAt(place) again (was flat sea level).
+    Field build now 1.3 s (was 0.5 s).
+  - Checks: SphereToolkitCheck 43988 pass. PlanningCheck 336141 pass (fewer: the road chart-copy checks
+    went with the copy; building checks now use the frame and outline; adds waves: within their
+    greatest height of the sea at 2687 sea places, 2261 with waves over 1 unit).
+  - Launches (seed 123): 67.461 N 139.716 E with ROADS, BUILDINGS, SHOPS zoomed 16x on the town: roads,
+    footprints and shop glows line up; the coast: smooth shoreline, see-through shallows, swell and
+    ripples, 21 FPS. Equator town, signshot: 3 of 8 signs carry maps (land, roads, footprints, the
+    "here" mark, a shop badge). Normal spawn, guess/shop/next: 772 points, next round built in
+    10.8 s over 291 frames, 56 FPS. World ready 73-79 s. No exceptions, no shader errors.
+  - Not looked at: the sea from a mountain top past FAR_PLANE (the grid stops there, as the terrain
+    does); swimming in a launch; the drive in PlanningCheck now prints street top speed 0.0 (its route
+    changed when towns moved in part 1; not a failing check, not investigated).
+2026-10-13  PHASE 5 APPEARANCE FIXES (uncommitted; pre-migration looks no phase owned, user report).
+  - Sky: Copilot's fs_sphere_sky sampled the sky texture by the WORLD direction (no sky rotation,
+    world y as up), so away from the north pole the sky showed the texture's grey lower half. It now
+    uses skyRotation in world form, exactly as the old sky dome's UVs (InsideSphere) and every
+    reflection's skyAlong do. Its fixed pale clouds are gone.
+  - Clouds, rain, snow: the old Weather ported to the sphere (SphereWeather rewritten). Cloud noise as
+    before (900-unit features, streaks along the wind, darkness, sun-lit edges, light through thin
+    cloud, haze at the horizon), laid out on the day's wind circle: the great circle through the
+    round's start along the wind; (u, v) = along it / off it in ground distance, so it is the same at
+    every latitude, drift is a turn about the circle's axis, and the seam is on the far side. Rain
+    follows the dark cloud round about overhead again (darknessAround; the stand-in used bare noise).
+    Drops and flakes as before (2600, streaks and splashes, flakes 0.9 units sized by distance, the
+    oceans' tint), kept in (u, v, height) and drawn camera-relative. Shaders fs_sphere_cloud,
+    vs/fs_sphere_rain, vs/fs_sphere_snow (the old ones); the stand-in precipitation shaders deleted.
+  - The haze's horizon is the sea's horizon: on this small planet it dips ~3 degrees below level, and
+    haze from level down to it showed as a grey band over the far sea.
+  - Sea seam (user report: a straight line out to the horizon, see-through to one side): the sea
+    was drawn without writing depth, so far crests drew over near ones (a sawtooth with the haze
+    showing through) where the water was opaque. It writes depth again, as the old water plane did.
+    Also: grid reach back to the old 2200 (finer far grid), the crests' sideways push fades out from
+    250 to 700 units, and the wave direction is measured over 4 texels so waves die away where two
+    coasts' slopes meet rather than tearing the surface there (waveSurfaceAt matches).
+  - Launches at 67.461 N 139.716 E: bright sky, white streaked clouds, snow falling as soft flakes,
+    the sea its own colour to its horizon, no seam. No exceptions.
+  - Grass lying flat (user report): not orientation (blades stand on the planet's radial up), but
+    shape: blades were 11-24 units wide at any height, so the shortest (2.5 cm, 0.25 units tall) were
+    wide strips along the ground. Shortest grass now 7 cm (GRASS_SHORTEST), and blades under ~30 cm
+    are narrowed in proportion (vs_grass_instanced, down to a quarter). Seen at 70 N looking down:
+    upright tufts.

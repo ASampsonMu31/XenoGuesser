@@ -51,6 +51,10 @@ void main() {
     vec3 localVertexPos = aPos;
     localVertexPos.y *= finalBladeHeight;
     localVertexPos.x *= 0.7 + 0.8 * widthHash;
+    // Short grass is narrower too (full width from about 30 cm up), so a short blade is still a
+    // blade standing up and not a wide strip lying along the ground
+    // (the mesh is GRASS_BLADE_HEIGHT, 4.8 units, tall before its height scales it)
+    localVertexPos.x *= clamp(finalBladeHeight * 4.8 / 3.0, 0.25, 1.0);
     // Blades lean a little either way, more at the tip
     localVertexPos.x += (leanHash - 0.5) * 0.35 * localVertexPos.y;
 

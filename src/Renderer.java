@@ -148,7 +148,6 @@ public class Renderer {
     shader.setVec3(gl, "sphereCamera", new Vector3((float) spherePosition.x(),
             (float) spherePosition.y(), (float) spherePosition.z()));
     shader.setFloat(gl, "planetRadius", (float) Planet.radius());
-    shader.setFloat(gl, "sphereLongitudeOffset", (float) Planet.centreLongitude());
     render(gl, mesh, modelMatrix, shader, material, lights, ambientLight, nightProportion,
             camera, camera.getSphereViewProjection(), new Vector3(0f, 0f, 0f), true);
   }

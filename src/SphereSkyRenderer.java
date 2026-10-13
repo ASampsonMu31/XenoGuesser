@@ -1,9 +1,10 @@
 import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL3;
 import com.jogamp.opengl.util.texture.Texture;
+import com.xenoguesser.math.Matrix4;
 import com.xenoguesser.math.Vector3;
 
-/** Draws the environment and a drifting cloud shell from the sphere-native camera position. */
+/** Draws the sky behind everything: the sky texture turned by the sky's rotation (the clouds go over it: SphereWeather). */
 public final class SphereSkyRenderer {
     private final Shader shader;
     private final int[] vertexArray = new int[1];
@@ -15,8 +16,7 @@ public final class SphereSkyRenderer {
     }
 
     public void render(GL3 gl, Camera camera, Texture skyTexture, Vector3 fallbackSky,
-            float aspect, float time, float cloudiness) {
-        SpherePosition position = camera.getSpherePosition();
+            float aspect, Matrix4 skyRotation) {
         Vector3 forward = camera.getSphereForwardDirection();
         Vector3 up = camera.getSphereUpDirection();
         Vector3 right = Vector3.crossProduct(forward, up);
@@ -35,16 +35,12 @@ public final class SphereSkyRenderer {
             gl.glActiveTexture(GL.GL_TEXTURE0);
             skyTexture.bind(gl);
         }
-        shader.setVec3(gl, "cameraPosition", new Vector3((float) position.x(),
-                (float) position.y(), (float) position.z()));
         shader.setVec3(gl, "cameraForward", forward);
         shader.setVec3(gl, "cameraRight", right);
         shader.setVec3(gl, "cameraUp", correctedUp);
         shader.setVec3(gl, "fallbackSky", fallbackSky);
         shader.setFloat(gl, "aspectRatio", aspect);
-        shader.setFloat(gl, "time", time);
-        shader.setFloat(gl, "cloudiness", cloudiness);
-        shader.setFloat(gl, "planetRadius", (float) Planet.radius());
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
         gl.glBindVertexArray(vertexArray[0]);
         gl.glDrawArrays(GL.GL_TRIANGLES, 0, 3);
         gl.glBindVertexArray(0);

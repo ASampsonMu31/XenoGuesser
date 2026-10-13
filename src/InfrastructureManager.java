@@ -220,11 +220,6 @@ public class InfrastructureManager {
         private int rank() {
             return culDeSac ? 3 : roadClass.rank;
         }
-
-        /** Chart bridge (D13) for the sign maps (Phase 5): the middle's x on the chart. */
-        private float chartMidX() {
-            return (float) Planet.mercatorPosition(frame.origin())[0];
-        }
     }
 
     /**
@@ -234,11 +229,6 @@ public class InfrastructureManager {
      */
     private static final class House {
         private SphereFrame frame;
-        // Chart bridge (D13): where the house is on the Mercator chart and how it's turned there
-        // (degrees, as Matrix4Transform.rotateAroundY), for what is still laid out on the chart
-        private float x;
-        private float z;
-        private float rotationY;
         private int nationId;
         private float sizeScale;
         private float width;
@@ -332,8 +322,11 @@ public class InfrastructureManager {
 
     @FunctionalInterface
     public interface BuildingVisitor {
-        /** A footprint: where its middle is, how it's turned, its size, and its outline round its middle in its own x and z. */
-        void visit(float x, float z, float rotationY, float width, float depth, int nationId, float[][] outline);
+        /**
+         * A footprint: its frame (origin on the datum at its middle, turned as the building is,
+         * local +z the door side) and its outline round the middle in that frame's x and z.
+         */
+        void visit(SphereFrame frame, float[][] outline, int nationId);
     }
 
     public InfrastructureManager(long seed, int numNations, NationGenerationManager nationManager,
@@ -781,8 +774,6 @@ public class InfrastructureManager {
         islandWealth = builder;
         roadNetwork.addAll(builder.build());
         straightenCrossings();
-        // (the maps, sign maps, route graph and border checks still read the roads on the chart)
-        for (RoadPath path : roadNetwork) path.toChart();
         deadEnds.addAll(builder.getDeadEnds());
 
         for (int pathIndex = 0; pathIndex < roadNetwork.size(); pathIndex++) {
@@ -840,7 +831,7 @@ public class InfrastructureManager {
         for (List<RoadSegment> bucket : roadSegmentsByCell.values()) {
             for (RoadSegment segment : bucket) {
                 // (within the map's top and bottom edges)
-                boolean playable = Math.abs(Planet.latitude(segment.from)) < Math.abs(Planet.latitude(regionWidth * 0.5));
+                boolean playable = Math.abs(Planet.latitude(segment.from)) < Math.abs(MapProjection.latitude(regionWidth * 0.5));
                 if (playable && segment.start.y > seaLevel + 0.5f && segment.end.y > seaLevel + 0.5f) {
                     landSegments.add(segment);
                 }
@@ -859,6 +850,16 @@ public class InfrastructureManager {
         }
     }
 
+    /** Visits (once each) every road polyline with a segment within a true distance of a place. */
+    public void forEachRoadPathNear(SpherePosition place, float distance, RoadPathVisitor visitor) {
+        java.util.BitSet seen = new java.util.BitSet(roadNetwork.size());
+        for (RoadSegment segment : segmentsNear(SphereMath.atAltitude(place, 0.0), distance)) {
+            if (seen.get(segment.pathIndex)) continue;
+            seen.set(segment.pathIndex);
+            visitor.visit(roadNetwork.get(segment.pathIndex));
+        }
+    }
+
         /**
      * A spot in the road in front of a random house, looking at it. A developer aid for
      * inspecting buildings; null if the world has no houses.
@@ -868,7 +869,7 @@ public class InfrastructureManager {
             return null;
         }
         House house = houses.get(rand.nextInt(houses.size()));
-        for (int attempt = 0; attempt < 50 && Math.abs(Planet.latitude(house.frame.origin())) > Math.abs(Planet.latitude(regionWidth * 0.5)); attempt++) {
+        for (int attempt = 0; attempt < 50 && Math.abs(Planet.latitude(house.frame.origin())) > Math.abs(MapProjection.latitude(regionWidth * 0.5)); attempt++) {
             house = houses.get(rand.nextInt(houses.size()));
         }
         float distance = house.depth * 0.5f + house.setback + Math.max(house.width, house.depth) * 1.6f;
@@ -973,23 +974,28 @@ public class InfrastructureManager {
     public void forEachShop(BuildingVisitor visitor) {
         for (Shop shop : shops) {
             House house = shop.house;
-            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId,
-                    footprint(styleOf(house), house.width, house.depth, 0f, 0f));
+            visitor.visit(house.frame, footprint(styleOf(house), house.width, house.depth, 0f, 0f), house.nationId);
         }
     }
 
     /** Visits every building footprint in the region, in its own shape (box, round or many-sided); extensions are visited as their own rectangle. */
     public void forEachBuilding(BuildingVisitor visitor) {
-        for (House house : houses) {
-            visitor.visit(house.x, house.z, house.rotationY, house.width, house.depth, house.nationId,
-                    footprint(styleOf(house), house.width, house.depth, 0f, 0f));
-            if (house.extensionSide != 0) {
-                float[] centre = chartAt(house, house.extensionSide * (house.width + house.extensionWidth) * 0.5f,
-                        (house.extensionDepth - house.depth) * 0.5f);
-                float hw = house.extensionWidth * 0.5f, hd = house.extensionDepth * 0.5f;
-                visitor.visit(centre[0], centre[1], house.rotationY, house.extensionWidth, house.extensionDepth, house.nationId,
-                        new float[][] { { -hw, hd }, { hw, hd }, { hw, -hd }, { -hw, -hd } });
-            }
+        for (House house : houses) visitBuilding(house, visitor);
+    }
+
+    /** Visits every building footprint whose plot comes within a true distance of a place. */
+    public void forEachBuildingNear(SpherePosition place, float distance, BuildingVisitor visitor) {
+        houseIndex.forEachNear(SphereMath.atAltitude(place, 0.0), distance, house -> visitBuilding(house, visitor));
+    }
+
+    private void visitBuilding(House house, BuildingVisitor visitor) {
+        visitor.visit(house.frame, footprint(styleOf(house), house.width, house.depth, 0f, 0f), house.nationId);
+        if (house.extensionSide != 0) {
+            // (its own frame, the house's axes at the extension's middle)
+            SphereFrame frame = house.frame.movedTo(SphereMath.atAltitude(world(house,
+                    house.extensionSide * (house.width + house.extensionWidth) * 0.5f, 0f, (house.extensionDepth - house.depth) * 0.5f), 0.0));
+            float hw = house.extensionWidth * 0.5f, hd = house.extensionDepth * 0.5f;
+            visitor.visit(frame, new float[][] { { -hw, hd }, { hw, hd }, { hw, -hd }, { -hw, -hd } }, house.nationId);
         }
     }
 
@@ -1307,8 +1313,6 @@ public class InfrastructureManager {
             for (int i = 0; i < path.points.size(); i++) {
                 if (path.points.get(i) == endPoint) {
                     path.points.remove(i);
-                    // (the chart copy, point for point, for the maps)
-                    if (i < path.chart.size()) path.chart.remove(i);
                     break;
                 }
             }
@@ -3408,7 +3412,7 @@ public class InfrastructureManager {
             float yc = y1 + 0.5f + fasciaH * 0.5f;
             float[] at = add(wallPoint(front, 0.5f, yc), scale3(n, 0.45f + standOff(front, 0.5f, yc, fasciaH)));
             float width = Math.min(70f, front.length * (1f - 2f * margin) * 0.95f);
-            sign = InfrastructureObject.createWallSign(fixedTo(house, at, n), chartVector(house, at), house.nationId,
+            sign = InfrastructureObject.createWallSign(fixedTo(house, at, n), house.nationId,
                     width, fasciaH, true, false, null, 0f, 0f);
         } else {
             float side = rand.nextBoolean() ? 0.06f : 0.94f;
@@ -3417,7 +3421,7 @@ public class InfrastructureManager {
             float height = Math.max(8f, Math.min(18f, wallTop - bottom - 1f));
             float[] at = add(wallPoint(front, side, bottom + height * 0.5f), scale3(n, bladeW * 0.5f + 0.6f));
             float[] along = normalise(sub(front.bottomB, front.bottomA));
-            sign = InfrastructureObject.createWallSign(fixedTo(house, at, along), chartVector(house, at), house.nationId,
+            sign = InfrastructureObject.createWallSign(fixedTo(house, at, along), house.nationId,
                     bladeW, height, true, true, null, 0f, 0f);
         }
         System.arraycopy(name, 0, sign.titleString, 0, name.length);
@@ -3670,7 +3674,7 @@ public class InfrastructureManager {
             float tilt = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, wall.normal[1]))));
             float[] at = add(wallPoint(wall, 0.5f, yc), scale3(wall.normal, curved ? 0.45f : 0.3f));
             int maxGlyphs = Math.max(1, mainListener != null ? mainListener.getNationAtlasSize(house.nationId) : 10);
-            InfrastructureObject poster = InfrastructureObject.createWallSign(fixedTo(house, at, n), chartVector(house, at), house.nationId,
+            InfrastructureObject poster = InfrastructureObject.createWallSign(fixedTo(house, at, n), house.nationId,
                     w, h, false, false, randomText(rand, maxGlyphs, 40, 120), tilt, radius);
             decorateSign(poster, rand, maxGlyphs, true);
             objects.add(poster);
@@ -3783,12 +3787,6 @@ public class InfrastructureManager {
     private static SphereFrame fixedTo(House house, float[] at, float[] face) {
         double turn = Math.atan2(face[2], face[0]) - Math.PI * 0.5;
         return house.frame.rotated(turn).movedTo(house.frame.toWorld(at[0], house.baseY + at[1], at[2]));
-    }
-
-    /** Chart bridge (D13): a house-local point (y above the house's base) on the chart, for the signs. */
-    private static Vector3 chartVector(House house, float[] p) {
-        float[] chart = chartPoint(house, p[0], house.baseY + p[1], p[2]);
-        return new Vector3(chart[0], chart[1], chart[2]);
     }
 
     /** A flat four-cornered face in house-local space, wound to face along outward. */
@@ -3955,20 +3953,16 @@ public class InfrastructureManager {
     // biggest are this much richer than the nation's usual towns
     private static final float BIG_CITY_FROM = 0.3f, BIG_CITY_TO = 0.75f, BIG_CITY_WEALTH = 0.8f;
 
-    public float areaRichness(int nationId, float urbanness, float x, float z) {
-        return areaRichness(nationId, urbanness, sphere(x, z));
-    }
-
-    private float areaRichness(int nationId, float urbanness, SpherePosition place) {
+    public float areaRichness(int nationId, float urbanness, SpherePosition place) {
         RoadNetworkBuilder islands = islandWealth;
         float island = islands == null ? Float.NaN : islands.islandRichnessAt(place);
         float base = Float.isNaN(island) ? nationRichness(nationId) : island;
         // (big cities draw the money: the bigger the city, the richer its people)
         float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, settlementManager.getCitySize(SphereMath.direction(place)));
         // (the fenced borders are measured on the nation map, D12)
-        double[] onMap = Planet.mercatorPosition(place);
+        double[] onMap = MapProjection.toMap(place);
         return Math.min(1f, base * (0.55f + 0.9f * urbanness) * (1f + BIG_CITY_WEALTH * big))
-                * (1f - BORDER_POVERTY * borderBlight((float) onMap[0], (float) onMap[2]));
+                * (1f - BORDER_POVERTY * borderBlight((float) onMap[0], (float) onMap[1]));
     }
 
     // How much of their wealth people right on a fenced border have lost, and how far (in
@@ -3981,6 +3975,12 @@ public class InfrastructureManager {
         if (gap >= BORDER_POVERTY_REACH) return 0f;
         float t = 1f - gap / BORDER_POVERTY_REACH;
         return t * t * (3f - 2f * t);
+    }
+
+    /** The distance from a place to the nearest fenced border, in nation-map cells (D12). */
+    private float borderGapAt(SpherePosition place) {
+        double[] onMap = MapProjection.toMap(place);
+        return borderGapAt((float) onMap[0], (float) onMap[1]);
     }
 
     /** The distance to the nearest fenced border, in nation-map cells, blended between cells. */
@@ -4808,15 +4808,15 @@ public class InfrastructureManager {
     private void borderFences(Map<Integer, NationBatch> batches, long cellId) {
         GeodesicChunkGrid.Cell cell = batchGrid.cell(cellId);
         // The cell's extent on the chart, its x kept beside its middle's across the map's join
-        double[] middle = Planet.mercatorPosition(SphereMath.atAltitude(cell.centre(), 0.0));
-        double minX = middle[0], maxX = middle[0], minZ = middle[2], maxZ = middle[2];
+        double[] middle = MapProjection.toMap(cell.centre());
+        double minX = middle[0], maxX = middle[0], minZ = middle[1], maxZ = middle[1];
         for (GeodesicChunkGrid.Direction corner : new GeodesicChunkGrid.Direction[] { cell.a(), cell.b(), cell.c() }) {
-            double[] p = Planet.mercatorPosition(SphereMath.atAltitude(corner, 0.0));
-            double x = middle[0] + Planet.wrapX(p[0] - middle[0]);
+            double[] p = MapProjection.toMap(corner);
+            double x = middle[0] + MapProjection.wrapX(p[0] - middle[0]);
             minX = Math.min(minX, x);
             maxX = Math.max(maxX, x);
-            minZ = Math.min(minZ, p[2]);
-            maxZ = Math.max(maxZ, p[2]);
+            minZ = Math.min(minZ, p[1]);
+            maxZ = Math.max(maxZ, p[1]);
         }
         // (its sides bow a little on the chart)
         double pad = 0.1 * Math.max(maxX - minX, maxZ - minZ) + 2.0 * BORDER_STEP;
@@ -4877,7 +4877,7 @@ public class InfrastructureManager {
     private boolean straddlesFencedBorder(House house) {
         // (nor on a border check's booth)
         if (!boothIndex.near(house.frame.origin(), house.plotRadius() + 6f).isEmpty()) return true;
-        if (borderGapAt(house.x, house.z) > 3.5f) return false;
+        if (borderGapAt(house.frame.origin()) > 3.5f) return false;
         float margin = 4f;
         float[][] corners = { { house.plotMinX - margin, house.plotMinZ - margin }, { house.plotMaxX + margin, house.plotMinZ - margin },
                 { house.plotMaxX + margin, house.plotMaxZ + margin }, { house.plotMinX - margin, house.plotMaxZ + margin } };
@@ -4977,7 +4977,7 @@ public class InfrastructureManager {
         // cells), fewer where the chart's grid is drawn tighter, so they stand as far apart in
         // true distance everywhere
         int every = 2 * Math.max(1, Math.round(chartStretch(fromChart[1])));
-        float postX = (float) Planet.wrapX(fromChart[0]);
+        float postX = (float) MapProjection.wrapX(fromChart[0]);
         if (Math.floorMod(Math.round(postX * 0.37f) + Math.round(fromChart[1] * 0.61f), every) == 0) {
             addBox(mesh, a[0], a[1] - 1.5f, a[2], dirX, dirZ, 0.45f, 0.45f, hgt + 1.5f);
             // Its arm leaning out at the top, carrying the wire
@@ -5092,7 +5092,7 @@ public class InfrastructureManager {
             return null;
         }
         SpherePosition at = SphereMath.atAltitude(foot, signY);
-        return createSign(house.frame.movedTo(at), onChart(at, house.x), house.nationId, rand);
+        return createSign(house.frame.movedTo(at), house.nationId, rand);
     }
 
     /** A sign beside the road, text facing across the carriageway, laid out in the segment's frame. More likely the more urban the street. */
@@ -5132,7 +5132,7 @@ public class InfrastructureManager {
         SpherePosition at = SphereMath.atAltitude(foot, signY);
         // Its face (local +z) back towards the road, that heading carried from the segment's middle
         double facing = SphereMath.carryHeading(segment.frame.origin(), foot, Math.atan2(-outwardZ, -outwardX));
-        return createSign(SphereFrame.at(at, facing - Math.PI * 0.5), onChart(at, segment.chartMidX()), segment.nationId, rand);
+        return createSign(SphereFrame.at(at, facing - Math.PI * 0.5), segment.nationId, rand);
     }
     public NationScripts scripts() {
         return scripts;
@@ -5147,12 +5147,12 @@ public class InfrastructureManager {
         return patriotism.getOrDefault(nationId, 0.3f);
     }
 
-    /** A standing sign in its own frame (its foot at the origin, text facing local +z); chart its place on the chart (D13). */
-    private InfrastructureObject createSign(SphereFrame frame, Vector3 chart, int nationId, Random rand) {
+    /** A standing sign in its own frame (its foot at the origin, text facing local +z). */
+    private InfrastructureObject createSign(SphereFrame frame, int nationId, Random rand) {
         int maxGlyphs = mainListener != null ? mainListener.getNationAtlasSize(nationId) : 10;
         if (maxGlyphs <= 0) maxGlyphs = 1;
         int[] textString = randomText(rand, maxGlyphs, 80, 200);
-        InfrastructureObject sign = InfrastructureObject.createSign(frame, chart, nationId, textString);
+        InfrastructureObject sign = InfrastructureObject.createSign(frame, nationId, textString);
         // Separate streams, so the pictures and title don't change what else the cell holds
         Random design = new Random(rand.nextLong());
         decorateSign(sign, design, maxGlyphs, false);
@@ -5320,20 +5320,21 @@ public class InfrastructureManager {
         int mapH = worldW >= worldH ? Math.max(64, Math.round(256 * worldH / worldW)) : 256;
         sign.mapWidth = mapW;
         sign.mapHeight = mapH;
-        float px = sign.position.x, pz = sign.position.z;
+        // Laid out north up round the sign, in true distances along the ground (x east, z south)
+        SpherePosition foot = SphereMath.atAltitude(sign.frame.origin(), 0.0);
+        SphereFrame round = SphereFrame.at(foot);
         float aspect = mapW / (float) mapH;
         float cx, cz, halfWidth;
-        float[] here, destination = null;
+        SpherePosition here, destination = null;
         boolean route = false;
         java.awt.image.BufferedImage badge = null;
         if (shop != null) {
-            // (chart bridge, D13: the sign maps are on the chart until Phase 5)
-            float[] door = chartPoint(doorwayOf(shop.house).door, 0f, px);
-            destination = new float[] { door[0], door[2] };
-            cx = (px + door[0]) * 0.5f;
-            cz = (pz + door[2]) * 0.5f;
-            halfWidth = Math.max(Math.abs(door[0] - px) * 0.5f, Math.abs(door[2] - pz) * 0.5f * aspect) * 1.45f + 90f;
-            here = rand.nextFloat() < 0.75f ? new float[] { px, pz } : null;
+            destination = doorwayOf(shop.house).door;
+            double[] door = round.fromSphere(destination);
+            cx = (float) door[0] * 0.5f;
+            cz = (float) door[2] * 0.5f;
+            halfWidth = Math.max(Math.abs(cx), Math.abs(cz) * aspect) * 1.45f + 90f;
+            here = rand.nextFloat() < 0.75f ? foot : null;
             route = here != null && rand.nextFloat() < 0.85f;
             int[] name = shopName(shop);
             List<java.awt.image.BufferedImage> glyphs = scripts.glyphs(shop.nationId);
@@ -5343,35 +5344,27 @@ public class InfrastructureManager {
         } else {
             halfWidth = (float) (150.0 * Math.pow(25.0, rand.nextFloat())) * (mapW / (float) Math.max(mapW, mapH));
             float halfHeight = halfWidth / aspect;
-            cx = px + (rand.nextFloat() - 0.5f) * halfWidth * 0.8f;
-            cz = pz + (rand.nextFloat() - 0.5f) * halfHeight * 0.8f;
-            here = rand.nextFloat() < 0.6f ? new float[] { px, pz } : null;
+            cx = (rand.nextFloat() - 0.5f) * halfWidth * 0.8f;
+            cz = (rand.nextFloat() - 0.5f) * halfHeight * 0.8f;
+            here = rand.nextFloat() < 0.6f ? foot : null;
         }
+        // (the map's own north-up frame at its middle)
+        SphereFrame centre = SphereFrame.at(round.toSphere(cx, 0.0, cz));
         long style = worldSeed * 61L + sign.nationId * 17L;
         PerlinNoise noise = terrainNoise;
         float sea = seaLevel;
-        float[] hereMark = here, shopMark = destination;
+        SpherePosition hereMark = here, shopMark = destination;
         boolean withRoute = route;
         java.awt.image.BufferedImage letter = badge;
-        float centreX = cx, centreZ = cz, half = halfWidth;
+        float half = halfWidth;
         SIGN_MAP_ARTIST.submit(() -> {
             try {
-                List<float[]> way = withRoute ? chartRoute(hereMark, shopMark) : null;
-                sign.mapPixels = SignMap.render(this, noise, sea, style, centreX, centreZ, half, mapW, mapH, hereMark, shopMark, way, letter);
+                List<SpherePosition> way = withRoute ? routes().route(hereMark, shopMark) : null;
+                sign.mapPixels = SignMap.render(this, noise, sea, style, centre, half, mapW, mapH, hereMark, shopMark, way, letter);
             } catch (RuntimeException e) {
                 System.err.println("[SIGNS] Map failed: " + e);
             }
         });
-    }
-
-    /** Chart bridge (D13) for the sign maps (Phase 5): the way along the roads between two chart points, on the chart. */
-    private List<float[]> chartRoute(float[] from, float[] to) {
-        List<float[]> way = new ArrayList<>();
-        for (SpherePosition p : routes().route(sphere(from[0], from[1]), sphere(to[0], to[1]))) {
-            float[] c = chartPoint(p, 0f, from[0]);
-            way.add(new float[] { c[0], c[2] });
-        }
-        return way;
     }
 
     // ==========================================
@@ -5517,10 +5510,6 @@ public class InfrastructureManager {
         double facing = SphereMath.carryHeading(segment.frame.origin(), at, Math.atan2(faceZ, faceX));
         // (turned so local +z, the door side, points along facing)
         house.frame = SphereFrame.at(at, facing - Math.PI * 0.5);
-        double[] chart = Planet.mercatorPosition(at);
-        house.x = (float) chart[0];
-        house.z = (float) chart[2];
-        house.rotationY = (float) Math.toDegrees(Math.atan2(Math.cos(facing), Math.sin(facing)));
     }
 
     // ------------------------------------------------------------------ placing in the world
@@ -5560,41 +5549,18 @@ public class InfrastructureManager {
         };
     }
 
-    // ------------------------------------------------------------------ chart bridge (D13)
-    // The sign maps and the maps (Phase 5) and the border fences' tracing (D12) are still on
-    // the Mercator chart. Everything they get from the frames goes through here.
+    // ------------------------------------------------------------------ the nation map (D12)
+    // The border fences are traced on the nation map's grid, which is on the Mercator chart
+    // (MapProjection): the authority for borders. Only that tracing uses these.
 
-    /** Chart bridge: the place under a chart point, on the datum. */
+    /** The place under a chart point, on the datum. */
     private static SpherePosition sphere(float chartX, float chartZ) {
-        return Planet.spherePosition(chartX, chartZ, 0.0);
+        return MapProjection.place(chartX, chartZ, 0.0);
     }
 
-    /** Chart bridge: how many chart units a true unit spans at chart z (1 / cos latitude). */
+    /** How many chart units a true unit spans at chart z (1 / cos latitude). */
     private static float chartStretch(float chartZ) {
-        return (float) (1.0 / Math.max(0.05, Math.cos(Planet.latitude(chartZ))));
-    }
-
-    /** Chart bridge: a place on the chart as {x, height, z}, x kept beside nearX so it never jumps across the map's join. */
-    private static float[] chartPoint(SpherePosition place, float height, float nearX) {
-        double[] chart = Planet.mercatorPosition(place);
-        return new float[] { nearX + (float) Planet.wrapX(chart[0] - nearX), height, (float) chart[2] };
-    }
-
-    /** Chart bridge: a place on the chart as {x, height, z}, its x beside nearX. */
-    private static Vector3 onChart(SpherePosition place, float nearX) {
-        float[] p = chartPoint(place, (float) SphereMath.altitude(place), nearX);
-        return new Vector3(p[0], p[1], p[2]);
-    }
-
-    /** Chart bridge: a point in a house's frame (y its height above the datum) on the chart, {x, y, z}. */
-    private static float[] chartPoint(House house, float x, float y, float z) {
-        return chartPoint(world(house, x, 0f, z), y, house.x);
-    }
-
-    /** Chart bridge: a point in a house's frame on the chart, {x, z}. */
-    private static float[] chartAt(House house, float x, float z) {
-        float[] p = chartPoint(house, x, 0f, z);
-        return new float[] { p[0], p[2] };
+        return (float) (1.0 / Math.max(0.05, Math.cos(MapProjection.latitude(chartZ))));
     }
 
     private static float dot(float[] a, float[] b) {

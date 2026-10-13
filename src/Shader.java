@@ -58,12 +58,17 @@ public class Shader {
   }
 
   /**
-   * The lying snow (see XenoGuesser_GLEventListener.snowCover) for every shader with a
-   * snowCover uniform: its texture unit, 1 / the world's width, half the width, how much fresh
-   * snow has settled, the climate it lies in ({freezing point, degrees below it for thick snow,
-   * degrees colder per unit up, sea level}) and the snow's colour.
+   * The lying snow (see XenoGuesser_GLEventListener.bindSnowCover) for every shader with a
+   * snowCover uniform: its cube map's texture unit, how much fresh snow has settled, how much
+   * warmer today is than usual, the climate it lies in ({freezing point, degrees below it for
+   * thick snow, degrees colder per unit up, sea level}), the snow's colour and the planet's radius.
    */
-  public static void setSnowCover(GL3 gl, int unit, float inverseWidth, float halfWidth, float fresh, float today, float[] climate, float[] colour) {
+  /** The cube map samplers and the texture units they are always bound to. */
+  public static final int SNOW_UNIT = 11, SOIL_REGION_UNIT = 6, WAVE_UNIT = 12;
+  private static final Object[][] CUBE_UNITS = { { "snowCover", SNOW_UNIT }, { "soilRegionMap", SOIL_REGION_UNIT },
+      { "waveMap", WAVE_UNIT } };
+
+  public static void setSnowCover(GL3 gl, int unit, float fresh, float today, float[] climate, float[] colour, float planetRadius) {
     synchronized (ALL) {
       for (Shader shader : ALL) {
         if (shader.ID == 0) continue;
@@ -71,10 +76,11 @@ public class Shader {
         if (c == -1) continue;
         gl.glUseProgram(shader.ID);
         gl.glUniform1i(c, unit);
-        gl.glUniform4f(shader.location(gl, "snowMap"), inverseWidth, halfWidth, 1f, fresh);
+        gl.glUniform2f(shader.location(gl, "snowState"), 1f, fresh);
         gl.glUniform4f(shader.location(gl, "snowClimate"), climate[0], climate[1], climate[2], climate[3]);
         gl.glUniform3f(shader.location(gl, "snowColour"), colour[0], colour[1], colour[2]);
         gl.glUniform1f(shader.location(gl, "snowToday"), today);
+        gl.glUniform1f(shader.location(gl, "planetRadius"), planetRadius);
       }
     }
   }
@@ -162,6 +168,16 @@ public class Shader {
     program.add(vertexShaderCode);
     program.add(fragmentShaderCode);
     program.link(gl, System.out);
+    // The cube maps get texture units of their own from the start (every sampler begins on unit
+    // 0, and a cube and a 2D sampler may not share one): the snow's and the soil colour's
+    int[] current = new int[1];
+    gl.glGetIntegerv(GL3.GL_CURRENT_PROGRAM, current, 0);
+    gl.glUseProgram(program.program());
+    for (Object[] cube : CUBE_UNITS) {
+      int at = gl.glGetUniformLocation(program.program(), (String) cube[0]);
+      if (at != -1) gl.glUniform1i(at, (Integer) cube[1]);
+    }
+    gl.glUseProgram(current[0]);
     if (!program.validateProgram(gl, System.out))
       System.err.println("[error] Unable to link program");
     return program.program();

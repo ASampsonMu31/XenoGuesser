@@ -397,8 +397,7 @@ public class OrganismSpecies {
         nativePatchScale = 2.0e-5f + rand.nextFloat() * 3.0e-5f;
         RegionalFactor climate = regions.createTemperaturePreference(nativeOptimalTemperature,
                 nativeTemperatureDeviation);
-        RegionalFactor water = regions.createWaterPreference((int) (nativeWaterPreference / 100f),
-                nativeWaterDeviation / 100f);
+        RegionalFactor water = regions.createWaterPreference(nativeWaterPreference, nativeWaterDeviation);
         RegionalFactor patches = regions.createNoiseMap(nativePatchScale);
         // Its home region: broad noise (each feature a large part of a continent across), only its
         // highest third counting, so a species keeps to one part of the world (one that likes the
@@ -407,12 +406,12 @@ public class OrganismSpecies {
         nativeHomeScale = HOME_SCALE_LOW
                 + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE;
         RegionalFactor home = regions.createNoiseMap(nativeHomeScale);
-        habitat = new RegionalFactor(1.0f, (cx, cz, wx, wz) -> {
-            float suitability = climate.evaluate(cx, cz, wx, wz) * (0.35f + 0.65f * water.evaluate(cx, cz, wx, wz));
-            float h = home.evaluate(cx, cz, wx, wz);
+        habitat = new RegionalFactor(1.0f, d -> {
+            float suitability = climate.evaluate(d) * (0.35f + 0.65f * water.evaluate(d));
+            float h = home.evaluate(d);
             float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
             float local = 1f - homeStrength + homeStrength * t * t * (3f - 2f * t);
-            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * local;
+            return suitability * (0.25f + 1.5f * patches.evaluate(d)) * 0.8f * local;
         });
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
@@ -446,16 +445,9 @@ public class OrganismSpecies {
         return best;
     }
 
-    /** How strongly the species lives here: 0 outside its range, rising to 1 at its heart. */
-    public float presenceAt(float worldX, float worldZ, float chunkSize) {
-        int cx = (int) Math.floor(worldX / chunkSize), cz = (int) Math.floor(worldZ / chunkSize);
-        float h = habitat.evaluate(cx, cz, worldX, worldZ);
-        return Math.max(0f, Math.min(1f, (h - habitatThreshold) / (1f - habitatThreshold) * 2.0f));
-    }
-
-    /** How strongly the species lives at a place: its presenceAt on the map there (see RegionalFactor.evaluateAt). */
-    public float presenceAt(SpherePosition position, float chunkSize) {
-        float h = habitat.evaluateAt(position, chunkSize);
+    /** How strongly the species lives at a place: 0 outside its range, rising to 1 at its heart. */
+    public float presenceAt(SpherePosition position) {
+        float h = habitat.evaluateAt(position);
         return Math.max(0f, Math.min(1f, (h - habitatThreshold) / (1f - habitatThreshold) * 2.0f));
     }
 

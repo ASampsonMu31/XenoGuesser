@@ -71,8 +71,9 @@ public class SettlementManager {
     private static final int HABITABILITY_LEVEL = 7;
 
     // Habitability shaping
-    private static final float COAST_DISTANCE_CHUNKS = 15.0f;
-    private static final float MOISTURE_DISTANCE_CHUNKS = 90.0f;
+    // (world units from the sea)
+    private static final float COAST_DISTANCE = 1500.0f;
+    private static final float MOISTURE_DISTANCE = 9000.0f;
     private static final float HOT_TEMPERATURE_START = 0.6f;
     private static final float HOT_TEMPERATURE_FULL = 0.97f;
     private static final float HIGHLAND_START = 250.0f;
@@ -86,7 +87,6 @@ public class SettlementManager {
     private static final float MOUNTAIN_START = 140.0f;
     private static final float MOUNTAIN_FULL = 450.0f;
 
-    private final float physicalChunkSize;
     private final float seaLevelHeight;
     private final PerlinNoise terrainNoise;
         private final RegionalGenerationManager regionalManager;
@@ -101,11 +101,10 @@ public class SettlementManager {
     private final GeodesicChunkGrid habitabilityGrid = new GeodesicChunkGrid(HABITABILITY_LEVEL);
     private final Map<Long, Float> habitabilityCache = new ConcurrentHashMap<>();
 
-        public SettlementManager(long seed, float physicalChunkSize, float seaLevelHeight,
+        public SettlementManager(long seed, float seaLevelHeight,
                              PerlinNoise terrainNoise, RegionalGenerationManager regionalManager,
                              NationGenerationManager nations) {
         this.nations = nations;
-        this.physicalChunkSize = physicalChunkSize;
         this.seaLevelHeight = seaLevelHeight;
         this.terrainNoise = terrainNoise;
         this.regionalManager = regionalManager;
@@ -188,22 +187,6 @@ public class SettlementManager {
         return reaching[(int) lookupGrid.cellAt(place).id()];
     }
 
-    // ------------------------------------------------------------------ chart bridges (D13)
-    // For the map, still on the Mercator chart until Phase 5
-
-    private static GeodesicChunkGrid.Direction onSphere(float chartX, float chartZ) {
-        return SphereMath.direction(Planet.spherePosition(chartX, chartZ, 0.0));
-    }
-
-    public float getUrbanness(float chartX, float chartZ) {
-        return getUrbanness(onSphere(chartX, chartZ));
-    }
-
-    /** Wraps urbanness as a RegionalFactor so it can drive or be visualised like any other factor. */
-    public RegionalFactor asRegionalFactor() {
-        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> getUrbanness(worldX, worldZ));
-    }
-
     // ------------------------------------------------------------------ placing
 
     private float computeHabitability(SpherePosition place) {
@@ -212,15 +195,11 @@ public class SettlementManager {
             return 0.0f;
         }
 
-        // (the water distances and the temperature are the map's, D12)
-        double[] map = Planet.mercatorPosition(place);
-        int cx = (int) Math.floor(map[0] / physicalChunkSize);
-        int cz = (int) Math.floor(map[2] / physicalChunkSize);
-        float waterDistance = regionalManager.getChunkDistanceToWater(cx, cz);
-        float coast = gaussianFalloff(waterDistance, COAST_DISTANCE_CHUNKS);
-        float moisture = gaussianFalloff(waterDistance, MOISTURE_DISTANCE_CHUNKS);
+        float waterDistance = regionalManager.distanceToWater(place);
+        float coast = gaussianFalloff(waterDistance, COAST_DISTANCE);
+        float moisture = gaussianFalloff(waterDistance, MOISTURE_DISTANCE);
 
-        float temperature = regionalManager.temperatureMap.evaluateAt(place, physicalChunkSize);
+        float temperature = regionalManager.temperatureMap.evaluateAt(place);
         float heat = smoothstep(HOT_TEMPERATURE_START, HOT_TEMPERATURE_FULL, temperature);
         // Deserts are where it is both hot and far from water
         float desert = heat * (1.0f - moisture);

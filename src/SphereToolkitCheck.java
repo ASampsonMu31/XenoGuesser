@@ -33,6 +33,8 @@ public final class SphereToolkitCheck {
         checkCollision();
         checkLandingPod();
         checkCameraFrames();
+        checkMapProjection();
+        checkSphereRaster();
         System.out.printf("%d checks, %d failed%n", checks, failures);
         if (failures > 0) System.exit(1);
     }
@@ -94,11 +96,11 @@ public final class SphereToolkitCheck {
             double[] d = frame.headingDirection(heading);
             near("headingOf " + where, angleDifference(frame.headingOf(d[0], d[1], d[2]), heading), 0, 1e-12);
         }
-        // Chart round trip, inside the chart
+        // Map round trip, inside the map
         if (Math.abs(latDeg) < 75) {
-            double[] chart = Planet.mercatorPosition(origin);
-            SpherePosition back = Planet.spherePosition(chart[0], chart[2], chart[1]);
-            near("chart round trip " + where, SphereMath.distance(back, origin), 0, 1e-6);
+            double[] map = MapProjection.toMap(origin);
+            SpherePosition back = MapProjection.place(map[0], map[1], SphereMath.altitude(origin));
+            near("map round trip " + where, SphereMath.distance(back, origin), 0, 1e-6);
         }
     }
 
@@ -107,21 +109,90 @@ public final class SphereToolkitCheck {
         Random random = new Random(7);
         for (int i = 0; i < 200; i++) {
             double x = (random.nextDouble() - 0.5) * Planet.width();
-            double z = (random.nextDouble() - 0.5) * 2 * Planet.clipHalfHeight();
-            SpherePosition p = Planet.spherePosition(x, z, 0);
-            double[] dx = sub(Planet.spherePosition(x + 1, z, 0), p);
-            double[] dz = sub(Planet.spherePosition(x, z + 1, 0), p);
+            double z = (random.nextDouble() - 0.5) * 2 * MapProjection.clipHalfHeight();
+            SpherePosition p = MapProjection.place(x, z, 0);
+            double[] dx = sub(MapProjection.place(x + 1, z, 0), p);
+            double[] dz = sub(MapProjection.place(x, z + 1, 0), p);
             double[] up = unit(new double[] { p.x(), p.y(), p.z() });
             // On the chart x cross y is z: the lifted chart axes must keep that order
             check("chart lift keeps handedness at " + x + "," + z, dot(cross(dx, up), dz) > 0);
             // And the chart's east is the world's east
             double[] east = SphereFrame.at(p).xAxis();
-            double[] across = sub(Planet.spherePosition(x + 1, z, 0), Planet.spherePosition(x - 1, z, 0));
+            double[] across = sub(MapProjection.place(x + 1, z, 0), MapProjection.place(x - 1, z, 0));
             near("chart east is world east", distance(unit(across), east), 0, 1e-8);
         }
-        // The distance on the chart's own formula matches the sphere's
-        SpherePosition a = Planet.spherePosition(1200, -800, 0), b = Planet.spherePosition(-30000, 21000, 0);
-        near("chart and sphere distances", SphereMath.distance(a, b), Planet.surfaceDistance(1200, -800, -30000, 21000), 1e-6);
+    }
+
+    // ------------------------------------------------------------------ the map
+
+    /** The one conversion pair: a map point and its direction go back and forth exactly, east is +x, north is -z. */
+    private static void checkMapProjection() {
+        Random random = new Random(5);
+        for (int i = 0; i < 500; i++) {
+            SpherePosition p = SphereMath.randomPlace(random, MapProjection.CLIP_LATITUDE);
+            GeodesicChunkGrid.Direction d = SphereMath.direction(p);
+            double[] m = MapProjection.toMap(d);
+            check("map point on the map", Math.abs(m[0]) <= Planet.width() * 0.5 && Math.abs(m[1]) <= MapProjection.clipHalfHeight() + 1e-3);
+            near("map direction round trip", SphereMath.angle(MapProjection.direction(m[0], m[1]), d), 0, 1e-9);
+            near("map latitude", MapProjection.latitude(m[1]), Planet.latitude(p), 1e-9);
+            double[] east = MapProjection.toMap(SphereMath.move(p, 0.0, 1.0)), north = MapProjection.toMap(SphereMath.move(p, -Math.PI * 0.5, 1.0));
+            check("east is +x on the map", MapProjection.wrapX(east[0] - m[0]) > 0);
+            check("north is -z on the map", north[1] < m[1]);
+        }
+    }
+
+    // ------------------------------------------------------------------ the sphere raster
+
+    /**
+     * Every texel's own direction falls in it; stepping to a neighbour and back returns (across
+     * faces too); a sample of a constant is that constant and of a smooth function is close to
+     * it everywhere (no seams at the faces' edges); distances to marked texels match brute force.
+     */
+    private static void checkSphereRaster() {
+        SphereRaster raster = new SphereRaster(24);
+        int size = raster.size();
+        double[] d = new double[3], e = new double[3];
+        for (int t = 0; t < size; t++) {
+            raster.direction(t, d);
+            check("texel's direction in its texel", raster.index(d[0], d[1], d[2]) == t);
+            for (int k = 0; k < 4; k++) {
+                int q = raster.neighbour(t, k);
+                boolean back = false;
+                for (int j = 0; j < 4; j++) back |= raster.neighbour(q, j) == t;
+                check("neighbour " + k + " of " + t + " leads back", back && q != t);
+                raster.direction(q, e);
+                double angle = Math.acos(Math.min(1, d[0] * e[0] + d[1] * e[1] + d[2] * e[2]));
+                check("neighbour " + k + " of " + t + " beside it", angle < 2.5 * 2.0 / 24);
+            }
+        }
+        float[] constant = new float[size], smooth = new float[size];
+        for (int t = 0; t < size; t++) {
+            raster.direction(t, d);
+            constant[t] = 3.5f;
+            smooth[t] = (float) (d[0] + 2 * d[1] - d[2]);
+        }
+        Random random = new Random(9);
+        double worst = 0;
+        for (int i = 0; i < 4000; i++) {
+            GeodesicChunkGrid.Direction p = SphereMath.direction(SphereMath.randomPlace(random, Math.PI * 0.5));
+            near("raster sample of a constant", raster.sample(constant, p), 3.5, 1e-5);
+            worst = Math.max(worst, Math.abs(raster.sample(smooth, p) - (p.x() + 2 * p.y() - p.z())));
+        }
+        // (a smooth function's error is about its curvature times a texel squared, anywhere: there is no jump at the edges)
+        check("raster sample of a smooth function (worst " + worst + ")", worst < 0.02);
+        boolean[] marked = new boolean[size];
+        for (int t = 0; t < size; t += 97) marked[t] = true;
+        float[] distance = raster.distanceTo(marked);
+        for (int t = 0; t < size; t++) {
+            raster.direction(t, d);
+            double best = Double.MAX_VALUE;
+            for (int m = 0; m < size; m += 97) {
+                raster.direction(m, e);
+                best = Math.min(best, Math.acos(Math.max(-1, Math.min(1, d[0] * e[0] + d[1] * e[1] + d[2] * e[2]))));
+            }
+            // (passing each texel's nearest marked texel on to its neighbours is exact to well within a texel)
+            near("raster distance at " + t, distance[t], best, 0.1 * 2.0 / 24);
+        }
     }
 
     // ------------------------------------------------------------------ moving

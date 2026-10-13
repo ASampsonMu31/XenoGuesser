@@ -1,0 +1,13 @@
+#version 330 core
+
+// A soft round snowflake, pale with a little of the oceans' colour
+in float alpha;
+out vec4 fragColour;
+uniform vec3 colour;
+
+void main() {
+    vec2 d = gl_PointCoord - vec2(0.5);
+    float r = length(d) * 2.0;
+    if (r > 1.0) discard;
+    fragColour = vec4(colour, alpha * (1.0 - r * r));
+}

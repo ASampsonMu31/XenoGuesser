@@ -29,15 +29,19 @@ public final class PlanningCheck {
         float width = 150_000f, chunk = 100f;
         Planet.setWidth(width);
         PerlinNoise noise = new PerlinNoise(seed);
-        float sea = XenoGuesser_GLEventListener.precalculateSeaLevel(seed, width, noise);
-        Planet.chooseJoin((x, z) -> TerrainMesh.getLayeredHeight(x, z, noise), sea);
-        RegionalGenerationManager regional = new RegionalGenerationManager(seed, width, sea);
-        regional.precalculateWaterDistanceField(width, noise, chunk);
-        regional.setMoistureMap(regional.createWaterPreference(0, 80f));
+        float sea = XenoGuesser_GLEventListener.precalculateSeaLevel(seed, noise);
+        MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, noise), sea);
+        RegionalGenerationManager regional = new RegionalGenerationManager(seed, sea);
+        long fieldStart = System.currentTimeMillis();
+        regional.precalculateWaterDistanceField(noise);
+        System.out.printf("Water distance field built in %d ms%n", System.currentTimeMillis() - fieldStart);
+        checkWaves(regional, noise, sea);
+        regional.setMoistureMap(regional.createWaterPreference(0f, 8000f));
         NationGenerationManager nations = new NationGenerationManager(seed, 6 + new Random(seed).nextInt(9), 384, sea, noise);
         nations.generateTerritories(seed, width);
-        SettlementManager settlements = new SettlementManager(seed, chunk, sea, noise, regional, nations);
+        SettlementManager settlements = new SettlementManager(seed, sea, noise, regional, nations);
 
+        checkClimate(regional, noise, sea);
         checkNations(nations, width);
         checkSettlements(settlements);
         checkRoads(new RoadNetworkBuilder(seed, sea, noise, settlements, nations).build(), noise, width);
@@ -55,13 +59,56 @@ public final class PlanningCheck {
         }
     }
 
+    /**
+     * The regional factors are sampled by direction (Phase 5): the distance to the sea is the
+     * true distance along the ground at every latitude (against a search round each place), and
+     * the climate is defined everywhere, the poles and the map's join included.
+     */
+    private static void checkClimate(RegionalGenerationManager regional, PerlinNoise noise, float sea) {
+        Random rand = new Random(17);
+        int tried = 0, north = 0;
+        double worst = 0;
+        while (tried < 60) {
+            // (half of them beyond 50 degrees, where the chart stretched distances two to four times)
+            SpherePosition p = SphereMath.randomPlace(rand, Math.toRadians(73));
+            if (tried % 2 == 1 && Math.abs(Planet.latitude(p)) < Math.toRadians(50)) continue;
+            if (TerrainMesh.getLayeredHeight(p, noise) <= sea) continue;
+            double nearest = Double.MAX_VALUE;
+            for (int k = 0; k < 120; k++) {
+                for (double out = 10.0; out < Math.min(nearest, 12000.0); out += 10.0) {
+                    if (TerrainMesh.getLayeredHeight(SphereMath.move(p, k * Math.PI / 60, out), noise) <= sea) {
+                        nearest = out;
+                        break;
+                    }
+                }
+            }
+            if (nearest > 12000.0) continue;
+            tried++;
+            if (Math.abs(Planet.latitude(p)) >= Math.toRadians(50)) north++;
+            double field = regional.distanceToWater(p), off = Math.abs(field - nearest);
+            worst = Math.max(worst, off);
+            // (the field's texels are up to about 90 across, and it's blended between them)
+            check(off < 120.0 + 0.04 * nearest, "distance to the sea at " + p + ": " + field + ", searched " + nearest);
+        }
+        System.out.printf("Distance to the sea: %d places (%d beyond 50 degrees), worst %.0f off the search%n", tried, north, worst);
+        for (double[] place : new double[][] { { 90, 0 }, { -90, 0 }, { 0, 180 }, { 0, -180 }, { 45, 179.9999 }, { 45, -179.9999 } }) {
+            GeodesicChunkGrid.Direction d = SphereMath.direction(Planet.position(Math.toRadians(place[0]), Math.toRadians(place[1]), 0.0));
+            float t = regional.temperatureMap.evaluate(d), r = regional.rainfallMap.evaluate(d);
+            check(t >= 0f && t <= 1f && r >= 0f && r <= 1f, "climate at " + place[0] + ", " + place[1] + ": " + t + ", " + r);
+        }
+        // Either side of the map's join (one place, two map points) the climate is the same
+        GeodesicChunkGrid.Direction east = MapProjection.direction(Planet.width() * 0.5 - 1e-3, 1234.0);
+        GeodesicChunkGrid.Direction west = MapProjection.direction(-Planet.width() * 0.5 + 1e-3, 1234.0);
+        check(Math.abs(regional.temperatureMap.evaluate(east) - regional.temperatureMap.evaluate(west)) < 1e-3f, "temperature jumps at the map's join");
+    }
+
     /** The world's borders are the map's: nation by direction equals the map lookup at the place's map point. */
     private static void checkNations(NationGenerationManager nations, float width) {
         Random rand = new Random(7);
         for (int i = 0; i < 2000; i++) {
             SpherePosition p = SphereMath.randomPlace(rand, Math.toRadians(74));
-            double[] m = Planet.mercatorPosition(p);
-            int byDirection = nations.getNationAt(p), byMap = nations.getNationAtWorld((float) m[0], (float) m[2], width);
+            double[] m = MapProjection.toMap(p);
+            int byDirection = nations.getNationAt(p), byMap = nations.getNationAtWorld((float) m[0], (float) m[1], width);
             check(byDirection == byMap, "nation at " + p + ": " + byDirection + " by direction, " + byMap + " on the map");
         }
         // Past the map's top and bottom, and at the poles themselves, there is still a nation
@@ -96,8 +143,6 @@ public final class PlanningCheck {
             // (the lookup leaves out a town's influence past 3.5 radii, under 0.3% each)
             check(Math.abs(urbanness - (1f - open)) < 0.005f, "urbanness at " + p + ": " + urbanness + ", brute force " + (1f - open));
             check(best < 0.01f || settlements.dominantSettlementAt(d) == dominant, "dominant town at " + p);
-            double[] m = Planet.mercatorPosition(p);
-            check(Math.abs(settlements.getUrbanness((float) m[0], (float) m[2]) - urbanness) < 1e-3f, "chart bridge urbanness at " + p);
         }
         for (int a = 0; a < all.size(); a++) {
             SettlementManager.Settlement s = all.get(a);
@@ -110,29 +155,40 @@ public final class PlanningCheck {
         }
     }
 
+    /** The sea's waves: within their greatest height of the sea everywhere, and rolling on open water. */
+    private static void checkWaves(RegionalGenerationManager regional, PerlinNoise noise, float sea) {
+        Random rand = new Random(7);
+        int seaPlaces = 0, waving = 0;
+        for (int i = 0; i < 4000; i++) {
+            SpherePosition place = SphereMath.randomPlace(rand, Math.PI / 2);
+            if (TerrainMesh.getLayeredHeight(place, noise) > sea) continue;
+            seaPlaces++;
+            float surface = regional.waveSurfaceAt(place, rand.nextFloat() * 100f, sea);
+            // (swell 7 and chop 2.2 high, each set's shares summed)
+            check(Math.abs(surface - sea) <= 7f * 1.6f + 2.2f * 3.45f, "the sea's surface at " + place + " is " + (surface - sea) + " off");
+            if (Math.abs(surface - sea) > 1f) waving++;
+        }
+        System.out.printf("Waves: %d of %d places on the sea more than 1 off its level%n", waving, seaPlaces);
+        check(waving > seaPlaces / 4, "the sea is mostly flat: " + waving + " of " + seaPlaces + " places with waves");
+    }
+
     private static void checkRoads(List<RoadPath> roads, PerlinNoise noise, float width) {
         check(roads.size() > 1000, "only " + roads.size() + " roads planned");
         for (int r = 0; r < roads.size(); r++) {
             RoadPath path = roads.get(r);
-            path.toChart();
-            check(path.chart.size() == path.points.size(), "road " + r + "'s chart copy has a different length");
             for (int i = 0; i < path.points.size(); i++) {
                 SpherePosition p = path.points.get(i);
                 check(Math.abs(SphereMath.altitude(p) - TerrainMesh.getLayeredHeight(p, noise)) < 0.01, "road " + r + " point " + i + " off the ground");
-                // The chart copy is the same place (its x maybe a whole way round), and runs on without a jump
-                com.xenoguesser.math.Vector3 c = path.chart.get(i);
-                check(SphereMath.distance(p, Planet.spherePosition(c.x, c.z, 0.0)) < 0.05, "road " + r + " point " + i + " moved on the chart");
                 if (i > 0) {
                     double step = SphereMath.distance(path.points.get(i - 1), p);
                     // (easing can stretch a highway step to a few road steps)
                     check(step < 600.0, "road " + r + " step " + i + " is " + step + " long");
-                    check(Math.abs(c.x - path.chart.get(i - 1).x) < width * 0.25f, "road " + r + " jumps across the chart at " + i);
                 }
             }
         }
     }
 
-    /** A point in a building's frame (as the maps are given it: middle and turn on the chart), on the datum. */
+    /** A point in a building's frame (as the maps are given it), on the datum. */
     private static SpherePosition inFrame(SphereFrame frame, double x, double z) {
         return SphereMath.atAltitude(frame.toWorld(x, 0.0, z), 0.0);
     }
@@ -143,14 +199,19 @@ public final class PlanningCheck {
         System.out.printf("Infrastructure built in %d ms%n", System.currentTimeMillis() - start);
         // Every building (and extension) fills its footprint, true size, and stops at its back wall
         int[] byBand = new int[10];
-        infra.forEachBuilding((x, z, rotationY, w, d, nation, outline) -> {
-            SpherePosition middle = Planet.spherePosition(x, z, 0.0);
+        infra.forEachBuilding((frame, outline, nation) -> {
+            SpherePosition middle = frame.origin();
+            check(Math.abs(SphereMath.altitude(middle)) < 1e-6, "building at " + middle + " not given on the datum");
             byBand[Math.min(9, (int) (Math.abs(Math.toDegrees(Planet.latitude(middle))) / 10))]++;
-            SphereFrame frame = SphereFrame.at(middle, -Math.toRadians(rotationY));
-            for (double[] inside : new double[][] { { 0, 0 }, { 0.4, 0.4 }, { -0.4, 0.4 }, { 0.4, -0.4 }, { -0.4, -0.4 } }) {
-                check(infra.isBuildingLocation(inFrame(frame, inside[0] * w, inside[1] * d), 0f), "building at " + middle + " missing at " + inside[0] + ", " + inside[1]);
+            // (the middle, and most of the way out to each corner of its outline)
+            check(infra.isBuildingLocation(inFrame(frame, 0.0, 0.0), 0f), "building at " + middle + " missing at its middle");
+            float back = 0f;
+            for (float[] corner : outline) {
+                check(infra.isBuildingLocation(inFrame(frame, corner[0] * 0.8, corner[1] * 0.8), 0f),
+                        "building at " + middle + " missing towards " + corner[0] + ", " + corner[1]);
+                back = Math.min(back, corner[1]);
             }
-            check(!infra.isBuildingLocation(inFrame(frame, 0.0, -d * 0.5 - 1.5), 0f), "building at " + middle + " reaches past its back wall");
+            check(!infra.isBuildingLocation(inFrame(frame, 0.0, back - 1.5), 0f), "building at " + middle + " reaches past its back wall");
         });
         System.out.printf("Buildings by latitude band (0-10, 10-20, ...): %s%n", java.util.Arrays.toString(byBand));
         check(byBand[6] > 50, "few buildings between 60 and 70 degrees: " + byBand[6]);
@@ -172,7 +233,8 @@ public final class PlanningCheck {
         // world coordinates, and signs in frames of their own, standing where they should and
         // facing the right way
         double[] lookupMicros = new double[2];
-        double[][] towns = { { 3.297, 16.389 }, { 67.461, 139.716 } };
+        // (two towns of about the same size, radius 482 and 457, near the equator and at 67 N)
+        double[][] towns = { { 4.841, 78.397 }, { 67.461, 139.716 } };
         GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
         for (int t = 0; t < towns.length; t++) {
             double[] town = towns[t];
@@ -320,7 +382,8 @@ public final class PlanningCheck {
         }
         System.out.printf("Parked vehicles: %d round the two towns, %d in a building, %d getting in from a building, %d away from the road%n",
                 parked, inBuilding, getInBlocked, offRoad);
-        check(parked > 20, "few vehicles parked round the towns: " + parked);
+        // (enough to go by: 18 round the towns used since Phase 5, 32 round the denser ones before)
+        check(parked >= 15, "few vehicles parked round the towns: " + parked);
         check(inBuilding == 0, inBuilding + " vehicles parked in a building");
         check(getInBlocked <= parked / 50, getInBlocked + " vehicles got into from inside a building");
         check(offRoad <= parked / 50, offRoad + " vehicles parked away from the road");

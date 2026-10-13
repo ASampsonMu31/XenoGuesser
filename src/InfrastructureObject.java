@@ -21,8 +21,8 @@ public class InfrastructureObject {
     public Matrix4 leftPostMatrix;
     public Matrix4 rightPostMatrix;
     public Matrix4 frontBoardMatrix;
-    // The regional soil colour map, for drawing dirt tracks as the ground they run over
-    public static Texture soilRegions;
+    // The regional soil colour cube map (a texture id), for drawing dirt tracks as the ground they run over
+    public static int soilRegions;
     // How far a poster on a round wall bends back at its edges (see vs_standard), 0 for flat
     private float bend;
     // Whether it's pasted on a wall that leans or curves, and so leans or curves with it
@@ -70,8 +70,7 @@ public class InfrastructureObject {
     // --- WHERE A SIGN STANDS ---
     // A sign is built in a frame of its own (D3 in GEODESIC_MIGRATION_PLAN.txt): its matrices
     // are in that frame (its foot at the origin, the board's face towards local +z) and it is
-    // drawn on the sphere through it. position is then a chart bridge (D13): where it is on the
-    // Mercator chart, for the sign maps and developer aids still there. Null for a batch.
+    // drawn on the sphere through it. Null for a batch.
     public SphereFrame frame;
     // How far either side of a standing sign's middle its posts are
     public static final float SIGN_POST_SPACING = 15.0f;
@@ -223,22 +222,20 @@ public class InfrastructureObject {
         return sign;
     }
 
-    /** A standing sign in its own frame (origin at its foot, between the posts; text facing local +z), chartPosition its place on the chart. */
-    public static InfrastructureObject createSign(SphereFrame frame, Vector3 chartPosition, int nationId, int[] textString) {
+    /** A standing sign in its own frame (origin at its foot, between the posts; text facing local +z). */
+    public static InfrastructureObject createSign(SphereFrame frame, int nationId, int[] textString) {
         InfrastructureObject sign = new InfrastructureObject(Type.SIGN, new Vector3(0f, 0f, 0f), nationId, 0f, textString);
         sign.frame = frame;
-        sign.position = chartPosition;
         return sign;
     }
 
     /** As createWallSign, built in its own frame: the board centred on its origin, facing local +z. */
-    public static InfrastructureObject createWallSign(SphereFrame frame, Vector3 chartPosition, int nationId, float width, float height,
+    public static InfrastructureObject createWallSign(SphereFrame frame, int nationId, float width, float height,
                                                       boolean banner, boolean bothSides, int[] textString,
                                                       float tiltDegrees, float curveRadius) {
         InfrastructureObject sign = createWallSign(new Vector3(0f, 0f, 0f), nationId, 0f, width, height, banner, bothSides, textString,
                 tiltDegrees, curveRadius);
         sign.frame = frame;
-        sign.position = chartPosition;
         return sign;
     }
 
@@ -342,9 +339,10 @@ public class InfrastructureObject {
             if (track) {
                 Shader trackShader = part.model.shader;
                 trackShader.use(gl);
-                if (soilRegions != null) {
+                if (soilRegions != 0) {
                     gl.glActiveTexture(GL3.GL_TEXTURE6);
-                    soilRegions.bind(gl);
+                    gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, soilRegions);
+                    gl.glActiveTexture(GL3.GL_TEXTURE0);
                     trackShader.setInt(gl, "soilRegionMap", 6);
                 }
                 trackShader.setFloat(gl, "useSoilRegions", 1f);

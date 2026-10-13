@@ -238,9 +238,9 @@ public class XenoGuesser extends JFrame {
       float physicalChunkSize = 100.0f;
       float totalRegionWidth = 150_000f;
       Planet.setWidth(totalRegionWidth);
-      float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, totalRegionWidth, worldNoise);
+      float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, worldNoise);
       // Where the map's left and right edges join: the meridian crossing the least land
-      float joinLand = Planet.chooseJoin((x, z) -> TerrainMesh.getLayeredHeight(x, z, worldNoise), seaLevelHeight);
+      float joinLand = MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, worldNoise), seaLevelHeight);
       System.out.printf("[PLANET] The map's join crosses %.1f%% land%n", joinLand * 100f);
       
       // (put in place by the first spawn)
@@ -262,9 +262,7 @@ public class XenoGuesser extends JFrame {
       loadingProgress.begin(LoadingProgress.Stage.WORLD_ART);
       WorldArtGenerator art = WorldArtGenerator.generate(worldSeed, listener.getSpeciesCount(), listener.getNationTextureJobs(), loadingProgress);
             listener.setWorldArt(art);
-      javax.imageio.ImageIO.write(listener.buildSoilRegionMap(art.palette()), "png",
-                    new java.io.File(WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_REGIONS)));
-            listener.buildWaveMap();
+      listener.buildSoilRegions(art.palette());
 
       loadingProgress.begin(LoadingProgress.Stage.WINDOW);
       glWarmUp.join();
