@@ -14,7 +14,7 @@
 public final class MapProjection {
 
     /** The latitude where the map is cut off, north and south. */
-    public static final double CLIP_LATITUDE = Math.toRadians(75.0);
+    public static final double CLIP_LATITUDE = Math.toRadians(85.0);
 
     /** The longitude at the map's middle (where map x is 0); see chooseJoin. */
     private static double centreLongitude = 0.0;

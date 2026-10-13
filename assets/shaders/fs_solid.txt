@@ -50,7 +50,10 @@ float snowAt(vec3 world, vec3 n) {
     float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
     // How much of the surface is under snow, less on steep faces...
     // (never quite all: there are always gaps where the surface shows through)
-    float amount = min(0.8, max(lying, snowState.y * snowy)) * smoothstep(0.45, 0.8, dot(n, up)) * (1.0 - snowCleared);
+    // (none under the sea or where the waves wash up: from the water's edge to a little
+    // above the highest waves' reach)
+    float washed = smoothstep(snowClimate.w + 8.0, snowClimate.w + 18.0, r - planetRadius);
+    float amount = min(0.8, max(lying, snowState.y * snowy)) * smoothstep(0.45, 0.8, dot(n, up)) * (1.0 - snowCleared) * washed;
     if (amount <= 0.0) return 0.0;
     // ...laid down as flakes and clumps of snow over the surface as it is (fine dots, then
     // patches, then drifts), each either snow or not, so a light dusting is scattered flakes

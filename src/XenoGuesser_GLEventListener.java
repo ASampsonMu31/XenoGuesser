@@ -22,7 +22,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private double lastElapsedTime = 0;
 
     private TextureLibrary textures;
-    private final GeodesicChunkGrid geodesicTerrainGrid = new GeodesicChunkGrid(6);
+    private final GeodesicChunkGrid geodesicTerrainGrid = new GeodesicChunkGrid(TerrainMesh.DRAWN_LEVEL);
     private Model geodesicTerrainModel;
     private java.util.concurrent.Future<Object[]> geodesicTerrainBuild;
     private SpherePosition geodesicTerrainBuildCentre;
@@ -47,7 +47,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private CellStream<List<SphereFlora>> floraStream;
     private CellStream<float[]> grassStream;
     private final CellIndex<SphereFlora> trees = new CellIndex<>();
-    private static final int GEODESIC_TERRAIN_SEGMENTS = 32;
+    private static final int GEODESIC_TERRAIN_SEGMENTS = TerrainMesh.DRAWN_SEGMENTS;
     
 private static class SpeciesConfig {
         String name;
@@ -1990,7 +1990,11 @@ private static class SpeciesConfig {
         SpherePosition lastFree = from;
         for (int i = 1; i <= steps; i++) {
             SpherePosition candidate = SphereMath.slerp(from, to, i / (double) steps);
-            if (jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
+            // (while swimming, the slope of the bed beneath doesn't matter: only ground that
+            // comes up out of the water, where the swimmer would stand, can be too steep)
+            boolean floating = swimming && TerrainMesh.getLayeredHeight(candidate, worldNoise) + playerEyeHeight
+                    < waterSurfaceHere + SWIM_EYE_HEIGHT;
+            if (!floating && jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
             SpherePosition resolved = geodesicCollision.resolveFirm(lastFree, candidate, PLAYER_RADIUS, PLAYER, jumpHeight);
             if (geodesicCollision.blockedStatic(resolved, PLAYER_RADIUS * 0.98, jumpHeight)) break;
             lastFree = resolved;
@@ -2298,6 +2302,8 @@ private static class SpeciesConfig {
 
         float[] blades = new float[attempts * 5];
         int writeIdx = 0;
+        // The terrain mesh's vertex heights, each worked out once for the cell (by terrain cell, row and column)
+        java.util.Map<Long, Float> meshHeights = new java.util.HashMap<>();
         for (int i = 0; i < attempts; i++) {
             long bladeSeed = worldSeed ^ (id * 73731703L) ^ ((long) i * 2147483647L);
 
@@ -2315,14 +2321,18 @@ private static class SpeciesConfig {
             double root = Math.sqrt(rand1);
             double wa = 1.0 - root, wb = root * (1.0 - rand2), wc = root * rand2;
             GeodesicChunkGrid.Direction direction = blend(cell, wa, wb, wc);
-            float ground = TerrainMesh.getLayeredHeight(direction, worldNoise);
+            // (on the ground as it's drawn, so no blade hovers where the mesh's flat triangles
+            // cut beneath a hump, nor is buried where they bridge a hollow)
+            float ground = TerrainMesh.drawnHeight(direction, worldNoise, meshHeights);
 
             // Grass thins out on steep ground and gives way to bare rock
             float slope = latticeSlope(lattice, n, wb, wc);
             float keep = 1f - Math.max(0f, Math.min(1f, (slope - 0.6f) / 0.6f));
             boolean onSlope = ((rand1 * 7.31f + rand2 * 3.17f) % 1f) >= keep;
             if (ground <= seaLevelHeight + 0.1f || onSlope) continue;
-            SpherePosition at = SphereMath.atAltitude(direction, ground);
+            // (a blade is a flat card turned to face the eyes: seen across a slope, its downhill
+            // corner would stand clear of the ground, so its root is sunk by about that much)
+            SpherePosition at = SphereMath.atAltitude(direction, ground - GRASS_SLOPE_SINK * Math.min(slope, 1.2f));
             if (podCovers(at, -2f)) continue;
             if (infraManager.isClearedForRoad(at, 11.0f, 1.5f)) continue;
 
@@ -3903,6 +3913,8 @@ private static class SpeciesConfig {
 
     // A grass blade's height in world units, before each blade's own height scales it
     private static final float GRASS_BLADE_HEIGHT = 4.8f;
+    // How far a blade's root is sunk per unit of slope (rise over run): about a typical blade's half width
+    private static final float GRASS_SLOPE_SINK = 0.8f;
     // The grass's height where it grows shortest and tallest, in metres (before each blade's own variation)
     private static final float GRASS_SHORTEST = 0.07f, GRASS_TALLEST = 1.0f;
     // The lowest and highest the grass's height and colour factors reach on the land, once worked out

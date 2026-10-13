@@ -46,6 +46,9 @@ public class RegionalGenerationManager {
 
     private final PerlinNoise temperatureNoise;
 
+    // How much warmer (on the 0 to 1 scale) the poles are kept than the equator's fall-off alone gives
+    private static final float POLAR_MILDNESS = 0.2f;
+
     // How far inland (world units) the climate is fully continental (see temperatureAt)
     private static final float FULLY_INLAND = 8000f;
 
@@ -68,6 +71,9 @@ public class RegionalGenerationManager {
     private float temperatureAt(GeodesicChunkGrid.Direction d) {
         float warmth = (float) Math.cos(latitude(d));
         float temp = 0.06f + 0.94f * (float) Math.pow(Math.max(0.0, warmth), 1.6);
+        // (the far north and south kept milder than that alone, so the frozen polar regions
+        // aren't vast: the poles a few tenths of the scale warmer, the equator no different)
+        temp += POLAR_MILDNESS * (1f - warmth);
         if (waterDistance != null) {
             float distance = field.sample(waterDistance, d);
             if (distance > 0f) {

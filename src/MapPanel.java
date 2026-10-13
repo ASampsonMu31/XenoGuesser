@@ -176,7 +176,16 @@ public class MapPanel extends JPanel {
     private RevealPhase currentPhase = RevealPhase.SHOW_PLAYER_PIN;
     private Timer revealTimer;
     
-    private float lineProgress = 0.0f; 
+    private float lineProgress = 0.0f;
+
+    // The results are shown on a globe (see RevealGlobe): first centred on the guess for a
+    // moment, then turning to the answer as the line between them is drawn along the great
+    // circle. How long it rests on the guess, and how long the turn takes (more the further)
+    private RevealGlobe globe;
+    private long revealStartTime;
+    private static final long GLOBE_HOLD_MS = 700, GLOBE_TURN_MIN_MS = 900, GLOBE_TURN_MAX_MS = 2200;
+    // The results' view's height over its width (the globe and the rod through it want something squarer than the chart)
+    private static final float REVEAL_ASPECT = 0.72f;
 
     private boolean nextRoundRequested = false;
     // Once the player has left the shop, until the next round is ready
@@ -207,6 +216,7 @@ public class MapPanel extends JPanel {
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
+        this.globe = new RevealGlobe(totalRegionWidth);
         this.physicalChunkSize = physicalChunkSize;
         this.listener = listener;
 
@@ -302,8 +312,10 @@ public class MapPanel extends JPanel {
                     int mapTop = (visualMapY != 0) ? visualMapY : BORDER_SIZE;
                     for (int i = savedNotes.size() - 1; i >= 0; i--) {
                         MapNote note = savedNotes.get(i);
-                        int nx = coreToScreenX(note.coreX, mapLeft);
-                        int ny = coreToScreenY(note.coreY, mapTop);
+                        int[] at = noteScreen(note, mapLeft, mapTop);
+                        if (at == null) continue;
+                        int nx = at[0];
+                        int ny = at[1];
 
                         boolean hitTriangle = (clickX >= nx - 14 && clickX <= nx + 14 && clickY >= ny - 22 && clickY <= ny);
                         boolean hitTextbox = false;
@@ -411,6 +423,7 @@ public class MapPanel extends JPanel {
                         dragFromU = viewCentreU;
                         dragFromV = viewCentreV;
                         dragging = false;
+                        if (isFullScreenReveal) globe.beginDrag();
                         return;
                     }
                     if (isGuessed) return;
@@ -457,6 +470,14 @@ public class MapPanel extends JPanel {
                 int dx = e.getX() - dragFrom.x, dy = e.getY() - dragFrom.y;
                 if (!dragging && dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
                 dragging = true;
+                if (isFullScreenReveal) {
+                    // The globe turns under the pointer (once it has finished turning to the answer)
+                    if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) return;
+                    setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
+                    globe.dragTo(dx, dy, currentMapSize, mapHeight());
+                    repaint();
+                    return;
+                }
                 if (zoom <= 1.0f) return;
                 // The point grabbed stays under the pointer, at the same zoom
                 setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
@@ -495,6 +516,13 @@ public class MapPanel extends JPanel {
                 (float) ((map[1] + halfRegion) / totalRegionWidth * mapImage.getHeight()) };
     }
 
+    /** Where a note's marker is on screen, {x, y}; null when it's round the back of the results' globe. */
+    private int[] noteScreen(MapNote note, int mapLeft, int mapTop) {
+        if (!isFullScreenReveal) return new int[] { coreToScreenX(note.coreX, mapLeft), coreToScreenY(note.coreY, mapTop) };
+        double[] p = globe.project(pixelDirection(note.coreX, note.coreY), mapLeft, mapTop, currentMapSize, mapHeight());
+        return p[2] < 0.0 ? null : new int[] { (int) Math.round(p[0]), (int) Math.round(p[1]) };
+    }
+
     /** Puts the guess's pin at a point of the map image, in its pixels. */
     private void placePin(float x, float y) {
         pinX = x;
@@ -520,6 +548,11 @@ public class MapPanel extends JPanel {
         float fractionX = (float) (e.getX() - mapLeft) / currentMapSize;
         float fractionY = (float) (e.getY() - mapTop) / mapHeight();
         if (fractionX < 0.0f || fractionX > 1.0f || fractionY < 0.0f || fractionY > 1.0f) {
+            return;
+        }
+        if (isFullScreenReveal) {
+            globe.zoomBy(-e.getPreciseWheelRotation(), ZOOM_STEP);
+            repaint();
             return;
         }
 
@@ -559,6 +592,7 @@ public class MapPanel extends JPanel {
      * clipped latitudes, its height aspect times its width, is shown.
      */
     private int mapHeight() {
+        if (isFullScreenReveal) return Math.round(currentMapSize * REVEAL_ASPECT);
         return Math.round(currentMapSize * MapProjection.aspect());
     }
 
@@ -824,9 +858,13 @@ public class MapPanel extends JPanel {
         this.mapSize = MapSize.SMALL;
         // The reveal starts from the whole map so both the guess and the answer are visible
         resetZoom();
-        this.currentPhase = RevealPhase.SHOW_PLAYER_PIN; 
+        this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         this.lineProgress = 0.0f;
-        
+        globe.setTexture(mapImage);
+        globe.resetZoom();
+        globe.centreOn(pin);
+        this.revealStartTime = System.currentTimeMillis();
+
         this.currentDisplayScore = 0;
         this.shouldDrawScoreText = false;
         this.currentScoreScale = 1.0f;
@@ -837,8 +875,7 @@ public class MapPanel extends JPanel {
         if (getParent() != null) {
             int parentHeight = getParent().getHeight();
             int parentWidth = getParent().getWidth();
-            int tall = Math.min(750, Math.max(300, parentHeight - 240));
-            this.currentMapSize = Math.min(Math.max(300, parentWidth - 80), Math.round(tall / MapProjection.aspect()));
+            this.currentMapSize = revealSize(parentWidth, parentHeight);
         } else {
             this.currentMapSize = 650;
         }
@@ -851,14 +888,19 @@ public class MapPanel extends JPanel {
         triggerParentLayoutUpdate();
         if (onSizeChanged != null) onSizeChanged.run();
 
-        final float lineRevealSpeed = 0.05f; 
+        // (the further apart, the longer the turn)
+        final long turnMs = GLOBE_TURN_MIN_MS + Math.round((GLOBE_TURN_MAX_MS - GLOBE_TURN_MIN_MS) * SphereMath.angle(pin, goal) / Math.PI);
         final long COUNT_UP_DURATION_MS = 500; 
         final long[] countUpStartTime = {-1};  
 
         revealTimer = new Timer(16, e -> {
             if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
-                lineProgress += lineRevealSpeed;
-                if (lineProgress >= 1.0f) {
+                // Resting on the guess, then turning to the answer, easing in and out, the line
+                // drawn as far as the globe has turned (so its end stays in the middle)
+                float t = Math.max(0f, Math.min(1f, (System.currentTimeMillis() - revealStartTime - GLOBE_HOLD_MS) / (float) turnMs));
+                lineProgress = t * t * (3f - 2f * t);
+                globe.centreOn(RevealGlobe.along(pin, goal, lineProgress));
+                if (t >= 1.0f) {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
                     calculateAndApplyScore();
@@ -1071,6 +1113,11 @@ public class MapPanel extends JPanel {
             }
             Shape frameClip = g2d.getClip();
             g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
+            if (plain) {
+                // The results: on the globe
+                globe.paint(g2d, mapX, mapY, currentMapSize, mapHeight());
+                g2d.setClip(frameClip);
+            } else {
             Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             drawWholeMap(g2d, mapSource, mapX, mapY);
@@ -1091,9 +1138,11 @@ public class MapPanel extends JPanel {
             drawGraticule(g2d, mapX, mapY);
             if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
             g2d.setClip(frameClip);
+            }
 
-            if (zoom > 1.01f) {
-                String zoomLabel = String.format("%.1fx", zoom);
+            float shownZoom = plain ? (float) globe.zoom() : zoom;
+            if (shownZoom > 1.01f) {
+                String zoomLabel = String.format("%.1fx", shownZoom);
                 g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
                 FontMetrics zoomFm = g2d.getFontMetrics();
                 int zoomW = zoomFm.stringWidth(zoomLabel) + 12;
@@ -1163,8 +1212,10 @@ public class MapPanel extends JPanel {
 
             if (isLarge || isFullScreenReveal) {
                 for (MapNote note : savedNotes) {
-                    int drawX = coreToScreenX(note.coreX, mapX);
-                    int drawY = coreToScreenY(note.coreY, mapY);
+                    int[] at = noteScreen(note, mapX, mapY);
+                    if (at == null) continue;
+                    int drawX = at[0];
+                    int drawY = at[1];
                     if (drawX < mapX || drawX > mapX + currentMapSize || drawY < mapY || drawY > mapY + mapHeight()) {
                         continue;
                     }
@@ -1254,23 +1305,29 @@ public class MapPanel extends JPanel {
                 int displayGoalX = coreToScreenX(goalX, mapX);
                 int displayGoalY = coreToScreenY(goalY, mapY);
 
+                // (on the globe, each only while it's on the side facing the viewer)
+                boolean pinShown = true, goalShown = true;
+
                 Shape markerClip = g2d.getClip();
                 g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
 
                 if (isFullScreenReveal) {
-                    int targetLineX = displayPinX + (int) ((displayGoalX - displayPinX) * lineProgress);
-                    int targetLineY = displayPinY + (int) ((displayGoalY - displayPinY) * lineProgress);
-
-                    g2d.setColor(Color.WHITE);
-                    Stroke dottedStroke = new BasicStroke(3.0f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10.0f, new float[]{6.0f, 6.0f}, 0.0f);
-                    g2d.setStroke(dottedStroke);
-                    g2d.drawLine(displayPinX, displayPinY, targetLineX, targetLineY);
-                    g2d.setStroke(originalStroke);
+                    // The great circle's arc the distance is measured along
+                    globe.drawArc(g2d, pin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight());
+                    double[] p = globe.project(pin, mapX, mapY, currentMapSize, mapHeight());
+                    double[] q = globe.project(goal, mapX, mapY, currentMapSize, mapHeight());
+                    displayPinX = (int) Math.round(p[0]);
+                    displayPinY = (int) Math.round(p[1]);
+                    displayGoalX = (int) Math.round(q[0]);
+                    displayGoalY = (int) Math.round(q[1]);
+                    pinShown = p[2] >= 0.0;
+                    goalShown = q[2] >= 0.0;
                 }
 
                 int pinLength = 16;       
                 int headDiameter = 12;    
                 int headRadius = headDiameter / 2;
+                if (pinShown) {
 
                 g2d.setColor(new Color(180, 182, 185)); 
                 g2d.setStroke(new BasicStroke(2.0f));
@@ -1284,8 +1341,9 @@ public class MapPanel extends JPanel {
                 g2d.fillOval(circleX, circleY, headDiameter, headDiameter);
                 g2d.setColor(new Color(30, 30, 30));
                 g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
+                }
 
-                if (isFullScreenReveal && (currentPhase != RevealPhase.SHOW_PLAYER_PIN)) {
+                if (isFullScreenReveal && goalShown && (currentPhase != RevealPhase.SHOW_PLAYER_PIN)) {
                     int flagPoleLength = 22;
 
                     g2d.setColor(Color.LIGHT_GRAY);
@@ -1430,6 +1488,15 @@ public class MapPanel extends JPanel {
         if (onSizeChanged != null) onSizeChanged.run();
     }
 
+    /**
+     * The results' view's width for a window of width by height: its height leaves room below
+     * for the note and proceed buttons and above for a margin.
+     */
+    private static int revealSize(int width, int height) {
+        int tall = Math.min(620, Math.max(260, height - 330));
+        return Math.min(Math.max(300, width - 80), Math.round(tall / REVEAL_ASPECT));
+    }
+
     /** M: enlarges the small map, or shrinks the large one. */
     /**
      * Resizes the map for the space the window now has (it's laid out again whenever the window
@@ -1439,8 +1506,7 @@ public class MapPanel extends JPanel {
     public void fitToWindow(int width, int height) {
         int size;
         if (isFullScreenReveal) {
-            int tall = Math.min(750, Math.max(300, height - 240));
-            size = Math.min(Math.max(300, width - 80), Math.round(tall / MapProjection.aspect()));
+            size = revealSize(width, height);
         } else if (isLarge) {
             size = Math.min((int) (height * 0.60f / MapProjection.aspect()), (int) (width * 0.55f));
         } else {
@@ -1594,12 +1660,18 @@ public class MapPanel extends JPanel {
     private void calculateAndApplyScore() {
         // How far apart the guess and the answer really are: the shortest way round the sphere's surface
         double realWorldDistance = SphereMath.angle(pin, goal) * Planet.radius();
+        this.roundDistance = realWorldDistance;
 
-        double kConstant = Planet.greatestDistance() / 7.0;
-        int score = (int) Math.round(5000.0 * Math.exp(-realWorldDistance / kConstant));
-        
+        // Full marks within PERFECT_DISTANCE; beyond it the score falls away smoothly from just
+        // under full (4,999 at the edge, never jumping), as it did before over the whole distance
+        int score;
+        if (realWorldDistance <= PERFECT_DISTANCE) {
+            score = 5000;
+        } else {
+            double kConstant = Planet.greatestDistance() / 7.0;
+            score = (int) Math.min(4999.0, Math.floor(5000.0 * Math.exp(-(realWorldDistance - PERFECT_DISTANCE) / kConstant)));
+        }
         if (score < 0) score = 0;
-        if (score > 5000) score = 5000;
 
         this.targetRoundScore = score;
     }
@@ -1726,9 +1798,22 @@ public class MapPanel extends JPanel {
      * Under the top of the results' map: the guess's points going to productivity, and the cash
      * it earns worked out (the monthly salary plus half the points).
      */
+    // A guess this close (world units: 10 m) scores full marks
+    private static final double PERFECT_DISTANCE = 10.0 * PlayerBody.METRE;
+    // How far the guess was from the answer this round (world units)
+    private double roundDistance;
+
+    /** A distance in world units as the player reads it: metres up to a kilometre, then kilometres. */
+    private static String distanceText(double units) {
+        double metres = units / PlayerBody.METRE;
+        if (metres < 1000.0) return String.format("%,d m", Math.round(metres));
+        return String.format(metres < 100_000.0 ? "%,.1f km" : "%,.0f km", metres / 1000.0);
+    }
+
     private void drawReckoning(Graphics2D g2d, int mapX, int mapY) {
         int points = targetRoundScore, cash = GameHUD.cashFor(points);
         String[] lines = {
+            "Distance: " + distanceText(roundDistance),
             String.format("Productivity: +%,d", points),
             String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
         };
@@ -1744,7 +1829,7 @@ public class MapPanel extends JPanel {
         g2d.fillRoundRect(x, y, boxW, boxH, 12, 12);
         g2d.setColor(new Color(255, 255, 255, 50));
         g2d.drawRoundRect(x, y, boxW, boxH, 12, 12);
-        Color[] colours = { new Color(150, 220, 255), new Color(120, 230, 140) };
+        Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
         for (int i = 0; i < lines.length; i++) {
             g2d.setColor(colours[i]);
             g2d.drawString(lines[i], x + padX, y + padY + fm.getAscent() + i * lineH);
