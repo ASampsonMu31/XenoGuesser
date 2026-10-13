@@ -22,15 +22,18 @@ import com.xenoguesser.math.Vector3;
  * come out of the front door, walk down the path to the pavement, stroll along the road or
  * visit a neighbour, and go back indoors.
  *
- * World units: the viewer's eyes are 20 above the ground.
+ * World units: the viewer's eyes are 20 above the ground. Each person is somewhere on the
+ * planet (on the datum) and faces a heading (D10) in the frame there; each step is worked out in
+ * that frame (D3), as the vehicles' are.
  */
 public class Inhabitants {
 
     // Bones
     private static final int PELVIS = 0, TORSO = 1, HEAD = 2, FIRST_ARM = 3;
 
-    // People are looked after in square cells of this size around the viewer
-    private static final float CELL = 200f;
+    // People are looked after by the geodesic cell their household lives in (the cells the
+    // houses are batched by), round the viewer
+    private final GeodesicChunkGrid cells = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
     // Neighbourhoods are peopled (and their vehicles parked) out to here: as far as vehicles are
     // drawn, so none appear out of nowhere; people further than they're drawn are moved on less often
     private static final float ACTIVE_RADIUS = Vehicles.DRAW_DISTANCE;
@@ -59,9 +62,13 @@ public class Inhabitants {
         InfrastructureManager.Doorway leftFrom;
         Phase phase;
         float timer;
-        List<float[]> route = new ArrayList<>();
+        List<Waypoint> route = new ArrayList<>();
         int next;
-        float x, z, heading, lookYaw;
+        // Where they are (on the datum) and which way they face (D10) there; null for one posed
+        // for a picture, who stands at the origin of their own frame
+        SpherePosition position;
+        double heading;
+        float lookYaw, sway;
         float walkPhase, walking, speed;
         float scale, bulk;
         int mesh;
@@ -85,16 +92,21 @@ public class Inhabitants {
         int carrying;
         int boughtFrom, packing;
         float[] bag = { 0.9f, 0.9f, 0.85f };
-        float steerHeading = Float.NaN, steerTimer;
-        float progressTimer, progressX, progressZ, progressExpected;
+        // (headings, D10, at where they were chosen: they are only kept a moment)
+        double steerHeading = Double.NaN;
+        float steerTimer;
+        float progressTimer, progressExpected;
+        SpherePosition progressAt;
         // Getting free when stuck: how many checks in a row found them stuck; a while spent
         // heading off some other way; a hop over a low fence (time into it, or below zero when
         // not hopping, its direction, length and peak) and how high off the ground they are
         int stuckCount;
-        float wanderTimer, wanderHeading;
-        float hopTime = -1f, hopDirX, hopDirZ, hopLength, hopPeak, lift;
+        float wanderTimer;
+        double wanderHeading, hopHeading;
+        float hopTime = -1f, hopLength, hopPeak, lift;
         // How far above the bare ground they stand (up on a road's deck), and where that was found
-        float standY, standX = Float.NaN, standZ;
+        float standY;
+        SpherePosition standAt;
         // The household's vehicle, if this is the one who drives it, and the drive to start
         // on reaching it (null when walking)
         Vehicles.Vehicle car;
@@ -115,16 +127,19 @@ public class Inhabitants {
      * out again only every few steps; in between it's the ground beneath plus that.
      */
     private float standingHeight(Person p) {
-        float ground = TerrainMesh.getLayeredHeight(p.x, p.z, terrainNoise);
-        if (Float.isNaN(p.standX) || Math.abs(p.x - p.standX) + Math.abs(p.z - p.standZ) > 4f) {
-            p.standX = p.x;
-            p.standZ = p.z;
-            p.standY = infrastructure.walkingSurfaceY(p.x, p.z) - ground;
+        float ground = TerrainMesh.getLayeredHeight(p.position, terrainNoise);
+        if (p.standAt == null || SphereMath.distance(p.position, p.standAt) > 4.0) {
+            p.standAt = p.position;
+            p.standY = infrastructure.walkingSurfaceY(p.position) - ground;
         }
         return ground + p.standY;
     }
 
-    // Route points are {x, z, kind}: at a house (inside or its door) or out on the street.
+    /** A point of someone's way: the place (on the datum) and its kind. */
+    private record Waypoint(SpherePosition place, float kind) {
+    }
+
+    // Route points have a kind: at a house (inside or its door) or out on the street.
     // Only walking from one street point to another meets obstacles; the way between a
     // door and the pavement is the garden path through the gate.
     private static final float AT_HOUSE = 0f, ON_STREET = 1f, BOARD = 2f;
@@ -139,11 +154,11 @@ public class Inhabitants {
     private static final float STUCK_SECONDS = 1.5f;
     private static final float HOP_SECONDS = 0.6f;
     // Where the viewer is: someone hopelessly stuck may be quietly moved on, out of sight
-    private float viewerX, viewerZ;
-    private Collision collision;
+    private SpherePosition viewer;
+    private GeodesicCollision collision;
 
-    /** Shares the world's solid things, so people walk round them and not through. */
-    public void setCollision(Collision collision) {
+    /** Shares the world's solid things, so people and vehicles go round them and not through. */
+    public void setCollision(GeodesicCollision collision) {
         this.collision = collision;
         vehicles.setCollision(collision);
     }
@@ -191,7 +206,6 @@ public class Inhabitants {
 
     private final long seed;
     private final InfrastructureManager infrastructure;
-    private final float regionWidth;
     private final PerlinNoise terrainNoise;
     private final Map<Integer, Culture> cultures = new HashMap<>();
     private final Map<Long, List<Person>> peopleByCell = new HashMap<>();
@@ -202,13 +216,11 @@ public class Inhabitants {
     private final float[] bones = new float[OrganismSpecies.MAX_BONES * 16];
     private final OrganismMesh[] meshes = new OrganismMesh[8];
     private Shader shader;
-    private int lastCellX = Integer.MIN_VALUE, lastCellZ = Integer.MIN_VALUE;
+    private long lastCell = -1L;
 
-    public Inhabitants(long seed, int nationCount, InfrastructureManager infrastructure,
-                       float regionWidth, PerlinNoise terrainNoise) {
+    public Inhabitants(long seed, int nationCount, InfrastructureManager infrastructure, PerlinNoise terrainNoise) {
         this.seed = seed;
         this.infrastructure = infrastructure;
-        this.regionWidth = regionWidth;
         this.terrainNoise = terrainNoise;
         Random rand = WorldPalette.rng(seed, 0xD0517L);
 
@@ -348,7 +360,7 @@ public class Inhabitants {
         vehiclesByCell.clear();
         allVehicles.clear();
         vehicles.clear();
-        lastCellX = lastCellZ = Integer.MIN_VALUE;
+        lastCell = -1L;
     }
 
     // ==========================================
@@ -671,17 +683,17 @@ public class Inhabitants {
         return b;
     }
 
-    // The guards in the border checks' booths near the viewer, by booth (see InfrastructureManager.borderBooths)
+    // The guards in the border checks' booths near the viewer, by booth (see InfrastructureManager.borderGuards)
     private final Map<Integer, Person> guards = new HashMap<>();
     private final Map<Integer, Integer> guardNations = new HashMap<>();
-    private List<float[]> booths;
+    private List<InfrastructureManager.Guard> booths;
 
     /** Puts a guard in each border booth near the viewer, and lets those far behind go. */
     private void staffBooths() {
-        if (booths == null) booths = infrastructure.borderBooths();
+        if (booths == null) booths = infrastructure.borderGuards();
         for (int i = 0; i < booths.size(); i++) {
-            float[] b = booths.get(i);
-            boolean near = Math.hypot(b[0] - viewerX, b[1] - viewerZ) < ACTIVE_RADIUS;
+            InfrastructureManager.Guard b = booths.get(i);
+            boolean near = SphereMath.distance(viewer, b.place()) < ACTIVE_RADIUS;
             if (!near) {
                 guards.remove(i);
                 continue;
@@ -689,14 +701,13 @@ public class Inhabitants {
             if (guards.containsKey(i)) continue;
             Person guard = new Person();
             Random rand = new Random(i * 7919L + 17L);
-            dress(guard, (int) b[4], rand);
+            dress(guard, b.nation(), rand);
             guard.rand = rand;
-            guard.x = b[0];
-            guard.z = b[1];
-            guard.heading = (float) Math.atan2(b[2], b[3]);
+            guard.position = b.place();
+            guard.heading = b.facing();
             guard.phase = Phase.INSIDE;
             guards.put(i, guard);
-            guardNations.put(i, (int) b[4]);
+            guardNations.put(i, b.nation());
         }
     }
 
@@ -706,8 +717,8 @@ public class Inhabitants {
 
     /**
      * Bone matrices for one person, standing or walking, at their current spot; or, given the
-     * seat of the open-topped vehicle they're driving ({x, rim height, z, heading}), sitting
-     * still in it, sunk to the chest so their legs are hidden in the body.
+     * seat of the open-topped vehicle they're driving ({x, rim height, z, turn} in the frame
+     * under it), sitting still in it, sunk to the chest so their legs are hidden in the body.
      */
     private void pose(Person p, float time, float[] seat) {
         float[] body;
@@ -716,8 +727,11 @@ public class Inhabitants {
             body = Affine.multiply(Affine.translation(seat[0], seat[1] - sunk, seat[2]),
                     Affine.multiply(Affine.rotationY(seat[3]), Affine.scale(p.scale, p.scale, p.scale)));
         } else {
-            body = Affine.multiply(Affine.translation(p.x, standingHeight(p) + p.lift, p.z),
-                    Affine.multiply(Affine.rotationY(p.heading), Affine.scale(p.scale, p.scale, p.scale)));
+            // In the frame where they stand (the origin, for a picture), at their height above
+            // the datum; the body's nose is along its local +z, turned the other way to a heading
+            float ground = p.position == null ? 0f : standingHeight(p) + p.lift;
+            body = Affine.multiply(Affine.translation(0f, ground, 0f),
+                    Affine.multiply(Affine.rotationY((float) (Math.PI * 0.5 - p.heading)), Affine.scale(p.scale, p.scale, p.scale)));
         }
         float walk = seat != null ? 0f : p.walking;
         float cycle = p.walkPhase;
@@ -795,7 +809,7 @@ public class Inhabitants {
             place(body, boneBase + 2, Affine.frame(foot, forward, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
         }
         if (hasTail) {
-            float sway = (float) Math.sin(time * 1.3f + p.x * 0.1f) * 0.4f;
+            float sway = (float) Math.sin(time * 1.3f + p.sway) * 0.4f;
             float[] base = plan == MANY_LEGGED ? new float[] { 0f, hip + shoulderWidth * 0.1f, -barrelLength * 0.6f }
                     : plan == BLOB ? new float[] { 0f, hip * 0.35f, -blobRadius * 0.8f }
                     : new float[] { 0f, hip - height * 0.02f, -shoulderWidth * 0.3f };
@@ -820,31 +834,32 @@ public class Inhabitants {
     //          LIFE
     // ==========================================
 
-    public void update(float dt, float viewerX, float viewerZ) {
-        this.viewerX = viewerX;
-        this.viewerZ = viewerZ;
-        int cellX = (int) Math.floor(viewerX / CELL), cellZ = (int) Math.floor(viewerZ / CELL);
-        int reach = (int) Math.ceil(ACTIVE_RADIUS / CELL);
-        if (cellX != lastCellX || cellZ != lastCellZ) {
-            lastCellX = cellX;
-            lastCellZ = cellZ;
+    /**
+     * Moves everyone on. The households in the geodesic cells within reach of the viewer are
+     * peopled (and their vehicles parked), nearest first; those well behind go.
+     */
+    public void update(float dt, SpherePosition viewer) {
+        this.viewer = viewer;
+        GeodesicChunkGrid.Cell here = cells.cellAt(viewer);
+        if (here.id() != lastCell) {
+            lastCell = here.id();
+            double keep = ACTIVE_RADIUS + here.angularRadius() * Planet.radius() * 3.0;
             Iterator<Map.Entry<Long, List<Person>>> it = peopleByCell.entrySet().iterator();
             while (it.hasNext()) {
                 Map.Entry<Long, List<Person>> entry = it.next();
                 long key = entry.getKey();
-                int cx = (int) (key >> 32), cz = (int) key;
-                if ((cx - cellX) * (cx - cellX) + (cz - cellZ) * (cz - cellZ) > (reach + 1) * (reach + 1)) {
+                if (SphereMath.angle(cells.cell(key).centre(), SphereMath.direction(viewer)) * Planet.radius() > keep) {
                     it.remove();
                     // Anyone still on the move (driving, or walking where they can be seen) carries
                     // on until they're done and out of sight, and so do vehicles in use or in sight
                     for (Person p : entry.getValue()) {
-                        boolean seen = p.phase == Phase.DRIVING ? p.driving != null && !outOfSight(p.driving.x(), p.driving.z()) : !outOfSight(p.x, p.z);
-                        if (p.phase != Phase.INSIDE && seen) roaming.add(p);
+                        boolean seen = !outOfSight(p.phase == Phase.DRIVING && p.driving != null ? p.driving.position() : p.position);
+                        if (p.phase != Phase.INSIDE && (p.phase != Phase.DRIVING || p.driving != null) && seen) roaming.add(p);
                     }
                     List<Vehicles.Vehicle> gone = vehiclesByCell.remove(key);
                     if (gone != null) {
                         for (Vehicles.Vehicle v : gone) {
-                            if (!outOfSight(v.x(), v.z())) roamingCars.add(v);
+                            if (!outOfSight(v.position())) roamingCars.add(v);
                             else vehicles.release(v);
                         }
                     }
@@ -852,23 +867,19 @@ public class Inhabitants {
             }
             // What's still to be peopled, nearest first
             unpeopled.clear();
-            for (int dz = -reach; dz <= reach; dz++) {
-                for (int dx = -reach; dx <= reach; dx++) {
-                    if (dx * dx + dz * dz > reach * reach || peopleByCell.containsKey(cellKey(cellX + dx, cellZ + dz))) continue;
-                    unpeopled.add(new int[] { cellX + dx, cellZ + dz, dx * dx + dz * dz });
-                }
-            }
-            unpeopled.sort((a, b) -> Integer.compare(a[2], b[2]));
+            GeodesicChunkGrid.Direction at = SphereMath.direction(viewer);
+            List<GeodesicChunkGrid.Cell> near = cells.cellsWithin(at, ACTIVE_RADIUS / Planet.radius());
+            near.sort((a, b) -> Double.compare(SphereMath.angle(a.centre(), at), SphereMath.angle(b.centre(), at)));
+            for (GeodesicChunkGrid.Cell cell : near) if (!peopleByCell.containsKey(cell.id())) unpeopled.add(cell.id());
         }
         if (!unpeopled.isEmpty()) {
             int count = 0;
             for (List<Person> list : peopleByCell.values()) count += list.size();
             for (int n = 0; n < CELLS_PER_FRAME && !unpeopled.isEmpty(); n++) {
-                int[] cell = unpeopled.remove(0);
-                long key = cellKey(cell[0], cell[1]);
+                long key = unpeopled.remove(0);
                 if (peopleByCell.containsKey(key)) continue;
                 List<Vehicles.Vehicle> cars = new ArrayList<>();
-                List<Person> people = populate(cell[0], cell[1], MAX_PEOPLE - count, cars);
+                List<Person> people = populate(key, MAX_PEOPLE - count, cars);
                 count += people.size();
                 peopleByCell.put(key, people);
                 vehiclesByCell.put(key, cars);
@@ -877,9 +888,9 @@ public class Inhabitants {
         float step = Math.min(dt, 0.1f);
         // Kept only while they could be seen: once out of sight they go, wherever they were off
         // to (so the traffic about isn't swayed by the places the viewer has been)
-        roaming.removeIf(p -> p.phase == Phase.INSIDE || outOfSight(p.driving != null ? p.driving.x() : p.x, p.driving != null ? p.driving.z() : p.z));
+        roaming.removeIf(p -> p.phase == Phase.INSIDE || outOfSight(p.driving != null ? p.driving.position() : p.position));
         roamingCars.removeIf(v -> {
-            boolean done = outOfSight(v.x(), v.z());
+            boolean done = outOfSight(v.position());
             if (done) vehicles.release(v);
             return done;
         });
@@ -890,11 +901,10 @@ public class Inhabitants {
         allVehicles.addAll(throughCars);
         // People too far off to be seen are moved on a quarter as often (by four times as much)
         frame++;
-        float far2 = (DRAW_DISTANCE + 100f) * (DRAW_DISTANCE + 100f);
+        float farDistance = DRAW_DISTANCE + 100f;
         for (List<Person> list : peopleByCell.values()) {
             for (Person p : list) {
-                float dx = p.x - viewerX, dz = p.z - viewerZ;
-                if (dx * dx + dz * dz > far2 && p.phase != Phase.DRIVING) {
+                if (p.phase != Phase.DRIVING && SphereMath.distance(viewer, p.position) > farDistance) {
                     if (((frame + System.identityHashCode(p)) & 3) != 0) continue;
                     live(p, Math.min(step * 4f, 0.25f));
                 } else {
@@ -903,7 +913,7 @@ public class Inhabitants {
             }
         }
         for (Person p : roaming) live(p, step);
-        vehicles.update(allVehicles, step, viewerX, viewerZ);
+        vehicles.update(allVehicles, step, viewer);
         swingDoors(step);
         staffBooths();
     }
@@ -945,8 +955,7 @@ public class Inhabitants {
     }
 
     private void holdNear(Person p, InfrastructureManager.Doorway door) {
-        float dx = door.doorX - p.x, dz = door.doorZ - p.z;
-        if (dx * dx + dz * dz < 12f * 12f) holdDoor(door, 0.5f);
+        if (SphereMath.distance(door.door, p.position) < 12.0) holdDoor(door, 0.5f);
     }
 
     /** Doors swing open while held, and shut again after. */
@@ -961,32 +970,33 @@ public class Inhabitants {
         }
     }
 
-    /**
-     * The open doors near enough to see: the dark of the doorway, and the door swung out
-     * on its hinge in the house's door colour. The organism shader is already set up.
-     */
     private OrganismMesh lightFrameMesh, lampMesh;
-    private List<float[]> borderLights;
+    private List<InfrastructureManager.TrafficLight> borderLights;
     // A traffic light's pole height and thickness, its housing's size, and a lamp's size
     private static final float LIGHT_POLE = 22f, LIGHT_POLE_HALF = 0.5f, LAMP_SIZE = 2.2f;
+
+    /** Whether a place is near enough the eye to draw something reach big there. */
+    private static boolean near(SpherePosition place, SpherePosition eye, double reach) {
+        double ex = place.x() - eye.x(), ey = place.y() - eye.y(), ez = place.z() - eye.z();
+        return ex * ex + ey * ey + ez * ez <= reach * reach;
+    }
 
     /**
      * The traffic lights at the borders where the two sides drive on different sides of the
      * road: a pole with a housing at the top, its two lamps showing through both faces (so
      * they're seen from either way), one lit for each side's turn and neither in the pause.
+     * Each is posed in the frame at its foot.
      */
-    private void renderBorderLights(GL3 gl, int bonesLocation, Frustum frustum, Vector3 viewPos) {
+    private void renderBorderLights(GL3 gl, int bonesLocation, SpherePosition eye) {
         if (lightFrameMesh == null) return;
         if (borderLights == null) borderLights = infrastructure.borderLights();
-        for (float[] l : borderLights) {
-            float dx = l[0] - viewPos.x, dz = l[1] - viewPos.z;
-            if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
-            float ground = TerrainMesh.getLayeredHeight(l[0], l[1], terrainNoise);
-            if (!frustum.intersectsSphere(l[0], ground + LIGHT_POLE * 0.5f, l[1], LIGHT_POLE)) continue;
-            boolean vertical = l[4] > 0.5f;
+        for (InfrastructureManager.TrafficLight l : borderLights) {
+            if (!near(l.foot(), eye, DRAW_DISTANCE)) continue;
+            float ground = TerrainMesh.getLayeredHeight(l.foot(), terrainNoise);
+            boolean vertical = l.vertical();
+            SphereRender.setAnchor(gl, shader, SphereFrame.at(l.foot()).modelMatrix(1f, eye));
             // The lamps face along the road (both ways); their row runs up or across the road
-            float heading = (float) Math.atan2(l[2], l[3]);
-            float[] base = Affine.multiply(Affine.translation(l[0], ground, l[1]), Affine.rotationY(heading));
+            float[] base = Affine.multiply(Affine.translation(0f, ground, 0f), Affine.rotationY((float) (Math.PI * 0.5 - l.heading())));
             float housingW = vertical ? LAMP_SIZE * 1.8f : LAMP_SIZE * 3.4f, housingH = vertical ? LAMP_SIZE * 3.4f : LAMP_SIZE * 1.8f;
             float top = LIGHT_POLE + housingH * 0.5f;
             shader.setFloat(gl, "lampGlow", 0f);
@@ -1000,12 +1010,12 @@ public class Inhabitants {
                     Affine.scale(housingW, housingH, LAMP_SIZE * 1.4f))), 0, bones, 0, 16);
             gl.glUniformMatrix4fv(bonesLocation, 1, false, bones, 0);
             lightFrameMesh.render(gl);
-            int turn = infrastructure.borderTurn((int) l[5]);
+            int turn = infrastructure.borderTurn(l.check());
             for (int k = 0; k < 2; k++) {
                 float offset = (k == 0 ? -1f : 1f) * LAMP_SIZE * 0.85f;
                 float[] at = vertical ? Affine.translation(0f, top - offset, 0f) : Affine.translation(offset, top, 0f);
                 boolean on = turn == k + 1;
-                float[] colour = { l[6 + k * 3], l[7 + k * 3], l[8 + k * 3] };
+                float[] colour = k == 0 ? l.colourA() : l.colourB();
                 shader.setFloat(gl, "lampGlow", on ? 1f : 0f);
                 shader.setVec3(gl, "eyeColour", on ? vec(colour) : new Vector3(colour[0] * 0.15f, colour[1] * 0.15f, colour[2] * 0.15f));
                 // (through the housing, showing on both faces)
@@ -1017,14 +1027,19 @@ public class Inhabitants {
         }
     }
 
-    private void renderDoors(GL3 gl, int bonesLocation, Frustum frustum, Vector3 viewPos) {
+    /**
+     * The open doors near enough to see: the dark of the doorway, and the door swung out on its
+     * hinge in the house's door colour, posed in the house's frame (where its corners are). The
+     * organism shader is already set up.
+     */
+    private void renderDoors(GL3 gl, int bonesLocation, SpherePosition eye) {
         if (doorMesh == null) return;
         for (DoorState state : openDoors.values()) {
             float[][] c = state.door.doorCorners;
             if (c == null || state.amount <= 0f) continue;
-            float dx = state.door.doorX - viewPos.x, dz = state.door.doorZ - viewPos.z;
-            if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
-            if (!frustum.intersectsSphere(c[0][0], c[0][1], c[0][2], 30f)) continue;
+            if (!near(state.door.door, eye, DRAW_DISTANCE)) continue;
+            SphereRender.setAnchor(gl, shader, state.door.frame.modelMatrix(1f, eye));
+            float[] doorstep = state.door.localDoor;
             // Along the doorway (left to right), and out of the wall towards the doorstep
             float ax = c[1][0] - c[0][0], az = c[1][2] - c[0][2];
             float width = (float) Math.hypot(ax, az);
@@ -1033,7 +1048,7 @@ public class Inhabitants {
             az /= width;
             float nx = -az, nz = ax;
             float midX = (c[0][0] + c[1][0]) * 0.5f, midZ = (c[0][2] + c[1][2]) * 0.5f;
-            if (nx * (state.door.doorX - midX) + nz * (state.door.doorZ - midZ) < 0f) { nx = -nx; nz = -nz; }
+            if (nx * (doorstep[0] - midX) + nz * (doorstep[1] - midZ) < 0f) { nx = -nx; nz = -nz; }
             float tall = c[3][1] - c[0][1];
             // The doorway: dark, just proud of the closed door
             float cx = (c[0][0] + c[1][0] + c[2][0] + c[3][0]) * 0.25f, cy = (c[0][1] + c[1][1] + c[2][1] + c[3][1]) * 0.25f,
@@ -1077,13 +1092,12 @@ public class Inhabitants {
     private final List<Vehicles.Vehicle> roamingCars = new ArrayList<>();
     private final List<Person> travellers = new ArrayList<>();
     private final List<Vehicles.Vehicle> throughCars = new ArrayList<>();
-    private float trafficTimer;
     // Vehicles passing through that have got where they were going, to go once out of sight
     private final java.util.Set<Vehicles.Vehicle> arrived = new java.util.HashSet<>();
     private final Random trafficRand = new Random(0x7AFF1CL);
 
-    private boolean outOfSight(float x, float z) {
-        return Math.hypot(x - viewerX, z - viewerZ) > Vehicles.OUT_OF_SIGHT;
+    private boolean outOfSight(SpherePosition place) {
+        return SphereMath.distance(viewer, place) > Vehicles.OUT_OF_SIGHT;
     }
 
     /**
@@ -1096,7 +1110,7 @@ public class Inhabitants {
         // Gone far off, or there and out of sight: no longer kept
         for (int i = throughCars.size() - 1; i >= 0; i--) {
             Vehicles.Vehicle v = throughCars.get(i);
-            if (Math.hypot(v.x() - viewerX, v.z() - viewerZ) > Vehicles.OUT_OF_SIGHT * 1.6f || (arrived.contains(v) && outOfSight(v.x(), v.z()))) {
+            if (SphereMath.distance(viewer, v.position()) > Vehicles.OUT_OF_SIGHT * 1.6f || (arrived.contains(v) && outOfSight(v.position()))) {
                 arrived.remove(v);
                 throughCars.remove(i);
                 travellers.remove(i);
@@ -1113,10 +1127,10 @@ public class Inhabitants {
      */
     private void addThroughCar() {
         boolean filling = throughCars.size() < THROUGH_TRAFFIC / 2;
-        float[] from = filling ? infrastructure.roadPointBetween(viewerX, viewerZ, 0f, Vehicles.OUT_OF_SIGHT + 300f, trafficRand)
-                : infrastructure.roadPointBetween(viewerX, viewerZ, Vehicles.OUT_OF_SIGHT, Vehicles.OUT_OF_SIGHT + 300f, trafficRand);
+        SpherePosition from = filling ? infrastructure.roadPointBetween(viewer, 0f, Vehicles.OUT_OF_SIGHT + 300f, trafficRand)
+                : infrastructure.roadPointBetween(viewer, Vehicles.OUT_OF_SIGHT, Vehicles.OUT_OF_SIGHT + 300f, trafficRand);
         if (from == null) return;
-        List<InfrastructureManager.Doorway> doors = infrastructure.doorwaysNear(from[0], from[1], 1500f);
+        List<InfrastructureManager.Doorway> doors = infrastructure.doorwaysNear(from, 1500f);
         doors.removeIf(d -> d.shop);
         if (doors.isEmpty()) return;
         InfrastructureManager.Doorway near = doors.get(trafficRand.nextInt(doors.size()));
@@ -1131,13 +1145,13 @@ public class Inhabitants {
         arrive[0] = () -> {
             // There: out of sight it's gone (see above), otherwise on somewhere else: never left
             // standing on the road
-            float[] here = { made[0].x(), made[0].z() };
-            if (outOfSight(here[0], here[1])) {
+            SpherePosition here = made[0].position();
+            if (outOfSight(here)) {
                 arrived.add(made[0]);
                 return;
             }
             for (int attempt = 0; attempt < 8; attempt++) {
-                float[] onward = attempt == 0 ? farSide(here) : infrastructure.roadPointBetween(here[0], here[1], 300f, 2600f, trafficRand);
+                SpherePosition onward = attempt == 0 ? farSide(here) : infrastructure.roadPointBetween(here, 300f, 2600f, trafficRand);
                 if (onward != null && vehicles.travel(made[0], here, onward, arrive[0])) return;
             }
             arrived.add(made[0]);
@@ -1146,12 +1160,12 @@ public class Inhabitants {
         for (int attempt = 0; attempt < 6 && made[0] == null; attempt++) {
             // Most come by on the way across to the far side; the rest head off any way at all
             boolean across = trafficRand.nextFloat() < 0.75f;
-            float[] to = across ? farSide(from) : infrastructure.roadPointBetween(from[0], from[1], 1200f, 2600f, trafficRand);
-            if (to == null || Math.hypot(to[0] - from[0], to[1] - from[1]) < 600f) continue;
+            SpherePosition to = across ? farSide(from) : infrastructure.roadPointBetween(from, 1200f, 2600f, trafficRand);
+            if (to == null || SphereMath.distance(from, to) < 600.0) continue;
             // Either way along it, as likely as each other, whichever end happens to be nearer the roads
             // round about (both ends out of sight)
-            float[] start = from, end = to;
-            if (outOfSight(to[0], to[1]) && trafficRand.nextBoolean()) {
+            SpherePosition start = from, end = to;
+            if (outOfSight(to) && trafficRand.nextBoolean()) {
                 start = to;
                 end = from;
             }
@@ -1165,28 +1179,25 @@ public class Inhabitants {
         travellers.add(driver);
     }
 
-    /** A point on the roads across on the far side of the viewer from a point, out of sight. */
-    private float[] farSide(float[] from) {
-        float dx = viewerX - from[0], dz = viewerZ - from[1], d = (float) Math.max(1f, Math.hypot(dx, dz));
-        float tx = viewerX + dx / d * (Vehicles.OUT_OF_SIGHT + 200f), tz = viewerZ + dz / d * (Vehicles.OUT_OF_SIGHT + 200f);
-        float[] to = infrastructure.roadPointBetween(tx, tz, 0f, 500f, trafficRand);
-        return to != null && !outOfSight(to[0], to[1]) ? null : to;
+    /** A point on the roads across on the far side of the viewer from a place, out of sight. */
+    private SpherePosition farSide(SpherePosition from) {
+        // (on along the great circle from the place through the viewer)
+        double onward = SphereMath.heading(viewer, from) + Math.PI;
+        SpherePosition across = SphereMath.move(SphereMath.atAltitude(viewer, 0.0), onward, Vehicles.OUT_OF_SIGHT + 200f);
+        SpherePosition to = infrastructure.roadPointBetween(across, 0f, 500f, trafficRand);
+        return to != null && !outOfSight(to) ? null : to;
     }
 
-    // Neighbourhoods in range still to be peopled, nearest first ({cell x, cell z, distance squared}); frames counted
-    private final List<int[]> unpeopled = new ArrayList<>();
+    // Neighbourhoods (geodesic cells) in range still to be peopled, nearest first; frames counted
+    private final List<Long> unpeopled = new ArrayList<>();
     private int frame;
 
-    private static long cellKey(int cx, int cz) {
-        return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
-    }
-
     /** The people of one cell: some of each house's household, more in town than in the country. */
-    private List<Person> populate(int cellX, int cellZ, int room, List<Vehicles.Vehicle> cars) {
+    private List<Person> populate(long cell, int room, List<Vehicles.Vehicle> cars) {
         List<Person> people = new ArrayList<>();
         if (room <= 0) return people;
-        Random rand = new Random(seed ^ (cellX * 0x9E3779B97F4A7C15L) ^ (cellZ * 0xC2B2AE3D27D4EB4FL) ^ 0x1A7L);
-        for (InfrastructureManager.Doorway door : infrastructure.doorwaysIn(cellX * CELL, cellZ * CELL, (cellX + 1) * CELL, (cellZ + 1) * CELL)) {
+        Random rand = new Random(seed ^ (cell * 0x9E3779B97F4A7C15L) ^ 0x1A7L);
+        for (InfrastructureManager.Doorway door : infrastructure.doorwaysInCell(cell)) {
             // Shops are where people go, not where they live
             if (door.shop) continue;
             // A household of up to three out and about, fuller in town than in the country
@@ -1212,8 +1223,7 @@ public class Inhabitants {
         p.rand = rand;
         p.speed = 14f + rand.nextFloat() * 8f;
         dress(p, home.nationId, rand);
-        p.x = home.insideX;
-        p.z = home.insideZ;
+        p.position = home.inside;
         if (rand.nextFloat() < 0.25f) {
             p.phase = Phase.INSIDE;
             p.timer = rand.nextFloat() * 12f;
@@ -1246,10 +1256,18 @@ public class Inhabitants {
                 setOffWalking(p);
             }
             int start = 1 + rand.nextInt(Math.max(1, p.route.size() - 2));
-            float[] at = p.route.get(start - 1), to = p.route.get(start);
-            float t = rand.nextFloat();
-            p.x = at[0] + (to[0] - at[0]) * t;
-            p.z = at[1] + (to[1] - at[1]) * t;
+            Waypoint at = p.route.get(start - 1), to = p.route.get(start);
+            // (a long leg can cut across a building's corner: never start inside one, where the
+            // walls would keep them; the leg's start is out on the street)
+            p.position = at.place();
+            for (int attempt = 0; attempt < 8; attempt++) {
+                SpherePosition along = SphereMath.slerp(at.place(), to.place(), rand.nextFloat());
+                if (!infrastructure.isBuildingLocation(along, 1f)) {
+                    p.position = along;
+                    break;
+                }
+            }
+            p.heading = SphereMath.heading(p.position, to.place());
             p.next = start;
         }
         return p;
@@ -1257,6 +1275,7 @@ public class Inhabitants {
 
     /** Build and clothes: their nation's dress, their own size and shade of skin. */
     private void dress(Person p, int nationId, Random rand) {
+        p.sway = rand.nextFloat() * 6.2832f;
         p.scale = 0.9f + rand.nextFloat() * 0.2f;
         p.bulk = 0.85f + rand.nextFloat() * 0.35f;
         Culture culture = cultures.getOrDefault(nationId, cultures.values().iterator().next());
@@ -1483,6 +1502,8 @@ public class Inhabitants {
         Matrix4 viewProjection = Matrix4.multiply(Matrix4Transform.perspective(fov, aspect, distance * 0.3f, distance * 3f),
                 Matrix4Transform.lookAt(eye, target, new Vector3(0f, 1f, 0f)));
         shader.use(gl);
+        // (posed in the picture's own space)
+        SphereRender.setAnchor(gl, shader, null);
         shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, new Matrix4(1).toFloatArrayForGLSL(), 0);
         shader.setVec3(gl, "viewPos", eye);
@@ -1502,15 +1523,12 @@ public class Inhabitants {
     private void drawPicture(GL3 gl, int nationId, boolean fullLength, int hold, OrganismMesh product, float[] productSize, Random rand) {
         Person p = new Person();
         dress(p, nationId, rand);
-        p.x = 0f;
-        p.z = 0f;
-        // Posed on the bare ground, whatever stands at the origin in the world
-        p.standX = 0f;
-        p.standZ = 0f;
-        p.standY = 0f;
+        // Posed at the origin of their own frame, on the ground (no position: see pose)
         // Turned a little for a portrait, more for a full figure so a long body shows its length
         float turn = hold >= 0 ? rand.nextFloat() * 0.25f : fullLength ? 0.3f + rand.nextFloat() * 0.3f : rand.nextFloat() * 0.35f;
-        p.heading = rand.nextBoolean() ? turn : -turn;
+        float turnY = rand.nextBoolean() ? turn : -turn;
+        // (facing the camera, along +z, turned by turnY)
+        p.heading = Math.PI * 0.5 - turnY;
         p.lookYaw = 0f;
         // Developer aid: with -Dxenoguesser.bags, full-length pictures carry a shopping bag
         if (System.getProperty("xenoguesser.bags") != null && fullLength && hold < 0) {
@@ -1523,7 +1541,7 @@ public class Inhabitants {
         float productScale = 1f;
         if (hold >= 0) {
             pose(p, 0f);
-            float headY = bones[HEAD * 16 + 13] - TerrainMesh.getLayeredHeight(0f, 0f, terrainNoise);
+            float headY = bones[HEAD * 16 + 13];
             float shoulderY = headY - headSize * 0.5f - neckLength - torsoLength * 0.1f;
             float frontZ = plan == MANY_LEGGED ? barrelLength * 0.32f : 0f;
             float biggest = Math.max(productSize[0], Math.max(productSize[1], productSize[2]));
@@ -1567,14 +1585,14 @@ public class Inhabitants {
         }
         pose(p, rand.nextFloat() * 10f);
 
-        float ground = TerrainMesh.getLayeredHeight(0f, 0f, terrainNoise);
+        float ground = 0f;
         float[] productWorld = null;
         if (productAt != null) {
             // The product follows the body's turn and size
-            float[] body = Affine.multiply(Affine.translation(0f, ground, 0f), Affine.multiply(Affine.rotationY(p.heading), Affine.scale(p.scale, p.scale, p.scale)));
+            float[] body = Affine.multiply(Affine.translation(0f, ground, 0f), Affine.multiply(Affine.rotationY(turnY), Affine.scale(p.scale, p.scale, p.scale)));
             productWorld = Affine.transformPoint(body, productAt[0], productAt[1], productAt[2]);
             float[] m = Affine.multiply(Affine.translation(productWorld[0], productWorld[1], productWorld[2]),
-                    Affine.multiply(Affine.rotationY(p.heading + (hold == 3 ? 0.4f : 0f)),
+                    Affine.multiply(Affine.rotationY(turnY + (hold == 3 ? 0.4f : 0f)),
                             Affine.scale(productScale * p.scale, productScale * p.scale, productScale * p.scale)));
             System.arraycopy(m, 0, bones, PRODUCT_BONE * 16, 16);
         }
@@ -1666,18 +1684,15 @@ public class Inhabitants {
         if (p.residence == null) p.residence = from;
         p.route.clear();
         p.leftFrom = from;
-        p.route.add(new float[] { from.insideX, from.insideZ, AT_HOUSE });
-        p.route.add(new float[] { from.doorX, from.doorZ, AT_HOUSE });
-        p.route.add(new float[] { from.gateX, from.gateZ, AT_HOUSE });
-        p.route.add(new float[] { from.kerbX, from.kerbZ, ON_STREET });
+        leaveBy(p, from);
         InfrastructureManager.Doorway home = p.residence;
         p.carrying = 0;
         p.pendingDrive = null;
         p.cancelDrive = null;
         // Their own vehicle if it's at home and free, or else a neighbour's that nobody is using
-        Vehicles.Vehicle own = p.car != null && p.car.isParked() && p.car.parkedAt == home.id && !vehicles.claimed(p.car) ? p.car : null;
+        Vehicles.Vehicle own = p.car != null && p.car.isParked() && p.car.parkedAt() == home.id && !vehicles.claimed(p.car) ? p.car : null;
         Vehicles.Vehicle car = own != null ? own : from.id == home.id && p.borrowed == null
-                ? vehicles.borrowable(allVehicles, home.kerbX, home.kerbZ, BORROW_REACH, p.rand) : null;
+                ? vehicles.borrowable(allVehicles, home.kerb, BORROW_REACH, p.rand) : null;
         // A borrowed vehicle goes back where it belongs, and they walk home from there
         InfrastructureManager.Doorway returnTo = car != null && car != p.car ? vehicles.homeOf(car) : home;
         InfrastructureManager.Doorway walkHome = car != null && car != p.car ? home : null;
@@ -1686,53 +1701,46 @@ public class Inhabitants {
             p.carrying = FULL;
             p.boughtFrom = from.nationId;
             Vehicles.Vehicle came = p.borrowed != null ? p.borrowed : p.car;
-            boolean back = came != null && came.isParked() && came.parkedAt == from.id
+            boolean back = came != null && came.isParked() && came.parkedAt() == from.id
                     && planDrive(p, from, came == p.car ? home : vehicles.homeOf(came), null, came, came == p.car ? null : home);
             if (!back) {
-                walkRoads(p, from.kerbX, from.kerbZ, home.kerbX, home.kerbZ);
+                walkRoads(p, from.kerb, home.kerb);
                 arriveAt(p, home);
             }
         } else if (car != null && p.rand.nextFloat() < DRIVE_OUT_CHANCE
-                && planDrive(p, home, returnTo, infrastructure.settlementBetween(home.kerbX, home.kerbZ, 1500f, 7000f, p.rand), car, walkHome)) {
+                && planDrive(p, home, returnTo, infrastructure.settlementBetween(home.kerb, 1500f, 7000f, p.rand), car, walkHome)) {
             // Out for a drive: along the roads to another settlement and back
         } else {
             Culture culture = cultures.getOrDefault(home.nationId, cultures.values().iterator().next());
             boolean stroll = p.rand.nextFloat() < culture.leisure / (culture.leisure + SHOP_TRIPS);
-            InfrastructureManager.Doorway shop = stroll ? null : infrastructure.shopDoorNear(home.kerbX, home.kerbZ, 2500f, home.nationId);
+            InfrastructureManager.Doorway shop = stroll ? null : infrastructure.shopDoorNear(home.kerb, 2500f, home.nationId);
             if (shop != null && shop.id != home.id) {
                 // Off to the shop with an empty bag: by car, if they have one, the likelier the further it is
                 p.carrying = EMPTY;
                 p.boughtFrom = shop.nationId;
                 p.packing = p.rand.nextInt(PACKINGS);
-                float far = (float) Math.hypot(shop.kerbX - home.kerbX, shop.kerbZ - home.kerbZ);
+                float far = (float) SphereMath.distance(shop.kerb, home.kerb);
                 boolean drive = car != null && p.rand.nextFloat() < Math.max(0f, Math.min(1f, (far - 120f) / 500f));
                 if (!(drive && planDrive(p, home, shop, null, car, null))) {
-                    walkRoads(p, home.kerbX, home.kerbZ, shop.kerbX, shop.kerbZ);
+                    walkRoads(p, home.kerb, shop.kerb);
                     arriveAt(p, shop);
                 }
             } else {
                 // Round a few blocks: by way of a couple of streets nearby, and back
-                float lastX = home.kerbX, lastZ = home.kerbZ;
-                List<InfrastructureManager.Doorway> near = infrastructure.doorwaysNear(home.kerbX, home.kerbZ, 380f);
+                SpherePosition last = home.kerb;
+                List<InfrastructureManager.Doorway> near = infrastructure.doorwaysNear(home.kerb, 380f);
                 near.removeIf(d -> d.id == home.id);
                 int stops = near.isEmpty() ? 0 : 2 + p.rand.nextInt(2);
                 for (int i = 0; i < stops; i++) {
                     InfrastructureManager.Doorway via = near.get(p.rand.nextInt(near.size()));
-                    walkRoads(p, lastX, lastZ, via.kerbX, via.kerbZ);
-                    lastX = via.kerbX;
-                    lastZ = via.kerbZ;
+                    walkRoads(p, last, via.kerb);
+                    last = via.kerb;
                 }
                 if (stops == 0) {
                     // Nowhere to go round: along the road a way and back
-                    float along = (p.rand.nextBoolean() ? 1f : -1f) * (30f + p.rand.nextFloat() * 90f);
-                    float strollX = home.kerbX + home.roadDirX * along, strollZ = home.kerbZ + home.roadDirZ * along;
-                    addStreetWalk(p, home.path, home.kerbX, home.kerbZ, strollX, strollZ);
-                    float[] turnAt = p.route.get(p.route.size() - 1);
-                    lastX = turnAt[0];
-                    lastZ = turnAt[1];
-                    addStreetWalk(p, home.path, lastX, lastZ, home.kerbX, home.kerbZ);
+                    strollAlong(p, home);
                 } else {
-                    walkRoads(p, lastX, lastZ, home.kerbX, home.kerbZ);
+                    walkRoads(p, last, home.kerb);
                 }
                 arriveAt(p, home);
             }
@@ -1741,20 +1749,30 @@ public class Inhabitants {
         p.phase = Phase.WALKING;
     }
 
+    /** From inside, out of the door, down the path and through the gate to the kerb. */
+    private void leaveBy(Person p, InfrastructureManager.Doorway door) {
+        p.route.add(new Waypoint(door.inside, AT_HOUSE));
+        p.route.add(new Waypoint(door.door, AT_HOUSE));
+        p.route.add(new Waypoint(door.gate, AT_HOUSE));
+        p.route.add(new Waypoint(door.kerb, ON_STREET));
+    }
+
+    /** Along the road from the door a way, either way, and back to the kerb. */
+    private void strollAlong(Person p, InfrastructureManager.Doorway home) {
+        float along = (p.rand.nextBoolean() ? 1f : -1f) * (30f + p.rand.nextFloat() * 90f);
+        addStreetWalk(p, home.path, home.kerb, home.alongRoad(along));
+        SpherePosition turnAt = p.route.get(p.route.size() - 1).place();
+        addStreetWalk(p, home.path, turnAt, home.kerb);
+    }
+
     /** A walking trip out (for someone who was going to drive but, starting mid-way, walks instead): a stroll round and home. */
     private void setOffWalking(Person p) {
         InfrastructureManager.Doorway home = p.residence;
         p.home = home;
         p.carrying = 0;
         p.leftFrom = home;
-        p.route.add(new float[] { home.insideX, home.insideZ, AT_HOUSE });
-        p.route.add(new float[] { home.doorX, home.doorZ, AT_HOUSE });
-        p.route.add(new float[] { home.gateX, home.gateZ, AT_HOUSE });
-        p.route.add(new float[] { home.kerbX, home.kerbZ, ON_STREET });
-        float along = (p.rand.nextBoolean() ? 1f : -1f) * (30f + p.rand.nextFloat() * 90f);
-        addStreetWalk(p, home.path, home.kerbX, home.kerbZ, home.kerbX + home.roadDirX * along, home.kerbZ + home.roadDirZ * along);
-        float[] turnAt = p.route.get(p.route.size() - 1);
-        addStreetWalk(p, home.path, turnAt[0], turnAt[1], home.kerbX, home.kerbZ);
+        leaveBy(p, home);
+        strollAlong(p, home);
         arriveAt(p, home);
     }
 
@@ -1765,20 +1783,19 @@ public class Inhabitants {
      * walkHome, on from there on foot to their own door. The route so far already has them out
      * of the door and at the kerb. False (nothing changed) if it can't be done.
      */
-    private boolean planDrive(Person p, InfrastructureManager.Doorway from, InfrastructureManager.Doorway to, float[] via,
+    private boolean planDrive(Person p, InfrastructureManager.Doorway from, InfrastructureManager.Doorway to, SpherePosition via,
                               Vehicles.Vehicle car, InfrastructureManager.Doorway walkHome) {
         if (car == null || (via == null && from.id == to.id) || (vehicles.claimed(car) && car.claimedBy() != p)) return false;
-        InfrastructureManager.Doorway at = car.parkedAt == from.id ? from : vehicles.homeOf(car);
-        if (at == null || car.parkedAt != at.id) return false;
-        float[] spot = vehicles.reserve(car, to);
-        if (at != from) walkRoads(p, from.kerbX, from.kerbZ, at.kerbX, at.kerbZ);
-        float[] getIn = vehicles.doorSide(car, at);
-        float[] getOut = vehicles.doorSideAt(car, spot, to);
-        p.route.add(new float[] { getIn[0], getIn[1], BOARD });
+        InfrastructureManager.Doorway at = car.parkedAt() == from.id ? from : vehicles.homeOf(car);
+        if (at == null || car.parkedAt() != at.id) return false;
+        Vehicles.Spot spot = vehicles.reserve(car, to);
+        if (at != from) walkRoads(p, from.kerb, at.kerb);
+        SpherePosition getIn = vehicles.doorSide(car, at), getOut = spot.getIn();
+        p.route.add(new Waypoint(getIn, BOARD));
         int exitIndex = p.route.size();
-        p.route.add(new float[] { getOut[0], getOut[1], ON_STREET });
+        p.route.add(new Waypoint(getOut, ON_STREET));
         if (walkHome != null && walkHome.id != to.id) {
-            walkRoads(p, getOut[0], getOut[1], walkHome.kerbX, walkHome.kerbZ);
+            walkRoads(p, getOut, walkHome.kerb);
             arriveAt(p, walkHome);
         } else {
             arriveAt(p, to);
@@ -1792,16 +1809,15 @@ public class Inhabitants {
         p.pendingDrive = () -> {
             boolean going = vehicles.drive(car, via, to, spot, () -> {
                 // Out of the car beside it, and on to the door on foot
-                p.x = getOut[0];
-                p.z = getOut[1];
+                p.position = getOut;
+                p.heading = SphereMath.heading(getOut, p.route.get(Math.min(exitIndex + 1, p.route.size() - 1)).place());
                 p.next = exitIndex;
                 p.phase = Phase.WALKING;
                 p.driving = null;
                 p.steerTimer = 0f;
                 p.progressTimer = 0f;
                 p.progressExpected = 0f;
-                p.progressX = p.x;
-                p.progressZ = p.z;
+                p.progressAt = p.position;
                 // A neighbour's left at the shops is still theirs to take back; anything else is free again
                 if (car != p.car && !backWhereItBelongs) {
                     p.borrowed = car;
@@ -1816,22 +1832,40 @@ public class Inhabitants {
         return true;
     }
 
-    /** The shortest way along the roads between two kerbside points, added to the route. */
-    private void walkRoads(Person p, float ax, float az, float bx, float bz) {
-        List<float[]> way = infrastructure.walkingRoute(ax, az, bx, bz);
-        for (int i = 1; i < way.size() - 1; i++) p.route.add(new float[] { way.get(i)[0], way.get(i)[1], ON_STREET });
-        p.route.add(new float[] { bx, bz, ON_STREET });
+    /** The shortest way along the roads between two kerbside places, added to the route. */
+    private void walkRoads(Person p, SpherePosition a, SpherePosition b) {
+        List<SpherePosition> way = infrastructure.walkingRoute(a, b);
+        for (int i = 1; i < way.size() - 1; i++) p.route.add(new Waypoint(way.get(i), ON_STREET));
+        p.route.add(new Waypoint(SphereMath.atAltitude(b, 0.0), ON_STREET));
     }
 
     /** From the kerb, in through the gate and at the door. */
     private void arriveAt(Person p, InfrastructureManager.Doorway door) {
-        p.route.add(new float[] { door.kerbX, door.kerbZ, ON_STREET });
-        p.route.add(new float[] { door.gateX, door.gateZ, AT_HOUSE });
-        p.route.add(new float[] { door.doorX, door.doorZ, AT_HOUSE });
-        p.route.add(new float[] { door.insideX, door.insideZ, AT_HOUSE });
+        p.route.add(new Waypoint(door.kerb, ON_STREET));
+        p.route.add(new Waypoint(door.gate, AT_HOUSE));
+        p.route.add(new Waypoint(door.door, AT_HOUSE));
+        p.route.add(new Waypoint(door.inside, AT_HOUSE));
         p.home = door;
     }
 
+    /** Moves someone to a place nearby, the headings they're keeping carried along with them. */
+    private static void moveTo(Person p, SpherePosition to) {
+        SpherePosition from = p.position;
+        p.heading = SphereMath.carryHeading(from, to, p.heading);
+        if (!Double.isNaN(p.steerHeading)) p.steerHeading = SphereMath.carryHeading(from, to, p.steerHeading);
+        if (p.wanderTimer > 0f) p.wanderHeading = SphereMath.carryHeading(from, to, p.wanderHeading);
+        if (p.hopTime >= 0f) p.hopHeading = SphereMath.carryHeading(from, to, p.hopHeading);
+        p.position = to;
+    }
+
+    private static float wrap(double angle) {
+        return (float) Math.atan2(Math.sin(angle), Math.cos(angle));
+    }
+
+    /**
+     * One step of someone's life. Out and about, it is worked out in the frame where they are
+     * (D3): their next point, and anything in the way, in that frame's (x, z).
+     */
     private void live(Person p, float dt) {
         if (p.phase == Phase.INSIDE) {
             p.timer -= dt;
@@ -1847,24 +1881,23 @@ public class Inhabitants {
         }
         if (p.phase == Phase.DRIVING) return;
         keepDoorsOpen(p);
-        float[] target = p.route.get(p.next);
-        float dx = target[0] - p.x, dz = target[1] - p.z;
+        Waypoint target = p.route.get(p.next);
+        SphereFrame frame = SphereFrame.at(p.position);
+        double[] aim = frame.fromSphere(target.place());
+        float dx = (float) aim[0], dz = (float) aim[2];
         float distance = (float) Math.sqrt(dx * dx + dz * dz);
         float move = p.speed * p.scale * dt;
-        boolean street = collision != null && p.route.get(p.next - 1)[2] != AT_HOUSE && target[2] != AT_HOUSE;
+        boolean street = collision != null && p.route.get(p.next - 1).kind() != AT_HOUSE && target.kind() != AT_HOUSE;
         // At the car: near enough to get in, even if something stops them reaching the very spot
-        boolean board = target[2] == BOARD && p.pendingDrive != null && (p.forceBoard || distance <= bodyRadius(p) + 6f);
+        boolean board = target.kind() == BOARD && p.pendingDrive != null && (p.forceBoard || distance <= bodyRadius(p) + 6f);
         if (street && !board) checkLeg(p, target);
         if (street && !board && distance > Math.max(move, bodyRadius(p) + 1f)) {
-            walkStreet(p, dx, dz, distance, move, dt);
+            walkStreet(p, frame, dx, dz, distance, move, dt);
         } else if (board || distance <= move || (street && distance <= bodyRadius(p) + 1f)) {
             p.forceBoard = false;
             // Close enough; out on the street they stay where they are rather than jump onto the spot
-            if (!street) {
-                p.x = target[0];
-                p.z = target[1];
-            }
-            if (target[2] == BOARD && p.pendingDrive != null) {
+            if (!street) moveTo(p, target.place());
+            if (target.kind() == BOARD && p.pendingDrive != null) {
                 // At the car: in, and off
                 java.util.function.BooleanSupplier drive = p.pendingDrive;
                 p.pendingDrive = null;
@@ -1884,31 +1917,30 @@ public class Inhabitants {
                 p.walking = 0f;
             }
         } else {
-            p.x += dx / distance * move;
-            p.z += dz / distance * move;
-            float desired = (float) Math.atan2(dx, dz);
-            float turn = (float) Math.atan2(Math.sin(desired - p.heading), Math.cos(desired - p.heading));
+            float desired = (float) Math.atan2(dz, dx);
+            float turn = wrap(desired - p.heading);
             p.heading += Math.max(-4f * dt, Math.min(4f * dt, turn));
+            moveTo(p, frame.toSphere(dx / distance * move, 0.0, dz / distance * move));
         }
-        if (collision != null && p.phase == Phase.WALKING) collision.addBody(p, p.x, p.z, bodyRadius(p));
+        if (collision != null && p.phase == Phase.WALKING) collision.addBody(p, p.position, bodyRadius(p));
         p.walking += (1f - p.walking) * Math.min(1f, dt * 5f);
         float stride = legLength * 0.55f * p.scale;
         p.walkPhase = (p.walkPhase + move / stride * (float) Math.PI) % (float) (Math.PI * 2);
-        p.lookYaw = 0.35f * (float) Math.sin(p.walkPhase * 0.13f + p.x * 0.01f);
+        p.lookYaw = 0.35f * (float) Math.sin(p.walkPhase * 0.13f + p.sway);
     }
 
     /**
      * One step along the street, bearing round whatever is in the way (walls, fences, posts,
-     * trees, creatures, other people, the player). Someone who has made almost no headway for
-     * a moment tries to get free (see unstick).
+     * trees, creatures, other people, vehicles, the player). Someone who has made almost no
+     * headway for a moment tries to get free (see unstick).
      */
-    private void walkStreet(Person p, float dx, float dz, float distance, float move, float dt) {
+    private void walkStreet(Person p, SphereFrame frame, float dx, float dz, float distance, float move, float dt) {
         float r = bodyRadius(p);
         if (p.hopTime >= 0f) {
             hop(p, r, dt);
             return;
         }
-        float desired = (float) Math.atan2(dx, dz);
+        double desired = Math.atan2(dz, dx);
         if (p.wanderTimer > 0f) {
             // Off some other way for a while, to come at it afresh
             p.wanderTimer -= dt;
@@ -1917,20 +1949,20 @@ public class Inhabitants {
         p.steerTimer -= dt;
         if (p.steerTimer <= 0f) {
             p.steerTimer = 0.2f + p.rand.nextFloat() * 0.1f;
-            p.steerHeading = collision.steer(p.x, p.z, r, desired, Math.max(5f, r * 2.5f), p);
+            p.steerHeading = collision.steer(p.position, r, desired, Math.max(5f, r * 2.5f), p, 0.0);
         }
-        float heading = Float.isNaN(p.steerHeading) ? desired : p.steerHeading;
-        float turn = (float) Math.atan2(Math.sin(heading - p.heading), Math.cos(heading - p.heading));
+        double heading = Double.isNaN(p.steerHeading) ? desired : p.steerHeading;
+        float turn = wrap(heading - p.heading);
         p.heading += Math.max(-4f * dt, Math.min(4f * dt, turn));
         // Hemmed in: wait where they are rather than push through
-        float step = Float.isNaN(p.steerHeading) ? 0f : move * (1f - 0.5f * Math.min(1f, Math.abs(turn)));
-        float[] free = collision.resolve(p.x + (float) Math.sin(p.heading) * step, p.z + (float) Math.cos(p.heading) * step, r, p);
-        p.x = free[0];
-        p.z = free[1];
+        double step = Double.isNaN(p.steerHeading) ? 0.0 : move * (1f - 0.5f * Math.min(1f, Math.abs(turn)));
+        SpherePosition ahead = frame.toSphere(Math.cos(p.heading) * step, 0.0, Math.sin(p.heading) * step);
+        moveTo(p, collision.resolve(ahead, r, p, 0.0));
         p.progressExpected += move;
         p.progressTimer += dt;
+        if (p.progressAt == null) p.progressAt = p.position;
         if (p.progressTimer > STUCK_SECONDS) {
-            float moved = (float) Math.hypot(p.x - p.progressX, p.z - p.progressZ);
+            float moved = (float) SphereMath.distance(p.position, p.progressAt);
             if (p.progressExpected > 4f && moved < p.progressExpected * 0.3f) {
                 unstick(p, r, dx, dz, distance);
             } else if (p.wanderTimer <= 0f) {
@@ -1938,23 +1970,22 @@ public class Inhabitants {
             }
             p.progressTimer = 0f;
             p.progressExpected = 0f;
-            p.progressX = p.x;
-            p.progressZ = p.z;
+            p.progressAt = p.position;
         }
     }
 
     /**
-     * Someone who has made almost no headway. Nearly there (the spot is up against a fence or
-     * a post) is near enough. Otherwise, in turn as they stay stuck: hop the low fence in the
-     * way if there is one, head off some other clear way for a moment, find the way afresh
-     * from where they are, and at last, out of the viewer's sight, carry on from the next
-     * stretch of street. They never give up on where they're going, so no one comes home
-     * from the shops empty-handed.
+     * Someone who has made almost no headway (the way to their point was (dx, dz) in the frame
+     * where they were). Nearly there (the spot is up against a fence or a post) is near enough.
+     * Otherwise, in turn as they stay stuck: hop the low fence in the way if there is one, head
+     * off some other clear way for a moment, find the way afresh from where they are, and at
+     * last, out of the viewer's sight, carry on from the next stretch of street. They never
+     * give up on where they're going, so no one comes home from the shops empty-handed.
      */
     private void unstick(Person p, float r, float dx, float dz, float distance) {
         p.stuckCount++;
-        float[] aim = p.route.get(p.next);
-        if (aim[2] == BOARD && p.pendingDrive != null && distance < 40f) {
+        Waypoint aim = p.route.get(p.next);
+        if (aim.kind() == BOARD && p.pendingDrive != null && distance < 40f) {
             // Up against the car (or what's round it): in they get
             p.forceBoard = true;
             return;
@@ -1969,24 +2000,22 @@ public class Inhabitants {
             p.stuckCount = 0;
             return;
         }
-        float towards = (float) Math.atan2(dx, dz);
+        double towards = SphereMath.heading(p.position, aim.place());
         if (tryHop(p, r, towards) || (p.wanderTimer > 0f && tryHop(p, r, p.wanderHeading))) return;
         if (p.stuckCount <= 3) {
             // Somewhere else for a second or two: a random clear way, more likely back the
             // way they came the more often they've been stuck
-            float spread = (float) Math.PI * Math.min(1f, 0.4f + 0.25f * p.stuckCount);
-            float wanted = towards + (float) Math.PI + (p.rand.nextFloat() * 2f - 1f) * spread;
-            float clear = collision.steer(p.x, p.z, r, wanted, Math.max(8f, r * 4f), p);
-            p.wanderHeading = Float.isNaN(clear) ? wanted : clear;
+            double spread = Math.PI * Math.min(1f, 0.4f + 0.25f * p.stuckCount);
+            double wanted = towards + Math.PI + (p.rand.nextFloat() * 2f - 1f) * spread;
+            double clear = collision.steer(p.position, r, wanted, Math.max(8f, r * 4f), p, 0.0);
+            p.wanderHeading = Double.isNaN(clear) ? wanted : clear;
             p.wanderTimer = 0.8f + p.rand.nextFloat() * 1.6f;
             p.steerTimer = 0f;
         } else if (p.stuckCount <= 5) {
             replan(p);
-        } else if (Math.hypot(p.x - viewerX, p.z - viewerZ) > DRAW_DISTANCE) {
+        } else if (SphereMath.distance(viewer, p.position) > DRAW_DISTANCE) {
             // Hopeless, and no one to see: on from the next stretch of street
-            float[] target = p.route.get(p.next);
-            p.x = target[0];
-            p.z = target[1];
+            moveTo(p, p.route.get(p.next).place());
             p.next = Math.min(p.next + 1, p.route.size() - 1);
             p.stuckCount = 0;
             p.wanderTimer = 0f;
@@ -2000,26 +2029,26 @@ public class Inhabitants {
      * At the start of each stretch along the street: if a wall or fence stands in the way of
      * going straight there, a way round it is found first (see detour).
      */
-    private void checkLeg(Person p, float[] target) {
+    private void checkLeg(Person p, Waypoint target) {
         if (p.checkedLeg == p.next) return;
         p.checkedLeg = p.next;
         // A way already found round things: on along it without looking again
-        if (target[2] == DETOUR || p.route.get(p.next - 1)[2] == DETOUR) return;
+        if (target.kind() == DETOUR || p.route.get(p.next - 1).kind() == DETOUR) return;
         float r = bodyRadius(p);
-        if (Math.hypot(target[0] - p.x, target[1] - p.z) > 220f) return;
-        if (!collision.clearLine(p.x, p.z, target[0], target[1], r)) detour(p, target);
+        if (SphereMath.distance(p.position, target.place()) > 220.0) return;
+        if (!collision.clearLine(p.position, target.place(), r)) detour(p, target);
     }
 
     /**
      * A way from where someone is to a point round the walls and fences between them, knowing
      * where every one nearby is, put into their route; false if there's none within reach.
      */
-    private boolean detour(Person p, float[] target) {
+    private boolean detour(Person p, Waypoint target) {
         float r = bodyRadius(p);
-        List<float[]> way = collision.findPath(p.x, p.z, target[0], target[1], r, 300f);
+        List<SpherePosition> way = collision.findPath(p.position, target.place(), r, 300.0);
         if (way == null || way.size() < 2) return false;
         // All but the last (the point itself), in order, before it
-        for (int i = way.size() - 2; i >= 0; i--) p.route.add(p.next, new float[] { way.get(i)[0], way.get(i)[1], DETOUR });
+        for (int i = way.size() - 2; i >= 0; i--) p.route.add(p.next, new Waypoint(way.get(i), DETOUR));
         p.checkedLeg = p.next;
         p.steerTimer = 0f;
         p.wanderTimer = 0f;
@@ -2030,20 +2059,20 @@ public class Inhabitants {
      * Hops the low fence or rail in the way towards heading, if there is one: something
      * blocking the way on the ground but clear at the height of a jump, with room to land.
      */
-    private boolean tryHop(Person p, float r, float heading) {
+    private boolean tryHop(Person p, float r, double heading) {
         float peak = height * p.scale * 0.55f;
         float length = Math.max(8f, r * 4f);
-        float sx = (float) Math.sin(heading), sz = (float) Math.cos(heading);
+        SphereFrame frame = SphereFrame.at(p.position);
+        double sx = Math.cos(heading), sz = Math.sin(heading);
         boolean low = false;
         for (float f = 0.25f; f <= 0.76f; f += 0.25f) {
-            float x = p.x + sx * length * f, z = p.z + sz * length * f;
-            if (collision.blocked(x, z, r, p, peak)) return false;
-            if (collision.blocked(x, z, r, p)) low = true;
+            SpherePosition at = frame.toSphere(sx * length * f, 0.0, sz * length * f);
+            if (collision.blocked(at, r, p, peak)) return false;
+            if (collision.blocked(at, r, p, 0.0)) low = true;
         }
-        if (!low || collision.blocked(p.x + sx * length, p.z + sz * length, r, p)) return false;
+        if (!low || collision.blocked(frame.toSphere(sx * length, 0.0, sz * length), r, p, 0.0)) return false;
         p.hopTime = 0f;
-        p.hopDirX = sx;
-        p.hopDirZ = sz;
+        p.hopHeading = heading;
         p.hopLength = length;
         p.hopPeak = peak;
         p.heading = heading;
@@ -2057,18 +2086,16 @@ public class Inhabitants {
         p.hopTime += dt;
         float t = Math.min(1f, p.hopTime / HOP_SECONDS);
         p.lift = p.hopPeak * 4f * t * (1f - t);
-        float step = p.hopLength * (t - before);
-        float[] free = collision.resolve(p.x + p.hopDirX * step, p.z + p.hopDirZ * step, r, p, p.hopPeak * 0.9f);
-        p.x = free[0];
-        p.z = free[1];
+        double step = p.hopLength * (t - before);
+        SpherePosition ahead = SphereMath.move(p.position, p.hopHeading, step);
+        moveTo(p, collision.resolve(ahead, r, p, p.hopPeak * 0.9f));
         if (t >= 1f) {
             p.hopTime = -1f;
             p.lift = 0f;
             p.steerTimer = 0f;
             p.progressTimer = 0f;
             p.progressExpected = 0f;
-            p.progressX = p.x;
-            p.progressZ = p.z;
+            p.progressAt = p.position;
         }
     }
 
@@ -2080,10 +2107,10 @@ public class Inhabitants {
             p.pendingDrive = null;
         }
         int size = p.route.size();
-        float[] kerb = p.route.get(size - 4), gate = p.route.get(size - 3), door = p.route.get(size - 2), inside = p.route.get(size - 1);
+        Waypoint kerb = p.route.get(size - 4), gate = p.route.get(size - 3), door = p.route.get(size - 2), inside = p.route.get(size - 1);
         p.route.clear();
-        p.route.add(new float[] { p.x, p.z, ON_STREET });
-        walkRoads(p, p.x, p.z, kerb[0], kerb[1]);
+        p.route.add(new Waypoint(p.position, ON_STREET));
+        walkRoads(p, p.position, kerb.place());
         p.route.add(gate);
         p.route.add(door);
         p.route.add(inside);
@@ -2093,69 +2120,75 @@ public class Inhabitants {
         p.wanderTimer = 0f;
     }
 
-    /** Adds the way along the road between two points to someone's route. */
-    private void addStreetWalk(Person p, int path, float ax, float az, float bx, float bz) {
-        for (float[] point : infrastructure.streetWalk(path, ax, az, bx, bz)) {
-            p.route.add(new float[] { point[0], point[1], ON_STREET });
+    /** Adds the way along the road between two places to someone's route. */
+    private void addStreetWalk(Person p, int path, SpherePosition a, SpherePosition b) {
+        for (SpherePosition point : infrastructure.streetWalk(path, a, b)) p.route.add(new Waypoint(point, ON_STREET));
+    }
+
+    /** What a self-check sees of someone out walking. */
+    interface WalkerVisitor {
+        void walker(Object person, SpherePosition position, boolean onStreet, float speed);
+    }
+
+    /** For the self-checks: everyone out walking round the viewer, and whether they're on the street (not on a garden path). */
+    void forEachWalker(WalkerVisitor visitor) {
+        List<List<Person>> everyone = new ArrayList<>(peopleByCell.values());
+        everyone.add(roaming);
+        for (List<Person> list : everyone) {
+            for (Person p : list) {
+                if (p.phase != Phase.WALKING || p.next < 1 || p.next >= p.route.size()) continue;
+                boolean street = p.route.get(p.next - 1).kind() != AT_HOUSE && p.route.get(p.next).kind() != AT_HOUSE;
+                visitor.walker(p, p.position, street, p.speed * p.scale);
+            }
         }
     }
 
-    /**
-     * Developer aid: beside the nearest vehicle to (x, z) (mode "moving": one on the move, or
-     * "driveway": one up a driveway, if there is one), looking at it, as {x, z, lookX, lookZ}; null if none.
-     */
-    public float[] vehicleViewpoint(float x, float z, String mode) {
-        boolean moving = "moving".equals(mode), driveway = "driveway".equals(mode);
-        Vehicles.Vehicle best = null;
-        float bestDistance = Float.MAX_VALUE;
-        for (Vehicles.Vehicle v : allVehicles) {
-            if (moving && v.isParked()) continue;
-            if (driveway && !(v.isParked() && v.park != null && v.park[4] > 0f)) continue;
-            float d = (float) Math.hypot(v.x - x, v.z - z);
-            if (d < bestDistance) { bestDistance = d; best = v; }
-        }
-        if (best == null) return mode != null && !mode.isEmpty() && !"true".equals(mode) ? vehicleViewpoint(x, z, "") : null;
-        // Out in the road ahead of it, a little to one side, looking back at it
-        float fx = (float) Math.sin(best.heading), fz = (float) Math.cos(best.heading);
-        float back = (best.length * 1.5f + 25f) * (driveway ? -1.4f : 1f);
-        float vx = best.x + fx * back - fz * back * 0.25f;
-        float vz = best.z + fz * back + fx * back * 0.25f;
-        float lx = best.x - vx, lz = best.z - vz, l = (float) Math.hypot(lx, lz);
-        return new float[] { vx, vz, lx / l, lz / l };
+    /** For the self-checks: how many people are in, out walking, and driving. */
+    int[] census() {
+        int[] counts = new int[3];
+        for (List<Person> list : peopleByCell.values()) for (Person p : list) counts[p.phase.ordinal()]++;
+        return counts;
     }
 
     /**
-     * Developer aid: out in front of the nearest house with someone in, looking at its door,
-     * and they're about to come out.
+     * Developer aid: beside the nearest vehicle to a place (mode "moving": one on the move, or
+     * "driveway": one up a driveway, if there is one), looking at it; null if none.
      */
-    public float[] doorViewpoint(float x, float z) {
+    public Viewpoint vehicleViewpoint(SpherePosition near, String mode) {
+        return vehicles.viewpoint(allVehicles, near, mode);
+    }
+
+    /**
+     * Developer aid: out in front of the nearest house to a place with someone in, looking at
+     * its door, and they're about to come out; null if there's none.
+     */
+    public Viewpoint doorViewpoint(SpherePosition near) {
         Person best = null;
-        float bestDistance = Float.MAX_VALUE;
+        double bestDistance = Double.MAX_VALUE;
         for (List<Person> list : peopleByCell.values()) {
             for (Person p : list) {
                 if (p.phase != Phase.INSIDE || p.home.shop || p.home.doorCorners == null) continue;
-                float d = (float) Math.hypot(p.home.doorX - x, p.home.doorZ - z);
+                double d = SphereMath.distance(p.home.door, near);
                 if (d < bestDistance) { bestDistance = d; best = p; }
             }
         }
         if (best == null) return null;
         best.timer = 0.05f;
         InfrastructureManager.Doorway door = best.home;
-        float ox = door.gateX - door.doorX, oz = door.gateZ - door.doorZ, l = (float) Math.hypot(ox, oz);
-        if (l < 1e-3f) { ox = door.kerbX - door.doorX; oz = door.kerbZ - door.doorZ; l = (float) Math.hypot(ox, oz); }
-        float vx = door.doorX + ox / l * 45f + door.roadDirX * 18f, vz = door.doorZ + oz / l * 45f + door.roadDirZ * 18f;
-        float lx = door.doorX - vx, lz = door.doorZ - vz, ll = (float) Math.hypot(lx, lz);
-        return new float[] { vx, vz, lx / ll, lz / ll };
+        // (in the house's frame: out from the door towards the gate, and a little along the road)
+        float[] d = door.localDoor, out = door.localGate, road = door.localRoadDir;
+        float ox = out[0] - d[0], oz = out[1] - d[1], l = (float) Math.hypot(ox, oz);
+        if (l < 1e-3f) { ox = door.localKerb[0] - d[0]; oz = door.localKerb[1] - d[1]; l = (float) Math.hypot(ox, oz); }
+        SpherePosition at = door.at(d[0] + ox / l * 45f + road[0] * 18f, d[1] + oz / l * 45f + road[1] * 18f);
+        return new Viewpoint(at, SphereMath.heading(at, door.door));
     }
 
-    /** Developer aid: a spot on a pavement in the busiest neighbourhood found, as {x, z, lookX, lookZ}. */
-    public float[] streetViewpoint(Random rand) {
+    /** Developer aid: a spot on a pavement in the busiest neighbourhood found, looking back towards a front door. */
+    public Viewpoint streetViewpoint(Random rand) {
         InfrastructureManager.Doorway best = null;
         int bestCount = 0;
         for (int attempt = 0; attempt < 600; attempt++) {
-            float x = (rand.nextFloat() - 0.5f) * regionWidth * 0.9f;
-            float z = (rand.nextFloat() - 0.5f) * regionWidth * 0.9f;
-            List<InfrastructureManager.Doorway> doors = infrastructure.doorwaysNear(x, z, 250f);
+            List<InfrastructureManager.Doorway> doors = infrastructure.doorwaysNear(SphereMath.randomPlace(rand, Math.toRadians(73.0)), 250f);
             if (doors.size() > bestCount) {
                 bestCount = doors.size();
                 best = doors.get(rand.nextInt(doors.size()));
@@ -2163,23 +2196,20 @@ public class Inhabitants {
         }
         if (best == null) return null;
         // On the pavement a little way along from a front door, looking back towards it
-        float back = 30f;
-        float x = best.kerbX + best.roadDirX * back, z = best.kerbZ + best.roadDirZ * back;
-        float lookX = best.doorX - x, lookZ = best.doorZ - z;
-        float length = (float) Math.hypot(lookX, lookZ);
-        return new float[] { x, z, lookX / length, lookZ / length };
+        SpherePosition at = best.alongRoad(30.0);
+        return new Viewpoint(at, SphereMath.heading(at, best.door));
     }
 
-    public void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
-                       float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
+    /**
+     * Draws the people near enough to see (out walking, at the wheel of an open-topped vehicle,
+     * or standing guard), their vehicles, the open doors and the border traffic lights, each
+     * posed in the frame where it stands and drawn relative to the eye.
+     */
+    public void render(GL3 gl, Camera camera, Vector3 sunDirection, float[] sunColour,
+            Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
         if (shader == null) return;
-        shader.use(gl);
-        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        shader.setVec3(gl, "viewPos", viewPos);
-        shader.setVec3(gl, "sunPos", sunPos);
-        shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
-        shader.setVec3(gl, "ambientLight", ambient);
+        SphereEye eye = new SphereEye(camera.getSpherePosition());
+        SphereRender.configure(gl, shader, camera.getSphereViewProjection(), sunDirection, sunColour, ambient, skyRotation);
         shader.setFloat(gl, "waterLevel", -1e9f);
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
         shader.setFloat(gl, "gloss", 0.2f);
@@ -2196,36 +2226,50 @@ public class Inhabitants {
         for (List<Person> list : everyone) {
             for (Person p : list) {
                 // Out walking, or driving a vehicle with an open top they can be seen in
-                float[] seat = p.phase == Phase.DRIVING && p.driving != null ? vehicles.seat(p.driving) : null;
+                Vehicles.Seat seat = p.phase == Phase.DRIVING && p.driving != null ? vehicles.seat(p.driving) : null;
                 if (p.phase != Phase.WALKING && seat == null) continue;
-                float px = seat != null ? seat[0] : p.x, pz = seat != null ? seat[2] : p.z;
-                float dx = px - viewPos.x, dz = pz - viewPos.z;
-                float drawn = seat != null ? Vehicles.DRAW_DISTANCE : DRAW_DISTANCE;
-                if (dx * dx + dz * dz > drawn * drawn) continue;
-                float ground = seat != null ? seat[1] - height * 0.5f : standingHeight(p);
-                if (!frustum.intersectsSphere(px, ground + height * 0.5f, pz, height)) continue;
-                pose(p, time, seat);
-                gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
-                drawPerson(gl, p, p.home.nationId, dx * dx + dz * dz < 260f * 260f);
+                if (seat != null) {
+                    // In the seat, posed in the frame under it
+                    double seen = eye.distanceSquared(SphereMath.atAltitude(seat.place(), seat.rim()));
+                    if (seen > Vehicles.DRAW_DISTANCE * Vehicles.DRAW_DISTANCE) continue;
+                    SphereRender.setAnchor(gl, shader, SphereFrame.at(seat.place()).modelMatrix(1f, eye.at));
+                    pose(p, time, new float[] { 0f, seat.rim(), 0f, (float) (Math.PI * 0.5 - seat.heading()) });
+                    gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
+                    drawPerson(gl, p, p.home.nationId, seen < 260f * 260f);
+                    continue;
+                }
+                drawStanding(gl, bonesLocation, p, p.home.nationId, eye, time);
             }
         }
         // The border guards, standing in their booths
         for (Map.Entry<Integer, Person> entry : guards.entrySet()) {
-            Person g = entry.getValue();
-            float dx = g.x - viewPos.x, dz = g.z - viewPos.z;
-            if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) continue;
-            float ground = standingHeight(g);
-            if (!frustum.intersectsSphere(g.x, ground + height * 0.5f, g.z, height)) continue;
-            pose(g, time, null);
-            gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
-            drawPerson(gl, g, guardNations.get(entry.getKey()), dx * dx + dz * dz < 260f * 260f);
+            drawStanding(gl, bonesLocation, entry.getValue(), guardNations.get(entry.getKey()), eye, time);
         }
         shader.setFloat(gl, "gloss", 0.55f);
-        vehicles.render(gl, shader, allVehicles, frustum, viewPos.x, viewPos.z, Vehicles.DRAW_DISTANCE);
+        vehicles.render(gl, shader, allVehicles, Vehicles.DRAW_DISTANCE, eye.at);
         shader.setFloat(gl, "gloss", 0.2f);
-        renderDoors(gl, bonesLocation, frustum, viewPos);
-        renderBorderLights(gl, bonesLocation, frustum, viewPos);
+        renderDoors(gl, bonesLocation, eye.at);
+        renderBorderLights(gl, bonesLocation, eye.at);
         gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    /** The eye, for distance tests. */
+    private record SphereEye(SpherePosition at) {
+        double distanceSquared(SpherePosition place) {
+            double ex = place.x() - at.x(), ey = place.y() - at.y(), ez = place.z() - at.z();
+            return ex * ex + ey * ey + ez * ez;
+        }
+    }
+
+    /** Someone on their feet, posed in the frame where they stand, if near enough to see. */
+    private void drawStanding(GL3 gl, int bonesLocation, Person p, int nationId, SphereEye eye, float time) {
+        float ground = standingHeight(p);
+        double seen = eye.distanceSquared(SphereMath.atAltitude(p.position, ground + height * 0.5f));
+        if (seen > DRAW_DISTANCE * DRAW_DISTANCE) return;
+        SphereRender.setAnchor(gl, shader, SphereFrame.at(p.position).modelMatrix(1f, eye.at));
+        pose(p, time, null);
+        gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
+        drawPerson(gl, p, nationId, seen < 260f * 260f);
     }
 
     private static Vector3 vec(float[] c) {

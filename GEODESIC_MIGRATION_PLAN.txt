@@ -1,0 +1,1041 @@
+GEODESIC WORLD MIGRATION PLAN
+=============================
+Branch: TrueSphereAttempt (started by GitHub Copilot; Claude continues it)
+Goal:   one latitude-independent 3D sphere world on the geodesic chunk grid.
+        The Mercator chart survives ONLY for drawing the minimap/heatmaps and
+        for converting a map click into a guess. Nothing in the live world uses it.
+Why:    method 1 (Mercator chart + per-latitude stretch, branch Claude5) works but
+        near 70 degrees the chart stretches about 3x, so streaming and conversions
+        cost far too much. Areas around 70 degrees matter to gameplay.
+
+HOW TO USE THIS FILE
+- Read this first at the start of every session; do not re-explore the codebase.
+- Work the phases in order. Tick [x] items as they land and add a line to the
+  LOG at the bottom (date, what was done, anything surprising).
+- If a decision changes, edit the DECISIONS section rather than adding a
+  contradiction lower down.
+- One phase (or part of one) per conversation, then start a fresh conversation:
+  long conversations cost more usage per message.
+- Effort: medium for porting; high only for Phase 1 design and for a bug that
+  survives two medium attempts.
+
+-------------------------------------------------------------------------------
+DECISIONS (settled; change here if they change)
+-------------------------------------------------------------------------------
+D1  Keep Copilot's foundation: SpherePosition (double, planet-centred
+    Cartesian), GeodesicChunkGrid (icosahedral), geodesic terrain/water
+    streaming, GeodesicCollision, sphere camera, camera-relative rendering
+    (sphereCamera uniform), SphereSkyRenderer, SphereWeather.
+D2  Do NOT keep Copilot's simplified stand-ins as the final systems:
+    GeodesicRoadMesh and GeodesicSettlementMesh get replaced by the real
+    InfrastructureManager ported to the sphere, then deleted.
+D3  Port by LOCAL TANGENT FRAMES, not rewrites. A frame = origin SpherePosition +
+    east/north/up unit vectors. Existing flat 2D code (house building, road
+    meshing, paint, fences, steering, collision tests) runs in metres-like local
+    (x, z) inside a frame and the results are lifted to the sphere with
+    frame.toWorld(x, y, z). On a 15 km round planet a frame is accurate to
+    a few cm over ~300 m, which is plenty for one house or road segment.
+D4  Plan globally on the sphere, build locally. Road networks and settlements are
+    planned with great-circle geometry on SpherePositions (or unit directions);
+    each piece (road segment, house, sign, booth) gets its own frame at its
+    own position. No piece spans more than one frame.
+D5  Spatial lookups (segmentsNear, housesNear, borders, doorways, collision) are
+    keyed by geodesic cell id (GeodesicChunkGrid at a fixed level), searching
+    the cell and its neighbours. No (x, z) chunk grids remain.
+D6  Every chart reference outside the map is a bug: Planet.stretch, trueArea,
+    seenFrom, latitude-for-placement, the shaders' onSphere/bend/curve uniforms,
+    Frustum's chart conversion. Delete these as each consumer is ported.
+D7  Noise and region factors are sampled from 3D unit directions (no seams, no
+    pole pinching). Keep the old 2D sampling only where the map needs it.
+D8  One render path. When a system is ported, delete its flat-world branch in
+    the shaders and GLEventListener in the same change. No dual flags left over
+    at the end (sphereNativeTerrain etc. go). Since Phase 6 vs_standard has one path:
+    model (planet-centred) then minus sphereCamera then viewProjection; a picture of
+    something on its own passes its own view-projection and sphereCamera = 0 (Renderer).
+D9  Units: true metres everywhere (PlayerBody.METRE = 10 game units/metre stays).
+D10 Axes (Phase 1): y = north pole, longitude 0 along +x, longitude 90 E along -z
+    (Planet.position/latitude/longitude are the only place this is written down).
+    East = y cross up (SphereFrame.at), south = east cross up: the sphere has the
+    chart's handedness, so chart-built meshes lift without flipping winding.
+    Local frame coordinates are chart-like: x east, y up, z south. A heading is
+    radians from local x towards local z (east towards south), as camera yaw.
+    Creatures follow it too since Phase 2 (their meshes face local +z, so they
+    are turned by rotationY(pi/2 - heading)); headings are carried along each
+    step with SphereMath.carryHeading.
+D11 Toolkit (Phase 1): SphereFrame (rigid toWorld/toLocal for one object;
+    curved toSphere/fromSphere for ground-hugging reaches; rotated(); headings;
+    modelMatrix), SphereMath (distance/angle, heading, move/moveToward,
+    carryHeading = parallel transport, slerp, arcFraction/nearestOnArc/
+    distanceToArc, atAltitude), TerrainMesh.getLayeredHeight(SpherePosition |
+    Direction) + groundAt = THE terrain height, CellIndex<T> (D5 index, default
+    level 8 = ~10 m cells, items with an extent; radii in world units, 10 per
+    metre, as everywhere). Self-check (LandingPod needs JOGL to load):
+    java -cp "target/classes;lib/jogamp-fat.jar" SphereToolkitCheck
+    (exit 1 on failure).
+D12 Regional factors (RegionalFactor: species habitats and abundance, grass,
+    leaf colour, climate, wealth) are sampled by direction since Phase 5
+    (Sampler.sample(Direction); evaluate(direction), evaluateAt(position)); the
+    map's heatmaps sample the same factors at each pixel's direction, so what
+    grows where still matches the overlays. Since the Phase 6 audit the nations are on
+    the sphere too: NationGenerationManager grows them over a SphereRaster (128 a side,
+    ~190-370 units a texel; costs in true distance, measured in the old chart's 390-unit
+    cells), getNationAt(direction) warps along the ground and votes the 4 nearest texels;
+    kinship (bordering, centres as mean directions) and border poverty (distanceTo on the
+    raster) read it; the map draws it per pixel direction (getNationAtMap). The border
+    fences are traced on the geodesic lattice (BORDER_LEVEL = BATCH_LEVEL + 5, ~7-unit
+    triangles nested in the batch cells), reading getNationAt at each lattice point. Counts per cell come
+    from the factor at the cell and the cell's own area (Cell.area(): level 7
+    cells differ by up to ~1.6x, so no per-level constant). Copilot's separate
+    sphere habitat model (OrganismSpecies native presence) is deleted.
+D13 Chart bridges: while a system is still on the chart (buildings, roads,
+    signs: Phase 3; people, vehicles: Phase 4), the ported systems reach it
+    only through marked conversions in XenoGuesser_GLEventListener (chart(p),
+    chartViewpoint, chartObstaclesNear, the wild/road/keep-out lambdas,
+    groundHeightAt's walkingSurfaceY) and SphereRender.chartAnchor. Each phase
+    deletes the bridges for what it ports; grep chart( to find them.
+    Since Phase 3a the plan is on the sphere and the building is not, so there are
+    marked bridges outside the listener too (grep "Chart bridge" / "chart bridge"):
+    RoadPath.chart + toChart (made once in prepareRoadNetwork, after border
+    straightening), Settlement.chartX/chartZ, SettlementManager's (x, z)
+    overloads, RoadNetworkBuilder.islandRichnessAt(x, z). Phase 3b deletes them
+    (the maps' use of RoadPath.chart and the urbanness factor go in Phase 5).
+    Since the first part of 3b, segments and houses are built in their own frames
+    and the rest reaches them through InfrastructureManager's "chart bridge
+    (D13)" section (sphere, chartStretch, chartPoint/chartAt/chartDirection,
+    onChart placements), RoadSegment.chartStart/chartEnd and House.x/z/rotationY.
+    Gone: islandRichnessAt(x, z), SettlementManager's getCitySize/getHabitability/
+    dominantSettlementAt(x, z). Left: getUrbanness(x, z) (map wealth overlay,
+    Phase 5), Settlement.chartX/chartZ (settlementBetween, Phase 4).
+    Since the rest of 3b (parts 3 and 4) every lookup is on the sphere and the
+    listener's infrastructure bridges are gone (chartObstaclesNear, the road and
+    keep-out lambdas, groundHeightAt, the flora/grass clearing tests, the pod's
+    keep-clear). Since 3b items 5 and 6 the batches are built per geodesic cell in
+    world coordinates (which chart chunk builds what, the onChart placements and the
+    map join's across/shifted are gone), and the spawn places the road network picks
+    (landingSite, randomRoadPoint, the house/shop/track/raised-road views) are Viewpoints
+    worked out in the segment's or house's frame. What is left, all marked "Chart
+    bridge" in InfrastructureManager: the (x, z) overloads and chart
+    results for people and vehicles (Phase 4: doorways, kerbSpot, roadAtPoint,
+    roadPointBetween, streetWalk, borderStopAhead/HoldAhead/Lights/Booths, the
+    chart Collision's obstaclesNear, walkingSurfaceY(x, z), booth/check chartX);
+    sign.position (sign maps, Phase 5); the border fences traced on the nation map's
+    chart grid (D12; each grid square built by the geodesic cell its middle is in).
+    Since Phase 4 part 1 the vehicles are on the sphere (RoadRoutes, roadAt, kerbSpot,
+    drivingRoute, roadPointBetween, settlementBetween, borderStop/HoldAhead take and give
+    SpherePositions; Doorway has its house frame and local points; Settlement.chartX/Z gone).
+    Since Phase 4 part 2 the people are on the sphere too and every people/vehicle bridge is
+    gone (with the chart Collision, Frustum, SphereRender.chartAnchor, RoadSegment.chartStart/
+    End, the (x, z) overloads of isRoadLocation/isBuildingLocation/isPlotLocation/
+    walkingSurfaceY/roadSurfaceY/obstaclesNear). Since Phase 5 part 1 areaRichness(x, z),
+    getUrbanness(x, z), Camera.getChartPosition and the listener's chart() are gone too.
+    Since Phase 5 part 2 the maps and sign maps are drawn from world shapes too (sign.position,
+    chartRoute, chartMidX, House.x/z/rotationY, chartAt/chartPoint/onChart and RoadPath.chart
+    are gone). Since the Phase 6 audit nothing is left on the chart outside the map: the
+    border fences and then the nations themselves went onto the sphere (D12). MapProjection
+    is used only by the map classes, heatmap/overlay images, the map's own terrain heights,
+    choosing the map's join, the map-to-nation lookup, guesses and the developer teleport;
+    CLIP_LATITUDE also keeps spawns and planning within the map's top and bottom edges.
+D14 Map and rasters (Phase 5). MapProjection holds the Mercator chart (moved out of
+    Planet) and the one conversion pair: toMap(direction | place) -> map {x, z}
+    (world units from the map's middle; image (u, v) = x / width + 1/2, z / width
+    + 1/2) and direction(x, z). Only the map classes, guess placement, the developer
+    teleport and the nation map (D12) use it. Fields precomputed over the whole sphere
+    are SphereRasters: cube maps in OpenGL's layout, looked up by direction, sampled
+    bilinearly across face edges (no seams, no pole), and the same texels upload as a
+    GL_TEXTURE_CUBE_MAP (seamless) for shaders: the distance to the sea and ground
+    height (RegionalGenerationManager, 512 a side) and the sea's wave field on the same texels
+    (wave size, distance to shore; RG32F), the snow climate (256), the soil
+    colour (64). Distances are true distances along the ground (nearest-seed
+    propagation), in world units, not chunk steps. Cube samplers have fixed texture
+    units (Shader.SNOW_UNIT 11, SOIL_REGION_UNIT 6, WAVE_UNIT 12), set at link time.
+
+-------------------------------------------------------------------------------
+PHASE 0  BASELINE  (short)
+-------------------------------------------------------------------------------
+[x] Commit the branch's current uncommitted state as "Copilot geodesic WIP
+    baseline" so there is a safe point to return to.
+[x] Clean build (mvn clean compile -q) and one launch at the equator and one at
+    ~70 degrees; screenshot both. Record in LOG what renders, what is missing,
+    what crashes. No fixing yet.
+[x] Grep inventory (one pass, save counts to LOG): uses of Planet.stretch /
+    trueArea / seenFrom / latitude / chartX/chartZ, the old (x, z) chunk keys,
+    and shader uniforms bend/curveCentre/curvature/curveDown/sphereNativeTerrain.
+    This list is the to-do list for D6/D8.
+
+-------------------------------------------------------------------------------
+PHASE 1  CORE FRAME TOOLKIT  (high effort, small code; everything depends on it)
+-------------------------------------------------------------------------------
+[x] Fix fs_sphere_sky compile error (see LOG 2026-10-11).
+[x] Find why geodesic terrain only shows a strip (camera was underground).
+[x] HANDEDNESS (do first): the chart -> sphere map is a reflection. Chart
+    (x east, y up, z south) has east x up = south; Copilot's sphere
+    (x = r cos lat cos lon, z = r cos lat sin lon) has east x up = north, so
+    anything built on the chart and copied onto the sphere point by point is
+    mirrored. Copilot hid it with a mirrored sphere camera (right = up x
+    forward in Camera.getSphereViewProjection and SphereSkyRenderer) plus
+    glFrontFace(GL_CW) around sphere terrain and geodesic infrastructure.
+    Fix both together: make the sphere right-handed against the chart
+    (e.g. z = -r cos lat sin lon, lon = atan2(-z, x)), put the convention in
+    ONE place (Planet / SphereFrame), replace the ~49 hand-written
+    lon/east computations (Camera, GeodesicCollision, GeodesicRoadMesh,
+    GeodesicSettlementMesh, OrganismManager, Planet, Renderer, SphereRender,
+    GLEventListener, vs_organism, fs_standard_d) with it, then use a normal
+    lookAt camera (right = forward x up) and delete the GL_CW flips.
+    Check: shop sign lettering reads correctly and the map's east is the
+    world's east. (Map/world east: verified by SphereToolkitCheck. Sign
+    lettering: signs are not drawn on the sphere yet, so it moved to Phase 3's
+    CHECK.)
+[x] "World ready" must wait for the first geodesic terrain patch: at ~66 S the
+    chart world shows for the first seconds (2 FPS) before the sphere takes
+    over (10 FPS in a dense city).
+[x] One spawn path: spawnat takes lat,lon; every spawn goes through the
+    sphere world; the old chart world is no longer reachable at runtime.
+[x] Copilot's geodesic roads float above the terrain and its stand-in houses
+    have gaps in their roofs: ignore (both are replaced in Phase 3).
+[x] SphereFrame class: origin, east, north, up; toWorld(x,y,z), toLocal(pos),
+    localDirection/worldDirection, heading helpers; built from any
+    SpherePosition. Handles the poles (pick east from a fixed reference axis
+    when near them).
+[x] Surface helpers in Planet (or a SphereMath class): unit direction <->
+    SpherePosition at a height, great-circle distance, bearing, move along
+    bearing by distance, slerp, nearest point on a great-circle arc.
+[x] Terrain height at a SpherePosition (one function, used by everything).
+[x] Geodesic spatial index: generic CellIndex<T> keyed by GeodesicChunkGrid
+    cell id at a fixed level, with near(position, radiusMetres).
+[x] Small unit-test style check (a main method or test) for frame round trips
+    at the equator, 70 degrees and a pole.
+
+-------------------------------------------------------------------------------
+PHASE 2  WORLD PLAYER LOOP ON ONE PATH
+-------------------------------------------------------------------------------
+[x] Player, camera, collision, jumping fully on SpherePosition + local frame
+    (Copilot did most of this: verify, remove any chart fallbacks).
+[x] Spawn, landing pod (LandingPod builds in a frame at the spawn point).
+[x] Grass, rocks, flora placement sampled per geodesic cell (counts per cell;
+    cells are near-equal area so no trueArea factors). (Counts use each
+    cell's own area, see D12.)
+[x] Animals (OrganismManager): finish the port, delete chart branches.
+[x] Shaders: delete onSphere/bend/curve code paths for the ported models.
+[x] CHECK: equator and 70 degrees look and walk the same; frame time flat.
+    (29 FPS equator, 30 FPS at 70 N; see LOG.)
+
+-------------------------------------------------------------------------------
+PHASE 3  INFRASTRUCTURE  (biggest phase; split across 2-3 conversations)
+-------------------------------------------------------------------------------
+3a Planning on the sphere
+[x] Settlements placed as SpherePositions (SettlementManager), urbanness
+    looked up by direction.
+[x] Nations: getNationAt(direction) (nation map sampled in 3D or via the
+    existing map lookup through a direction -> map conversion; map stays the
+    authority for borders so the minimap matches).
+[x] Road network (RoadPath) as sequences of SpherePositions; segment lengths
+    and smoothing by great-circle maths. Border straightening the same way.
+3b Building in frames
+[x] RoadSegment gets a frame at its midpoint; offsetEdge/miterOffset/
+    appendRoadSegment/paint/guard rails/culdesacs run in that frame. Junction
+    tests convert the other segment into this segment's frame.
+[x] House gets a frame at its position; localToWorld/worldToLocal/bake/
+    houseVertex become frame.toWorld/toLocal. House-building code itself
+    should barely change.
+[x] Fences, driveways, shop fronts, signs, flags, booths, traffic lights,
+    crossover lines: frame of their own house/segment/check.
+    (Fences, driveways, shop windows and goods, wall flags, finery, flagpoles:
+    the house's frame. Signs: a frame each (house sign and wall boards: the
+    house's axes; roadside: carried from the segment). Booths, traffic lights,
+    crossover lines: the check's frame. Border fences: a frame per piece.)
+[x] Spatial queries (segmentsNear, housesNear, clearedAt, roadAt, roadDepth,
+    walkingSurfaceY, doorways, border checks) on CellIndex (D5).
+    (Also: collision shapes, driveways, shops, booths, the pod's keep-clear.)
+[x] Batching: NationBatch meshes built per geodesic cell in camera-relative
+    world coordinates (follow how Copilot's terrain chunks do it).
+    (Level 7 cells, InfrastructureManager.BATCH_LEVEL; window glass drawn again.)
+[x] Delete GeodesicRoadMesh, GeodesicSettlementMesh and their fields/futures
+    in XenoGuesser_GLEventListener.
+CHECK: a town at the equator and one at ~70 degrees; roads, houses, paint,
+fences, signs, borders all present and true size; no gaps at cell borders.
+Shop sign lettering reads the right way round (moved here from Phase 1).
+[x] Passed 2026-10-13 (see LOG). Phase 3 is complete; Phase 4 can start.
+
+-------------------------------------------------------------------------------
+PHASE 4  VEHICLES AND PEOPLE
+-------------------------------------------------------------------------------
+[x] Vehicles: position as SpherePosition, heading as a direction in the local
+    frame at its position (re-derived every step; parallel-transport the
+    heading as it moves). Routes as SpherePositions. Steering, following,
+    overtaking maths unchanged in the vehicle's current frame.
+[x] Inhabitants: same pattern; streetWalk, detours, hops, doors, guards.
+    (Also: population per geodesic cell, not the chart CELL grid; the people on
+    GeodesicCollision (needs clearLine/findPath and hops' clearance); the open doors
+    and border traffic lights are not drawn on the sphere yet; the sign pictures of
+    people are blank (LOG 3b parts 3/4). Then delete the bridges listed in D13.)
+    (All done: see LOG Phase 4 part 2.)
+[x] Remove all Planet.stretch uses added by method 1 (they are not on this
+    branch, but check nothing was merged in). (None found.)
+CHECK: a car driving between two latitudes keeps its size and speed.
+[x] Passed 2026-10-13 (PlanningCheck's drive from 37.9 S to 57.2 S, and launches; see LOG).
+    Phase 4 is complete; Phase 5 can start.
+
+-------------------------------------------------------------------------------
+PHASE 5  MAP, HEATMAPS, GAME FLOW
+-------------------------------------------------------------------------------
+Parts: (1) the conversion pair; the regional factors, water distance and climate on
+directions (D12 ends, D14); heatmaps per map pixel; the snow climate and soil maps as
+cube maps; thermometer, weather, sea level and April's ocean on the sphere.
+(2) map layers and sign maps from world shapes; guess, pin and goal as directions;
+items; round flow.
+[x] One conversion pair: direction <-> map (u, v) (Mercator), used only by
+    BirdsEyeMaps/MapPanel/MapTiles and guess placement. (MapProjection, D14.)
+[x] Heatmaps sampled from the 3D world functions at each map pixel's direction.
+    (And the regional factors themselves by direction: D12, D14.)
+[x] Buildings/roads layers drawn by projecting world shapes to the map.
+    (And the sign maps: laid out north up round the sign in true distances, see LOG.)
+[x] Guess scoring by great-circle distance; pin/goal stored as directions.
+[x] Items: altimeter (height above sea level at the player), compass
+    (north = local frame's north), identification kit lens projection.
+    (Reviewed in part 2: nothing left on the chart; see LOG.)
+[x] Shop/round flow, spawn per round, April ocean percentage (computed on the
+    sphere). (Reviewed in part 2 and a round change launched; see LOG.)
+[x] Added in part 2: the sea as it was before the migration (see LOG).
+CHECK: map layers, sign maps, sea and a round change in launches.
+[x] Passed 2026-10-13 (see LOG). Phase 5 is complete; Phase 6 can start.
+
+-------------------------------------------------------------------------------
+PHASE 6  CLEAN-UP
+-------------------------------------------------------------------------------
+[x] Delete every remaining chart use outside the map (D6 list from Phase 0).
+    (Also the border fences: the last chart cost that grew with latitude; see LOG.)
+[x] Delete flat-world shader uniforms and flags (D8).
+[x] Remove dead classes/fields; update code comments; replace Planet's method 1
+    note with a short note describing the geodesic design and D1-D9.
+[x] Final tests: equator, 70 degrees, near a pole, crossing an icosahedron
+    face edge; check frame rate is the same everywhere.
+[x] Passed 2026-10-13 (see LOG). Phase 6 is complete: the migration is done.
+
+-------------------------------------------------------------------------------
+EFFICIENCY RULES (to stretch the weekly allowance)
+-------------------------------------------------------------------------------
+- Patch with Python scripts written by the Write tool (no bash heredocs with
+  quotes). Normalise CRLF. Avoid trailing-space anchors.
+- Always mvn clean compile; the game must not be running while building.
+- Batch test launches: one launch should check several things (equator + 70
+  degrees via -Dxenoguesser.spawnat=lat,lon, screenshots via hudtest=shot). World
+  load takes about 80 s, so every launch is expensive.
+- Launching for a test: java directly (classpath = target/classes plus
+  mvn dependency:build-classpath), the pom's JVM flags (--add-exports
+  java.desktop/sun.awt=ALL-UNNAMED etc.: without them JOGL can't open the
+  window), KMP_AFFINITY=disabled, from the Terminal panel, with -Dxenoguesser.seed=123
+  -Dxenoguesser.skipmenu (without skipmenu it waits at the main menu forever).
+  Debug runs save first_frame.png and later_frame.png (150 frames on) in
+  %TEMP%/xenoguesser/run-<pid>/generated_world: use those; hudtest=shot's
+  window_shot grabs whatever window is in front. hudtest=guess,shop,next runs a
+  round change. Land for seed 123: 70 N at lon 27.5 or 139; equator at lon 11.5.
+- Read only the parts of big files a step needs (grep first, then targeted reads).
+- No debug code left in; temporary prints marked // TEMP and removed the same turn.
+- Commit only when the user asks.
+
+-------------------------------------------------------------------------------
+NOTES
+-------------------------------------------------------------------------------
+- Branch Claude5 holds the uncommitted method 1 work (true sizes on the
+  Mercator chart). It is a fallback only; do not merge it into this branch.
+  Ideas from it that carry over: counts per true area, true-size objects,
+  the per-frame "where am I now" rule for anything that moves.
+- Planet: about 150,000 game units round (15 km), R about 23,873 units.
+
+-------------------------------------------------------------------------------
+LOG
+-------------------------------------------------------------------------------
+2026-10-09  Plan written. Not started. Copilot's foundation reviewed only
+            briefly (it builds; geodesic terrain/water/collision/flora/sky exist;
+            infrastructure, vehicles, people, maps are still on the chart).
+2026-10-11  PHASE 0 DONE.
+  - Baseline commit 490e496 "Copilot geodesic WIP baseline, plus migration
+    plan". Most geodesic files were untracked before this (never committed by
+    Copilot). target/ files left uncommitted on purpose.
+  - The method 1 work from Claude5 is NOT in this tree (Claude5 and this branch
+    both sit at c3482c9; its uncommitted changes are gone). Copilot's own diff
+    has a few stretch/trueArea uses (Planet.trueArea, PLAYER_RADIUS *
+    Planet.stretch in GLEventListener): delete these in Phase 2.
+  - Launch, normal spawn (seed 123): BROKEN. Sky fragment shader fails to
+    compile ("ERROR: 0:26 'float': overloaded functions must have the same
+    return type", likely fs_sphere_sky.txt noise3 at line 26 clashing with
+    another noise3), so the sky is flat purple. Terrain mostly missing (only a
+    thin strip of ground and water), Copilot's geodesic roads float in the sky,
+    a little flora and birds. 58 FPS. Load 126 s.
+  - Launch with -Dxenoguesser.spawnat=49768,37072 (~66 S): the OLD chart world
+    renders instead (houses, shops, people, fences, road paint all fine),
+    16 FPS. So spawnat bypasses the geodesic path: two worlds coexist and the
+    spawn route picks which. Phase 1 must give spawnat a sphere form
+    (lat,lon or direction) and route every spawn through one path.
+  - Inventory (counts of lines):
+      chart API (Planet.stretch/trueArea/seenFrom/latitude/chartX/chartZ/scale)
+        outside the map: XenoGuesser_GLEventListener 9,
+        RegionalGenerationManager 2, InfrastructureObject 1; map: MapPanel 2.
+      (x, z) chunk keys (chunkKey/chunkIndex/PHYSICAL_CHUNK_SIZE):
+        XenoGuesser_GLEventListener 57, InfrastructureManager 32,
+        OrganismManager 2.
+      flat-world shader uniforms (bend/curveCentre/curvature/curveDown/
+        sphereNativeTerrain): vs_standard, vs_organism, vs_rock, vs_glass,
+        vs_grass_instanced, vs_water, fs_standard_d; Java setters in
+        InfrastructureObject 3, GLEventListener 4, Shader 2, Renderer 1.
+  - Added to Phase 1 (first items): fix the sky shader compile error; find why
+    geodesic terrain only shows a strip near the spawn (likely the build
+    centre/radius or camera-relative offset) before building on it.
+2026-10-11  PHASE 0 BUG FIXES (uncommitted on top of 490e496):
+  - fs_sphere_sky: own noise3() clashed with GLSL's built-in noise3 (returns
+    vec3); renamed valueNoise3. Sky now renders.
+  - Camera underground: two causes. (1) Spawn set the eye from the CHART
+    terrain height (different noise from the sphere terrain): spawn and its
+    dry-land test now use TerrainMesh.getLayeredHeight(Planet.spherePosition(
+    x, z, 0)). (2) movePlayerOnGeodesicTerrain stepped along the bare surface
+    (altitude 0) and kept that, dropping the eyes underground on every move;
+    it now keeps the altitude it had. Result: ground, sea, sky, flora and
+    houses render at the normal spawn, 27 FPS.
+  - Tried a non-mirrored camera: correct maths, but it shows the world
+    mirrored against the map (the reflection described in Phase 1), so it was
+    reverted; the handedness fix is Phase 1's first item.
+  - spawnat at ~66 S: does end up in the sphere world after a few seconds
+    (see the "World ready" item in Phase 1).
+2026-10-11  PHASE 1 DONE (uncommitted).
+  - Toolkit: SphereFrame, SphereMath, CellIndex<T>, TerrainMesh.getLayeredHeight
+    (Direction overload) + groundAt; see D10/D11. SphereToolkitCheck: 2425 checks
+    pass (frames at 0, 66, +-70, 89.9999 and +-90 degrees; chart lift keeps
+    handedness and chart east = world east at 200 random points; walking a
+    great circle with carryHeading closes over the pole; CellIndex equals brute
+    force at 70 N, a pole, an icosahedron vertex and the equator).
+  - Handedness: Planet.position/latitude/longitude now put lon 90 E on -z.
+    Every hand-written lat/lon frame (Camera, GeodesicCollision, GeodesicRoadMesh,
+    GeodesicSettlementMesh, InfrastructureObject, OrganismManager, SphereRender,
+    GLEventListener water/flora/steepness, vs_organism, fs_standard_d) now goes
+    through SphereFrame/Planet. Camera and SphereSkyRenderer use a plain look-at
+    (right = forward x up, up = right x forward); the GL_CW flips and
+    InfrastructureObject's index swap are gone. Surprise: changing only `right`
+    rolled the view upside down; the corrected up must change with it.
+    The map now shows the mirror image of the old map: same 3D planet, now
+    labelled the right way round (old chart coordinates no longer match).
+  - Camera walking carries its yaw along each step (great circles, over poles);
+    Planet.moveOnSurface/interpolateSurface/surfaceDistance(SpherePosition),
+    turnAlong, acrossPole, inTangentFrame and Camera.turn deleted (SphereMath).
+  - One world: the chart terrain streaming (chunkCache, terrainInFlight,
+    prefetchTerrain, chunkBounds) is deleted. Loading at launch, between rounds
+    and after a teleport waits for geodesicTerrainReadyHere(); display() draws
+    nothing without the sphere's ground. render()'s chart branches before the
+    sphere block are collapsed (movement, sun, sky, terrain pass; this removed
+    the Planet.stretch in moveSolidly). The chart passes after the sphere block
+    are unreachable and labelled as the porting reference for grass, rocks,
+    glass, signs and chart-built people/vehicles (delete per D8 when ported).
+    Chart batch GPU uploads in updateVisibleChunks are gone too.
+  - Spawning: moveToLocation places the camera through Camera.setSphereView;
+    -Dxenoguesser.spawnat now takes latitude,longitude in degrees.
+  - Launches (seed 123): shop view: shop front, shelves, people, street correct
+    way up, walls show with culling on, 23 FPS. 70 N (27.5 E, 139 E): straight
+    into the sphere world, level horizon, sea, houses, 29 FPS. Equator (11.5 E):
+    trees, fences, houses, rain, 28 FPS. Load 79-83 s (was 126 s). Round change
+    (guess, shop, next): next round built in 3.9 s, no errors.
+  - Seen, not fixed (later phases): a sliver of sky between coast and sea
+    (the geodesic water patch drops any triangle with a vertex on land); shop
+    signs/glass are not drawn on the sphere yet (Phase 3); the sky texture is
+    sampled by world direction, not the local frame. Chart-world helpers now
+    unused but left for Phase 6: Collision.resolveFirm, Weather (chart clouds),
+    skyModel, regionalManager.waveSurfaceAt.
+2026-10-11  PHASE 1 REVIEW before Phase 2.
+  - Added a camera check to SphereToolkitCheck (2449 checks pass): with the
+    game's own Camera, facing north puts east on the right of the screen and
+    up at the top, facing east puts south on the right (equator, +-70, near
+    the pole). With "chart east = world east" this closes the handedness check
+    without needing signs. A launch on a west-facing coast (19.75 S, 101.8 W)
+    showed only a hill ahead, so the screen test was done in code instead.
+  - Not exercised by a launch: the debug teleport (map click). It goes through
+    the same moveToLocation and teleportLoading wait as spawning, which were
+    tested.
+  - Phase 1 is complete; Phase 2 can start.
+2026-10-11  PHASE 2 CODE DONE (uncommitted); its CHECK launch still to do.
+  - Camera is sphere-only: position + yaw/pitch in the local frame; lookAt,
+    frame(), getSphereView, localViewProjection (for things posed in the
+    camera's frame). getChartPosition() is the one chart accessor, for the map
+    and unported systems. setPosition/setTarget/getViewMatrix etc. are gone.
+  - GeodesicCollision rewritten: obstacle Sources (pod, trees, rocks, the
+    stand-in walls, and the real infrastructure through a chart bridge),
+    moving bodies in a CellIndex swapped each frame, and Collision's flat
+    tests (resolve, resolveFirm, blocked, blockedStatic, steer) run in the
+    tangent frame of the place asked about. Copilot's route graph (findPath,
+    findRoadPath, nearRoute) is deleted (unused). The player moves with
+    resolveFirm and is a body other things give way to.
+  - Player: stands on groundHeightAt (terrain, road deck via the chart, pod
+    stairs); body posed in the camera's local frame and drawn again (it was
+    not drawn on the sphere at all); compass pull from the latitude.
+  - Spawn: every dev view and the normal landing site end as a Viewpoint
+    (place + D10 heading); infra-chosen ones go through chartViewpoint.
+    "edge" view deleted (the sphere has no edge). mountain/shore/swim/zoo/bug
+    sample the sphere. The next round's pod spot is kept clear of trees,
+    grass and rocks while it is prefetched (the chart version did not).
+  - LandingPod: placed in a rotated SphereFrame (local z = stairs), floorAt,
+    covers and obstacles on SpherePositions, drawn with an anchor matrix.
+  - Rocks: placed per level-8 cell, meshed per level-6 detail tile and
+    level-5 coarse tile (built on worker threads), stored relative to the
+    tile centre and drawn camera-relative; coarse rocks hide per quarter of
+    their tile drawn in detail (exact, no overlaps). Solid rocks in a
+    CellIndex. Grain noise uses tile coordinates, sky light uses local up.
+  - Flora and grass: CellStream<T> (new) keeps per-level-7-cell data round
+    the viewer, built on workers, prefetched for the next round. Flora uses
+    the real species abundance (Copilot's one-random-plant-per-cell stand-in
+    is gone); trees go in a CellIndex for trunk collision and the lens.
+    Grass slope comes from an 8-step lattice per cell, colour/height are
+    blended from the cell's corners (no seams). vs_grass_instanced billboards
+    about the planet's up, camera-relative.
+  - Animals: OrganismManager has no chart code left: population per level-7
+    cell from the map habitat (D12), D10 headings carried with carryHeading,
+    steering, hops and body chains ported onto GeodesicCollision, outlines
+    kept in world coordinates for the lens. Wild/road tests go through the
+    chart bridge to the real towns and roads (not Copilot's stand-ins).
+  - Shaders: vs_organism is one camera-relative path with an `anchor` matrix
+    worked out in double (people and vehicles use SphereRender.chartAnchor
+    until Phase 4); planetDrop/curve removed from vs_organism, vs_rock,
+    vs_grass_instanced, vs_standard; Shader.setPlanetCurve and .flat() gone.
+    (vs_glass and vs_water still declare curve uniforms: Phase 3 / dead.)
+    Snow on rocks removed (the sphere terrain has none either, see below).
+  - Also: sky reflections now use the sky rotation in world form (frame
+    rotation x local rotation), fixing the "sky texture sampled by world
+    direction" item from Phase 1; the body gets the local one. The sun disc
+    (Light) is drawn camera-relative. The identification kit's lens now
+    projects through the camera's local frame (part of Phase 5's lens item).
+    Flora/animal pictures are drawn with their own view (Model.renderWith),
+    not by moving the camera. Planet's stretch, trueArea, curvature,
+    compassPull, chartDistance, scale, wrapChunk and the chart sun/pole
+    overloads are deleted (no users left). Weather.renderClouds deleted (dead).
+    The unreachable chart passes in render() are deleted; for porting glass,
+    signs and chart people see render() in commit d99cb86.
+  - SphereToolkitCheck: 2928 checks pass (cell areas sum to 4 pi and points
+    stay in their cell; collision pushes, jumps, steering and bodies at 0, 70,
+    -70, 89.9999 and 90 degrees; the pod's frame, stairs and facing; the
+    camera's lookAt and local view against the world view).
+  - LAUNCH BLOCKED: every launch (Bash sandboxed and not, PowerShell, the
+    Terminal panel) failed at window creation with JOGL "Unable to determine
+    GraphicsConfiguration" in GLCanvas.addNotify, before any game code runs,
+    so it looks like the machine's display state at the time, not this
+    change. Confirmed later the same day: commit d99cb86 built in a separate
+    worktree fails identically. Also needed from a tool shell: KMP_AFFINITY=disabled (PyTorch's
+    OpenMP failed to set thread affinity outside the sandbox).
+  - Seen, not fixed: snow is drawn nowhere on the sphere yet (terrain shader
+    returns 0, rocks/grass removed); needs a direction-based snow lookup.
+    The thermometer reads temperatureAt through the chart (Phase 5).
+2026-10-11  PHASE 2 CHECK PASSED.
+  - The earlier launch failures were not the display: launches need the JVM
+    flags from pom.xml/launch.json (--add-exports java.desktop/sun.awt and
+    sun.java2d, java.base/java.lang; -XX:+UseZGC -XX:+ZGenerational). Without
+    sun.awt, JOGL fails with "Unable to determine GraphicsConfiguration".
+    Launch from the Terminal panel with those flags and KMP_AFFINITY=disabled.
+  - Equator (0, 11.5): grass, rocks, distant trees and a flying creature, no
+    exceptions, 29 FPS. 70 N (27.5 E): ground and sparse short (cold) grass on
+    a slope, no exceptions, 30 FPS. Frame time is flat. Phase 2 is complete.
+2026-10-11  PHASE 3a DONE (uncommitted).
+  - SettlementManager: sites drawn evenly over the sphere (up to 73 degrees),
+    spacing, one-nation test and slopes by great-circle distance / the site's
+    frame; radii are true world units. Urbanness, city size and the dominant
+    town are exact Gaussians of surface distance, from the settlements listed
+    per level-5 cell (0.7 us a lookup); the old 750x750 chart grids and the
+    stamping a whole way round the join are gone. Habitability cached per
+    level-7 cell (water distance and temperature still the map's, D12).
+  - NationGenerationManager.getNationAt(direction | SpherePosition): the map's
+    own lookup at the place's map point (borders identical: 2000/2000 random
+    places agree), the grid's edge rows carried on to the poles.
+  - RoadNetworkBuilder rewritten on the sphere: highways A* over level-6
+    geodesic cells (each joined to the 9 cells sharing a corner, ~260 units
+    apart, built in parallel), Chaikin/resample/easing by slerp and great-
+    circle distance, lanes and tracks walk with SphereMath.move + carryHeading,
+    streets laid flat in each town's SphereFrame and lifted with toSphere, roads
+    found through a CellIndex<segment> (level 7). The track/island latitude
+    limit is 73 degrees. RoadPath.points are SpherePositions on the ground.
+  - Border straightening (InfrastructureManager.straightenCrossings) on the
+    sphere: crossing by halving along the great circle, the straight run along
+    the great circle through it. findBorderChecks (booths) stays on the chart.
+  - Flora's and the animals' urbanness now read the sphere directly (two
+    chart( bridges in the listener gone).
+  - Seed 123: 340 towns, 360 highway / 1283 street / 566 lane / 917 track
+    paths, roads 4.0 s, 16407 houses, 34 border checks. Towns by latitude band
+    (0-10, 10-20, ...): 45 60 87 64 45 22 13 4 0; none above 70 now (before,
+    sites were even on the chart, which over-weighted the far north).
+  - Launches: equator town (3.297, 16.389): road and paint, building, person,
+    car, 29 FPS. 70 N (70, 139): no town there, ground/trees/creature, 30 FPS.
+    Town at 67.461 N 139.716 E: building, fences, shop, person, road paint,
+    27 FPS. World ready 65-84 s. No exceptions.
+  - Expected until 3b: roads and town extents are now true size, but houses,
+    road widths, paint etc. are still built in chart units and lifted point by
+    point, so above ~50 degrees they are narrower than true and packed more
+    densely along roads (more houses per true km at high latitude).
+  - PlanningCheck (new, separate from SphereToolkitCheck as it builds seed
+    123's nations, towns and roads, several seconds):
+    java -cp "target/classes;lib/jogamp-fat.jar" PlanningCheck (exit 1 on
+    failure). Nations by direction = map lookup (2000 places, and the poles);
+    urbanness and dominant town = brute force over all towns (3000 places),
+    chart bridge agrees; towns within 73 degrees and spaced in true distance;
+    every road point on the ground, steps under 600 units, chart copy at the
+    same place with no jump across the map. 330311 checks pass.
+  - Launch script used: PowerShell needs the -D arguments quoted
+    ('-Dxenoguesser.seed=123'), else java reads ".seed=123" as the main class;
+    Tee-Object writes the log as UTF-16 (read it with iconv -f UTF-16).
+2026-10-11  PHASE 3b PART 1 DONE (uncommitted): RoadSegment and House in frames.
+  - MeshBuilder.Placement: a builder can take vertices built in a frame and place
+    them (normals and planar uv worked out first, in the frame). NationBatch.place
+    sets it for the piece being built. Until batching moves to geodesic cells the
+    placement is a chart bridge (onChart): frame -> planet -> chart point, which
+    InfrastructureObject.sphereVertices lifts back exactly (level normal parts
+    scaled by cos latitude, which the lift undoes).
+  - RoadSegment: SphereFrame at its middle (east/up/south, datum), from/to = the
+    path's own points, start/end/tangents in the frame by fromSphere (x, z along
+    the ground, y the height above the datum), lifted with toSphere. Built from
+    RoadPath.points, not RoadPath.chart. Deck heights: roadSurfaceY(SpherePosition),
+    sampled round the place in its own east/south frame so junctions agree.
+    Junctions: Crossing = the other segment's ends put in this segment's frame.
+    Dirt tracks are textured by path distance and offset across (was chart x, z).
+  - House: frame at its middle (datum), turned so local +z (door) faces the road;
+    placed in the frontage segment's frame, heading carried with carryHeading.
+    Settling, plot tests, plotsOverlap (in a's frame), doorways, followKerb, the
+    fences, driveways, windows, shop fronts and wall flags all work in the frame.
+    House.x/z/rotationY remain as the chart bridge (buckets, signs, maps, people).
+  - Spatial queries still use the chart buckets (Phase 3b item 4), with their
+    search widened by the chart's stretch; the distance tests themselves are done
+    in each segment's / house's frame, so they match what is drawn.
+  - Everything is true size now: seed 123 has 10609 houses (was 16407: spacing
+    along roads is now true distance, so far fewer at high latitude).
+  - PlanningCheck also builds the infrastructure (~5 s more): every building
+    fills its footprint and stops at its back wall (true size), made roads are
+    their class's width, and the chunks round the two test towns build meshes on
+    their own chunks. 426270 checks pass. SphereToolkitCheck: 2928 pass.
+  - Launches (seed 123): equator town (3.297, 16.389): roads, paint, junctions,
+    houses, round tower, fences, person, 26 FPS. Town at 67.461 N 139.716 E:
+    full-size blocks, road paint, fences, door, people, 21 FPS. No exceptions,
+    world ready 84-85 s.
+  - Seen, not fixed: frame rate is down a little (3a: 29 equator / 27 at 67 N).
+    Likely the queries people/vehicles/grass make every frame: the chart buckets
+    searched grow with the stretch and each candidate is now a fromSphere. Item 4
+    (CellIndex) should take this back; measure after it. People and vehicles
+    still move on the chart (Phase 4), so kerbs, routes and doorways reach them
+    through the bridge in chart units.
+2026-10-12  PHASE 3b PARTS 3 AND 4 DONE (uncommitted): the rest in frames, lookups on CellIndex.
+  - Signs: InfrastructureObject.frame (D3): a sign's matrices are in its own frame
+    (foot at the origin, face towards local +z) and it is drawn on the sphere through
+    it (draw(): frame.modelMatrix x local, renderSphereNative); sign.position is now
+    only the chart bridge for the sign maps. House signs and wall boards (shop names,
+    posters) take the house's axes moved to where they are (flush with its walls);
+    roadside signs are laid out in the segment's frame, their facing carried to them.
+    The listener draws them again (renderSigns, in renderGeodesicInfrastructure);
+    they were not drawn at all on the sphere before. signShot works on the sphere.
+  - Flagpoles: in the house's frame, the world's wind put into it. Booths, traffic
+    lights, crossover lines: BorderCheck (frame at the crossing, local x along the
+    road, z towards the near booth) and Booth (own frame, axes carried from the
+    check), found on the sphere from RoadPath.points (no longer RoadPath.chart).
+    Vehicles' stop/hold tests run in the check's frame in true units; the results
+    go back to them in chart units. Border fences: still traced on the chart grid
+    (the nation map is the authority, D12), each piece built in a frame at its
+    middle, true size; posts thinned by the chart's stretch so they stand as far
+    apart everywhere (the grid is ~3x denser in true terms at 70 degrees).
+  - Lookups (D5): CellIndexes at level 7 for segments (middle, half length), houses
+    (middle, plot's far corner; filed once the plots are final), driveways, shops,
+    border checks and booths; a placement index (plot middles) while plots are laid
+    out and fenced. Collision shapes are Obstacles on SpherePositions in a level-8
+    CellIndex, filed the first time each chunk is built. The sphere versions are the
+    real ones (isRoadLocation, isBuildingLocation, isClearedForRoad, walkingSurfaceY,
+    roofAt, obstaclesNear, nearestShop); (x, z) overloads convert for Phase 4. The
+    map join (nearJoin/otherSide) no longer matters to any lookup.
+  - CellIndex: searches skip cells and items with a cheap dot-product bound
+    (cos x >= 1 - x^2/2) before the exact distance, and keep the cells seen in an
+    unboxed set. SphereToolkitCheck still matches brute force: 2928 pass.
+  - PlanningCheck (426502 pass): as before, plus round the two towns (each built over
+    the same true area): signs in right-handed upright frames, standing ones on the
+    ground off the road facing a road, wall boards against their building; every
+    front door has a solid wall by it; driveways cleared all along; the lookups'
+    cost (13.7 us a round of four at the equator, 10.0 at 67 N; about 1.3-2.7 us
+    each, the walking surface more for its terrain noise); booths off the road with
+    guards facing it, traffic lights in pairs, and a vehicle coming up to a fenced
+    crossing stopping level with its booth; at 12 fenced crossings the border fence
+    reaches the road (within 60) with a gatepost, pieces at most 7.8 long.
+    426506 pass. 10609 houses, as before.
+    (A first version tested fence within 80 of each booth: 2 of 12 failed, as booths
+    now stand a true 45 from the border, not a few chart units, and where the border
+    meets the road at a shallow angle the fence near the road is left out as road.
+    The last commit's code, built separately, had fence at all 12, so the test was
+    moved to the crossing itself, which is what matters.)
+  - Launches (seed 123): equator town (3.297, 16.389): signs on posts and shop name
+    boards and posters on walls, lettering the right way round (the glyphs match the
+    same glyphs printed on the packets in the shop window), people, cars, 22 FPS
+    (part 1: 26; signs are drawn again, which they were not on the sphere before,
+    each with its own uniforms and 512-letter text: likely the difference, not
+    profiled; batching them is for 3b item 5). Town at
+    67.461 N 139.716 E: houses, fences, a sign, paint, a car, 28 FPS (part 1: 21).
+    Border crossing at 70.3 S 0.2 E: booth true size beside the road, its guard
+    standing in it, town behind, 28 FPS. World ready 70-84 s. No exceptions.
+    Round change (hudtest=guess,shop,next, normal spawn): next round built in the
+    background in 10.9 s over 286 frames, started at once, no exceptions (Phase 1
+    logged 3.9 s at another spot; not compared like for like).
+  - The frame rates above are not a latitude comparison: the towns differ a lot in
+    density (846k vertices round the equator town, 43k over the same true area round
+    the 67 N one), and the chart chunks streamed (VIEW_DISTANCE rings) cover only
+    ~0.38 of the true ground at 67 degrees, so the north draws less. Item 5 (batches
+    per geodesic cell) removes that; measure latitude there, with like towns.
+  - Seen, not fixed: the people's and goods' pictures on signs show only their
+    backdrop colour (the textures from Inhabitants.renderPictures are blank:
+    Phase 4, which ports the people). A few booths (2 of 40) and lights (4 of 68)
+    stand within reach of another road passing a crossing (as before the port).
+    House placement takes ~2.2 s (was 1.7 s on the chart buckets).
+2026-10-13  PHASE 3b PARTS 5 AND 6 DONE (uncommitted): batches per geodesic cell; stand-ins deleted.
+  - Batching: InfrastructureManager.generateForCell(cell) builds what stands in one level-7
+    geodesic cell (BATCH_LEVEL, the vegetation's level): the houses, segments, booths and
+    crossover lines whose middles are in it (roadSegmentsByCell, housesByCell). NationBatch
+    places every piece straight into world coordinates (inWorld(frame): rigid, or along the
+    ground for roads/fences; normals turned by the frame) and keeps a 3D box for its bounds;
+    InfrastructureObject.createBatch takes the box's centre as a SpherePosition. Drawn
+    camera-relative as the terrain is (vs_standard subtracts sphereCamera). Anything built
+    between pieces (no frame) throws. Gone: chunkKey/chunkIndex, across/shifted (map join),
+    the onChart placements, sphereVertices (the chart lift), roadChunkSize, the chart branch
+    of InfrastructureObject.render.
+  - Border fences: still traced on the chart's 6-unit grid (D12), over the cell's chart
+    extent (its corners, kept beside its middle across the join, padded); each grid square
+    is built by the cell its middle is in, so cells meet with no gap or double. None past
+    the map's top and bottom (~85 degrees). Post spacing uses the wrapped chart x.
+  - Listener: infraCache keyed by cell id; wantInfrastructureAround (on a change of cell)
+    lists the cells within VIEW_DISTANCE + 1 chunks' reach, nearest first and those the way
+    the player went since last time first, and drops those well behind. lastChunkX/Z,
+    chunksByPriority, trackWalking/walkDir gone. Loaded = every wanted cell built.
+  - Window glass drawn again (it was not drawn on the sphere at all): vs_glass is
+    camera-relative (curve uniforms gone), drawWindowGlass culls by the batches' centres.
+  - Deleted (D2): GeodesicRoadMesh, GeodesicSettlementMesh, fs_sphere_structure, their
+    models/futures/materials, the stand-in walls' CellIndex and collision source. They
+    were still being drawn on top of the real roads and houses until now.
+  - PlanningCheck (426524 pass): the cells within 450 of each test town (52 at the equator,
+    51 at 67 N: the same true area) build; every vertex is within 200 of its cell, inside
+    its batch's bounds, with a unit normal, and sampled vertices are on the ground (none on
+    the chart); border fences as before through cells. Cost: 5.2 ms a cell in the dense
+    equator town (worst 71 ms, the first, cold), 0.6 ms at 67 N. SphereToolkitCheck 2928.
+    Seed 123 still 10609 houses.
+  - Launches (seed 123): equator town (3.297, 16.389): roads, paint, junctions, houses,
+    round tower, shop signs, people, cars, 24 FPS (part 3/4: 22). Town at 67.461 N
+    139.716 E: full-size blocks, fences, paint, posters and a sign, person, car, 25 FPS.
+    Border crossing at 70.3 S 0.2 E: booths, guard, crossover lines, fence with barbed wire
+    and gatepost, town, 24 FPS. World ready 88-99 s. No exceptions. (A game window left
+    behind others renders but slowly; bring it to the front before reading its frames.)
+  - Not done: the full latitude frame-time comparison with like towns (the two test towns
+    differ ~20x in vertices); window glass not looked at closely in a launch. A dense cell
+    is built on the GL thread in one go (~5 ms): if walking through big towns hitches,
+    build cells on the builder threads (needs recording/obstacleIndex made thread-safe).
+2026-10-13  PHASE 3 REVIEW before Phase 4.
+  - Found still on the chart: the spawn places the road network picks. landingSite (every
+    normal round's pod) worked on RoadSegment.chartStart/End with distances times the
+    chart's stretch (method 1 style); randomRoadPoint, randomHouseViewpoint, shop/track/
+    raisedRoadViewpoint returned chart {x, z, dir}. All now return a Viewpoint laid out in
+    the segment's or house's frame (InfrastructureManager.viewpoint); dryLand takes a
+    SpherePosition; landSegments' "on the map" test is by latitude. chartLength gone.
+    shopViewpoint stands in front of the shop in its frame (was: from its chart doorway).
+  - PlanningCheck: 300 landing sites (54 above 40 degrees): all facing a road within 59
+    true units ahead, none in a building; 1 standing where another road passes (the
+    method allows it now and then; checked rare). 426828 pass.
+  - Launch (seed 123, normal spawn, hudtest=guess,shop,next): pod on dry land facing the
+    road, next round built in 12.1 s over 310 frames, no exceptions.
+  - Left on purpose (later phases, listed in D13): people/vehicle bridges and their
+    chartStretch uses (Phase 4), the minimap/sign maps/forEachBuilding (Phase 5), the
+    thermometer (Phase 5), the border fence tracing on the chart (D12), Frustum (used by
+    people/vehicles only), vs_water + waterPlaneModel (dead, Phase 6).
+2026-10-13  PHASE 4 PART 1 DONE (uncommitted): vehicles on the sphere.
+  - Vehicles: position (SpherePosition on the datum) + D10 heading; each step works in
+    SphereFrame.at(position) (target, other vehicles, probes all put in its local x, z),
+    moves with frame.toSphere and carries the heading (moveTo). Routes are Stops
+    {SpherePosition, side, half width, rank, dirt}; parking places are Spots {place,
+    heading, slot, driveway, getIn}, laid out in the house's frame or at a Kerb.
+    Collision on GeodesicCollision (new: blocked with an ignore predicate), so vehicles
+    now meet the player, creatures, trees, rocks and the pod (before: none of those).
+    Drawn with SphereFrame.modelMatrix (no chartAnchor); open-topped drivers posed from
+    Vehicles.Seat in the frame under the seat. Old flat render paths gone.
+  - Shared: RoadRoutes on SpherePositions (CellIndex, chord lengths); Doorway gains its
+    house frame and local door/kerb/road/gate/driveway; InfrastructureManager.roadAt,
+    kerbSpot (record Kerb), drivingRoute, roadPointBetween, settlementBetween,
+    doorwaysNear(place), borderStopAhead/HoldAhead(place, heading, reach) in true units.
+    Sign maps reach the route graph through chartRoute (bridge, Phase 5).
+  - Found and fixed: the chart Collision for people/vehicles never had endFrame called
+    since Phase 2 (bodies piled up every frame, nobody saw anyone). It is ended each frame
+    after inhabitants.update, and the player is put in it (bridge until part 2).
+  - Inhabitants (part 2 still to do) talks to vehicles on the sphere: through traffic
+    (roadPointBetween, farSide by great circle), borrowing and drives out by sphere; the
+    people's own route points convert with chart() (bridge). Unused flat render deleted.
+  - PlanningCheck (426839 pass): 32 cars parked round the two test towns, none in a
+    building, all at the road (or up a driveway); a car driven by road from 37.9 S to
+    57.2 S arrives (200 s), every step moves exactly speed x dt in true distance (0.0000%
+    off), reaches its street limit (40) in the south and highway limit (72) in the north
+    (true units: the same limits at every latitude), on the road 3973 of 4003 steps.
+    19 of 20 fenced crossings stop traffic level with the booth: the same in the last
+    commit's build (not a regression). SphereToolkitCheck 2928 pass.
+  - Launches (seed 123, vehicleshot=moving): equator town (3.297, 16.389): parked
+    crawler along the road, a stilt vehicle and a boxy pod driving off along the road,
+    upright, true size, 19 FPS. 67.461 N 139.716 E: a vehicle on the road by the pod,
+    the same size against the people as at the equator, 19 FPS. World ready 94-113 s.
+    No exceptions. (Frame rate 19 against 24-25 in 3b parts 5/6: views differ (close
+    up on vehicles) so not like for like; if it holds, profile the vehicles'
+    GeodesicCollision queries (two resolves + up to three blocked a vehicle a step).)
+  - Launch script gotcha: PowerShell turns -SpawnAt 3.297,16.389 into an array; quote it.
+2026-10-13  PHASE 4 PART 2 DONE (uncommitted): the people on the sphere; Phase 4 complete.
+  - Inhabitants: each person is a SpherePosition (datum) + D10 heading; route points are
+    Waypoints {SpherePosition, kind}. Walking, steering round things, unsticking, hops and
+    detours are worked in SphereFrame.at(position) (moveTo carries the heading and any
+    steer/wander/hop heading kept). Posed in the frame where they stand (rotationY(pi/2 -
+    heading)), drawn with that frame's modelMatrix; guards from InfrastructureManager.
+    borderGuards (records). Populated per BATCH_LEVEL geodesic cell (doorwaysInCell, from
+    housesByCell) out to ACTIVE_RADIUS, nearest first; cells dropped by true distance.
+  - GeodesicCollision gains clearLine and findPath (the grid search in the frame half way
+    between the two places, giving SpherePositions). People now walk round trees, rocks and
+    the pod too (the chart collision only had the infrastructure), and the player, creatures
+    and vehicles see them (before part 1 nobody did: see the endFrame bug there).
+  - Doorway is sphere only: frame + local door/kerb/road/gate/driveway, and inside/door/gate/
+    kerb on the datum, alongRoad(). Door corners are kept in the house's frame, so the open
+    doors are drawn in it; border traffic lights are TrafficLight records drawn in the frame
+    at their foot. Doors and lights had not been drawn on the sphere at all until now.
+  - streetWalk, walkingRoute, shopDoorNear, doorwaysNear take SpherePositions; doorwaysIn,
+    the chart obstaclesNear and the other (x, z) overloads are gone (list in D13).
+  - Deleted: Collision.java, Frustum.java, SphereRender.chartAnchor, the listener's chart
+    Collision and chartViewpoint, Inhabitants' regionWidth and flat render path.
+  - Fixed: the people's pictures on signs were blank because pictureCamera never set the
+    organism shader's anchor (a zero matrix, so nothing was drawn); it is now the identity.
+    Not yet looked at in a launch.
+  - PlanningCheck (426850 pass) adds a minute of life round each test town (cells built out
+    to 1100): equator 38584 street steps, 172 (0.4%) touching a building, 1 jump, pace 0.91
+    of their speed; 67 N 8635 steps, 0 in a building, 0 jumps, pace 0.90. People go in and
+    come out, some drive. SphereToolkitCheck 2928. (The runs differ a little each time: the
+    border waits use Math.random and the lights the clock.)
+  - Launches (seed 123): equator town, vehicleshot=door: the front door swings open on its
+    hinge and the person steps out, upright, facing out, 18 FPS. Border crossing at 70.3 S
+    0.2 E: both booths, a traffic light (pole and lamp housing), a hauler drawn up at the
+    booth, a guard in the far booth (mostly behind its front corner pillar from that angle;
+    this world's people are 15 tall against a 9 high wall), people walking up the street.
+    No exceptions.
+2026-10-13  PHASE 4 VERIFICATION before committing (and before Phase 5).
+  - Checked against the pre-migration commit c3482c9: no class lost but Collision and Frustum
+    (their jobs are GeodesicCollision's now); every render pass has a sphere counterpart
+    (clouds in SphereSkyRenderer, rain in SphereWeather, the sea as the geodesic water patch).
+  - Launches (seed 123): sign shots at the equator town: the sign pictures now show (an advert
+    with a person holding up a packet, a poster of the nation's goods; blank since Phase 2).
+    Normal spawn + hudtest=guess,shop,next: next round built in 14.0 s over 359 frames, no
+    exceptions (12.1 s in the Phase 3 review; not like for like). 70 N + round change: built
+    in 2.4 s. No shader compile errors.
+  - FOUND AND FIXED (pre-migration features no phase owned):
+    * Snow lay nowhere on the sphere since Phase 2 (fs_standard_d's snowAt returned 0 for
+      everything planet-centred; rocks had theirs taken out). snowAt now reads the climate map
+      at the place's map point (D12), uses the altitude and the normal against local up, and
+      3D noise for the flakes; rocks have the same (vs_rock passes aWorld). Seen at 70 N 27.5 E:
+      the ground and rocks under snow with gaps (confirmed by a TEMP red snow colour, removed).
+    * The weather was Copilot's stand-in: rain from bare noise, snow from a latitude formula,
+      and the old chart Weather (fresh snow settling, cloud haze in the fog) no longer updated.
+      SphereWeather now has the old climate rules: cover drawn about the place's rainfall plus
+      the day's wetness (newDay each spawn), rain under dark cloud, snow below the map's
+      temperature, fresh snow settling and melting, the haze; the sky's clouds follow its
+      cloudiness. Weather.java deleted. (Rainfall/temperature are read on the chart: D12.)
+  - PlanningCheck 426850 pass, SphereToolkitCheck 2928 pass after all of it.
+  - Still not looked at: the sliver of sky between coast and sea (Phase 1, seen not fixed),
+    window glass up close. Frame rate in the dense equator town 18-19 FPS (24-29 in Phases
+    2-3, with fewer things drawn: doors, lights, people's sphere collision are new); 29-30 at
+    70 N. Profile in Phase 6's frame-rate check if it holds.
+2026-10-13  PHASE 5 PART 1 DONE (uncommitted): the map's conversion pair; factors and climate by direction.
+  - MapProjection (D14): the Mercator chart moved out of Planet (CLIP_LATITUDE, chartX/Z, the
+    join, wrapX, aspect...) with the one pair toMap / direction. Planet keeps the size, axes, sun.
+    Planet.surfaceDistance, Planet.mercatorPosition/spherePosition, Camera.getChartPosition and the
+    listener's chart() are gone.
+  - SphereRaster (new, D14): cube-map raster by direction; distanceTo = true great-circle distance
+    to marked texels. RegionalGenerationManager on it: the distance to the sea and ground height
+    over the whole sphere (512 a side, 0.5 s), replacing the chart chunk BFS (which counted 4-way
+    chart steps: Manhattan, and 2-4 times too many above 50 degrees). The dead wave map (texture
+    never bound) and buildWaveMap are deleted; the shore/swim dev views look for open sea instead.
+  - RegionalFactor.Sampler takes a Direction (D12 ended): temperature, rainfall, noise maps, water
+    preference (now in world units: grass 8000, species' own, settlements' coast 1500 / moisture
+    9000), species habitats, flora abundance, wealth. Heatmaps sample each map pixel's direction
+    (in parallel); their ranges, the grass spans and the altimeter's top sample evenly over the
+    sphere within the map's latitudes. The thermometer and the weather read the climate by
+    direction (two chart bridges gone). Sea level and April's ocean sample by direction.
+  - Guess: MapPanel keeps the goal and pin as directions (pixels only for drawing); score from the
+    great-circle angle. The developer teleport passes a direction.
+  - Shaders: the snow climate is a cube map (256) read in the place's direction in fs_standard_d,
+    fs_rock and fs_solid (fs_solid, the walls and roofs, still read the chart texture with chart
+    x/z and world y as up: roofs got the wrong climate since Phase 3); sphereLongitudeOffset and
+    the chart maths in shaders gone. The soil colour map is a cube map (64) and the terrain uses it
+    again: Copilot's sphere path had set useSoilRegions 0, which also turned off the bare rock on
+    steep slopes (found here; pre-migration feature no phase owned). The rock's noise was a sine
+    hash on planet-centred x, z (smeared, flat along x): now exact 3D value noise. Cube samplers get
+    their units at link time (else validation fails: two sampler types on unit 0).
+  - Towns moved a little (habitability now uses true distances): 340 towns, by band 42 58 85 60
+    52 21 15 7 0 (was 45 60 87 64 45 22 13 4 0), 10674 houses (was 10609). The old equator test
+    town (3.297, 16.389) is now a village; PlanningCheck uses 4.841, 78.397 (radius 482) against
+    67.461, 139.716 (radius 457): like-sized towns at last. Parked-car floor 15 (18 found, none
+    in a building or off the road).
+  - Checks: SphereToolkitCheck 43988 pass (adds the map pair round trips, east/north on the map,
+    and the raster: texels, neighbours across faces, seamless sampling, distances vs brute force).
+    PlanningCheck 423012 pass (adds: distance to the sea within 81 units of a search at 60 places,
+    30 beyond 50 degrees; climate defined at the poles and equal across the map's join).
+  - Launches (seed 123): 70 N 27.5 E: temperature, rainfall and wealth maps right (cold south,
+    towns bright, borders poorer); ground and rocks under (pink: this world's sea tint) snow with
+    gaps, confirmed with a TEMP red snow colour, removed; guess, shop, next: 138 points, next round
+    built in 2.0 s. Equator town 4.841, 78.397: houses, signs, people, grass, roofs bare, 27 FPS.
+    67.461 N 139.716 E: snow, cleared roads, houses, fence, people, open door, 18 FPS (a close
+    view of buildings and people, against an open one at the equator: not like for like yet).
+    World ready 75-97 s. No exceptions, no shader errors.
+  - Left for part 2: map layers (roads, buildings, shops) and sign maps from world shapes (the
+    D13 bridges listed there), compass and identification kit lens, shop/round flow review.
+    Seen, not fixed: track grit still uses planet-centred x, z (like the old rock noise);
+    fs_grass_instanced and fs_terrain keep dead chart snow code (Phase 6).
+2026-10-13  PHASE 5 PART 2 DONE (uncommitted): map layers and sign maps from world shapes; the sea; Phase 5 complete.
+  - Maps: InfrastructureManager.BuildingVisitor gives each footprint's frame and outline (frame x, z);
+    forEachBuildingNear / forEachRoadPathNear search the CellIndexes. BirdsEyeMaps projects every road
+    point and footprint corner with MapProjection.toMap once per world (MapShapes; x run on unbroken
+    from the first point, drawn again a whole way round where a shape crosses the join); the shop
+    glow is a true 120 units (times 1/cos latitude on the map). Layers and zoomed tiles share it.
+  - Sign maps (SignMap.render): laid out north up in SphereFrame.at(the map's middle), true distances
+    along the ground (fromSphere / toSphere), so the same at every latitude. Found: the land on them
+    was the old 2D chart noise (getLayeredHeight(x, z)), not the sphere's ground; now sampled on the
+    sphere. Footprints in their own shapes (were rectangles); the route from routes().route direct.
+  - Gone: RoadPath.chart/toChart, House.x/z/rotationY, sign.position (createSign/createWallSign lose
+    the chart argument), chartMidX, chartRoute, chartVector, chartAt, chartPoint, onChart.
+    borderGapAt(SpherePosition) reads the nation map (D12) for a house.
+  - Items reviewed: the compass needle is held in the local frame (north = local -z, its pull
+    cos latitude); the lens projects through the camera's local frame (lastSceneViewProjection =
+    localViewProjection) with trees and creatures put in it by toLocal, hidden-by-land test along
+    the true line of sight; the altimeter reads groundHeightAt minus the sea level. Nothing to change.
+  - Round flow reviewed: the goal is the spawn's direction (held back until the results close), the
+    next pod spot is chosen and prefetched on the sphere, resetToNextRound clears every sphere stream;
+    April's ocean on the sphere since part 1. Nothing to change.
+  - The sea (pre-migration feature no phase owned; user report: jagged angular coast, wrong look).
+    Copilot's geodesic water patch (level-6 cells, 8 segments, ~56 units; triangles dropped where any
+    vertex was on land, hence the zigzag coast and the sky sliver from Phase 1) and its stand-in shader
+    are gone, with the dead flat vs_water/fs_water and waterPlaneModel. The old way is back on the
+    sphere: a camera-centred grid (256 a side, ~3 units apart underfoot, out to FAR_PLANE) laid along
+    the ground in the eye's frame and wrapped onto the sea's sphere in vs_sphere_water (relative to
+    the eyes for precision); the terrain hides it where higher, so the coast is the sea surface meeting
+    the noisy ground. fs_sphere_water is fs_water ported: depth-tinted shallows from the terrain depth
+    pre-pass, the sea texture's ripples (triplanar on planet-centred position), sky reflection, glitter,
+    whitecaps and shore foam. Gerstner waves in each point's east/up/south frame from a wave map on the
+    field's SphereRaster (RegionalGenerationManager.buildWaveField: body sizes by flood fill over
+    texels, true distance to shore, 20 four-neighbour blur passes), uploaded as an RG32F cube map
+    (Shader.WAVE_UNIT 12). The swimmer bobs on waveSurfaceAt(place) again (was flat sea level).
+    Field build now 1.3 s (was 0.5 s).
+  - Checks: SphereToolkitCheck 43988 pass. PlanningCheck 336141 pass (fewer: the road chart-copy checks
+    went with the copy; building checks now use the frame and outline; adds waves: within their
+    greatest height of the sea at 2687 sea places, 2261 with waves over 1 unit).
+  - Launches (seed 123): 67.461 N 139.716 E with ROADS, BUILDINGS, SHOPS zoomed 16x on the town: roads,
+    footprints and shop glows line up; the coast: smooth shoreline, see-through shallows, swell and
+    ripples, 21 FPS. Equator town, signshot: 3 of 8 signs carry maps (land, roads, footprints, the
+    "here" mark, a shop badge). Normal spawn, guess/shop/next: 772 points, next round built in
+    10.8 s over 291 frames, 56 FPS. World ready 73-79 s. No exceptions, no shader errors.
+  - Not looked at: the sea from a mountain top past FAR_PLANE (the grid stops there, as the terrain
+    does); swimming in a launch; the drive in PlanningCheck now prints street top speed 0.0 (its route
+    changed when towns moved in part 1; not a failing check, not investigated).
+2026-10-13  PHASE 5 APPEARANCE FIXES (uncommitted; pre-migration looks no phase owned, user report).
+  - Sky: Copilot's fs_sphere_sky sampled the sky texture by the WORLD direction (no sky rotation,
+    world y as up), so away from the north pole the sky showed the texture's grey lower half. It now
+    uses skyRotation in world form, exactly as the old sky dome's UVs (InsideSphere) and every
+    reflection's skyAlong do. Its fixed pale clouds are gone.
+  - Clouds, rain, snow: the old Weather ported to the sphere (SphereWeather rewritten). Cloud noise as
+    before (900-unit features, streaks along the wind, darkness, sun-lit edges, light through thin
+    cloud, haze at the horizon), laid out on the day's wind circle: the great circle through the
+    round's start along the wind; (u, v) = along it / off it in ground distance, so it is the same at
+    every latitude, drift is a turn about the circle's axis, and the seam is on the far side. Rain
+    follows the dark cloud round about overhead again (darknessAround; the stand-in used bare noise).
+    Drops and flakes as before (2600, streaks and splashes, flakes 0.9 units sized by distance, the
+    oceans' tint), kept in (u, v, height) and drawn camera-relative. Shaders fs_sphere_cloud,
+    vs/fs_sphere_rain, vs/fs_sphere_snow (the old ones); the stand-in precipitation shaders deleted.
+  - The haze's horizon is the sea's horizon: on this small planet it dips ~3 degrees below level, and
+    haze from level down to it showed as a grey band over the far sea.
+  - Sea seam (user report: a straight line out to the horizon, see-through to one side): the sea
+    was drawn without writing depth, so far crests drew over near ones (a sawtooth with the haze
+    showing through) where the water was opaque. It writes depth again, as the old water plane did.
+    Also: grid reach back to the old 2200 (finer far grid), the crests' sideways push fades out from
+    250 to 700 units, and the wave direction is measured over 4 texels so waves die away where two
+    coasts' slopes meet rather than tearing the surface there (waveSurfaceAt matches).
+  - Launches at 67.461 N 139.716 E: bright sky, white streaked clouds, snow falling as soft flakes,
+    the sea its own colour to its horizon, no seam. No exceptions.
+  - Grass lying flat (user report): not orientation (blades stand on the planet's radial up), but
+    shape: blades were 11-24 units wide at any height, so the shortest (2.5 cm, 0.25 units tall) were
+    wide strips along the ground. Shortest grass now 7 cm (GRASS_SHORTEST), and blades under ~30 cm
+    are narrowed in proportion (vs_grass_instanced, down to a quarter). Seen at 70 N looking down:
+    upright tufts.
+2026-10-13  PHASE 6 DONE (uncommitted): clean-up and final tests; the migration is complete.
+  - D8: sphereNativeTerrain gone. vs_standard draws everything one way (D8 note); Renderer has
+    one draw (render: on the planet, camera-relative; render with a view-projection: a picture),
+    no lights (numLights was 0 on both paths already); Model.renderSphereNative, the old
+    camera-relative render, renderWithShader and the chart depth pass gone (renderDepthPass sets
+    the camera itself); the listener's setSphereTerrainTransform gone. Signs always have a frame,
+    so InfrastructureObject.draw's no-frame branch and the position/rotation wall-sign factories
+    went. The poster "bend" uniform stays (it curves posters, not the world).
+  - Found by the D8 pass: fs_solid read aPos (camera-relative) for snow and weathering, so roofs
+    and walls never had snow and their grime slid with the camera; both use aWorldPos now. The
+    weathering streaks (fs_solid, fs_standard_d) and the track grit used world y / x,z as if the
+    world were flat: now height above the datum and alongGround(world) (the two world axes
+    furthest from local up). Track grit was in the D6 "seen, not fixed" list.
+  - Dead code: shader files fs/vs_cloud, fs/vs_rain, fs/vs_snow, fs_terrain, fs_single_sky (with
+    InsideSphere, skyModel, makeSkybox); TerrainMesh's chart chunk builder (buildChunkData,
+    generateTerrainChunk, calculateNormal); fs_grass_instanced's never-called chart snowAt;
+    unused listener fields (healthyColour, totalGrassInstances, grassStaging...), the grass
+    instance buffer renamed from grassChunkCoordVBO; prepareRoadNetwork/generateForCell lose
+    their unused chunkSize/totalRegionWidth; a few dead fields elsewhere. "Per chunk's area
+    (100 by 100)" stays as a density unit (counts, heatmaps), not a grid.
+  - Spawn picks (landSegments, randomHouseViewpoint) kept within MapProjection.CLIP_LATITUDE (75):
+    they compared against latitude(width/2), about 85, so a round could start off the map.
+  - Planet's header now describes the design (frames, cells, directions, camera-relative, the map
+    only on the chart). Code comments still cite D-numbers: keep this file as the design record.
+  - FOUND AND FIXED by the pole test: world ready took 286 s at 89.9 N (terrain stage 250 s,
+    against ~24 s elsewhere). jstack: borderFences, on the GL thread, tracing the chart's 6-unit
+    grid over each batch cell's chart extent, ~(1/cos lat)^2 times more points near the pole. The
+    fences are now traced on the geodesic lattice (D12): each batch cell's 1024 level-12
+    triangles, marching triangles, crossings halved along the side from a fixed end so both
+    triangles find the same point; a post on about every other triangle (by its id). Pole: world
+    ready 74 s, terrain stage 3.4 s. Probe (scratch, not kept): cells round 36 fenced crossings
+    1-8 ms a cell from 70 S to 32 N; cells at 0/60/80/84/89.9 degrees 1.3/2.4/0.2/0.2/0.2 ms.
+  - Checks: SphereToolkitCheck 43988 pass. PlanningCheck 336142 pass (adds: border fence pieces
+    join up: 50 of 1416 ends meet no other piece, the gateways and booth bends).
+  - Launches (seed 123): 70 N 27.5 E 30 FPS (as Phase 2); equator town 4.841, 78.397 25 FPS
+    (houses, signs with pictures, people); 67.461 N 139.716 E 29 FPS (town, people, sea, snow);
+    89.9 N 0 E (open sea; the pole is on an icosahedron edge) 30 FPS, level horizon, no seam;
+    face edge midpoint 30 N 20.905 W (land) 24 FPS, grass, rocks, a creature, rain, no seam;
+    fenced crossing 66.974 S 22.532 W 26 FPS, booth, town, world ready 94 s. World ready 72-82 s
+    elsewhere. No exceptions, no shader errors. Frame rate follows what is in view, not latitude.
+  - Seen, not fixed (also in the last commit, built separately and launched at 70 N 27.5 E: the
+    same frame pixel for pixel): the lying snow shows as near-black patches at 70 N and at the
+    67 S crossing (pale pink at 67.461 N 139.716 E). Roofs now get the same snow as the ground,
+    so they show it too. Not looked into.
+2026-10-13  PHASE 6 AUDIT (uncommitted; user asked: is the migration finished? chart only for the
+            map, every legacy feature restored).
+  - Audit against the pre-migration commit c3482c9: dev options and key bindings identical; every
+    shader uniform set; every render pass and draw call has a sphere counterpart; no method lost
+    but chart/chunk ones and renamed ones (tree collision, parking reservations, animals kept out
+    of towns, look-ahead loading, the map's hover values all present).
+  - LOST LEGACY FEATURE, restored: sunlight. Before the migration every terrain, tree, leaf,
+    building and sign draw passed lights[0] (the sun) to its shader (Renderer.doLights); Copilot's
+    sphere path set numLights 0 everywhere, so since Phase 1 the world was lit by ambient only (no
+    sun shading on slopes or walls). Renderer.setLights(lights) on the world's renderer; the sun's
+    position is relative to the eyes (SphereRender.sunPoint), as the fragments' aPos is. Pictures
+    drawn on their own stay unlit, as before.
+  - LAST CHART SYSTEM, ported: the nations (D12, D13). They were grown on a 384 x 384 Mercator
+    grid (each nation's spacing and every cost in chart cells, so stretched towards the poles) and
+    looked up through toMap. Now a SphereRaster: NationGenerationManager (new constructor without a
+    resolution; generateTerritories(seed)), SphereRaster.corners/solidAngle, NationKinship
+    (bordering by raster neighbours, centres as area-weighted mean directions, gradient as a slope
+    along a random direction), InfrastructureManager border poverty (distance raster),
+    BirdsEyeMaps' nation names (a 384 map grid sampled from the sphere lookup). getNationAtWorld
+    is getNationAtMap. The world changed: 11471 houses (was 10674), 14 nations 2.4-11.7% of the
+    sphere each.
+  - Chart-era restriction removed: normal rounds started below 60 degrees "where the map stretches
+    most" (the reason was lost from the comment in Phase 3); they now start anywhere on the map
+    (CLIP_LATITUDE, 75).
+  - The new layout exposed old weaknesses, fixed: (1) a road wandering along a border got border
+    checks 60 units apart (one with its guard facing off the road, one 63 from any fence): checks
+    now keep 2 x RAIL_CLEAR_OF_BORDER apart. (2) Walkers already out at the start were put at a
+    random point on a straight leg of their way, which can cut through a building (the walls then
+    kept them in; same in c3482c9): now never inside one (Inhabitants.create).
+    PlanningCheck made exact where the new layout showed it measured the wrong thing: people "in a
+    building" by the building's real outline (round and many-sided buildings counted their
+    bounding rectangle's corners); top speeds only on steps within one leg of the way, not
+    braking (a highway-to-street step counted as a street at 58); fence pieces bent round a
+    booth left out of the true-size length. New: every nation holds some of the sphere.
+  - Not a bug after all (the task flagged earlier withdrawn): the "near-black snow" at 70 N. A TEMP
+    red snow colour (removed) showed the snow is the brownish 80% cover (its colour carries this
+    world's dark maroon sea tint) and the dark patches are the bare ground in its gaps.
+  - Checks: SphereToolkitCheck 43988 pass. PlanningCheck 346952 pass (borders 12 of 12 fenced and
+    gated, longest piece 7.2; street speed 40 south and north; 0 street steps in a building).
+  - Launches (seed 123): 70 N with the nations map open: nations, borders, names and flags drawn
+    from the sphere; equator town 26 FPS and 67.461 N 139.716 E 28 FPS with sun shading on walls
+    and snow on roofs; pole; normal spawn + guess, shop, next: next round built in 7.4 s over 166
+    frames. World ready 70-78 s. No exceptions, no shader errors.
+  - The migration is complete: nothing outside the map uses the chart.

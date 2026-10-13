@@ -118,6 +118,8 @@ public class OrganismSpecies {
     final RegionalFactor habitat;
     final float habitatThreshold;
     private final PerlinNoise sizeCline, legCline, hueCline, morphCline;
+    private final float nativeOptimalTemperature, nativeTemperatureDeviation, nativeWaterPreference,
+            nativeWaterDeviation, nativePatchScale, nativeHomeScale;
 
     public OrganismSpecies(long seed, int index, RegionalGenerationManager regions) {
         Random rand = WorldPalette.rng(seed, 0xB065L + index * 7919L);
@@ -388,20 +390,28 @@ public class OrganismSpecies {
         gloss = 0.15f + rand.nextFloat() * 0.85f;
 
         // --- Range: climate and water preferences, broken into patches; ignores borders ---
-        RegionalFactor climate = regions.createTemperaturePreference(rand.nextFloat(), 0.15f + rand.nextFloat() * 0.25f);
-        RegionalFactor water = regions.createWaterPreference(rand.nextInt(40), 25.0f + rand.nextFloat() * 70.0f);
-        RegionalFactor patches = regions.createNoiseMap(2.0e-5f + rand.nextFloat() * 3.0e-5f);
+        nativeOptimalTemperature = rand.nextFloat();
+        nativeTemperatureDeviation = 0.15f + rand.nextFloat() * 0.25f;
+        nativeWaterPreference = rand.nextInt(40) * 100f;
+        nativeWaterDeviation = (25.0f + rand.nextFloat() * 70.0f) * 100f;
+        nativePatchScale = 2.0e-5f + rand.nextFloat() * 3.0e-5f;
+        RegionalFactor climate = regions.createTemperaturePreference(nativeOptimalTemperature,
+                nativeTemperatureDeviation);
+        RegionalFactor water = regions.createWaterPreference(nativeWaterPreference, nativeWaterDeviation);
+        RegionalFactor patches = regions.createNoiseMap(nativePatchScale);
         // Its home region: broad noise (each feature a large part of a continent across), only its
         // highest third counting, so a species keeps to one part of the world (one that likes the
         // cold north needn't live in the cold south too)
         homeStrength = homeStrength(new Random(seed * 1949L + index));
-        RegionalFactor home = regions.createNoiseMap(HOME_SCALE_LOW + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE);
-        habitat = new RegionalFactor(1.0f, (cx, cz, wx, wz) -> {
-            float suitability = climate.evaluate(cx, cz, wx, wz) * (0.35f + 0.65f * water.evaluate(cx, cz, wx, wz));
-            float h = home.evaluate(cx, cz, wx, wz);
+        nativeHomeScale = HOME_SCALE_LOW
+                + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE;
+        RegionalFactor home = regions.createNoiseMap(nativeHomeScale);
+        habitat = new RegionalFactor(1.0f, d -> {
+            float suitability = climate.evaluate(d) * (0.35f + 0.65f * water.evaluate(d));
+            float h = home.evaluate(d);
             float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
             float local = 1f - homeStrength + homeStrength * t * t * (3f - 2f * t);
-            return suitability * (0.25f + 1.5f * patches.evaluate(cx, cz, wx, wz)) * 0.8f * local;
+            return suitability * (0.25f + 1.5f * patches.evaluate(d)) * 0.8f * local;
         });
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
@@ -435,23 +445,30 @@ public class OrganismSpecies {
         return best;
     }
 
-    /** How strongly the species lives here: 0 outside its range, rising to 1 at its heart. */
-    public float presenceAt(float worldX, float worldZ, float chunkSize) {
-        int cx = (int) Math.floor(worldX / chunkSize), cz = (int) Math.floor(worldZ / chunkSize);
-        float h = habitat.evaluate(cx, cz, worldX, worldZ);
+    /** How strongly the species lives at a place: 0 outside its range, rising to 1 at its heart. */
+    public float presenceAt(SpherePosition position) {
+        float h = habitat.evaluateAt(position);
         return Math.max(0f, Math.min(1f, (h - habitatThreshold) / (1f - habitatThreshold) * 2.0f));
     }
 
     /** Per-individual traits from where it lives: {size scale, leg scale, hue shift, morph (0 or 1)}. */
-    public float[] traitsAt(float worldX, float worldZ, Random rand) {
+    public float[] traitsAt(SpherePosition position, Random rand) {
         float clineScale = 1.0f / 18000f;
-        float size = 1.0f + 0.35f * sizeCline.onSphere(Planet.surface(worldX, worldZ), clineScale, 0f, 0f) + (rand.nextFloat() - 0.5f) * 0.12f;
-        float legs = 1.0f + 0.3f * legCline.onSphere(Planet.surface(worldX, worldZ), clineScale, 0f, 0f);
-        float hueShift = 0.12f * hueCline.onSphere(Planet.surface(worldX, worldZ), clineScale * 0.8f, 0f, 0f);
+        float[] surface = sphereSurface(position);
+        float size = 1.0f + 0.35f * sizeCline.onSphere(surface, clineScale, 0f, 0f) + (rand.nextFloat() - 0.5f) * 0.12f;
+        float legs = 1.0f + 0.3f * legCline.onSphere(surface, clineScale, 0f, 0f);
+        float hueShift = 0.12f * hueCline.onSphere(surface, clineScale * 0.8f, 0f, 0f);
         // The share of the second morph runs smoothly from none to all across the range
-        float share = 0.5f + 0.9f * morphCline.onSphere(Planet.surface(worldX, worldZ), clineScale * 0.7f, 0f, 0f);
+        float share = 0.5f + 0.9f * morphCline.onSphere(surface, clineScale * 0.7f, 0f, 0f);
         float morph = rand.nextFloat() < share ? 1f : 0f;
         return new float[] { size, legs, hueShift, morph };
+    }
+
+    private static float[] sphereSurface(SpherePosition position) {
+        double length = position.length();
+        double scale = Planet.radius() / length;
+        return new float[] { (float) (position.x() * scale), (float) (position.y() * scale),
+                (float) (position.z() * scale) };
     }
 
     public void buildMeshes(GL3 gl) {

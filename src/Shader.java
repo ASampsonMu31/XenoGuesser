@@ -33,15 +33,7 @@ public class Shader {
     }
   }
 
-  private boolean flat;
-
-  /** Leaves this shader out of the planet's curve (the sky, which is drawn round the viewer). */
-  public Shader flat() {
-    flat = true;
-    return this;
-  }
-
-  // Every shader made, so the planet's curve can be handed to all of them at once
+  // Every shader made, so the fog and snow can be handed to all of them at once
   private static final java.util.List<Shader> ALL = new java.util.ArrayList<>();
 
   /** Forgets every shader made so far (their GL context has gone, e.g. back at the main menu). */
@@ -51,26 +43,6 @@ public class Shader {
     }
   }
 
-  /**
-   * The world is a sphere (see Planet): every shader drawing the world lowers each vertex by
-   * curvature times the square of its distance across the ground from centre, along down
-   * (the view-projection of a unit step up), so the horizon curves away.
-   */
-  public static void setPlanetCurve(GL3 gl, float centreX, float centreZ, float curvature, float[] down) {
-    synchronized (ALL) {
-      for (Shader shader : ALL) {
-        if (shader.ID == 0 || shader.flat) continue;
-        int c = shader.location(gl, "curveCentre");
-        if (c == -1) continue;
-        gl.glUseProgram(shader.ID);
-        gl.glUniform2f(c, centreX, centreZ);
-        gl.glUniform1f(shader.location(gl, "curvature"), curvature);
-        gl.glUniform4f(shader.location(gl, "curveDown"), down[0], down[1], down[2], down[3]);
-        gl.glUniform1f(shader.location(gl, "planetWidth"), Planet.width());
-      }
-    }
-  }
-  
   /** What the distance fades into, for every shader with fog (see fogHaze in those shaders). */
   public static void setFog(GL3 gl, float r, float g, float b) {
     synchronized (ALL) {
@@ -86,12 +58,17 @@ public class Shader {
   }
 
   /**
-   * The lying snow (see XenoGuesser_GLEventListener.snowCover) for every shader with a
-   * snowCover uniform: its texture unit, 1 / the world's width, half the width, how much fresh
-   * snow has settled, the climate it lies in ({freezing point, degrees below it for thick snow,
-   * degrees colder per unit up, sea level}) and the snow's colour.
+   * The lying snow (see XenoGuesser_GLEventListener.bindSnowCover) for every shader with a
+   * snowCover uniform: its cube map's texture unit, how much fresh snow has settled, how much
+   * warmer today is than usual, the climate it lies in ({freezing point, degrees below it for
+   * thick snow, degrees colder per unit up, sea level}), the snow's colour and the planet's radius.
    */
-  public static void setSnowCover(GL3 gl, int unit, float inverseWidth, float halfWidth, float fresh, float today, float[] climate, float[] colour) {
+  /** The cube map samplers and the texture units they are always bound to. */
+  public static final int SNOW_UNIT = 11, SOIL_REGION_UNIT = 6, WAVE_UNIT = 12;
+  private static final Object[][] CUBE_UNITS = { { "snowCover", SNOW_UNIT }, { "soilRegionMap", SOIL_REGION_UNIT },
+      { "waveMap", WAVE_UNIT } };
+
+  public static void setSnowCover(GL3 gl, int unit, float fresh, float today, float[] climate, float[] colour, float planetRadius) {
     synchronized (ALL) {
       for (Shader shader : ALL) {
         if (shader.ID == 0) continue;
@@ -99,10 +76,11 @@ public class Shader {
         if (c == -1) continue;
         gl.glUseProgram(shader.ID);
         gl.glUniform1i(c, unit);
-        gl.glUniform4f(shader.location(gl, "snowMap"), inverseWidth, halfWidth, 1f, fresh);
+        gl.glUniform2f(shader.location(gl, "snowState"), 1f, fresh);
         gl.glUniform4f(shader.location(gl, "snowClimate"), climate[0], climate[1], climate[2], climate[3]);
         gl.glUniform3f(shader.location(gl, "snowColour"), colour[0], colour[1], colour[2]);
         gl.glUniform1f(shader.location(gl, "snowToday"), today);
+        gl.glUniform1f(shader.location(gl, "planetRadius"), planetRadius);
       }
     }
   }
@@ -190,6 +168,16 @@ public class Shader {
     program.add(vertexShaderCode);
     program.add(fragmentShaderCode);
     program.link(gl, System.out);
+    // The cube maps get texture units of their own from the start (every sampler begins on unit
+    // 0, and a cube and a 2D sampler may not share one): the snow's and the soil colour's
+    int[] current = new int[1];
+    gl.glGetIntegerv(GL3.GL_CURRENT_PROGRAM, current, 0);
+    gl.glUseProgram(program.program());
+    for (Object[] cube : CUBE_UNITS) {
+      int at = gl.glGetUniformLocation(program.program(), (String) cube[0]);
+      if (at != -1) gl.glUniform1i(at, (Integer) cube[1]);
+    }
+    gl.glUseProgram(current[0]);
     if (!program.validateProgram(gl, System.out))
       System.err.println("[error] Unable to link program");
     return program.program();

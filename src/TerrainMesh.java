@@ -1,14 +1,17 @@
-import com.jogamp.opengl.*;
+import java.util.List;
 
 public class TerrainMesh {
 
     /**
-     * The ground's height at chart point (worldX, worldZ). Every layer is noise sampled at
-     * that place on the planet's surface (see Planet), so the land runs on round the world
-     * with no seam where the chart's east and west edges meet.
+     * The ground's height at map point (mapX, mapZ), for the map (see MapProjection). Every
+     * layer is noise sampled at that place on the planet's surface, so the land runs on round
+     * the world with no seam where the map's east and west edges meet.
      */
-    public static float getLayeredHeight(float worldX, float worldZ, PerlinNoise noise) {
-        float[] surface = Planet.surface(worldX, worldZ);
+    public static float getLayeredHeight(float mapX, float mapZ, PerlinNoise noise) {
+        return getLayeredHeight(MapProjection.surface(mapX, mapZ), noise);
+    }
+
+    private static float getLayeredHeight(float[] surface, PerlinNoise noise) {
         // LAYER 1: the continents. A handful of separate landmasses spread round the planet
         // (see continentField), their coasts broken up by broad noise so they're irregular,
         // now and then split into two or joined by an isthmus
@@ -85,6 +88,171 @@ public class TerrainMesh {
 
         float height = baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
         return flattenLowlands(height, surface, continent, noise);
+    }
+
+    /**
+     * The ground's height above the datum under a place on the sphere: the one terrain height
+     * everything in the world uses (the chart's getLayeredHeight(x, z) goes through the same
+     * sampling, for the map). The position's own altitude makes no difference.
+     */
+    public static float getLayeredHeight(SpherePosition position, PerlinNoise noise) {
+        double length = position.length();
+        if (!(length > 0.0)) throw new IllegalArgumentException("Terrain cannot be sampled at the planet centre");
+        float[] surface = {
+                (float) (position.x() * Planet.radius() / length),
+                (float) (position.y() * Planet.radius() / length),
+                (float) (position.z() * Planet.radius() / length)
+        };
+        return getLayeredHeight(surface, noise);
+    }
+
+    /** The ground's height above the datum in a direction from the planet's centre. */
+    public static float getLayeredHeight(GeodesicChunkGrid.Direction direction, PerlinNoise noise) {
+        return getLayeredHeight(new SpherePosition(direction.x(), direction.y(), direction.z()), noise);
+    }
+
+    /** The point on the ground straight below (or above) a place. */
+    public static SpherePosition groundAt(SpherePosition position, PerlinNoise noise) {
+        return SphereMath.atAltitude(position, getLayeredHeight(position, noise));
+    }
+
+    /**
+     * Builds a triangular geodesic terrain cell as {vertices, indices}. Vertices are stored
+     * in planet-centred Cartesian coordinates and transformed by the sphere-aware vertex shader.
+     */
+    public static Object[] buildGeodesicCellData(GeodesicChunkGrid.Cell cell, int segments, PerlinNoise noise) {
+        if (segments < 1) throw new IllegalArgumentException("A geodesic terrain cell needs at least one segment");
+        int vertexCount = (segments + 1) * (segments + 2) / 2;
+        float[] vertices = new float[vertexCount * 8];
+        GeodesicChunkGrid.Direction a = cell.a(), b = cell.b(), c = cell.c();
+        int vertex = 0;
+        for (int row = 0; row <= segments; row++) {
+            for (int column = 0; column <= row; column++) {
+                double wa = (segments - row) / (double) segments;
+                double wb = (row - column) / (double) segments;
+                double wc = column / (double) segments;
+                GeodesicChunkGrid.Direction direction = new GeodesicChunkGrid.Direction(
+                        wa * a.x() + wb * b.x() + wc * c.x(),
+                        wa * a.y() + wb * b.y() + wc * c.y(),
+                        wa * a.z() + wb * b.z() + wc * c.z()).normalized();
+                SpherePosition ground = new SpherePosition(direction.x() * Planet.radius(),
+                        direction.y() * Planet.radius(), direction.z() * Planet.radius());
+                float height = getLayeredHeight(ground, noise);
+                float radius = (float) (Planet.radius() + height);
+                vertices[vertex++] = (float) direction.x() * radius;
+                vertices[vertex++] = (float) direction.y() * radius;
+                vertices[vertex++] = (float) direction.z() * radius;
+                vertices[vertex++] = (float) direction.x();
+                vertices[vertex++] = (float) direction.y();
+                vertices[vertex++] = (float) direction.z();
+                vertices[vertex++] = (float) (wb + wc);
+                vertices[vertex++] = (float) wc;
+            }
+        }
+
+        int triangleCount = segments * segments;
+        int[] indices = new int[triangleCount * 3];
+        int index = 0;
+        for (int row = 0; row < segments; row++) {
+            int rowStart = row * (row + 1) / 2;
+            int nextRowStart = (row + 1) * (row + 2) / 2;
+            for (int column = 0; column <= row; column++) {
+                int top = rowStart + column;
+                int lowerLeft = nextRowStart + column;
+                int lowerRight = lowerLeft + 1;
+                indices[index++] = top;
+                indices[index++] = lowerLeft;
+                indices[index++] = lowerRight;
+                if (column < row) {
+                    indices[index++] = top;
+                    indices[index++] = top + 1;
+                    indices[index++] = lowerRight;
+                }
+            }
+        }
+        orientTrianglesOutward(vertices, indices);
+        smoothGeodesicNormals(vertices, indices);
+        return new Object[] { vertices, indices };
+    }
+
+    private static void smoothGeodesicNormals(float[] vertices, int[] indices) {
+        for (int i = 0; i < vertices.length; i += 8) {
+            vertices[i + 3] = 0f;
+            vertices[i + 4] = 0f;
+            vertices[i + 5] = 0f;
+        }
+        for (int i = 0; i < indices.length; i += 3) {
+            int a = indices[i] * 8, b = indices[i + 1] * 8, c = indices[i + 2] * 8;
+            float abx = vertices[b] - vertices[a], aby = vertices[b + 1] - vertices[a + 1],
+                    abz = vertices[b + 2] - vertices[a + 2];
+            float acx = vertices[c] - vertices[a], acy = vertices[c + 1] - vertices[a + 1],
+                    acz = vertices[c + 2] - vertices[a + 2];
+            float nx = aby * acz - abz * acy;
+            float ny = abz * acx - abx * acz;
+            float nz = abx * acy - aby * acx;
+            vertices[a + 3] += nx; vertices[a + 4] += ny; vertices[a + 5] += nz;
+            vertices[b + 3] += nx; vertices[b + 4] += ny; vertices[b + 5] += nz;
+            vertices[c + 3] += nx; vertices[c + 4] += ny; vertices[c + 5] += nz;
+        }
+        for (int i = 0; i < vertices.length; i += 8) {
+            float nx = vertices[i + 3], ny = vertices[i + 4], nz = vertices[i + 5];
+            float length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            if (length < 1e-8f) {
+                nx = vertices[i]; ny = vertices[i + 1]; nz = vertices[i + 2];
+                length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+            }
+            vertices[i + 3] = nx / length;
+            vertices[i + 4] = ny / length;
+            vertices[i + 5] = nz / length;
+        }
+    }
+
+    private static void orientTrianglesOutward(float[] vertices, int[] indices) {
+        for (int i = 0; i < indices.length; i += 3) {
+            int a = indices[i] * 8, b = indices[i + 1] * 8, c = indices[i + 2] * 8;
+            double abx = vertices[b] - vertices[a];
+            double aby = vertices[b + 1] - vertices[a + 1];
+            double abz = vertices[b + 2] - vertices[a + 2];
+            double acx = vertices[c] - vertices[a];
+            double acy = vertices[c + 1] - vertices[a + 1];
+            double acz = vertices[c + 2] - vertices[a + 2];
+            double outward = (aby * acz - abz * acy) * vertices[a]
+                    + (abz * acx - abx * acz) * vertices[a + 1]
+                    + (abx * acy - aby * acx) * vertices[a + 2];
+            if (outward < 0.0) {
+                int swap = indices[i + 1];
+                indices[i + 1] = indices[i + 2];
+                indices[i + 2] = swap;
+            }
+        }
+    }
+
+    /** Builds one merged geodesic terrain patch as {vertices, indices}. */
+    public static Object[] buildGeodesicPatchData(GeodesicChunkGrid grid, SpherePosition centre,
+            double angularRadius, int segments, PerlinNoise noise) {
+        if (segments < 1) throw new IllegalArgumentException("A geodesic terrain patch needs at least one segment");
+        List<GeodesicChunkGrid.Cell> cells = grid.cellsWithin(
+                new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z()), angularRadius);
+        if (cells.isEmpty()) throw new IllegalStateException("Geodesic terrain patch contains no cells");
+
+        int verticesPerCell = (segments + 1) * (segments + 2) / 2;
+        int indicesPerCell = segments * segments * 3;
+        float[] vertices = new float[Math.multiplyExact(Math.multiplyExact(cells.size(), verticesPerCell), 8)];
+        int[] indices = new int[Math.multiplyExact(cells.size(), indicesPerCell)];
+        int vertexOffset = 0;
+        int indexOffset = 0;
+        for (GeodesicChunkGrid.Cell cell : cells) {
+            Object[] cellData = buildGeodesicCellData(cell, segments, noise);
+            float[] cellVertices = (float[]) cellData[0];
+            int[] cellIndices = (int[]) cellData[1];
+            System.arraycopy(cellVertices, 0, vertices, vertexOffset * 8, cellVertices.length);
+            for (int i = 0; i < cellIndices.length; i++) {
+                indices[indexOffset + i] = cellIndices[i] + vertexOffset;
+            }
+            vertexOffset += verticesPerCell;
+            indexOffset += cellIndices.length;
+        }
+        return new Object[] { vertices, indices };
     }
 
     private static final float CONTINENT_HEIGHT = 480.0f;
@@ -351,183 +519,5 @@ public class TerrainMesh {
         }
         float crags = (1.0f - Math.abs(noise.onSphere(surface, 0.035f, 11.3f, -5.9f))) * 10.0f;
         return mask * (total - 80.0f + crags * mask);
-    }
-
-    // Calculates real normal data based on terrain elevation changes
-    private static float[] calculateNormal(float x, float z, PerlinNoise noise) {
-        float h = 0.1f; 
-        float heightL = getLayeredHeight(x - h, z, noise);
-        float heightR = getLayeredHeight(x + h, z, noise);
-        float heightD = getLayeredHeight(x, z - h, noise);
-        float heightU = getLayeredHeight(x, z + h, noise);
-
-        float nx = heightL - heightR;
-        float ny = 1.0f; // Reset to 1.0f for true height scaling
-        float nz = heightD - heightU;
-
-        float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-        if (len == 0) return new float[]{0, 1, 0};
-        return new float[]{nx / len, ny / len, nz / len};
-    }
-
-    public static Mesh generateTerrainChunk(GL3 gl, int segments, float scale, int chunkX, int chunkZ, PerlinNoise noise) {
-        Object[] data = buildChunkData(segments, scale, chunkX, chunkZ, noise);
-        return new Mesh(gl, (float[]) data[0], (int[]) data[1]);
-    }
-
-    /**
-     * A terrain chunk's vertices and indices, {float[], int[]}, without touching the GPU, so
-     * it can be worked out on another thread and only uploaded on the GL thread. Heights are
-     * sampled once per grid point (and a border round it), normals taken from neighbours.
-     */
-    public static Object[] buildChunkData(int segments, float scale, int chunkX, int chunkZ, PerlinNoise noise) {
-        int coreVertices = (segments + 1) * (segments + 1);
-        int skirtVerticesCount = (segments + 1) * 4 - 4; // Safely drops corners
-        
-        float[] vertices = new float[(coreVertices + skirtVerticesCount) * 8]; 
-        float chunkSize = segments * scale;
-        float globalStartX = chunkX * chunkSize;
-        float globalStartZ = chunkZ * chunkSize;
-
-        int vertexIndex = 0;
-
-        // Heights on the grid and a one-step border round it
-        int side = segments + 3;
-        float[] grid = new float[side * side];
-        for (int z = -1; z <= segments + 1; z++) {
-            for (int x = -1; x <= segments + 1; x++) {
-                grid[(z + 1) * side + (x + 1)] = getLayeredHeight(globalStartX + (x * scale) - (chunkSize / 2.0f),
-                        globalStartZ + (z * scale) - (chunkSize / 2.0f), noise);
-            }
-        }
-        // Normals from the neighbours' heights, flattened as before (the slope across 0.2 units against 1 up)
-        float flatten = 0.1f / scale;
-
-        // --- Step 1: Generate Standard Core Grid ---
-        for (int z = 0; z <= segments; z++) {
-            for (int x = 0; x <= segments; x++) {
-                float worldX = globalStartX + (x * scale) - (chunkSize / 2.0f);
-                float worldZ = globalStartZ + (z * scale) - (chunkSize / 2.0f);
-                int g = (z + 1) * side + (x + 1);
-                float worldY = grid[g];
-                float gx = (grid[g - 1] - grid[g + 1]) * flatten, gz = (grid[g - side] - grid[g + side]) * flatten;
-                float glen = (float) Math.sqrt(gx * gx + 1f + gz * gz);
-                float[] normal = { gx / glen, 1f / glen, gz / glen };
-
-                vertices[vertexIndex++] = worldX;
-                vertices[vertexIndex++] = worldY; 
-                vertices[vertexIndex++] = worldZ;
-                
-                vertices[vertexIndex++] = normal[0]; 
-                vertices[vertexIndex++] = normal[1]; 
-                vertices[vertexIndex++] = normal[2];
-                
-                vertices[vertexIndex++] = (float) x / segments; 
-                vertices[vertexIndex++] = (float) z / segments; 
-            }
-        }
-
-        int numCoreIndices = segments * segments * 6;
-        int numSkirtIndices = segments * 4 * 6; 
-        int[] indices = new int[numCoreIndices + numSkirtIndices];
-        
-        int indexPointer = 0;
-        for (int z = 0; z < segments; z++) {
-            for (int x = 0; x < segments; x++) {
-                int topLeft = (z * (segments + 1)) + x;
-                int topRight = topLeft + 1;
-                int bottomLeft = ((z + 1) * (segments + 1)) + x;
-                int bottomRight = bottomLeft + 1;
-                indices[indexPointer++] = topLeft; indices[indexPointer++] = bottomLeft; indices[indexPointer++] = topRight;
-                indices[indexPointer++] = topRight; indices[indexPointer++] = bottomLeft; indices[indexPointer++] = bottomRight;
-            }
-        }
-
-        // --- Step 2: Generate Skirt Vertices & Stitch Walls ---
-        float skirtDepth = 60.0f; 
-        int skirtVertexCounter = 0;
-        int skirtStartVertexIdx = coreVertices; 
-
-        int[] northSkirtIndices = new int[segments + 1];
-        int[] southSkirtIndices = new int[segments + 1];
-        int[] westSkirtIndices  = new int[segments + 1];
-        int[] eastSkirtIndices  = new int[segments + 1];
-
-        for (int z = 0; z <= segments; z++) {
-            for (int x = 0; x <= segments; x++) {
-                if (x == 0 || x == segments || z == 0 || z == segments) {
-                    int coreVertexID = (z * (segments + 1)) + x;
-                    int coreStride = coreVertexID * 8;
-                    int currentSkirtVertexID = skirtStartVertexIdx + skirtVertexCounter;
-                    
-                    if (z == 0) northSkirtIndices[x] = currentSkirtVertexID;
-                    if (z == segments) southSkirtIndices[x] = currentSkirtVertexID;
-                    if (x == 0) westSkirtIndices[z] = currentSkirtVertexID;
-                    if (x == segments) eastSkirtIndices[z] = currentSkirtVertexID;
-                    
-                    skirtVertexCounter++;
-
-                    vertices[vertexIndex++] = vertices[coreStride + 0]; 
-                    vertices[vertexIndex++] = vertices[coreStride + 1] - skirtDepth; 
-                    vertices[vertexIndex++] = vertices[coreStride + 2]; 
-                    
-                    for(int k = 3; k < 8; k++) { 
-                        vertices[vertexIndex++] = vertices[coreStride + k]; 
-                    }
-                }
-            }
-        }
-
-        // --- Step 3: Stitching Skirt Walls ---
-        // North Wall
-        for (int x = 0; x < segments; x++) {
-            indices[indexPointer++] = x; 
-            indices[indexPointer++] = northSkirtIndices[x]; 
-            indices[indexPointer++] = x + 1;
-            
-            indices[indexPointer++] = x + 1; 
-            indices[indexPointer++] = northSkirtIndices[x]; 
-            indices[indexPointer++] = northSkirtIndices[x + 1];
-        }
-
-        // South Wall
-        for (int x = 0; x < segments; x++) {
-            int cCurr = (segments * (segments + 1)) + x;
-            indices[indexPointer++] = cCurr; 
-            indices[indexPointer++] = cCurr + 1; 
-            indices[indexPointer++] = southSkirtIndices[x];
-            
-            indices[indexPointer++] = cCurr + 1; 
-            indices[indexPointer++] = southSkirtIndices[x + 1]; 
-            indices[indexPointer++] = southSkirtIndices[x];
-        }
-
-        // West Wall
-        for (int z = 0; z < segments; z++) {
-            int cCurr = z * (segments + 1);
-            int cNext = (z + 1) * (segments + 1);
-            indices[indexPointer++] = cCurr; 
-            indices[indexPointer++] = cNext; 
-            indices[indexPointer++] = westSkirtIndices[z];
-            
-            indices[indexPointer++] = cNext; 
-            indices[indexPointer++] = westSkirtIndices[z + 1]; 
-            indices[indexPointer++] = westSkirtIndices[z];
-        }
-
-        // East Wall
-        for (int z = 0; z < segments; z++) {
-            int cCurr = (z * (segments + 1)) + segments;
-            int cNext = ((z + 1) * (segments + 1)) + segments;
-            indices[indexPointer++] = cCurr; 
-            indices[indexPointer++] = eastSkirtIndices[z]; 
-            indices[indexPointer++] = cNext;
-            
-            indices[indexPointer++] = cNext; 
-            indices[indexPointer++] = eastSkirtIndices[z]; 
-            indices[indexPointer++] = eastSkirtIndices[z + 1];
-        }
-
-        return new Object[] { vertices, indices };
     }
 }

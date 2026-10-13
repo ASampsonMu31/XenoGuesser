@@ -1,22 +1,24 @@
-import java.util.HashMap;
-import java.util.Map;
-import java.util.LinkedList;
-import java.util.Queue;
 import java.awt.image.BufferedImage;
-import java.awt.Color;
 
+/**
+ * The world's climate and the regional factors built on it (temperature, rainfall, distance to
+ * the sea, noise maps), each sampled in a direction from the planet's centre (D7): the same
+ * rules at every latitude, nothing pinched at the poles. The map's heatmaps sample the same
+ * factors at each of their pixels' directions (generateHeatmap).
+ */
 public class RegionalGenerationManager {
-    
-    private final float halfRegion;
-    private final float seaLevelHeight;
-    /** Everything that shapes the landscape is generated this far past the playable edge. */
-    public static final float GENERATION_MARGIN = 5000.0f;
 
-    private short[] waterField = new short[0];
-    private int waterFieldMin;
-    private int waterFieldSize;
+    private final float seaLevelHeight;
     private final long worldSeed;
     private int assignedNoiseTracks = 0;
+
+    // The distance to the sea and the ground's height, over the whole sphere (see
+    // precalculateWaterDistanceField): a texel about 90 units across at most
+    private static final int FIELD_SIDE = 512;
+    private final SphereRaster field = new SphereRaster(FIELD_SIDE);
+    // World units from each texel to the nearest sea (0 on the sea), and its ground above the sea
+    private float[] waterDistance;
+    private float[] altitude;
 
     // Direct structural object handles replacing old functional callback lambdas
     public final RegionalFactor temperatureMap;
@@ -25,8 +27,7 @@ public class RegionalGenerationManager {
     public final RegionalFactor rainfallMap;
     private final PerlinNoise rainfallNoise;
 
-    public RegionalGenerationManager(long seed, float totalRegionWidth, float seaLevelHeight) {
-        this.halfRegion = totalRegionWidth / 2.0f; 
+    public RegionalGenerationManager(long seed, float seaLevelHeight) {
         this.seaLevelHeight = seaLevelHeight;
         this.worldSeed = seed;
 
@@ -36,9 +37,7 @@ public class RegionalGenerationManager {
         this.rainfallNoise = new PerlinNoise(seed * 613L + 97L);
         this.rainfallMap = new RegionalFactor(1.0f, this::rainfallAt);
 
-        this.coldMap = new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
-            1.0f - this.temperatureMap.evaluate(cx, cz, worldX, worldZ)
-        );
+        this.coldMap = new RegionalFactor(1.0f, d -> 1.0f - this.temperatureMap.evaluate(d));
     }
 
     // ==========================================
@@ -46,9 +45,19 @@ public class RegionalGenerationManager {
     // ==========================================
 
     private final PerlinNoise temperatureNoise;
-    // The ground's height above the sea in every chunk (from the water pre-scan), for how
-    // much colder the heights are
-    private float[] chunkAltitude;
+
+    // How far inland (world units) the climate is fully continental (see temperatureAt)
+    private static final float FULLY_INLAND = 8000f;
+
+    /** The place on the datum in a direction, {x, y, z} in world units, for sampling noise there. */
+    private static float[] surface(GeodesicChunkGrid.Direction d) {
+        double r = Planet.radius();
+        return new float[] { (float) (d.x() * r), (float) (d.y() * r), (float) (d.z() * r) };
+    }
+
+    private static double latitude(GeodesicChunkGrid.Direction d) {
+        return Math.asin(Math.max(-1.0, Math.min(1.0, d.y())));
+    }
 
     /**
      * How warm a place is, 0 coldest to 1 hottest: warmest at the equator and coldest at
@@ -56,25 +65,20 @@ public class RegionalGenerationManager {
      * sea evens temperatures out); colder the higher the ground; and varying from region to
      * region besides.
      */
-    private float temperatureAt(int cx, int cz, float worldX, float worldZ) {
-        double latitude = Planet.latitude(worldZ);
-        float warmth = (float) Math.cos(latitude);
+    private float temperatureAt(GeodesicChunkGrid.Direction d) {
+        float warmth = (float) Math.cos(latitude(d));
         float temp = 0.06f + 0.94f * (float) Math.pow(Math.max(0.0, warmth), 1.6);
-        if (waterFieldSize > 0) {
-            int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
-            int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
-            int d = waterField[j * waterFieldSize + i];
-            if (d > 0) {
+        if (waterDistance != null) {
+            float distance = field.sample(waterDistance, d);
+            if (distance > 0f) {
                 // The further inland, the more extreme: hotter where it's warm, colder where it's cool
-                float inland = Math.min(1f, d / 80f);
+                float inland = Math.min(1f, distance / FULLY_INLAND);
                 temp += 0.14f * inland * (warmth - 0.55f) * 2f;
             }
-            if (chunkAltitude != null) {
-                // About a third of the scale colder for every thousand units up
-                temp -= Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * ALTITUDE_CHILL;
-            }
+            // About a third of the scale colder for every thousand units up
+            temp -= altitudeChill(d);
         }
-        float[] surface = Planet.surface(worldX, worldZ);
+        float[] surface = surface(d);
         temp += 0.09f * temperatureNoise.onSphere(surface, 1f / 9000f, 0f, 0f) + 0.04f * temperatureNoise.onSphere(surface, 1f / 2500f, 7.3f, 1.9f);
         return Math.max(0.0f, Math.min(1.0f, temp));
     }
@@ -89,7 +93,7 @@ public class RegionalGenerationManager {
 
     /**
      * How much rain falls at a place over a year on average, 0 driest to 1 wettest (the
-     * weather on any one day is drawn from this: see Weather). Mostly it's:
+     * weather on any one day is drawn from this: see SphereWeather). Mostly it's:
      * <ul>
      *   <li>moisture: rain comes from water evaporated off the sea, so it falls most where the
      *       moisture map is high and is dry far inland;</li>
@@ -100,15 +104,15 @@ public class RegionalGenerationManager {
      *       and the coldest places are drier.</li>
      * </ul>
      */
-    private float rainfallAt(int cx, int cz, float worldX, float worldZ) {
-        float moisture = moistureMap != null ? moistureMap.evaluate(cx, cz, worldX, worldZ) : 0.5f;
-        float warmth = temperatureMap.evaluate(cx, cz, worldX, worldZ);
+    private float rainfallAt(GeodesicChunkGrid.Direction d) {
+        float moisture = moistureMap != null ? moistureMap.evaluate(d) : 0.5f;
+        float warmth = temperatureMap.evaluate(d);
         float supply = 0.1f + 0.9f * moisture;
         float capacity = 0.7f + 0.3f * (float) Math.sqrt(warmth);
-        float[] surface = Planet.surface(worldX, worldZ);
+        float[] surface = surface(d);
         float regional = 1f + 1.6f * rainfallNoise.onSphere(surface, 1f / 22000f, 0f, 0f) + 0.2f * rainfallNoise.onSphere(surface, 1f / 5000f, 5.1f, 2.7f);
         // The polar regions are wetter: storms track along the polar front, and the snow piles up
-        double latitude = Math.abs(Planet.latitude(worldZ));
+        double latitude = Math.abs(latitude(d));
         float polar = (float) Math.max(0.0, Math.min(1.0, (latitude - Math.toRadians(50)) / Math.toRadians(25)));
         regional += POLAR_WETNESS * polar * polar * (3f - 2f * polar);
         float rain = RAINFALL_SCALE * (float) Math.pow(supply, 1.3) * capacity * Math.max(0f, regional);
@@ -125,68 +129,51 @@ public class RegionalGenerationManager {
         { 0.86f, 0.74f, 0.50f }, { 0.62f, 0.80f, 0.55f }, { 0.25f, 0.55f, 0.90f }, { 0.12f, 0.12f, 0.55f }
     };
 
-    /** How much colder (on the temperature map's 0 to 1 scale) a chunk is for its height (see temperatureAt). */
-    public float altitudeChill(int cx, int cz) {
-        if (waterFieldSize == 0 || chunkAltitude == null) return 0f;
-        int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
-        int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
-        return Math.max(0f, chunkAltitude[j * waterFieldSize + i]) * ALTITUDE_CHILL;
+    /** How much colder (on the temperature map's 0 to 1 scale) a place is for the height of the ground round it (see temperatureAt). */
+    public float altitudeChill(GeodesicChunkGrid.Direction d) {
+        if (altitude == null) return 0f;
+        return Math.max(0f, field.sample(altitude, d)) * ALTITUDE_CHILL;
     }
 
     // How much colder it gets for each unit of height, on the temperature map's scale
     public static final float ALTITUDE_CHILL = 0.00033f;
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
-        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            float currentTemp = this.temperatureMap.evaluate(cx, cz, worldX, worldZ);
+        return new RegionalFactor(1.0f, d -> {
+            float currentTemp = this.temperatureMap.evaluate(d);
             float diff = currentTemp - optimalTemp;
             double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
             return (float) Math.exp(exponent);
         });
     }
 
-    public RegionalFactor createWaterPreference(int optimalDistance, float standardDeviation) {
-        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> {
-            int chunksAway = getChunkDistanceToWater(cx, cz);
-            float diff = (float) chunksAway - optimalDistance;
+    /** A preference for being a certain distance from the sea, both in world units. */
+    public RegionalFactor createWaterPreference(float optimalDistance, float standardDeviation) {
+        return new RegionalFactor(1.0f, d -> {
+            float diff = distanceToWater(d) - optimalDistance;
             double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
             return (float) Math.exp(exponent);
         });
     }
 
-    /** Chunks (4-connected steps) from the chunk to the nearest water chunk; 999 if unknown. */
-    public int getChunkDistanceToWater(int cx, int cz) {
-        if (waterFieldSize == 0) return 999;
-        // Beyond the generated margin, carry on with the value at its edge
-        int i = Math.max(0, Math.min(waterFieldSize - 1, cx - waterFieldMin));
-        int j = Math.max(0, Math.min(waterFieldSize - 1, cz - waterFieldMin));
-        int d = waterField[j * waterFieldSize + i];
-        return d < 0 ? 999 : d;
+    // What distanceToWater gives before the field is worked out
+    private static final float UNKNOWN_DISTANCE = 99_900f;
+
+    /** World units along the ground from a place to the nearest sea (0 on the sea), blended between texels. */
+    public float distanceToWater(GeodesicChunkGrid.Direction d) {
+        return waterDistance == null ? UNKNOWN_DISTANCE : field.sample(waterDistance, d);
+    }
+
+    public float distanceToWater(SpherePosition place) {
+        return distanceToWater(SphereMath.direction(place));
     }
 
     public RegionalFactor createNoiseMap(float scale) {
         int uniqueOffset = 33333 + (assignedNoiseTracks * 11111);
         assignedNoiseTracks++;
-        
+
         PerlinNoise noise = new PerlinNoise(worldSeed + uniqueOffset);
-        return new RegionalFactor(1.0f, (cx, cz, worldX, worldZ) -> 
-            (noise.onSphere(Planet.surface(worldX, worldZ), scale, 0f, 0f) + 1.0f) / 2.0f
-        );
-    }
-
-    // ==========================================
-    //      COUNT EVALUATION ENGINE
-    // ==========================================
-
-    /**
-     * Evaluates the absolute generation element counts for an entire chunk.
-     */
-    public int evaluateChunkAssetCount(int cx, int cz, float chunkSize, float baseMultiplier, int maxLimit, RegionalFactor factorNode) {
-        float worldX = (cx + 0.5f) * chunkSize;
-        float worldZ = (cz + 0.5f) * chunkSize;
-        
-        float distributionDensity = factorNode.evaluate(cx, cz, worldX, worldZ);
-        return Math.min(maxLimit, Math.round(distributionDensity * baseMultiplier)); 
+        return new RegionalFactor(1.0f, d -> (noise.onSphere(surface(d), scale, 0f, 0f) + 1.0f) / 2.0f);
     }
 
     // ==========================================
@@ -198,22 +185,22 @@ public class RegionalGenerationManager {
         { 0.10f, 0.20f, 0.75f }, { 0.45f, 0.75f, 0.95f }, { 1.00f, 0.80f, 0.35f }, { 0.85f, 0.10f, 0.05f }
     };
 
-    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label) {
-        return generateHeatmap(totalRegionWidth, physicalChunkSize, factorToVisualize, label, null);
+    public BufferedImage generateHeatmap(float totalRegionWidth, float pixelSize, RegionalFactor factorToVisualize, String label) {
+        return generateHeatmap(totalRegionWidth, pixelSize, factorToVisualize, label, null);
     }
 
-    /** As generateHeatmap, in the given four colours from lowest to highest (null for the usual red to green). */
-    public BufferedImage generateHeatmap(float totalRegionWidth, float physicalChunkSize, RegionalFactor factorToVisualize, String label,
+    /**
+     * A heatmap of a factor over the whole map, a pixel every pixelSize map units (square, as
+     * the map's images are), each the factor in that pixel's middle's direction; in the given
+     * four colours from lowest to highest (null for the usual red to green).
+     */
+    public BufferedImage generateHeatmap(float totalRegionWidth, float pixelSize, RegionalFactor factorToVisualize, String label,
                                          float[][] colours) {
-        int minChunkX = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
-        int maxChunkX = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
-        int minChunkZ = (int) Math.floor((-totalRegionWidth / 2.0f) / physicalChunkSize);
-        int maxChunkZ = (int) Math.ceil((totalRegionWidth / 2.0f) / physicalChunkSize);
+        int min = (int) Math.floor((-totalRegionWidth / 2.0f) / pixelSize);
+        int max = (int) Math.ceil((totalRegionWidth / 2.0f) / pixelSize);
+        int size = max - min + 1;
 
-        int width = maxChunkX - minChunkX + 1;
-        int height = maxChunkZ - minChunkZ + 1;
-
-        BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
+        BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
 
         float[][] spectrum = colours != null ? colours : new float[][] {
             {0.85f, 0.00f, 0.00f}, // Red
@@ -222,224 +209,187 @@ public class RegionalGenerationManager {
             {0.00f, 0.70f, 0.10f}  // Green
         };
 
-        // Track minimum and maximum limits observed across the region
-        float minObservedFactor = Float.MAX_VALUE;
-        float maxObservedFactor = -Float.MAX_VALUE;
-
-        for (int z = 0; z < height; z++) {
-            int cz = minChunkZ + z;
-            for (int x = 0; x < width; x++) {
-                int cx = minChunkX + x;
-                
-                float worldX = (cx + 0.5f) * physicalChunkSize;
-                float worldZ = (cz + 0.5f) * physicalChunkSize;
-
-                float factor = factorToVisualize.evaluate(cx, cz, worldX, worldZ);
-
-                // Update min/max metrics
-                if (factor < minObservedFactor) minObservedFactor = factor;
-                if (factor > maxObservedFactor) maxObservedFactor = factor;
-
-                float r, g, b;
-                if (factor <= 0.333f) {
-                    float t = factor / 0.333f;
-                    r = spectrum[0][0] + t * (spectrum[1][0] - spectrum[0][0]);
-                    g = spectrum[0][1] + t * (spectrum[1][1] - spectrum[0][1]);
-                    b = spectrum[0][2] + t * (spectrum[1][2] - spectrum[0][2]);
-                } else if (factor <= 0.666f) {
-                    float t = (factor - 0.333f) / 0.333f;
-                    r = spectrum[1][0] + t * (spectrum[2][0] - spectrum[1][0]);
-                    g = spectrum[1][1] + t * (spectrum[2][1] - spectrum[1][1]);
-                    b = spectrum[1][2] + t * (spectrum[2][2] - spectrum[1][2]);
-                } else {
-                    float t = (factor - 0.666f) / 0.334f;
-                    r = spectrum[2][0] + t * (spectrum[3][0] - spectrum[2][0]);
-                    g = spectrum[2][1] + t * (spectrum[3][1] - spectrum[2][1]);
-                    b = spectrum[2][2] + t * (spectrum[3][2] - spectrum[2][2]);
-                }
-
-                int ir = Math.max(0, Math.min(255, Math.round(r * 255.0f)));
-                int ig = Math.max(0, Math.min(255, Math.round(g * 255.0f)));
-                int ib = Math.max(0, Math.min(255, Math.round(b * 255.0f)));
-
-                Color pixelColour = new Color(ir, ig, ib, 255);
-                image.setRGB(x, z, pixelColour.getRGB());
+        float[] lows = new float[size], highs = new float[size];
+        java.util.stream.IntStream.range(0, size).parallel().forEach(z -> {
+            float low = Float.MAX_VALUE, high = -Float.MAX_VALUE;
+            double mapZ = (min + z + 0.5) * pixelSize;
+            for (int x = 0; x < size; x++) {
+                float factor = factorToVisualize.evaluate(MapProjection.direction((min + x + 0.5) * pixelSize, mapZ));
+                low = Math.min(low, factor);
+                high = Math.max(high, factor);
+                image.setRGB(x, z, spectrumColour(spectrum, factor));
             }
-        }
+            lows[z] = low;
+            highs[z] = high;
+        });
 
+        float minObservedFactor = Float.MAX_VALUE, maxObservedFactor = -Float.MAX_VALUE;
+        for (int z = 0; z < size; z++) {
+            minObservedFactor = Math.min(minObservedFactor, lows[z]);
+            maxObservedFactor = Math.max(maxObservedFactor, highs[z]);
+        }
         // Print the statistical range straight into your development console terminal
         System.out.printf("[%s METRICS] Range observed: Min = %.4f | Max = %.4f%n", label, minObservedFactor, maxObservedFactor);
 
         return image;
     }
-    
+
+    /** A value 0 to 1 in a four-colour spectrum, as opaque ARGB. */
+    private static int spectrumColour(float[][] spectrum, float factor) {
+        int from = factor <= 0.333f ? 0 : factor <= 0.666f ? 1 : 2;
+        float t = from == 0 ? factor / 0.333f : from == 1 ? (factor - 0.333f) / 0.333f : (factor - 0.666f) / 0.334f;
+        int rgb = 0xFF;
+        for (int c = 0; c < 3; c++) {
+            float v = spectrum[from][c] + t * (spectrum[from + 1][c] - spectrum[from][c]);
+            rgb = (rgb << 8) | Math.max(0, Math.min(255, Math.round(v * 255.0f)));
+        }
+        return rgb;
+    }
+
     // ==========================================
-    //   BREADTH-FIRST-SEARCH DISTANCE PRE-SCAN
+    //        DISTANCE TO THE SEA
     // ==========================================
 
     /**
-     * Distance in chunks from every chunk to the nearest sea chunk, over the playable
-     * region plus GENERATION_MARGIN on every side, so moisture-driven vegetation looks the
-     * same just past the edge of the map as inside it. Stored as a flat grid: a string-keyed
-     * map of the 2.25 million chunks was slow to build and slow to query every frame.
+     * The ground's height at every texel of the field over the whole sphere, and the true
+     * distance along the ground from each to the nearest sea (SphereRaster.distanceTo), so
+     * moisture-driven vegetation and the inland climate follow the same rules at every latitude.
      */
-    public void precalculateWaterDistanceField(float totalRegionWidth, PerlinNoise worldNoise, float physicalChunkSize){
-        float half = totalRegionWidth / 2.0f + GENERATION_MARGIN;
-        waterFieldMin = (int) Math.floor(-half / physicalChunkSize);
-        waterFieldSize = (int) Math.ceil(half / physicalChunkSize) - waterFieldMin + 1;
-        waterField = new short[waterFieldSize * waterFieldSize];
-        java.util.Arrays.fill(waterField, (short) -1);
-        float[] altitude = new float[waterFieldSize * waterFieldSize];
-
-        int[] queue = new int[waterFieldSize * waterFieldSize];
-        int head = 0, tail = 0;
-        for (int j = 0; j < waterFieldSize; j++) {
-            for (int i = 0; i < waterFieldSize; i++) {
-                float worldX = (waterFieldMin + i + 0.5f) * physicalChunkSize;
-                float worldZ = (waterFieldMin + j + 0.5f) * physicalChunkSize;
-                float height = TerrainMesh.getLayeredHeight(worldX, worldZ, worldNoise);
-                altitude[j * waterFieldSize + i] = height - seaLevelHeight;
-                if (height <= seaLevelHeight) {
-                    waterField[j * waterFieldSize + i] = 0;
-                    queue[tail++] = j * waterFieldSize + i;
-                }
-            }
-        }
-        while (head < tail) {
-            int cell = queue[head++];
-            int i = cell % waterFieldSize, j = cell / waterFieldSize;
-            short next = (short) Math.min(Short.MAX_VALUE, waterField[cell] + 1);
-            if (i > 0) tail = visit(cell - 1, next, queue, tail);
-            if (i < waterFieldSize - 1) tail = visit(cell + 1, next, queue, tail);
-            if (j > 0) tail = visit(cell - waterFieldSize, next, queue, tail);
-            if (j < waterFieldSize - 1) tail = visit(cell + waterFieldSize, next, queue, tail);
-        }
-        chunkAltitude = altitude;
+    public void precalculateWaterDistanceField(PerlinNoise worldNoise) {
+        int size = field.size();
+        float[] heights = new float[size];
+        boolean[] sea = new boolean[size];
+        java.util.stream.IntStream.range(0, size).parallel().forEach(t -> {
+            float h = TerrainMesh.getLayeredHeight(field.direction(t), worldNoise);
+            heights[t] = h - seaLevelHeight;
+            sea[t] = h <= seaLevelHeight;
+        });
+        float[] angle = field.distanceTo(sea);
+        float radius = (float) Planet.radius();
+        float[] distance = new float[size];
+        for (int t = 0; t < size; t++) distance[t] = angle[t] == Float.MAX_VALUE ? UNKNOWN_DISTANCE : angle[t] * radius;
+        altitude = heights;
+        waterDistance = distance;
+        buildWaveField(sea);
     }
 
-        // Bodies of water smaller than this (in chunks) are calm; waves reach full size at the upper bound
+    // ==========================================
+    //        THE SEA'S WAVES
+    // ==========================================
+
+    // The sizes below were tuned on the old chart's chunks, this many world units square
+    private static final float WAVE_CHUNK = 100f;
+    // Bodies of water smaller than this (in chunks) are calm; waves reach full size at the upper bound
     private static final double CALM_BODY_CHUNKS = 400.0;
     private static final double FULL_WAVE_BODY_CHUNKS = 400_000.0;
     private static final float SHORE_WAVE_FLOOR = 0.2f;
     private static final float OPEN_WATER_CHUNKS = 8.0f;
+    // Passes of the four-neighbour blur over the field (about the old map's two box blurs of
+    // radius two, in its chunks, as this field's texels are smaller)
+    private static final int WAVE_BLUR_PASSES = 20;
 
-        private float[] waveStrength;
-
-    /** The wave map's value at a point (0 calm to 1 full ocean swell), or 0 before it is built. */
-    public float waveStrengthAt(float worldX, float worldZ, float physicalChunkSize) {
-        if (waveStrength == null) return 0f;
-        int i = Math.max(0, Math.min(waterFieldSize - 1, (int) Math.floor(worldX / physicalChunkSize) - waterFieldMin));
-        int j = Math.max(0, Math.min(waterFieldSize - 1, (int) Math.floor(worldZ / physicalChunkSize) - waterFieldMin));
-        return waveStrength[j * waterFieldSize + i];
-    }
-
-    /** World coordinate of the wave map's first texel edge, and the width it covers. */
-    public float waveMapOrigin(float physicalChunkSize) {
-        return waterFieldMin * physicalChunkSize;
-    }
-
-    public float waveMapWidth(float physicalChunkSize) {
-        return waterFieldSize * physicalChunkSize;
-    }
+    // Per texel of the field: how big the waves are (0 calm to 1 full ocean swell), and the
+    // distance to the nearest shore in world units, smoothed (wave crests follow its contours)
+    private float[] waveStrength, shoreDistance;
 
     /**
-     * How big the waves are across every body of water, one texel per chunk in the red
-     * channel: nothing on ponds and small lakes, rising with the size of the body to full
-     * ocean swell, and easing off near the shore. Rows run along +Z like the soil map.
+     * How big the waves are over every body of water: nothing on ponds and small lakes,
+     * rising with the size of the body (its true area) to full ocean swell, and easing off
+     * near the shore; and the true distance to the shore, smoothed so its contours are gentle
+     * curves, so the waves always roll in towards land.
      */
-    public void buildWaveMap(float physicalChunkSize) {
-        int n = waterFieldSize;
-        int[] body = new int[n * n];
+    private void buildWaveField(boolean[] sea) {
+        int size = field.size();
+        int[] neighbours = new int[size * 4];
+        java.util.stream.IntStream.range(0, size).parallel().forEach(t -> {
+            for (int k = 0; k < 4; k++) neighbours[t * 4 + k] = field.neighbour(t, k);
+        });
+        // Label each connected body of water and count its texels
+        int[] body = new int[size];
         java.util.Arrays.fill(body, -1);
-        int[] queue = new int[n * n];
+        int[] queue = new int[size];
         java.util.List<Integer> bodySizes = new java.util.ArrayList<>();
-
-        // Label each connected body of water and count its chunks
-        for (int start = 0; start < n * n; start++) {
-            if (waterField[start] != 0 || body[start] >= 0) continue;
+        for (int start = 0; start < size; start++) {
+            if (!sea[start] || body[start] >= 0) continue;
             int label = bodySizes.size();
             int head = 0, tail = 0;
             queue[tail++] = start;
             body[start] = label;
             while (head < tail) {
-                int cell = queue[head++];
-                int i = cell % n, j = cell / n;
-                if (i > 0) tail = joinBody(cell - 1, label, body, queue, tail);
-                if (i < n - 1) tail = joinBody(cell + 1, label, body, queue, tail);
-                if (j > 0) tail = joinBody(cell - n, label, body, queue, tail);
-                if (j < n - 1) tail = joinBody(cell + n, label, body, queue, tail);
+                int t = queue[head++];
+                for (int k = 0; k < 4; k++) {
+                    int q = neighbours[t * 4 + k];
+                    if (sea[q] && body[q] < 0) {
+                        body[q] = label;
+                        queue[tail++] = q;
+                    }
+                }
             }
             bodySizes.add(tail);
         }
-
-        // Distance from the shore out into the water
-        short[] offshore = new short[n * n];
-        java.util.Arrays.fill(offshore, (short) -1);
-        int head = 0, tail = 0;
-        for (int cell = 0; cell < n * n; cell++) {
-            if (waterField[cell] != 0) {
-                offshore[cell] = 0;
-                queue[tail++] = cell;
-            }
-        }
-        while (head < tail) {
-            int cell = queue[head++];
-            int i = cell % n, j = cell / n;
-            short next = (short) Math.min(Short.MAX_VALUE, offshore[cell] + 1);
-            int[] neighbours = { i > 0 ? cell - 1 : -1, i < n - 1 ? cell + 1 : -1, j > 0 ? cell - n : -1, j < n - 1 ? cell + n : -1 };
-            for (int other : neighbours) {
-                if (other >= 0 && offshore[other] < 0) {
-                    offshore[other] = next;
-                    queue[tail++] = other;
-                }
-            }
-        }
-
-        float[] strength = new float[n * n];
+        boolean[] land = new boolean[size];
+        for (int t = 0; t < size; t++) land[t] = !sea[t];
+        float[] offshore = field.distanceTo(land);
+        float radius = (float) Planet.radius();
+        double chunksPerTexel = 4.0 * Math.PI * radius * radius / size / (WAVE_CHUNK * WAVE_CHUNK);
         double low = Math.log(CALM_BODY_CHUNKS), high = Math.log(FULL_WAVE_BODY_CHUNKS);
-        for (int cell = 0; cell < n * n; cell++) {
-            if (body[cell] < 0) continue;
-            float size = (float) ((Math.log(bodySizes.get(body[cell])) - low) / (high - low));
-            size = Math.max(0f, Math.min(1f, size));
-            size = size * size * (3 - 2 * size);
-            float open = Math.min(1f, offshore[cell] / OPEN_WATER_CHUNKS);
-            strength[cell] = size * (SHORE_WAVE_FLOOR + (1 - SHORE_WAVE_FLOOR) * open * open * (3 - 2 * open));
+        float[] strength = new float[size], distance = new float[size];
+        for (int t = 0; t < size; t++) {
+            // (no land anywhere: as far as the planet goes)
+            distance[t] = offshore[t] == Float.MAX_VALUE ? (float) Math.PI * radius : offshore[t] * radius;
+            if (body[t] < 0) continue;
+            float bodySize = (float) ((Math.log(bodySizes.get(body[t]) * chunksPerTexel) - low) / (high - low));
+            bodySize = Math.max(0f, Math.min(1f, bodySize));
+            bodySize = bodySize * bodySize * (3 - 2 * bodySize);
+            float open = Math.min(1f, distance[t] / (OPEN_WATER_CHUNKS * WAVE_CHUNK));
+            strength[t] = bodySize * (SHORE_WAVE_FLOOR + (1 - SHORE_WAVE_FLOOR) * open * open * (3 - 2 * open));
         }
-                        strength = boxBlur(boxBlur(strength, n, 2), n, 2);
-        waveStrength = strength;
-
-        // True (Euclidean) distance to the nearest land, smoothed so its contours are gentle
-        // curves: wave crests follow these contours, so they always roll in towards the shore
-        float[] squared = new float[n * n];
-        for (int cell = 0; cell < n * n; cell++) {
-            squared[cell] = waterField[cell] != 0 ? 0f : 1e12f;
-        }
-        distanceTransform2D(squared, n);
-        float[] distance = new float[n * n];
-        for (int cell = 0; cell < n * n; cell++) {
-            distance[cell] = (float) Math.sqrt(squared[cell]) * physicalChunkSize;
-        }
-        shoreDistance = boxBlur(boxBlur(distance, n, 2), n, 2);
+        waveStrength = blur(strength, neighbours, WAVE_BLUR_PASSES);
+        shoreDistance = blur(distance, neighbours, WAVE_BLUR_PASSES);
     }
 
-    private float[] shoreDistance;
+    /** Passes of averaging each texel with its four neighbours. */
+    private static float[] blur(float[] values, int[] neighbours, int passes) {
+        float[] from = values.clone(), to = new float[values.length];
+        for (int pass = 0; pass < passes; pass++) {
+            float[] source = from, target = to;
+            java.util.stream.IntStream.range(0, values.length).parallel().forEach(t -> {
+                int n = t * 4;
+                target[t] = (source[t] + source[neighbours[n]] + source[neighbours[n + 1]]
+                        + source[neighbours[n + 2]] + source[neighbours[n + 3]]) * 0.2f;
+            });
+            from = target;
+            to = source;
+        }
+        return from;
+    }
+
+    /** Texels along a side of the wave field's cube map. */
+    public int waveFieldSide() {
+        return field.side();
+    }
+
+    /** How far apart the wave field's texels are at most, in world units (the step for its slopes). */
+    public float waveFieldTexel() {
+        return (float) (2.0 / field.side() * Planet.radius());
+    }
 
     /**
-     * The wave map as interleaved pairs per texel, row by row along +Z: wave size (0 to 1)
-     * and distance to the nearest shore in world units. Built by buildWaveMap.
+     * The wave field as interleaved pairs per texel in SphereRaster's order (as a cube map's
+     * faces): wave size (0 to 1) and distance to the nearest shore in world units; null until built.
      */
-    public float[] waveMapTexels() {
-        int n = waterFieldSize;
-        float[] texels = new float[n * n * 2];
-        for (int cell = 0; cell < n * n; cell++) {
-            texels[cell * 2] = waveStrength[cell];
-            texels[cell * 2 + 1] = shoreDistance[cell];
+    public float[] waveFieldTexels() {
+        if (waveStrength == null) return null;
+        float[] texels = new float[waveStrength.length * 2];
+        for (int t = 0; t < waveStrength.length; t++) {
+            texels[t * 2] = waveStrength[t];
+            texels[t * 2 + 1] = shoreDistance[t];
         }
         return texels;
     }
 
-    // The wave set in vs_water.txt, which this must match: wavelength, share of its set's
-    // height, and whether it is swell (0) or chop (1)
+    // The wave set in vs_sphere_water.txt, which this must match: wavelength, share of its
+    // set's height, and whether it is swell (0) or chop (1)
     private static final float[][] WAVES = {
         { 620f, 1.00f, 0f }, { 410f, 0.60f, 0f }, { 150f, 1.00f, 1f },
         { 108f, 0.70f, 1f }, { 84f, 0.55f, 1f }, { 128f, 0.60f, 1f }
@@ -447,16 +397,17 @@ public class RegionalGenerationManager {
     private static final float WAVE_GRAVITY = 140f, SWELL_HEIGHT = 7f, CHOP_HEIGHT = 2.2f;
 
     /**
-     * Height of the sea surface at a point right beside the viewer at the given time, as the
+     * The sea surface's altitude at a place right beside the viewer at the given time, as the
      * water shader draws it there, so a swimmer can bob on the waves.
      */
-    public float waveSurfaceAt(float worldX, float worldZ, float time, float seaLevel, float physicalChunkSize) {
-        if (waveStrength == null || shoreDistance == null) return seaLevel;
-        float texel = physicalChunkSize;
-        float strength = bilinear(waveStrength, worldX, worldZ, texel);
-        float distance = bilinear(shoreDistance, worldX, worldZ, texel);
-        float slopeX = (bilinear(shoreDistance, worldX + texel, worldZ, texel) - bilinear(shoreDistance, worldX - texel, worldZ, texel)) / (2 * texel);
-        float slopeZ = (bilinear(shoreDistance, worldX, worldZ + texel, texel) - bilinear(shoreDistance, worldX, worldZ - texel, texel)) / (2 * texel);
+    public float waveSurfaceAt(SpherePosition place, float time, float seaLevel) {
+        if (waveStrength == null) return seaLevel;
+        SphereFrame frame = SphereFrame.at(SphereMath.atAltitude(place, 0.0));
+        float h = waveFieldTexel() * 4f;   // (as vs_sphere_water measures the slope)
+        float strength = field.sample(waveStrength, SphereMath.direction(place));
+        float distance = shoreAt(frame, 0f, 0f);
+        float slopeX = (shoreAt(frame, h, 0f) - shoreAt(frame, -h, 0f)) / (2 * h);
+        float slopeZ = (shoreAt(frame, 0f, h) - shoreAt(frame, 0f, -h)) / (2 * h);
         float coherence = smoothstep(0.15f, 0.55f, (float) Math.sqrt(slopeX * slopeX + slopeZ * slopeZ));
         float swell = SWELL_HEIGHT * smoothstep(0.55f, 1.0f, strength) * coherence;
         float chop = CHOP_HEIGHT * smoothstep(0.0f, 0.45f, strength) * (0.5f + 0.5f * coherence);
@@ -467,114 +418,17 @@ public class RegionalGenerationManager {
             float omega = (float) Math.sqrt(WAVE_GRAVITY * k);
             height += amplitude * (float) Math.sin(-k * distance - omega * time + i * 1.7f);
         }
-        return seaLevel - 0.05f + height;
+        return seaLevel + height;
     }
 
-    private float bilinear(float[] grid, float worldX, float worldZ, float texel) {
-        int n = waterFieldSize;
-        float gx = Math.max(0f, Math.min(n - 1.001f, (worldX - waterFieldMin * texel) / texel - 0.5f));
-        float gz = Math.max(0f, Math.min(n - 1.001f, (worldZ - waterFieldMin * texel) / texel - 0.5f));
-        int i = (int) gx, j = (int) gz;
-        float fx = gx - i, fz = gz - j;
-        float top = grid[j * n + i] + (grid[j * n + i + 1] - grid[j * n + i]) * fx;
-        float bottom = grid[(j + 1) * n + i] + (grid[(j + 1) * n + i + 1] - grid[(j + 1) * n + i]) * fx;
-        return top + (bottom - top) * fz;
+    /** The smoothed distance to the shore at a point (x east, z south) in a frame on the datum. */
+    private float shoreAt(SphereFrame frame, float x, float z) {
+        SpherePosition at = frame.toWorld(x, 0.0, z);
+        return field.sample(shoreDistance, at.x(), at.y(), at.z());
     }
 
     private static float smoothstep(float edge0, float edge1, float value) {
         float t = Math.max(0f, Math.min(1f, (value - edge0) / (edge1 - edge0)));
         return t * t * (3f - 2f * t);
-    }
-
-    public int waveMapResolution() {
-        return waterFieldSize;
-    }
-
-    /** Squared Euclidean distance transform in place (Felzenszwalb and Huttenlocher), in cells. */
-    private static void distanceTransform2D(float[] grid, int n) {
-        float[] line = new float[n], result = new float[n], z = new float[n + 1];
-        int[] v = new int[n];
-        for (int j = 0; j < n; j++) {
-            for (int i = 0; i < n; i++) line[i] = grid[j * n + i];
-            distanceTransform1D(line, result, v, z, n);
-            for (int i = 0; i < n; i++) grid[j * n + i] = result[i];
-        }
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) line[j] = grid[j * n + i];
-            distanceTransform1D(line, result, v, z, n);
-            for (int j = 0; j < n; j++) grid[j * n + i] = result[j];
-        }
-    }
-
-    private static void distanceTransform1D(float[] f, float[] d, int[] v, float[] z, int n) {
-        // Lower envelope of parabolas rooted at each cell; doubles keep the far-off "no land"
-        // values from swamping the arithmetic
-        double[] zz = new double[n + 1];
-        int k = 0;
-        v[0] = 0;
-        zz[0] = Double.NEGATIVE_INFINITY;
-        zz[1] = Double.POSITIVE_INFINITY;
-        for (int q = 1; q < n; q++) {
-            double s = intersection(f, v[k], q);
-            while (s <= zz[k]) {
-                k--;
-                s = intersection(f, v[k], q);
-            }
-            k++;
-            v[k] = q;
-            zz[k] = s;
-            zz[k + 1] = Double.POSITIVE_INFINITY;
-        }
-        k = 0;
-        for (int q = 0; q < n; q++) {
-            while (zz[k + 1] < q) k++;
-            double dq = q - v[k];
-            d[q] = (float) Math.min(1e12, dq * dq + f[v[k]]);
-        }
-    }
-
-    private static double intersection(float[] f, int p, int q) {
-        return (((double) f[q] + (double) q * q) - ((double) f[p] + (double) p * p)) / (2.0 * q - 2.0 * p);
-    }
-
-    private int joinBody(int cell, int label, int[] body, int[] queue, int tail) {
-        if (waterField[cell] != 0 || body[cell] >= 0) return tail;
-        body[cell] = label;
-        queue[tail] = cell;
-        return tail + 1;
-    }
-
-    private static float[] boxBlur(float[] values, int n, int radius) {
-        float[] across = new float[n * n], result = new float[n * n];
-        for (int j = 0; j < n; j++) {
-            for (int i = 0; i < n; i++) {
-                float sum = 0;
-                int count = 0;
-                for (int d = -radius; d <= radius; d++) {
-                    int x = i + d;
-                    if (x >= 0 && x < n) { sum += values[j * n + x]; count++; }
-                }
-                across[j * n + i] = sum / count;
-            }
-        }
-        for (int j = 0; j < n; j++) {
-            for (int i = 0; i < n; i++) {
-                float sum = 0;
-                int count = 0;
-                for (int d = -radius; d <= radius; d++) {
-                    int y = j + d;
-                    if (y >= 0 && y < n) { sum += across[y * n + i]; count++; }
-                }
-                result[j * n + i] = sum / count;
-            }
-        }
-        return result;
-    }
-
-    private int visit(int cell, short distance, int[] queue, int tail) {
-        if (waterField[cell] >= 0) return tail;
-        waterField[cell] = distance;
-        queue[tail] = cell;
-        return tail + 1;
     }
 }

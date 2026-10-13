@@ -7,8 +7,8 @@ import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
+import java.util.ArrayList;
 import java.util.List;
-import com.xenoguesser.math.Vector3;
 
 /**
  * Top-down minimap layers of the generated world: the plain land and sea, the
@@ -38,7 +38,6 @@ public class BirdsEyeMaps {
     private static final Color TRACK_COLOUR = new Color(205, 178, 128);
     private static final float TRACK_STROKE = 0.8f;
 
-    private static final Color BUILDING_LAND = new Color(44, 48, 52);
 
     private final int outputResolution;
     private final int detailResolution;
@@ -217,11 +216,19 @@ public class BirdsEyeMaps {
      * at the chart's top or bottom edge included). Each is {nationId, worldX, worldZ, area in
      * world units squared, 1 for the main name or 0}.
      */
-    // The smallest island (in territory cells, each a few hundred units across) given its own small name
+    // The smallest island (in label grid cells, each a few hundred units across) given its own small name
     private static final int MIN_NAMED_ISLAND_CELLS = 12;
+    // The grid on the map the nations' land is worked out on for their names
+    private static final int LABEL_GRID = 384;
 
     public List<float[]> nationLabelPlaces(NationGenerationManager nations) {
-        int res = nations.nationMap.length;
+        int res = LABEL_GRID;
+        // Which nation holds each grid cell's middle on the map
+        int[][] grid = new int[res][res];
+        java.util.stream.IntStream.range(0, res).parallel().forEach(cy -> {
+            float worldZ = (cy + 0.5f) * totalRegionWidth / res - totalRegionWidth * 0.5f;
+            for (int cx = 0; cx < res; cx++) grid[cx][cy] = nations.getNationAtMap((cx + 0.5f) * totalRegionWidth / res - totalRegionWidth * 0.5f, worldZ);
+        });
         // Only dry land on the map counts: a nation's territory reaches out over its waters,
         // and the chart is cut off short of the poles
         float[] heights = getDetailHeights();
@@ -230,7 +237,7 @@ public class BirdsEyeMaps {
         boolean[] land = new boolean[res * res];
         for (int cy = 0; cy < res; cy++) {
             float worldZ = (cy + 0.5f) * cellSize - totalRegionWidth * 0.5f;
-            if (Math.abs(worldZ) > Planet.clipHalfHeight()) continue;
+            if (Math.abs(worldZ) > MapProjection.clipHalfHeight()) continue;
             // (land if any of the cell is, so a nation showing only a sliver still counts)
             int py0 = cy * n / res, py1 = Math.max(py0 + 1, (cy + 1) * n / res);
             for (int cx = 0; cx < res; cx++) {
@@ -252,7 +259,7 @@ public class BirdsEyeMaps {
         int[] stack = new int[res * res];
         for (int start = 0; start < res * res; start++) {
             int sx = start % res, sy = start / res;
-            int id = nations.nationMap[sx][sy];
+            int id = grid[sx][sy];
             if (id == 0 || region[start] != 0 || !land[start]) continue;
             regionCount++;
             // Flood fill (wrapping east to west), summing the cells' positions as angles so a
@@ -275,7 +282,7 @@ public class BirdsEyeMaps {
                 for (int[] q : next) {
                     if (q[1] < 0 || q[1] >= res) continue;
                     int k = q[1] * res + q[0];
-                    if (region[k] == 0 && land[k] && nations.nationMap[q[0]][q[1]] == id) {
+                    if (region[k] == 0 && land[k] && grid[q[0]][q[1]] == id) {
                         region[k] = regionCount;
                         stack[top++] = k;
                     }
@@ -350,7 +357,7 @@ public class BirdsEyeMaps {
                 if (heights[y * n + x] <= seaLevelHeight) {
                     pixels[y * n + x] = WATER.getRGB();
                 } else {
-                    int id = nations.getNationAtWorld(pixelToWorld(x + 0.5f), worldZ, totalRegionWidth);
+                    int id = nations.getNationAtMap(pixelToWorld(x + 0.5f), worldZ);
                     pixels[y * n + x] = nations.getNationColor(id).getRGB() | 0xFF000000;
                 }
             }
@@ -362,12 +369,13 @@ public class BirdsEyeMaps {
 
     public BufferedImage[] renderRoadLayer(InfrastructureManager infrastructure) {
         BufferedImage canvas = newLayer();
-        Graphics2D g = createGraphics(canvas);
-        g.setStroke(new BasicStroke(0.9f));
-        drawRoadClass(g, infrastructure, RoadPath.RoadClass.DIRT, TRACK_COLOUR, TRACK_STROKE);
-        drawRoadClass(g, infrastructure, RoadPath.RoadClass.LANE, LANE_COLOUR, LANE_STROKE);
-        drawRoadClass(g, infrastructure, RoadPath.RoadClass.STREET, STREET_COLOUR, STREET_STROKE);
-        drawRoadClass(g, infrastructure, RoadPath.RoadClass.HIGHWAY, HIGHWAY_COLOUR, HIGHWAY_STROKE);
+        Graphics2D g = onDetail(createGraphics(canvas));
+        float perPixel = totalRegionWidth / detailResolution;
+        MapShapes shapes = shapes(infrastructure);
+        drawRoadClass(g, shapes, RoadPath.RoadClass.DIRT, TRACK_COLOUR, TRACK_STROKE * perPixel, null);
+        drawRoadClass(g, shapes, RoadPath.RoadClass.LANE, LANE_COLOUR, LANE_STROKE * perPixel, null);
+        drawRoadClass(g, shapes, RoadPath.RoadClass.STREET, STREET_COLOUR, STREET_STROKE * perPixel, null);
+        drawRoadClass(g, shapes, RoadPath.RoadClass.HIGHWAY, HIGHWAY_COLOUR, HIGHWAY_STROKE * perPixel, null);
         g.dispose();
         return finishLayer(canvas);
     }
@@ -376,31 +384,34 @@ public class BirdsEyeMaps {
 
     public BufferedImage[] renderBuildingLayer(InfrastructureManager infrastructure) {
         BufferedImage canvas = newLayer();
-        Graphics2D g = createGraphics(canvas);
+        Graphics2D g = onDetail(createGraphics(canvas));
         // One colour for every building, so the map shows where people live rather than hinting at nations
-        infrastructure.forEachBuilding(buildingDrawer(g, BUILDING_COLOUR));
+        g.setColor(BUILDING_COLOUR);
+        fillAll(g, shapes(infrastructure).buildings, null);
         g.dispose();
         return finishLayer(canvas);
     }
 
     private static final Color COMMERCIAL_ZONE = new Color(255, 170, 60, 80);
     private static final Color SHOP_COLOUR = new Color(255, 110, 20);
+    // How far round each shop its district's glow reaches, in true world units
+    private static final float SHOP_GLOW = 120f;
 
     /** Where the shopping is: every shop in bright orange, over a warm glow marking the commercial districts round them. */
     public BufferedImage[] renderShopLayer(InfrastructureManager infrastructure) {
         BufferedImage canvas = newLayer();
-        Graphics2D g = createGraphics(canvas);
-        float pixelsPerUnit = detailResolution / totalRegionWidth;
+        Graphics2D g = onDetail(createGraphics(canvas));
+        MapShapes shapes = shapes(infrastructure);
         // The districts: a soft disc round each shop, overlapping into zones (drawn opaque on
         // their own canvas first so overlaps don't build up)
         BufferedImage zones = newLayer();
-        Graphics2D z = createGraphics(zones);
+        Graphics2D z = onDetail(createGraphics(zones));
         z.setColor(Color.WHITE);
-        float glow = Math.max(4f, 120f * pixelsPerUnit);
-        infrastructure.forEachShop((x, zz, rotationY, width, depth, nationId, outline) -> {
-            float px = worldToPixel((float) Planet.wrapX(x)), pz = worldToPixel(zz);
-            z.fill(new Ellipse2D.Float(px - glow, pz - glow, glow * 2, glow * 2));
-        });
+        float least = 4f * totalRegionWidth / detailResolution;
+        for (float[] shop : shapes.shopMiddles) {
+            float glow = Math.max(least, SHOP_GLOW * shop[2]);
+            z.fill(new Ellipse2D.Float(shop[0] - glow, shop[1] - glow, glow * 2, glow * 2));
+        }
         z.dispose();
         int zone = COMMERCIAL_ZONE.getRGB();
         for (int y = 0; y < detailResolution; y++) {
@@ -409,35 +420,102 @@ public class BirdsEyeMaps {
                 if (a > 0) canvas.setRGB(x, y, (zone & 0xFFFFFF) | ((COMMERCIAL_ZONE.getAlpha() * a / 255) << 24));
             }
         }
-        infrastructure.forEachShop(buildingDrawer(g, SHOP_COLOUR));
+        g.setColor(SHOP_COLOUR);
+        fillAll(g, shapes.shops, null);
         g.dispose();
         return finishLayer(canvas);
     }
 
-    /** Draws each building visited in the shape and size of its footprint. */
-    private InfrastructureManager.BuildingVisitor buildingDrawer(Graphics2D g, Color colour) {
-        float pixelsPerUnit = detailResolution / totalRegionWidth;
-        AffineTransform identity = g.getTransform();
-        return (x, z, rotationY, width, depth, nationId, outline) -> {
-            g.setTransform(identity);
-            // Anything built past the map's join is drawn where it is on the planet
-            g.translate(worldToPixel((float) Planet.wrapX(x)), worldToPixel(z));
-            // Local +X maps to world (cos, -sin), i.e. a clockwise turn on the map
-            g.rotate(-Math.toRadians(rotationY));
-            // (in its own units: its true size on the chart)
-            g.scale(pixelsPerUnit, pixelsPerUnit);
-            g.setColor(colour);
-            g.fill(shape(outline));
-        };
+    // ------------------------------------------------------------------ world shapes on the map
+    // The roads and buildings are put on the map by projecting the world's own shapes (each road
+    // point and each corner of a footprint, MapProjection.toMap), once per world. A shape's x
+    // runs on unbroken from its first point, so one crossing the map's join reaches past the
+    // edge and is drawn again from the other side.
+
+    /** The world's roads and footprints in map units (from the map's middle, z south). */
+    private static final class MapShapes {
+        final List<RoadPath.RoadClass> roadClasses = new ArrayList<>();
+        final List<Path2D.Float> roads = new ArrayList<>();
+        final List<Path2D.Float> buildings = new ArrayList<>();
+        final List<Path2D.Float> shops = new ArrayList<>();
+        // Each shop's middle {x, z, map units per true unit there}
+        final List<float[]> shopMiddles = new ArrayList<>();
     }
 
-    /** A footprint's outline (points in its own x and z) as a shape to fill. */
-    private static Path2D.Float shape(float[][] outline) {
-        Path2D.Float path = new Path2D.Float();
-        path.moveTo(outline[0][0], outline[0][1]);
-        for (int i = 1; i < outline.length; i++) path.lineTo(outline[i][0], outline[i][1]);
-        path.closePath();
-        return path;
+    private InfrastructureManager shapesOf;
+    private MapShapes shapes;
+
+    private synchronized MapShapes shapes(InfrastructureManager infrastructure) {
+        if (shapesOf == infrastructure && shapes != null) return shapes;
+        MapShapes made = new MapShapes();
+        infrastructure.forEachRoadPath(path -> {
+            if (path.points.size() < 2) return;
+            Path2D.Float line = new Path2D.Float();
+            double lastX = 0;
+            for (int i = 0; i < path.points.size(); i++) {
+                double[] m = MapProjection.toMap(path.points.get(i));
+                double x = i == 0 ? m[0] : lastX + MapProjection.wrapX(m[0] - lastX);
+                if (i == 0) line.moveTo(x, m[1]); else line.lineTo(x, m[1]);
+                lastX = x;
+            }
+            made.roadClasses.add(path.roadClass);
+            made.roads.add(line);
+        });
+        infrastructure.forEachBuilding((frame, outline, nationId) -> made.buildings.add(footprintOnMap(frame, outline)));
+        infrastructure.forEachShop((frame, outline, nationId) -> {
+            made.shops.add(footprintOnMap(frame, outline));
+            double[] m = MapProjection.toMap(frame.origin());
+            float stretch = (float) (1.0 / Math.max(0.05, Math.cos(MapProjection.latitude(m[1]))));
+            made.shopMiddles.add(new float[] { (float) m[0], (float) m[1], stretch });
+        });
+        shapesOf = infrastructure;
+        shapes = made;
+        return made;
+    }
+
+    /** A footprint's outline (points in its frame's x and z) put on the map corner by corner. */
+    private static Path2D.Float footprintOnMap(SphereFrame frame, float[][] outline) {
+        double middleX = MapProjection.toMap(frame.origin())[0];
+        Path2D.Float shape = new Path2D.Float();
+        for (int i = 0; i < outline.length; i++) {
+            double[] m = MapProjection.toMap(frame.toWorld(outline[i][0], 0.0, outline[i][1]));
+            double x = middleX + MapProjection.wrapX(m[0] - middleX);
+            if (i == 0) shape.moveTo(x, m[1]); else shape.lineTo(x, m[1]);
+        }
+        shape.closePath();
+        return shape;
+    }
+
+    /** Graphics on a detail canvas set to draw in map units. */
+    private Graphics2D onDetail(Graphics2D g) {
+        double perUnit = detailResolution / (double) totalRegionWidth;
+        g.scale(perUnit, perUnit);
+        g.translate(halfRegion, halfRegion);
+        return g;
+    }
+
+    /** Fills every shape that reaches into bounds (all, if null), and again a whole way round where it crosses the map's join. */
+    private void fillAll(Graphics2D g, List<Path2D.Float> shapes, float[] bounds) {
+        for (Path2D.Float shape : shapes) {
+            Rectangle2D box = shape.getBounds2D();
+            for (int k = -1; k <= 1; k++) {
+                if (!reaches(box, k, bounds)) continue;
+                if (k == 0) {
+                    g.fill(shape);
+                } else {
+                    g.translate(k * totalRegionWidth, 0);
+                    g.fill(shape);
+                    g.translate(-k * totalRegionWidth, 0);
+                }
+            }
+        }
+    }
+
+    /** Whether a shape's box, moved k whole ways round, reaches onto the map (and into bounds {minX, minZ, maxX, maxZ}, if given). */
+    private boolean reaches(Rectangle2D box, int k, float[] bounds) {
+        double minX = box.getMinX() + k * totalRegionWidth, maxX = box.getMaxX() + k * totalRegionWidth;
+        if (maxX < -halfRegion || minX > halfRegion) return false;
+        return bounds == null || !(maxX < bounds[0] || minX > bounds[2] || box.getMaxY() < bounds[1] || box.getMinY() > bounds[3]);
     }
 
     private BufferedImage newLayer() {
@@ -470,33 +548,21 @@ public class BirdsEyeMaps {
         return new BufferedImage[] { output, detail };
     }
 
-    private void drawRoadClass(Graphics2D g, InfrastructureManager infrastructure, RoadPath.RoadClass roadClass,
-                               Color colour, float strokeWidth) {
+    /** One class of road, its lines width map units wide, those reaching into bounds (all, if null). */
+    private void drawRoadClass(Graphics2D g, MapShapes shapes, RoadPath.RoadClass roadClass, Color colour, float width, float[] bounds) {
         g.setColor(colour);
-        g.setStroke(new BasicStroke(strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        infrastructure.forEachRoadPath(path -> {
-            if (path.roadClass != roadClass || path.points.size() < 2) {
-                return;
+        g.setStroke(new BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        for (int i = 0; i < shapes.roads.size(); i++) {
+            if (shapes.roadClasses.get(i) != roadClass) continue;
+            Path2D.Float line = shapes.roads.get(i);
+            Rectangle2D box = line.getBounds2D();
+            for (int k = -1; k <= 1; k++) {
+                if (!reaches(box, k, bounds)) continue;
+                g.translate(k * totalRegionWidth, 0);
+                g.draw(line);
+                g.translate(-k * totalRegionWidth, 0);
             }
-            List<Vector3> points = path.points;
-            Path2D.Float line = new Path2D.Float();
-            line.moveTo(worldToPixel(points.get(0).x), worldToPixel(points.get(0).z));
-            for (int i = 1; i < points.size(); i++) {
-                line.lineTo(worldToPixel(points.get(i).x), worldToPixel(points.get(i).z));
-            }
-            g.draw(line);
-            // ...and a road running over the map's join is drawn again from the other side
-            float pixelsRound = totalRegionWidth * detailResolution / totalRegionWidth;
-            for (Vector3 p : points) {
-                if (Math.abs(p.x) > totalRegionWidth * 0.5f) {
-                    float shift = p.x > 0 ? -pixelsRound : pixelsRound;
-                    g.translate(shift, 0);
-                    g.draw(line);
-                    g.translate(-shift, 0);
-                    break;
-                }
-            }
-        });
+        }
     }
 
     /** Land shaded by elevation (or flat), with the sea on top. */
@@ -665,7 +731,7 @@ public class BirdsEyeMaps {
                     if (h[(y + 1) * w + x + 1] <= seaLevelHeight) {
                         tile.setRGB(x, y, WATER.getRGB());
                     } else {
-                        int id = nations.getNationAtWorld(tileWorld(level, tx, x, size), worldZ, totalRegionWidth);
+                        int id = nations.getNationAtMap(tileWorld(level, tx, x, size), worldZ);
                         tile.setRGB(x, y, nations.getNationColor(id).getRGB());
                     }
                 }
@@ -773,25 +839,12 @@ public class BirdsEyeMaps {
             float detailToWorld = totalRegionWidth / detailResolution;
             float widen = (float) Math.pow(tileMagnification(level, size), 0.45) / tileMagnification(level, size);
             float[] bounds = tileBounds(level, tx, ty, 200f);
+            MapShapes shapes = shapes(infrastructure);
             Object[][] classes = { { RoadPath.RoadClass.DIRT, TRACK_COLOUR, TRACK_STROKE }, { RoadPath.RoadClass.LANE, LANE_COLOUR, LANE_STROKE },
                     { RoadPath.RoadClass.STREET, STREET_COLOUR, STREET_STROKE }, { RoadPath.RoadClass.HIGHWAY, HIGHWAY_COLOUR, HIGHWAY_STROKE } };
             for (Object[] rc : classes) {
-                g.setColor((Color) rc[1]);
-                g.setStroke(new BasicStroke((Float) rc[2] * detailToWorld * Math.max(widen, 1f / tileMagnification(level, size)),
-                        BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                infrastructure.forEachRoadPath(path -> {
-                    if (path.roadClass != rc[0] || path.points.size() < 2) return;
-                    float minX = Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-                    for (Vector3 p : path.points) {
-                        minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
-                        minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
-                    }
-                    if (maxX < bounds[0] || minX > bounds[2] || maxZ < bounds[1] || minZ > bounds[3]) return;
-                    Path2D.Float line = new Path2D.Float();
-                    line.moveTo(path.points.get(0).x, path.points.get(0).z);
-                    for (int i = 1; i < path.points.size(); i++) line.lineTo(path.points.get(i).x, path.points.get(i).z);
-                    g.draw(line);
-                });
+                drawRoadClass(g, shapes, (RoadPath.RoadClass) rc[0], (Color) rc[1],
+                        (Float) rc[2] * detailToWorld * Math.max(widen, 1f / tileMagnification(level, size)), bounds);
             }
             g.dispose();
             return tile;
@@ -799,45 +852,36 @@ public class BirdsEyeMaps {
     }
 
     /** Buildings (or shops) to scale, in their own shapes. */
-    private MapTiles.Renderer footprintTiles(java.util.function.BiConsumer<InfrastructureManager, InfrastructureManager.BuildingVisitor> each,
+    private MapTiles.Renderer footprintTiles(java.util.function.Function<MapShapes, List<Path2D.Float>> which,
                                              InfrastructureManager infrastructure, Color colour) {
         return (level, tx, ty, size) -> {
             BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = tileGraphics(tile, level, tx, ty, size);
-            AffineTransform base = g.getTransform();
-            float[] bounds = tileBounds(level, tx, ty, 120f);
             g.setColor(colour);
-            each.accept(infrastructure, (x, z, rotationY, width, depth, nationId, outline) -> {
-                float wx = (float) Planet.wrapX(x);
-                if (wx < bounds[0] || wx > bounds[2] || z < bounds[1] || z > bounds[3]) return;
-                g.setTransform(base);
-                g.translate(wx, z);
-                g.rotate(-Math.toRadians(rotationY));
-                g.fill(shape(outline));
-            });
+            fillAll(g, which.apply(shapes(infrastructure)), tileBounds(level, tx, ty, 10f));
             g.dispose();
             return tile;
         };
     }
 
     public MapTiles.Renderer buildingTiles(InfrastructureManager infrastructure) {
-        return footprintTiles(InfrastructureManager::forEachBuilding, infrastructure, BUILDING_COLOUR);
+        return footprintTiles(shapes -> shapes.buildings, infrastructure, BUILDING_COLOUR);
     }
 
     public MapTiles.Renderer shopTiles(InfrastructureManager infrastructure) {
-        MapTiles.Renderer shops = footprintTiles(InfrastructureManager::forEachShop, infrastructure, SHOP_COLOUR);
+        MapTiles.Renderer shops = footprintTiles(shapes -> shapes.shops, infrastructure, SHOP_COLOUR);
         return (level, tx, ty, size) -> {
             // The districts' glow under the shops
             BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = tileGraphics(tile, level, tx, ty, size);
-            float[] bounds = tileBounds(level, tx, ty, 200f);
+            float[] bounds = tileBounds(level, tx, ty, 0f);
             g.setColor(COMMERCIAL_ZONE);
             java.awt.geom.Area zones = new java.awt.geom.Area();
-            infrastructure.forEachShop((x, z, rotationY, width, depth, nationId, outline) -> {
-                float wx = (float) Planet.wrapX(x);
-                if (wx < bounds[0] || wx > bounds[2] || z < bounds[1] || z > bounds[3]) return;
-                zones.add(new java.awt.geom.Area(new Ellipse2D.Float(wx - 120f, z - 120f, 240f, 240f)));
-            });
+            for (float[] shop : shapes(infrastructure).shopMiddles) {
+                float glow = SHOP_GLOW * shop[2];
+                if (shop[0] + glow < bounds[0] || shop[0] - glow > bounds[2] || shop[1] + glow < bounds[1] || shop[1] - glow > bounds[3]) continue;
+                zones.add(new java.awt.geom.Area(new Ellipse2D.Float(shop[0] - glow, shop[1] - glow, glow * 2, glow * 2)));
+            }
             g.fill(zones);
             g.dispose();
             Graphics2D over = tile.createGraphics();
@@ -859,19 +903,11 @@ public class BirdsEyeMaps {
         return (pixel / detailResolution) * totalRegionWidth - halfRegion;
     }
 
-    private float worldToPixel(float world) {
-        return ((world + halfRegion) / totalRegionWidth) * detailResolution;
-    }
-
     private static int lerpColour(Color from, Color to, float t) {
         t = Math.max(0.0f, Math.min(1.0f, t));
         int r = Math.round(from.getRed() + (to.getRed() - from.getRed()) * t);
         int g = Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * t);
         int b = Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * t);
         return (r << 16) | (g << 8) | b;
-    }
-
-    private static int clampChannel(float value) {
-        return Math.max(0, Math.min(255, Math.round(value * 255.0f)));
     }
 }

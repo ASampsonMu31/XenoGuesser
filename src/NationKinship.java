@@ -5,45 +5,41 @@ import java.util.Random;
  * likely to share a style, and continuous traits drift gradually across the map, the way
  * building traditions and road conventions spread between neighbours on Earth.
  *
- * Built from each nation's territorial centre on the nation map.
+ * Built from each nation's territory on the sphere: its middle (the mean direction of its
+ * territory, by area) and which nations it touches.
  */
 public final class NationKinship {
 
     private final int numNations;
-    private final float[][] centres;   // [nationId] = {x, z} in [0, 1] map space
+    private final double[][] centres;   // [nationId] = unit {x, y, z}
     // Whether two nations share a land border, and their cultures (see assignCultures)
     private final boolean[][] bordering;
     private int[] culture;
 
     public NationKinship(NationGenerationManager nations) {
         this.numNations = nations.numNations;
-        int[][] map = nations.nationMap;
-        int res = map.length;
-        double[] sumX = new double[numNations + 1], sumZ = new double[numNations + 1];
-        int[] count = new int[numNations + 1];
-        for (int x = 0; x < res; x++) {
-            for (int z = 0; z < map[x].length; z++) {
-                int id = map[x][z];
-                if (id < 1 || id > numNations) continue;
-                sumX[id] += x;
-                sumZ[id] += z;
-                count[id]++;
-            }
-        }
+        SphereRaster raster = nations.raster();
+        int[] territory = nations.territory();
+        double[][] sum = new double[numNations + 1][3];
         bordering = new boolean[numNations + 1][numNations + 1];
-        for (int x = 0; x < res; x++) {
-            for (int z = 0; z + 1 < map[x].length; z++) {
-                int id = map[x][z], east = map[(x + 1) % res][z], south = map[x][z + 1];
-                if (id < 1 || id > numNations) continue;
-                if (east != id && east >= 1 && east <= numNations) bordering[id][east] = bordering[east][id] = true;
-                if (south != id && south >= 1 && south <= numNations) bordering[id][south] = bordering[south][id] = true;
+        double[] d = new double[3];
+        for (int t = 0; t < territory.length; t++) {
+            int id = territory[t];
+            if (id < 1 || id > numNations) continue;
+            raster.direction(t, d);
+            double area = raster.solidAngle(t);
+            for (int k = 0; k < 3; k++) sum[id][k] += d[k] * area;
+            for (int k = 0; k < 4; k++) {
+                int other = territory[raster.neighbour(t, k)];
+                if (other != id && other >= 1 && other <= numNations) bordering[id][other] = bordering[other][id] = true;
             }
         }
-        centres = new float[numNations + 1][];
+        centres = new double[numNations + 1][];
         for (int n = 1; n <= numNations; n++) {
-            // A nation that never claimed land still needs a position; park it mid-map
-            centres[n] = count[n] == 0 ? new float[] {0.5f, 0.5f}
-                    : new float[] {(float) (sumX[n] / count[n] / res), (float) (sumZ[n] / count[n] / res)};
+            double length = Math.sqrt(sum[n][0] * sum[n][0] + sum[n][1] * sum[n][1] + sum[n][2] * sum[n][2]);
+            // A nation that never claimed land still needs a position; park it on the equator
+            centres[n] = length > 0.0 ? new double[] { sum[n][0] / length, sum[n][1] / length, sum[n][2] / length }
+                    : new double[] { 1.0, 0.0, 0.0 };
         }
     }
 
@@ -168,18 +164,17 @@ public final class NationKinship {
 
     /**
      * A value in [0, 1] per nation that varies smoothly with geography (a random slope
-     * across the map plus a gentle bump), with a little individual jitter.
+     * across the planet plus a gentle bump), with a little individual jitter.
      */
     public float[] gradient(Random rng, float jitter) {
-        double angle = rng.nextDouble() * Math.PI * 2;
-        float dx = (float) Math.cos(angle), dz = (float) Math.sin(angle);
-        float bumpX = rng.nextFloat(), bumpZ = rng.nextFloat();
+        double[] slope = randomDirection(rng), bump = randomDirection(rng);
         float[] raw = new float[numNations + 1];
         float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
         for (int n = 1; n <= numNations; n++) {
-            float[] c = centres[n];
-            float bx = c[0] - bumpX, bz = c[1] - bumpZ;
-            raw[n] = (c[0] - 0.5f) * dx + (c[1] - 0.5f) * dz + 0.4f * (float) Math.exp(-(bx * bx + bz * bz) * 8);
+            double[] c = centres[n];
+            // (the bump a sixth of the way round the planet across)
+            double fromBump = angle(c, bump) / (2.0 * Math.PI);
+            raw[n] = (float) (0.5 * dot(c, slope) + 0.4 * Math.exp(-fromBump * fromBump * 8.0));
             min = Math.min(min, raw[n]);
             max = Math.max(max, raw[n]);
         }
@@ -191,8 +186,21 @@ public final class NationKinship {
         return result;
     }
 
+    /** How far apart two nations' middles are: the angle between them, radians. */
     private float distance(int a, int b) {
-        float dx = centres[a][0] - centres[b][0], dz = centres[a][1] - centres[b][1];
-        return (float) Math.sqrt(dx * dx + dz * dz);
+        return (float) angle(centres[a], centres[b]);
+    }
+
+    private static double angle(double[] a, double[] b) {
+        return Math.acos(Math.max(-1.0, Math.min(1.0, dot(a, b))));
+    }
+
+    private static double dot(double[] a, double[] b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    }
+
+    private static double[] randomDirection(Random rng) {
+        double y = rng.nextDouble() * 2.0 - 1.0, around = rng.nextDouble() * 2.0 * Math.PI, across = Math.sqrt(1.0 - y * y);
+        return new double[] { across * Math.cos(around), y, across * Math.sin(around) };
     }
 }

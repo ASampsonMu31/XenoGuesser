@@ -115,13 +115,16 @@ public class MapPanel extends JPanel {
     private float halfRegion;
 
     private volatile boolean isGuessed = false;
-    // The next round's answer, waiting for the results to close
-    // (in map pixels, fractional: exactly where, however far the map is zoomed)
-    private float[] pendingGoal;
+    // Where the player really is (the goal) and where they guess (the pin), as directions from
+    // the planet's centre; and the same in map pixels, fractional (exactly where, however far
+    // the map is zoomed), for drawing them. The next round's goal waits for the results to close.
+    private GeodesicChunkGrid.Direction pendingGoal;
+    private GeodesicChunkGrid.Direction goal;
     private float goalX;
     private float goalY;
 
     private boolean hasPin = false;
+    private GeodesicChunkGrid.Direction pin;
     private float pinX;
     private float pinY;
 
@@ -423,14 +426,8 @@ public class MapPanel extends JPanel {
                     int localizedY = clickY - visualMapY;
 
                     if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < mapHeight()) {
-                        float corePixelX = screenToCoreX(clickX, visualMapX);
-                        float corePixelY = screenToCoreY(clickY, visualMapY);
-
-                        float worldX = (corePixelX / mapImage.getWidth()) * totalRegionWidth - halfRegion;
-                        float worldZ = (corePixelY / mapImage.getHeight()) * totalRegionWidth - halfRegion;
-
                         if (MapPanel.this.listener != null) {
-                            MapPanel.this.listener.setTelepot(worldX, worldZ);
+                            MapPanel.this.listener.setTelepot(pixelDirection(screenToCoreX(clickX, visualMapX), screenToCoreY(clickY, visualMapY)));
                         }
                     }
                 }
@@ -448,9 +445,7 @@ public class MapPanel extends JPanel {
                 setCursor(java.awt.Cursor.getDefaultCursor());
                 // A click without a drag places the marker (before the guess)
                 if (click && !isGuessed && (isLarge || isFullScreenReveal)) {
-                    pinX = screenToCoreX(e.getX(), visualMapX);
-                    pinY = screenToCoreY(e.getY(), visualMapY);
-                    hasPin = true;
+                    placePin(screenToCoreX(e.getX(), visualMapX), screenToCoreY(e.getY(), visualMapY));
                     repaint();
                 }
             }
@@ -484,9 +479,35 @@ public class MapPanel extends JPanel {
     private void teleportToClick(int clickX, int clickY) {
         int localizedX = clickX - visualMapX, localizedY = clickY - visualMapY;
         if (localizedX < 0 || localizedX >= currentMapSize || localizedY < 0 || localizedY >= mapHeight() || listener == null) return;
-        float worldX = (screenToCoreX(clickX, visualMapX) / mapImage.getWidth()) * totalRegionWidth - halfRegion;
-        float worldZ = (screenToCoreY(clickY, visualMapY) / mapImage.getHeight()) * totalRegionWidth - halfRegion;
-        listener.setTelepot(worldX, worldZ);
+        listener.setTelepot(pixelDirection(screenToCoreX(clickX, visualMapX), screenToCoreY(clickY, visualMapY)));
+    }
+
+    /** The direction from the planet's centre under a point of the map image, in its pixels. */
+    private GeodesicChunkGrid.Direction pixelDirection(float x, float y) {
+        return MapProjection.direction(x / mapImage.getWidth() * totalRegionWidth - halfRegion,
+                y / mapImage.getHeight() * totalRegionWidth - halfRegion);
+    }
+
+    /** Where a direction from the planet's centre is on the map image, {x, y} in its pixels. */
+    private float[] directionPixel(GeodesicChunkGrid.Direction d) {
+        double[] map = MapProjection.toMap(d);
+        return new float[] { (float) ((map[0] + halfRegion) / totalRegionWidth * mapImage.getWidth()),
+                (float) ((map[1] + halfRegion) / totalRegionWidth * mapImage.getHeight()) };
+    }
+
+    /** Puts the guess's pin at a point of the map image, in its pixels. */
+    private void placePin(float x, float y) {
+        pinX = x;
+        pinY = y;
+        pin = pixelDirection(x, y);
+        hasPin = true;
+    }
+
+    private void setGoal(GeodesicChunkGrid.Direction d) {
+        goal = d;
+        float[] p = directionPixel(d);
+        goalX = p[0];
+        goalY = p[1];
     }
 
     /** Zooms the enlarged map about the cursor, keeping the point under it fixed. */
@@ -503,13 +524,13 @@ public class MapPanel extends JPanel {
         }
 
         float cursorU = viewLeft() + fractionX / zoom;
-        float cursorV = viewTop() + fractionY * Planet.aspect() / zoom;
+        float cursorV = viewTop() + fractionY * MapProjection.aspect() / zoom;
         float newZoom = zoom * (float) Math.pow(ZOOM_STEP, -e.getPreciseWheelRotation());
         zoom = Math.max(1.0f, Math.min(MAX_ZOOM, newZoom));
 
         float halfView = 0.5f / zoom;
         viewCentreU = clampCentre(cursorU - fractionX / zoom + halfView);
-        viewCentreV = clampCentreV(cursorV - fractionY * Planet.aspect() / zoom + halfView * Planet.aspect());
+        viewCentreV = clampCentreV(cursorV - fractionY * MapProjection.aspect() / zoom + halfView * MapProjection.aspect());
         repaint();
     }
 
@@ -538,12 +559,12 @@ public class MapPanel extends JPanel {
      * clipped latitudes, its height aspect times its width, is shown.
      */
     private int mapHeight() {
-        return Math.round(currentMapSize * Planet.aspect());
+        return Math.round(currentMapSize * MapProjection.aspect());
     }
 
     private float clampCentreV(float centre) {
-        float halfView = 0.5f * Planet.aspect() / zoom;
-        float top = 0.5f - 0.5f * Planet.aspect(), bottom = 0.5f + 0.5f * Planet.aspect();
+        float halfView = 0.5f * MapProjection.aspect() / zoom;
+        float top = 0.5f - 0.5f * MapProjection.aspect(), bottom = 0.5f + 0.5f * MapProjection.aspect();
         return Math.max(top + halfView, Math.min(bottom - halfView, centre));
     }
 
@@ -552,7 +573,7 @@ public class MapPanel extends JPanel {
     }
 
     private float viewTop() {
-        return viewCentreV - 0.5f * Planet.aspect() / zoom;
+        return viewCentreV - 0.5f * MapProjection.aspect() / zoom;
     }
 
     // Conversions between core map pixels (the mapImage grid) and screen pixels, respecting the zoom
@@ -817,7 +838,7 @@ public class MapPanel extends JPanel {
             int parentHeight = getParent().getHeight();
             int parentWidth = getParent().getWidth();
             int tall = Math.min(750, Math.max(300, parentHeight - 240));
-            this.currentMapSize = Math.min(Math.max(300, parentWidth - 80), Math.round(tall / Planet.aspect()));
+            this.currentMapSize = Math.min(Math.max(300, parentWidth - 80), Math.round(tall / MapProjection.aspect()));
         } else {
             this.currentMapSize = 650;
         }
@@ -901,21 +922,14 @@ public class MapPanel extends JPanel {
      * are still showing (it is built behind them), so it is held back until they close
      * rather than moving the answer flag on screen and giving the next round away.
      */
-    public synchronized void setPlayerSpawnLocation(float spawnX, float spawnZ) {
-        float x = ((spawnX + halfRegion) / totalRegionWidth) * mapImage.getWidth();
-        float y = ((spawnZ + halfRegion) / totalRegionWidth) * mapImage.getHeight();
-        if (isGuessed) {
-            pendingGoal = new float[] { x, y };
-        } else {
-            goalX = x;
-            goalY = y;
-        }
+    public synchronized void setPlayerSpawnLocation(GeodesicChunkGrid.Direction place) {
+        if (isGuessed) pendingGoal = place;
+        else setGoal(place);
     }
 
     private synchronized void applyPendingGoal() {
         if (pendingGoal != null) {
-            goalX = pendingGoal[0];
-            goalY = pendingGoal[1];
+            setGoal(pendingGoal);
             pendingGoal = null;
         }
     }
@@ -1426,9 +1440,9 @@ public class MapPanel extends JPanel {
         int size;
         if (isFullScreenReveal) {
             int tall = Math.min(750, Math.max(300, height - 240));
-            size = Math.min(Math.max(300, width - 80), Math.round(tall / Planet.aspect()));
+            size = Math.min(Math.max(300, width - 80), Math.round(tall / MapProjection.aspect()));
         } else if (isLarge) {
-            size = Math.min((int) (height * 0.60f / Planet.aspect()), (int) (width * 0.55f));
+            size = Math.min((int) (height * 0.60f / MapProjection.aspect()), (int) (width * 0.55f));
         } else {
             return;
         }
@@ -1463,7 +1477,7 @@ public class MapPanel extends JPanel {
         int parentHeight = getParent() != null ? getParent().getHeight() : 900;
         currentMapSize = switch (size) {
             case SMALL -> 210;
-            case LARGE -> Math.min((int) (parentHeight * 0.60f / Planet.aspect()),
+            case LARGE -> Math.min((int) (parentHeight * 0.60f / MapProjection.aspect()),
                     getParent() != null ? (int) (getParent().getWidth() * 0.55f) : 900);
         };
         if (!isLarge) resetZoom();
@@ -1526,9 +1540,7 @@ public class MapPanel extends JPanel {
 
     /** Developer aid: a guess at the middle of the map, as if clicked and confirmed. */
     public void devGuess() {
-        pinX = mapImage.getWidth() / 2;
-        pinY = mapImage.getHeight() / 2;
-        hasPin = true;
+        placePin(mapImage.getWidth() / 2, mapImage.getHeight() / 2);
         startRevealSequence();
     }
 
@@ -1565,13 +1577,13 @@ public class MapPanel extends JPanel {
         java.awt.Stroke old = g2d.getStroke();
         g2d.setStroke(new BasicStroke(1f));
         for (int lon = -150; lon <= 150; lon += 30) {
-            float fx = (float) ((Planet.chartX(Math.toRadians(lon)) + halfRegion) / totalRegionWidth);
+            float fx = (float) ((MapProjection.x(Math.toRadians(lon)) + halfRegion) / totalRegionWidth);
             int px = Math.round(originX + fx * span);
             g2d.setColor(new Color(255, 255, 255, lon == 0 ? 70 : 38));
             g2d.drawLine(px, mapY, px, mapY + mapHeight());
         }
         for (int lat = -80; lat <= 80; lat += lat == -80 || lat == 60 ? 20 : 30) {
-            float fy = (float) ((Planet.chartZ(Math.toRadians(lat)) + halfRegion) / totalRegionWidth);
+            float fy = (float) ((MapProjection.z(Math.toRadians(lat)) + halfRegion) / totalRegionWidth);
             int py = Math.round(originY + fy * span);
             g2d.setColor(new Color(255, 255, 255, lat == 0 ? 70 : 38));
             g2d.drawLine(mapX, py, mapX + currentMapSize, py);
@@ -1580,13 +1592,8 @@ public class MapPanel extends JPanel {
     }
 
     private void calculateAndApplyScore() {
-        // The map is a Mercator chart of the planet: where each point is on it, in world units
-        float mapWidthPixels = mapImage.getWidth();
-        float mapHeightPixels = mapImage.getHeight();
-        double pinWorldX = (pinX / mapWidthPixels - 0.5) * totalRegionWidth, pinWorldZ = (pinY / mapHeightPixels - 0.5) * totalRegionWidth;
-        double goalWorldX = (goalX / mapWidthPixels - 0.5) * totalRegionWidth, goalWorldZ = (goalY / mapHeightPixels - 0.5) * totalRegionWidth;
-        // How far apart they really are: the shortest way round the sphere's surface
-        double realWorldDistance = Planet.surfaceDistance(pinWorldX, pinWorldZ, goalWorldX, goalWorldZ);
+        // How far apart the guess and the answer really are: the shortest way round the sphere's surface
+        double realWorldDistance = SphereMath.angle(pin, goal) * Planet.radius();
 
         double kConstant = Planet.greatestDistance() / 7.0;
         int score = (int) Math.round(5000.0 * Math.exp(-realWorldDistance / kConstant));
@@ -1617,7 +1624,7 @@ public class MapPanel extends JPanel {
         if (renderer == null || across <= wholeDetail * 1.1f) return false;
         int level = Math.max(1, Math.min(8, (int) Math.ceil(Math.log(across / MapTiles.SIZE) / Math.log(2))));
         int n = 1 << level;
-        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + Planet.aspect() / zoom;
+        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + MapProjection.aspect() / zoom;
         int tx0 = Math.max(0, (int) Math.floor(u0 * n)), tx1 = Math.min(n - 1, (int) Math.floor(u1 * n));
         int ty0 = Math.max(0, (int) Math.floor(v0 * n)), ty1 = Math.min(n - 1, (int) Math.floor(v1 * n));
         for (int ty = ty0; ty <= ty1; ty++) {

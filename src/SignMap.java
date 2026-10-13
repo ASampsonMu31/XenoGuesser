@@ -1,13 +1,9 @@
-import com.xenoguesser.math.Vector3;
-
 import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
-import java.awt.geom.AffineTransform;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
-import java.awt.geom.Rectangle2D;
 import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Random;
@@ -23,14 +19,15 @@ public final class SignMap {
     }
 
     /**
-     * Draws the map, centred on (centreX, centreZ) and halfWidth world units from middle to
-     * left and right edges, as ARGB pixels in rows from the top. North (-z) is up. Optional:
-     * a mark where the sign stands (here), a business it advertises (destination, its badge
-     * showing a letter of its name) and the way along the roads between them.
+     * Draws the map round centre's origin, halfWidth world units from middle to left and right
+     * edges, as ARGB pixels in rows from the top. It is laid out in centre's frame (an
+     * east/up/south one: north up) in true distances along the ground, so it looks the same at
+     * any latitude. Optional: a mark where the sign stands (here), a business it advertises
+     * (destination, its badge showing a letter of its name) and the way along the roads between them.
      */
     public static int[] render(InfrastructureManager infrastructure, PerlinNoise terrain, float seaLevel, long styleSeed,
-                               float centreX, float centreZ, float halfWidth, int width, int height,
-                               float[] here, float[] destination, List<float[]> route, BufferedImage badgeGlyph) {
+                               SphereFrame centre, float halfWidth, int width, int height,
+                               SpherePosition here, SpherePosition destination, List<SpherePosition> route, BufferedImage badgeGlyph) {
         Random style = new Random(styleSeed);
         float hue = style.nextFloat();
         float[] land = WorldPalette.hsv(hue, 0.08f + style.nextFloat() * 0.22f, 0.86f + style.nextFloat() * 0.1f);
@@ -44,7 +41,7 @@ public final class SignMap {
 
         float unitsPerPixel = halfWidth * 2f / width;
         float halfHeight = halfWidth * height / width;
-        float left = centreX - halfWidth, top = centreZ - halfHeight;
+        float left = -halfWidth, top = -halfHeight;
 
         float reliefScale = Math.min(1f, unitsPerPixel / 12f);
         // The land, from a coarse grid of heights filled in between
@@ -53,7 +50,8 @@ public final class SignMap {
         float[] heights = new float[gw * gh];
         for (int j = 0; j < gh; j++) {
             for (int i = 0; i < gw; i++) {
-                heights[j * gw + i] = TerrainMesh.getLayeredHeight(left + i * step * unitsPerPixel, top + j * step * unitsPerPixel, terrain);
+                heights[j * gw + i] = TerrainMesh.getLayeredHeight(
+                        centre.toSphere(left + i * step * unitsPerPixel, 0.0, top + j * step * unitsPerPixel), terrain);
             }
         }
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
@@ -86,38 +84,37 @@ public final class SignMap {
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
         g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
         float scale = 1f / unitsPerPixel;
-        AffineTransform toMap = new AffineTransform(scale, 0, 0, scale, -left * scale, -top * scale);
-        float right = left + halfWidth * 2f, bottom = top + halfHeight * 2f;
         float margin = 60f;
+        float reach = (float) Math.hypot(halfWidth, halfHeight) + margin;
 
-        // Buildings
+        // Buildings, in their own shapes, each side at least a couple of pixels
         g.setColor(building);
-        AffineTransform base = g.getTransform();
-        infrastructure.forEachBuilding((x, z, rotationY, w, d, nationId, outline) -> {
-            if (x < left - margin || x > right + margin || z < top - margin || z > bottom + margin) return;
-            g.setTransform(base);
-            g.transform(toMap);
-            g.translate(x, z);
-            g.rotate(-Math.toRadians(rotationY));
-            float pw = Math.max(w, 2.2f * unitsPerPixel), pd = Math.max(d, 2.2f * unitsPerPixel);
-            g.fill(new Rectangle2D.Float(-pw * 0.5f, -pd * 0.5f, pw, pd));
+        float least = 2.2f * unitsPerPixel;
+        infrastructure.forEachBuildingNear(centre.origin(), reach, (frame, outline, nationId) -> {
+            float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+            for (float[] p : outline) {
+                minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+                minZ = Math.min(minZ, p[1]); maxZ = Math.max(maxZ, p[1]);
+            }
+            float sx = Math.max(1f, least / Math.max(1e-3f, maxX - minX)), sz = Math.max(1f, least / Math.max(1e-3f, maxZ - minZ));
+            Path2D.Float shape = new Path2D.Float();
+            for (int i = 0; i < outline.length; i++) {
+                double[] p = centre.fromSphere(frame.toWorld(outline[i][0] * sx, 0.0, outline[i][1] * sz));
+                float px = (float) (p[0] - left) * scale, pz = (float) (p[2] - top) * scale;
+                if (i == 0) shape.moveTo(px, pz); else shape.lineTo(px, pz);
+            }
+            shape.closePath();
+            g.fill(shape);
         });
-        g.setTransform(base);
 
         // Roads: lanes, then streets, then highways on top
         for (RoadPath.RoadClass roadClass : new RoadPath.RoadClass[] { RoadPath.RoadClass.LANE, RoadPath.RoadClass.STREET, RoadPath.RoadClass.HIGHWAY }) {
             float minPixels = roadClass == RoadPath.RoadClass.HIGHWAY ? 2.4f : roadClass == RoadPath.RoadClass.STREET ? 1.5f : 1.0f;
             float stroke = Math.max(minPixels, roadClass.width * scale);
             Color fill = roadClass == RoadPath.RoadClass.HIGHWAY ? highwayFill : roadFill;
-            infrastructure.forEachRoadPath(path -> {
-                if (path.roadClass != roadClass || path.points.size() < 2 || !near(path.points, left, top, right, bottom, margin)) return;
-                Path2D.Float line = new Path2D.Float();
-                Vector3 first = path.points.get(0);
-                line.moveTo((first.x - left) * scale, (first.z - top) * scale);
-                for (int i = 1; i < path.points.size(); i++) {
-                    Vector3 p = path.points.get(i);
-                    line.lineTo((p.x - left) * scale, (p.z - top) * scale);
-                }
+            infrastructure.forEachRoadPathNear(centre.origin(), reach, path -> {
+                if (path.roadClass != roadClass || path.points.size() < 2) return;
+                Path2D.Float line = onMap(centre, path.points, left, top, scale);
                 if (roadCasing != null && stroke > 1.4f) {
                     g.setColor(roadCasing);
                     g.setStroke(new BasicStroke(stroke + 1.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
@@ -140,9 +137,7 @@ public final class SignMap {
         float markSize = Math.max(5f, width * 0.05f);
 
         if (route != null && route.size() > 1) {
-            Path2D.Float way = new Path2D.Float();
-            way.moveTo((route.get(0)[0] - left) * scale, (route.get(0)[1] - top) * scale);
-            for (int i = 1; i < route.size(); i++) way.lineTo((route.get(i)[0] - left) * scale, (route.get(i)[1] - top) * scale);
+            Path2D.Float way = onMap(centre, route, left, top, scale);
             float w = Math.max(2f, width * 0.018f);
             g.setColor(new Color(0, 0, 0, 90));
             g.setStroke(new BasicStroke(w + 1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
@@ -156,10 +151,12 @@ public final class SignMap {
             g.draw(way);
         }
         if (destination != null) {
-            badge(g, (destination[0] - left) * scale, (destination[1] - top) * scale, markSize * 1.7f, badgeColour, badgeGlyph, badgeShape);
+            double[] d = centre.fromSphere(destination);
+            badge(g, (float) (d[0] - left) * scale, (float) (d[2] - top) * scale, markSize * 1.7f, badgeColour, badgeGlyph, badgeShape);
         }
         if (here != null) {
-            mark(g, (here[0] - left) * scale, (here[1] - top) * scale, markSize, hereShape, hereColour);
+            double[] h = centre.fromSphere(here);
+            mark(g, (float) (h[0] - left) * scale, (float) (h[2] - top) * scale, markSize, hereShape, hereColour);
         }
         g.dispose();
         return image.getRGB(0, 0, width, height, null, 0, width);
@@ -284,15 +281,15 @@ public final class SignMap {
         }
     }
 
-    private static boolean near(List<Vector3> points, float left, float top, float right, float bottom, float margin) {
-        float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
-        for (Vector3 p : points) {
-            minX = Math.min(minX, p.x);
-            maxX = Math.max(maxX, p.x);
-            minZ = Math.min(minZ, p.z);
-            maxZ = Math.max(maxZ, p.z);
+    /** A line through places, in the map's pixels. */
+    private static Path2D.Float onMap(SphereFrame centre, List<SpherePosition> places, float left, float top, float scale) {
+        Path2D.Float line = new Path2D.Float();
+        for (int i = 0; i < places.size(); i++) {
+            double[] p = centre.fromSphere(places.get(i));
+            float px = (float) (p[0] - left) * scale, pz = (float) (p[2] - top) * scale;
+            if (i == 0) line.moveTo(px, pz); else line.lineTo(px, pz);
         }
-        return maxX >= left - margin && minX <= right + margin && maxZ >= top - margin && minZ <= bottom + margin;
+        return line;
     }
 
     private static float[] mix(float[] a, float[] b, float t) {

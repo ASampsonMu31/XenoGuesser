@@ -1,26 +1,36 @@
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import com.xenoguesser.math.Vector3;
+import java.util.stream.IntStream;
 
 /**
- * Lays out the region's roads in three layers:
+ * Lays out the planet's roads on the sphere in three layers:
  * highways routed across the terrain between neighbouring settlements,
  * street grids filling each settlement's urban area, and winding country
  * lanes that always run from one road to another. A final pass joins any
  * loose road end to a nearby road or runs it down to the shore; any end left
  * over becomes a dead end, which InfrastructureManager finishes with a house.
+ * <p>
+ * Everything is planned with great-circle geometry on SpherePositions (D4 in
+ * GEODESIC_MIGRATION_PLAN.txt): highways are routed over the geodesic cells of
+ * ROUTING_LEVEL, lanes and tracks walk along great circles carrying their heading
+ * with them, a town's streets are laid out flat in its own tangent frame and lifted
+ * along the curve, and roads are found again through a CellIndex. A heading is in
+ * radians from east towards south in the local frame where it applies (D10).
  */
 public class RoadNetworkBuilder {
     private static final float ROAD_STEP = 70.0f;
 
-    // Highway routing grid
-    private static final float ROUTING_CELL_SIZE = 400.0f;
+    // Highway routing: over the geodesic cells of this level, each joined to the (up to) nine
+    // cells sharing a corner with it; their centres are about 260 world units apart
+    private static final int ROUTING_LEVEL = 6;
     private static final float ROUTING_LAND_MARGIN = 3.0f;
     private static final float SLOPE_COST = 120.0f;
     // Grades past this (rise over run) are dearer still, so roads wind round hills instead
@@ -67,17 +77,23 @@ public class RoadNetworkBuilder {
     // Highways may ride a short causeway across a dip below sea level rather than stopping
     private static final int MAX_CAUSEWAY_POINTS = 3;
 
-    private static final float INDEX_CELL_SIZE = 200.0f;
+    // Roads are indexed by the geodesic cells of this level (about 200 world units across)
+    private static final int INDEX_LEVEL = 7;
 
     private final long seed;
-    private final float halfRegion;
     private final float seaLevelHeight;
     private final PerlinNoise terrainNoise;
     private final SettlementManager settlementManager;
     private final NationGenerationManager nationManager;
-    private final float totalRegionWidth;
 
-    private final int routingResolution;
+    // The routing cells, by id: their centres, the cells sharing a corner with each, and what
+    // the ground is like there
+    private final GeodesicChunkGrid routingGrid = new GeodesicChunkGrid(ROUTING_LEVEL);
+    private final int cellCount;
+    // About how far apart neighbouring cells' centres are
+    private final float cellSpacing;
+    private final GeodesicChunkGrid.Direction[] cellCentre;
+    private final int[][] cellNeighbours;
     private final float[] cellHeight;
     // How well off the people of each island without the main roads are (see buildIslandTracks),
     // per routing cell; NaN elsewhere. And each nation's own wealth, which theirs is drawn from
@@ -86,14 +102,20 @@ public class RoadNetworkBuilder {
     private final float[] cellRugged;
     private final boolean[] cellPassable;
     private final boolean[] cellHasHighway;
-    private final Map<Long, List<float[]>> highwayPointsByCell = new HashMap<>();
+    private final CellIndex<SpherePosition> highwayPoints = new CellIndex<>(INDEX_LEVEL);
     private final List<RoadPath> roads = new ArrayList<>();
     private final List<RoadPath.DeadEnd> deadEnds = new ArrayList<>();
 
-    // Spatial index of finished roads: cell -> {path index, point index} of each segment start
-    private final Map<Long, List<int[]>> segmentIndex = new HashMap<>();
+    // Index of finished roads: each segment filed at its middle, reaching half its length
+    private record SegmentRef(int path, int index) {
+    }
+
+    private record Filed(SpherePosition position, SegmentRef segment) {
+    }
+
+    private final CellIndex<SegmentRef> segmentIndex = new CellIndex<>(INDEX_LEVEL);
     private final List<int[]> indexedPoints = new ArrayList<>();
-    private final Map<Integer, List<Long>> indexedCellsByPath = new HashMap<>();
+    private final Map<Integer, List<Filed>> filedByPath = new HashMap<>();
 
     // Scratch state reused across route searches
     private final float[] routeCost;
@@ -105,18 +127,18 @@ public class RoadNetworkBuilder {
     /** Per-nation town planning: block size, block aspect and how much the streets wander. */
     private final Map<Integer, float[]> streetStyles = new HashMap<>();
 
-    public RoadNetworkBuilder(long seed, float totalRegionWidth, float seaLevelHeight, PerlinNoise terrainNoise,
+    public RoadNetworkBuilder(long seed, float seaLevelHeight, PerlinNoise terrainNoise,
                               SettlementManager settlementManager, NationGenerationManager nationManager) {
         this.seed = seed;
-        this.totalRegionWidth = totalRegionWidth;
-                this.halfRegion = totalRegionWidth * 0.5f + RegionalGenerationManager.GENERATION_MARGIN;
         this.seaLevelHeight = seaLevelHeight;
         this.terrainNoise = terrainNoise;
         this.settlementManager = settlementManager;
         this.nationManager = nationManager;
 
-                this.routingResolution = (int) Math.ceil(halfRegion * 2.0f / ROUTING_CELL_SIZE);
-        int cellCount = routingResolution * routingResolution;
+        this.cellCount = (int) routingGrid.cellCount();
+        this.cellSpacing = (float) (Math.sqrt(4.0 * Math.PI / cellCount) * Planet.radius());
+        this.cellCentre = new GeodesicChunkGrid.Direction[cellCount];
+        this.cellNeighbours = new int[cellCount][];
         this.cellHeight = new float[cellCount];
         this.islandRichness = new float[cellCount];
         Arrays.fill(islandRichness, Float.NaN);
@@ -128,20 +150,30 @@ public class RoadNetworkBuilder {
         this.routeStamp = new int[cellCount];
         this.routeClosedStamp = new int[cellCount];
 
-        for (int j = 0; j < routingResolution; j++) {
-            for (int i = 0; i < routingResolution; i++) {
-                int cell = j * routingResolution + i;
-                float height = TerrainMesh.getLayeredHeight(cellCentreX(i), cellCentreZ(j), terrainNoise);
-                cellHeight[cell] = height;
-                cellPassable[cell] = height > seaLevelHeight + ROUTING_LAND_MARGIN;
-                if (cellPassable[cell]) {
-                    float x = cellCentreX(i), z = cellCentreZ(j), d = ROUTING_CELL_SIZE * 0.35f;
-                    float gx = TerrainMesh.getLayeredHeight(x + d, z, terrainNoise) - TerrainMesh.getLayeredHeight(x - d, z, terrainNoise);
-                    float gz = TerrainMesh.getLayeredHeight(x, z + d, terrainNoise) - TerrainMesh.getLayeredHeight(x, z - d, terrainNoise);
-                    cellRugged[cell] = (float) Math.hypot(gx, gz) / (2.0f * d);
-                }
+        int[][] edges = new int[cellCount][];
+        IntStream.range(0, cellCount).parallel().forEach(id -> {
+            GeodesicChunkGrid.Cell cell = routingGrid.cell(id);
+            cellCentre[id] = cell.centre();
+            edges[id] = routingGrid.neighbours(cell).stream().mapToInt(n -> (int) n.id()).toArray();
+            SpherePosition centre = SphereMath.atAltitude(cell.centre(), 0.0);
+            float height = height(centre);
+            cellHeight[id] = height;
+            cellPassable[id] = height > seaLevelHeight + ROUTING_LAND_MARGIN;
+            if (cellPassable[id]) {
+                SphereFrame frame = SphereFrame.at(centre);
+                float d = cellSpacing * 0.35f;
+                float gx = height(frame.toSphere(d, 0.0, 0.0)) - height(frame.toSphere(-d, 0.0, 0.0));
+                float gz = height(frame.toSphere(0.0, 0.0, d)) - height(frame.toSphere(0.0, 0.0, -d));
+                cellRugged[id] = (float) Math.hypot(gx, gz) / (2.0f * d);
             }
-        }
+        });
+        // A cell's edge neighbours and theirs: the cells round it sharing a corner with it
+        IntStream.range(0, cellCount).parallel().forEach(id -> {
+            Set<Integer> around = new LinkedHashSet<>();
+            for (int e : edges[id]) around.add(e);
+            for (int e : edges[id]) for (int f : edges[e]) if (f != id) around.add(f);
+            cellNeighbours[id] = around.stream().mapToInt(Integer::intValue).toArray();
+        });
 
         Random styleRand = new Random(seed + 2468L);
         for (int n = 1; n <= nationManager.numNations; n++) {
@@ -186,7 +218,7 @@ public class RoadNetworkBuilder {
         int[] landmass = labelLandmasses();
         int[] settlementLandmass = new int[settlements.size()];
         for (int a = 0; a < settlements.size(); a++) {
-            int cell = nearestPassableCell(settlements.get(a).x, settlements.get(a).z);
+            int cell = nearestPassableCell(settlements.get(a).centre);
             settlementLandmass[a] = cell < 0 ? -1 : landmass[cell];
         }
 
@@ -209,8 +241,8 @@ public class RoadNetworkBuilder {
                 order[b] = b;
             }
             final SettlementManager.Settlement origin = from;
-            Arrays.sort(order, (p, q) -> Float.compare(
-                    distanceSquared(origin, settlements.get(p)), distanceSquared(origin, settlements.get(q))));
+            Arrays.sort(order, (p, q) -> Double.compare(
+                    distance(origin, settlements.get(p)), distance(origin, settlements.get(q))));
 
             int added = 0;
             for (int k = 0; k < order.length && added < wanted; k++) {
@@ -218,7 +250,7 @@ public class RoadNetworkBuilder {
                 if (b == a || settlementLandmass[b] != settlementLandmass[a]) {
                     continue;
                 }
-                if (distanceSquared(from, settlements.get(b)) > MAX_LINK_DISTANCE * MAX_LINK_DISTANCE) {
+                if (distance(from, settlements.get(b)) > MAX_LINK_DISTANCE) {
                     break;
                 }
                 addLink(a, b, links, linked);
@@ -227,9 +259,9 @@ public class RoadNetworkBuilder {
         }
 
         // Short links first so longer routes can reuse the roads they built
-        links.sort((p, q) -> Float.compare(
-                distanceSquared(settlements.get(p[0]), settlements.get(p[1])),
-                distanceSquared(settlements.get(q[0]), settlements.get(q[1]))));
+        links.sort((p, q) -> Double.compare(
+                distance(settlements.get(p[0]), settlements.get(p[1])),
+                distance(settlements.get(q[0]), settlements.get(q[1]))));
 
         Random jitterRand = new Random(seed ^ 0x6A09E667F3BCC909L);
         for (int[] link : links) {
@@ -242,7 +274,7 @@ public class RoadNetworkBuilder {
                                       List<int[]> links, Set<Long> linked) {
         int count = settlements.size();
         boolean[] inTree = new boolean[count];
-        float[] bestDistance = new float[count];
+        double[] bestDistance = new double[count];
         int[] bestParent = new int[count];
 
         for (int root = 0; root < count; root++) {
@@ -250,7 +282,7 @@ public class RoadNetworkBuilder {
                 continue;
             }
             int landmassId = settlementLandmass[root];
-            Arrays.fill(bestDistance, Float.MAX_VALUE);
+            Arrays.fill(bestDistance, Double.MAX_VALUE);
             Arrays.fill(bestParent, -1);
             int current = root;
             while (current >= 0) {
@@ -263,7 +295,7 @@ public class RoadNetworkBuilder {
                     if (inTree[other] || settlementLandmass[other] != landmassId) {
                         continue;
                     }
-                    float distance = distanceSquared(settlements.get(current), settlements.get(other));
+                    double distance = distance(settlements.get(current), settlements.get(other));
                     if (distance < bestDistance[other]) {
                         bestDistance[other] = distance;
                         bestParent[other] = current;
@@ -286,11 +318,11 @@ public class RoadNetworkBuilder {
 
     /** Flood fills the passable routing cells so routes are only attempted within one landmass. */
     private int[] labelLandmasses() {
-        int[] labels = new int[cellPassable.length];
+        int[] labels = new int[cellCount];
         Arrays.fill(labels, -1);
-        int[] queue = new int[cellPassable.length];
+        int[] queue = new int[cellCount];
         int nextLabel = 0;
-        for (int seedCell = 0; seedCell < cellPassable.length; seedCell++) {
+        for (int seedCell = 0; seedCell < cellCount; seedCell++) {
             if (!cellPassable[seedCell] || labels[seedCell] >= 0) {
                 continue;
             }
@@ -300,20 +332,10 @@ public class RoadNetworkBuilder {
             labels[seedCell] = nextLabel;
             while (head < tail) {
                 int cell = queue[head++];
-                int ci = cell % routingResolution;
-                int cj = cell / routingResolution;
-                for (int dj = -1; dj <= 1; dj++) {
-                    for (int di = -1; di <= 1; di++) {
-                        int ni = ci + di;
-                        int nj = cj + dj;
-                        if (ni < 0 || nj < 0 || ni >= routingResolution || nj >= routingResolution) {
-                            continue;
-                        }
-                        int next = nj * routingResolution + ni;
-                        if (cellPassable[next] && labels[next] < 0) {
-                            labels[next] = nextLabel;
-                            queue[tail++] = next;
-                        }
+                for (int next : cellNeighbours[cell]) {
+                    if (cellPassable[next] && labels[next] < 0) {
+                        labels[next] = nextLabel;
+                        queue[tail++] = next;
                     }
                 }
             }
@@ -323,8 +345,8 @@ public class RoadNetworkBuilder {
     }
 
     private void routeHighway(SettlementManager.Settlement from, SettlementManager.Settlement to, Random jitterRand) {
-        int start = nearestPassableCell(from.x, from.z);
-        int goal = nearestPassableCell(to.x, to.z);
+        int start = nearestPassableCell(from.centre);
+        int goal = nearestPassableCell(to.centre);
         if (start < 0 || goal < 0 || start == goal) {
             return;
         }
@@ -354,60 +376,54 @@ public class RoadNetworkBuilder {
 
     private void emitHighwayRun(int[] route, int first, int last, SettlementManager.Settlement from,
                                 SettlementManager.Settlement to, Random jitterRand) {
-        List<float[]> controlPoints = new ArrayList<>();
+        List<SpherePosition> controlPoints = new ArrayList<>();
         for (int k = first; k <= last; k++) {
             int cell = route[k];
-            float x = cellCentreX(cell % routingResolution);
-            float z = cellCentreZ(cell / routingResolution);
+            SpherePosition point = SphereMath.atAltitude(cellCentre[cell], 0.0);
 
             if (k == 0) {
-                x = from.x;
-                z = from.z;
+                point = from.centre;
             } else if (k == route.length - 1) {
-                x = to.x;
-                z = to.z;
+                point = to.centre;
             } else if ((k == first || k == last) && cellHasHighway[cell]) {
-                float[] join = nearestHighwayPoint(x, z);
+                SpherePosition join = highwayPoints.nearest(point, JOIN_SNAP_DISTANCE);
                 if (join != null) {
-                    x = join[0];
-                    z = join[1];
+                    point = join;
                 }
             } else {
-                // Break up the routing grid so highways don't run in perfect 45 degree lines
-                x += (jitterRand.nextFloat() - 0.5f) * ROUTING_CELL_SIZE * 0.6f;
-                z += (jitterRand.nextFloat() - 0.5f) * ROUTING_CELL_SIZE * 0.6f;
+                // Break up the routing grid so highways don't follow its cells' zigzags
+                float jx = (jitterRand.nextFloat() - 0.5f) * cellSpacing * 0.6f;
+                float jz = (jitterRand.nextFloat() - 0.5f) * cellSpacing * 0.6f;
+                point = SphereFrame.at(point).toSphere(jx, 0.0, jz);
             }
-            controlPoints.add(new float[] { x, z });
+            controlPoints.add(point);
         }
         if (controlPoints.size() < 2) {
             return;
         }
 
-        List<float[]> smoothed = controlPoints;
+        List<SpherePosition> smoothed = controlPoints;
         for (int pass = 0; pass < SMOOTHING_PASSES; pass++) {
             smoothed = chaikin(smoothed);
         }
-        List<float[]> resampled = easeGradients(resample(smoothed, ROAD_STEP), 3);
+        List<SpherePosition> resampled = easeGradients(resample(smoothed, ROAD_STEP), 3);
         for (RoadPath path : splitOverWater(resampled, RoadPath.RoadClass.HIGHWAY)) {
             roads.add(path);
-            for (Vector3 point : path.points) {
-                long key = routingCellKey(point.x, point.z);
-                highwayPointsByCell.computeIfAbsent(key, ignored -> new ArrayList<>()).add(new float[] { point.x, point.z });
+            for (SpherePosition point : path.points) {
+                highwayPoints.add(point, point);
             }
         }
     }
 
-    /** A* over the routing grid, cost weighted by slope and discounted along existing highways. */
+    /** A* over the routing cells, cost weighted by slope and discounted along existing highways. */
     private int[] findRoute(int start, int goal) {
         currentStamp++;
-        int goalI = goal % routingResolution;
-        int goalJ = goal / routingResolution;
 
         MinHeap open = new MinHeap();
         routeStamp[start] = currentStamp;
         routeCost[start] = 0.0f;
         routeParent[start] = -1;
-        open.push(start, heuristic(start, goalI, goalJ));
+        open.push(start, heuristic(start, goal));
 
         int expansions = 0;
         while (!open.isEmpty()) {
@@ -424,56 +440,43 @@ public class RoadNetworkBuilder {
                 return null;
             }
 
-            int ci = cell % routingResolution;
-            int cj = cell / routingResolution;
-            for (int dj = -1; dj <= 1; dj++) {
-                for (int di = -1; di <= 1; di++) {
-                    if (di == 0 && dj == 0) {
-                        continue;
-                    }
-                    int ni = ci + di;
-                    int nj = cj + dj;
-                    if (ni < 0 || nj < 0 || ni >= routingResolution || nj >= routingResolution) {
-                        continue;
-                    }
-                    int next = nj * routingResolution + ni;
-                    if (!cellPassable[next] || routeClosedStamp[next] == currentStamp) {
-                        continue;
-                    }
+            GeodesicChunkGrid.Direction here = cellCentre[cell];
+            for (int next : cellNeighbours[cell]) {
+                if (!cellPassable[next] || routeClosedStamp[next] == currentStamp) {
+                    continue;
+                }
 
-                    float stepLength = ROUTING_CELL_SIZE * ((di != 0 && dj != 0) ? 1.41421356f : 1.0f);
-                    float midX = (cellCentreX(ci) + cellCentreX(ni)) * 0.5f;
-                    float midZ = (cellCentreZ(cj) + cellCentreZ(nj)) * 0.5f;
-                    if (TerrainMesh.getLayeredHeight(midX, midZ, terrainNoise) <= seaLevelHeight + 1.0f) {
-                        continue;
-                    }
+                GeodesicChunkGrid.Direction there = cellCentre[next];
+                float stepLength = (float) (SphereMath.angle(here, there) * Planet.radius());
+                // (halfway between the two centres; the height lookup puts it on the sphere)
+                GeodesicChunkGrid.Direction middle = new GeodesicChunkGrid.Direction(
+                        here.x() + there.x(), here.y() + there.y(), here.z() + there.z());
+                if (TerrainMesh.getLayeredHeight(middle, terrainNoise) <= seaLevelHeight + 1.0f) {
+                    continue;
+                }
 
-                    float slope = Math.abs(cellHeight[next] - cellHeight[cell]) / stepLength;
-                    float rugged = cellRugged[next];
-                    float steep = Math.max(0f, slope - GENTLE_GRADE);
-                    float stepCost = stepLength * (1.0f + SLOPE_COST * slope * slope + STEEP_GRADE_COST * steep * steep + RUGGED_COST * rugged * rugged);
-                    if (cellHasHighway[next]) {
-                        stepCost *= EXISTING_ROAD_COST;
-                    }
+                float slope = Math.abs(cellHeight[next] - cellHeight[cell]) / stepLength;
+                float rugged = cellRugged[next];
+                float steep = Math.max(0f, slope - GENTLE_GRADE);
+                float stepCost = stepLength * (1.0f + SLOPE_COST * slope * slope + STEEP_GRADE_COST * steep * steep + RUGGED_COST * rugged * rugged);
+                if (cellHasHighway[next]) {
+                    stepCost *= EXISTING_ROAD_COST;
+                }
 
-                    float cost = routeCost[cell] + stepCost;
-                    if (routeStamp[next] != currentStamp || cost < routeCost[next]) {
-                        routeStamp[next] = currentStamp;
-                        routeCost[next] = cost;
-                        routeParent[next] = cell;
-                        open.push(next, cost + heuristic(next, goalI, goalJ));
-                    }
+                float cost = routeCost[cell] + stepCost;
+                if (routeStamp[next] != currentStamp || cost < routeCost[next]) {
+                    routeStamp[next] = currentStamp;
+                    routeCost[next] = cost;
+                    routeParent[next] = cell;
+                    open.push(next, cost + heuristic(next, goal));
                 }
             }
         }
         return null;
     }
 
-    private float heuristic(int cell, int goalI, int goalJ) {
-        int dx = Math.abs(cell % routingResolution - goalI);
-        int dz = Math.abs(cell / routingResolution - goalJ);
-        float octile = Math.max(dx, dz) + 0.41421356f * Math.min(dx, dz);
-        return octile * ROUTING_CELL_SIZE * HEURISTIC_WEIGHT;
+    private float heuristic(int cell, int goal) {
+        return (float) (SphereMath.angle(cellCentre[cell], cellCentre[goal]) * Planet.radius()) * HEURISTIC_WEIGHT;
     }
 
     private int[] traceRoute(int goal) {
@@ -488,47 +491,23 @@ public class RoadNetworkBuilder {
         return route;
     }
 
-    private int nearestPassableCell(float x, float z) {
-        int ci = clampCell((int) Math.floor((x + halfRegion) / ROUTING_CELL_SIZE));
-        int cj = clampCell((int) Math.floor((z + halfRegion) / ROUTING_CELL_SIZE));
-        for (int radius = 0; radius <= 3; radius++) {
-            for (int dj = -radius; dj <= radius; dj++) {
-                for (int di = -radius; di <= radius; di++) {
-                    int ni = ci + di;
-                    int nj = cj + dj;
-                    if (ni >= 0 && nj >= 0 && ni < routingResolution && nj < routingResolution
-                            && cellPassable[nj * routingResolution + ni]) {
-                        return nj * routingResolution + ni;
-                    }
-                }
+    /** The passable routing cell holding a place, or the nearest within three rings of it; -1 if none. */
+    private int nearestPassableCell(SpherePosition place) {
+        int start = (int) routingGrid.cellAt(place).id();
+        if (cellPassable[start]) return start;
+        ArrayDeque<int[]> queue = new ArrayDeque<>();
+        Set<Integer> seen = new HashSet<>();
+        queue.add(new int[] { start, 0 });
+        seen.add(start);
+        while (!queue.isEmpty()) {
+            int[] entry = queue.removeFirst();
+            if (cellPassable[entry[0]]) return entry[0];
+            if (entry[1] >= 3) continue;
+            for (int next : cellNeighbours[entry[0]]) {
+                if (seen.add(next)) queue.addLast(new int[] { next, entry[1] + 1 });
             }
         }
         return -1;
-    }
-
-    private float[] nearestHighwayPoint(float x, float z) {
-        float[] best = null;
-        float bestDistance = JOIN_SNAP_DISTANCE * JOIN_SNAP_DISTANCE;
-        int ci = (int) Math.floor((x + halfRegion) / ROUTING_CELL_SIZE);
-        int cj = (int) Math.floor((z + halfRegion) / ROUTING_CELL_SIZE);
-        for (int dj = -2; dj <= 2; dj++) {
-            for (int di = -2; di <= 2; di++) {
-                List<float[]> points = highwayPointsByCell.get(((long) (ci + di) << 32) ^ (cj + dj));
-                if (points == null) {
-                    continue;
-                }
-                for (float[] point : points) {
-                    float dx = point[0] - x;
-                    float dz = point[1] - z;
-                    float distance = dx * dx + dz * dz;
-                    if (distance < bestDistance) {
-                        bestDistance = distance;
-                        best = point;
-                    }
-                }
-            }
-        }
-        return best;
     }
 
     // ==========================================
@@ -540,14 +519,14 @@ public class RoadNetworkBuilder {
         PerlinNoise wanderNoise = new PerlinNoise(seed + 97531L);
 
         for (SettlementManager.Settlement settlement : settlementManager.getSettlements()) {
+            // Laid out flat in the town's own frame (x east, z south) and lifted along the curve
+            SphereFrame frame = SphereFrame.at(settlement.centre);
             float extent = settlement.radiusAtUrbanness(STREET_URBANNESS);
             float heading = streetRand.nextFloat() * (float) Math.PI;
             // On a hillside the streets run along the slope, the cross streets up it
             float span = Math.max(ROAD_STEP * 2f, extent * 0.5f);
-            float gx = TerrainMesh.getLayeredHeight(settlement.x + span, settlement.z, terrainNoise)
-                    - TerrainMesh.getLayeredHeight(settlement.x - span, settlement.z, terrainNoise);
-            float gz = TerrainMesh.getLayeredHeight(settlement.x, settlement.z + span, terrainNoise)
-                    - TerrainMesh.getLayeredHeight(settlement.x, settlement.z - span, terrainNoise);
+            float gx = height(frame.toSphere(span, 0.0, 0.0)) - height(frame.toSphere(-span, 0.0, 0.0));
+            float gz = height(frame.toSphere(0.0, 0.0, span)) - height(frame.toSphere(0.0, 0.0, -span));
             if (Math.hypot(gx, gz) / (2f * span) > 0.035f) heading = (float) Math.atan2(gz, gx) + (float) Math.PI * 0.5f;
             float phaseA = streetRand.nextFloat();
             float phaseB = streetRand.nextFloat();
@@ -555,7 +534,7 @@ public class RoadNetworkBuilder {
                 continue;
             }
 
-                        int nationId = nationManager.getNationAtWorld(settlement.x, settlement.z, totalRegionWidth);
+                        int nationId = nationManager.getNationAt(settlement.direction);
             float[] style = streetStyles.getOrDefault(nationId, new float[] { 450.0f, 1.2f, 30.0f });
             // Each settlement has its own character within its nation's tendency: some are
             // strict grids, some wind like old villages, with their own block size and how
@@ -573,14 +552,14 @@ public class RoadNetworkBuilder {
             float blockSize = style[0] * (0.75f + streetRand.nextFloat() * 0.5f);
             float blockAspect = style[1] * (0.85f + streetRand.nextFloat() * 0.3f);
 
-            layStreetFamily(settlement, extent, heading, blockSize, phaseA, wander, wanderFrequency, wanderNoise);
-            layStreetFamily(settlement, extent, heading + (float) Math.PI * 0.5f, blockSize * blockAspect,
+            layStreetFamily(settlement, frame, extent, heading, blockSize, phaseA, wander, wanderFrequency, wanderNoise);
+            layStreetFamily(settlement, frame, extent, heading + (float) Math.PI * 0.5f, blockSize * blockAspect,
                     phaseB, wander, wanderFrequency, wanderNoise);
         }
     }
 
     /** One set of parallel streets across the settlement, cut wherever it leaves the urban area or meets water. */
-    private void layStreetFamily(SettlementManager.Settlement settlement, float extent, float heading,
+    private void layStreetFamily(SettlementManager.Settlement settlement, SphereFrame frame, float extent, float heading,
                                                                   float spacing, float phase, float wander, float wanderFrequency, PerlinNoise wanderNoise) {
         float dirX = (float) Math.cos(heading);
         float dirZ = (float) Math.sin(heading);
@@ -595,27 +574,31 @@ public class RoadNetworkBuilder {
             }
             float noiseRow = line * 7.31f + heading * 3.17f;
 
-            List<float[]> run = new ArrayList<>();
+            List<SpherePosition> run = new ArrayList<>();
+            float lastHeight = 0f;
             for (float t = -extent; t <= extent + 0.001f; t += ROAD_STEP) {
                                 float drift = wander * wanderNoise.eval(t * wanderFrequency, noiseRow);
-                float x = settlement.x + dirX * t + sideX * (offset + drift);
-                float z = settlement.z + dirZ * t + sideZ * (offset + drift);
+                float x = dirX * t + sideX * (offset + drift);
+                float z = dirZ * t + sideZ * (offset + drift);
+                SpherePosition point = frame.toSphere(x, 0.0, z);
+                GeodesicChunkGrid.Direction direction = SphereMath.direction(point);
 
-                float height = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
-                boolean inTown = settlementManager.getUrbanness(x, z) >= STREET_URBANNESS
-                        && settlementManager.dominantSettlementAt(x, z) == settlement
+                float height = height(point);
+                boolean inTown = settlementManager.getUrbanness(direction) >= STREET_URBANNESS
+                        && settlementManager.dominantSettlementAt(direction) == settlement
                         && height > seaLevelHeight + 0.5f;
                 // Too steep from the last point: the street stops short of the climb
                 if (inTown && !run.isEmpty()) {
-                    float[] last = run.get(run.size() - 1);
-                    float climb = Math.abs(height - TerrainMesh.getLayeredHeight(last[0], last[1], terrainNoise));
-                    if (climb > MAX_STREET_GRADE * (float) Math.hypot(x - last[0], z - last[1])) {
+                    SpherePosition last = run.get(run.size() - 1);
+                    float climb = Math.abs(height - lastHeight);
+                    if (climb > MAX_STREET_GRADE * (float) SphereMath.distance(point, last)) {
                         emitStreet(run);
                         run = new ArrayList<>();
                     }
                 }
                 if (inTown) {
-                    run.add(new float[] { x, z });
+                    run.add(point);
+                    lastHeight = height;
                 } else {
                     emitStreet(run);
                     run = new ArrayList<>();
@@ -625,13 +608,13 @@ public class RoadNetworkBuilder {
         }
     }
 
-    private void emitStreet(List<float[]> run) {
+    private void emitStreet(List<SpherePosition> run) {
         if (run.size() < MIN_STREET_POINTS) {
             return;
         }
         RoadPath path = new RoadPath(RoadPath.RoadClass.STREET);
-        for (float[] point : run) {
-            path.points.add(groundPoint(point[0], point[1]));
+        for (SpherePosition point : run) {
+            path.points.add(ground(point));
         }
         roads.add(path);
     }
@@ -669,15 +652,14 @@ public class RoadNetworkBuilder {
                 continue;
             }
             int index = Math.max(1, Math.min(highway.points.size() - 1, pick));
-            Vector3 origin = highway.points.get(index);
-            if (settlementManager.getUrbanness(origin.x, origin.z) > LANE_START_MAX_URBANNESS) {
+            SpherePosition origin = highway.points.get(index);
+            if (settlementManager.getUrbanness(origin) > LANE_START_MAX_URBANNESS) {
                 continue;
             }
-            Vector3 previous = highway.points.get(index - 1);
-            float along = (float) Math.atan2(origin.z - previous.z, origin.x - previous.x);
+            float along = (float) headingFrom(highway.points.get(index - 1), origin);
             float side = laneRand.nextBoolean() ? 1.0f : -1.0f;
             float heading = along + side * ((float) Math.PI * 0.5f + (laneRand.nextFloat() - 0.5f) * 0.9f);
-            growLane(origin.x, origin.z, heading, highwayIndex, laneRand, 0);
+            growLane(origin, heading, highwayIndex, laneRand, 0);
         }
 
         // Each settlement also sends lanes out from the streets at its edge towards other roads
@@ -686,11 +668,13 @@ public class RoadNetworkBuilder {
             float edge = Math.max(ROAD_STEP, settlement.radiusAtUrbanness(LANE_START_MAX_URBANNESS));
             for (int lane = 0; lane < laneCount; lane++) {
                 float heading = laneRand.nextFloat() * (float) Math.PI * 2.0f;
-                float edgeX = settlement.x + (float) Math.cos(heading) * edge;
-                float edgeZ = settlement.z + (float) Math.sin(heading) * edge;
-                RoadHit anchor = nearestRoad(edgeX, edgeZ, edge, -1, null, -1.0f);
+                SpherePosition edgePoint = SphereMath.move(settlement.centre, heading, edge);
+                RoadHit anchor = nearestRoad(edgePoint, edge, -1, Double.NaN, -1.0f);
                 if (anchor != null) {
-                    growLane(anchor.x, anchor.z, heading, anchor.pathIndex, laneRand, 0);
+                    // (still heading out from the middle, as seen from the edge)
+                    double outward = SphereMath.carryHeading(settlement.centre, edgePoint, heading);
+                    growLane(anchor.point, (float) SphereMath.carryHeading(edgePoint, anchor.point, outward),
+                            anchor.pathIndex, laneRand, 0);
                 }
             }
         }
@@ -700,42 +684,41 @@ public class RoadNetworkBuilder {
      * Wanders from a point on one road towards a point on another and keeps
      * the lane only if it arrives, so lanes never end in open country.
      */
-    private boolean growLane(float startX, float startZ, float heading, int originPath, Random random, int depth) {
-        float[] target = pickLaneTarget(startX, startZ, heading, originPath, random);
+    private boolean growLane(SpherePosition start, float heading, int originPath, Random random, int depth) {
+        SpherePosition target = pickLaneTarget(start, heading, originPath, random);
         if (target == null) {
             return false;
         }
-        float targetDistance = (float) Math.hypot(target[0] - startX, target[1] - startZ);
+        float targetDistance = (float) SphereMath.distance(start, target);
         int maxSteps = (int) (targetDistance / ROAD_STEP * 2.0f) + 6;
 
         RoadPath path = new RoadPath(RoadPath.RoadClass.LANE);
-        path.points.add(groundPoint(startX, startZ));
-        float x = startX;
-        float z = startZ;
+        path.points.add(ground(start));
+        SpherePosition at = start;
         boolean joined = false;
 
         for (int step = 0; step < maxSteps && !joined; step++) {
-            float desired = (float) Math.atan2(target[1] - z, target[0] - x);
+            float desired = (float) SphereMath.heading(at, target);
             float turn = wrapAngle(desired - heading) * LANE_STEERING;
             turn = Math.max(-0.35f, Math.min(0.35f, turn));
             heading += turn + (random.nextFloat() - 0.5f) * LANE_WANDER;
-            heading = flattestHeading(x, z, heading);
-            x += (float) Math.cos(heading) * ROAD_STEP;
-            z += (float) Math.sin(heading) * ROAD_STEP;
+            heading = flattestHeading(at, heading);
+            SpherePosition next = SphereMath.move(at, heading, ROAD_STEP);
+            heading = (float) SphereMath.carryHeading(at, next, heading);
+            at = next;
 
-            if (Math.abs(x) > halfRegion || Math.abs(z) > halfRegion
-                    || TerrainMesh.getLayeredHeight(x, z, terrainNoise) <= seaLevelHeight + 0.5f) {
+            if (height(at) <= seaLevelHeight + 0.5f) {
                 return false;
             }
 
             // Leave the road we set out from before we can join anything
             int excluded = step < 4 ? originPath : -1;
-            RoadHit hit = nearestRoad(x, z, LANE_JOIN_DISTANCE, excluded, null, -1.0f);
+            RoadHit hit = nearestRoad(at, LANE_JOIN_DISTANCE, excluded, Double.NaN, -1.0f);
             if (hit != null) {
-                path.points.add(groundPoint(hit.x, hit.z));
+                path.points.add(ground(hit.point));
                 joined = true;
             } else {
-                path.points.add(groundPoint(x, z));
+                path.points.add(ground(at));
             }
         }
         if (!joined || path.points.size() < 3) {
@@ -748,38 +731,33 @@ public class RoadNetworkBuilder {
 
         if (depth < 1 && path.points.size() >= 12 && random.nextFloat() < 0.5f) {
             int branchIndex = 3 + random.nextInt(path.points.size() - 6);
-            Vector3 branchStart = path.points.get(branchIndex);
-            Vector3 before = path.points.get(branchIndex - 1);
-            float along = (float) Math.atan2(branchStart.z - before.z, branchStart.x - before.x);
+            SpherePosition branchStart = path.points.get(branchIndex);
+            float along = (float) headingFrom(path.points.get(branchIndex - 1), branchStart);
             float branchHeading = along + (random.nextBoolean() ? 1.0f : -1.0f) * (0.9f + random.nextFloat() * 0.6f);
-            growLane(branchStart.x, branchStart.z, branchHeading, laneIndex, random, depth + 1);
+            growLane(branchStart, branchHeading, laneIndex, random, depth + 1);
         }
         return true;
     }
 
     /** A point on some other road, a sensible distance away and roughly in the direction of travel. */
-    private float[] pickLaneTarget(float x, float z, float heading, int originPath, Random random) {
+    private SpherePosition pickLaneTarget(SpherePosition from, float heading, int originPath, Random random) {
         if (indexedPoints.isEmpty()) {
             return null;
         }
-        float headingX = (float) Math.cos(heading);
-        float headingZ = (float) Math.sin(heading);
         for (int attempt = 0; attempt < 60; attempt++) {
             int[] entry = indexedPoints.get(random.nextInt(indexedPoints.size()));
             if (entry[0] == originPath) {
                 continue;
             }
-            Vector3 point = roads.get(entry[0]).points.get(entry[1]);
-            float dx = point.x - x;
-            float dz = point.z - z;
-            float distance = (float) Math.sqrt(dx * dx + dz * dz);
+            SpherePosition point = roads.get(entry[0]).points.get(entry[1]);
+            double distance = SphereMath.distance(from, point);
             if (distance < LANE_TARGET_MIN_DISTANCE || distance > LANE_TARGET_MAX_DISTANCE) {
                 continue;
             }
-            if ((dx * headingX + dz * headingZ) / distance < 0.2f) {
+            if (Math.cos(SphereMath.heading(from, point) - heading) < 0.2) {
                 continue;
             }
-            return new float[] { point.x, point.z };
+            return point;
         }
         return null;
     }
@@ -793,6 +771,8 @@ public class RoadNetworkBuilder {
     private static final float TRACK_MAX_URBANNESS = 0.22f;
     // How far ahead a track looks for open country to head into, and what counts as open
     private static final float TRACK_LOOKAHEAD = 1800.0f, TRACK_CLEARANCE = 700.0f;
+    // Tracks peter out short of the far north and south (the map stops at 75 degrees)
+    private static final double TRACK_MAX_LATITUDE = Math.toRadians(73.0);
 
     /**
      * Dirt tracks branching off the highways and lanes (and each other) and running a long
@@ -808,17 +788,15 @@ public class RoadNetworkBuilder {
             RoadPath source = roads.get(entry[0]);
             if (entry[1] < 1 || entry[1] >= source.points.size()) continue;
             if (source.roadClass == RoadPath.RoadClass.STREET && rand.nextFloat() < 0.7f) continue;
-            Vector3 origin = source.points.get(entry[1]);
-            if (settlementManager.getUrbanness(origin.x, origin.z) > TRACK_MAX_URBANNESS) continue;
-            Vector3 previous = source.points.get(entry[1] - 1);
-            float along = (float) Math.atan2(origin.z - previous.z, origin.x - previous.x);
+            SpherePosition origin = source.points.get(entry[1]);
+            if (settlementManager.getUrbanness(origin) > TRACK_MAX_URBANNESS) continue;
+            float along = (float) headingFrom(source.points.get(entry[1] - 1), origin);
             // Out to whichever side has open country ahead (if neither, usually not at all)
             float best = Float.NaN;
             for (float side : rand.nextBoolean() ? new float[] { 1f, -1f } : new float[] { -1f, 1f }) {
                 float heading = along + side * ((float) Math.PI * 0.5f + (rand.nextFloat() - 0.5f) * 0.8f);
-                float aheadX = origin.x + (float) Math.cos(heading) * TRACK_LOOKAHEAD;
-                float aheadZ = origin.z + (float) Math.sin(heading) * TRACK_LOOKAHEAD;
-                if (nearestRoad(aheadX, aheadZ, TRACK_CLEARANCE, -1, null, -1.0f) == null) {
+                SpherePosition ahead = SphereMath.move(origin, heading, TRACK_LOOKAHEAD);
+                if (nearestRoad(ahead, TRACK_CLEARANCE, -1, Double.NaN, -1.0f) == null) {
                     best = heading;
                     break;
                 }
@@ -827,7 +805,7 @@ public class RoadNetworkBuilder {
                 if (rand.nextFloat() < 0.8f) continue;
                 best = along + (rand.nextBoolean() ? 1f : -1f) * (float) Math.PI * 0.5f;
             }
-            if (growTrack(origin.x, origin.z, best, entry[0], rand, 8)) made++;
+            if (growTrack(origin, best, entry[0], rand, 8)) made++;
         }
     }
 
@@ -850,11 +828,9 @@ public class RoadNetworkBuilder {
         this.nationRichness = richness;
     }
 
-    /** How well off the people are at a point on an island the main roads never reached; NaN anywhere else. */
-    public float islandRichnessAt(float x, float z) {
-        int ci = (int) Math.floor((x + halfRegion) / ROUTING_CELL_SIZE), cj = (int) Math.floor((z + halfRegion) / ROUTING_CELL_SIZE);
-        if (ci < 0 || cj < 0 || ci >= routingResolution || cj >= routingResolution) return Float.NaN;
-        return islandRichness[cj * routingResolution + ci];
+    /** How well off the people are at a place on an island the main roads never reached; NaN anywhere else. */
+    public float islandRichnessAt(SpherePosition place) {
+        return islandRichness[(int) routingGrid.cellAt(place).id()];
     }
 
     /**
@@ -870,8 +846,8 @@ public class RoadNetworkBuilder {
         for (int label : landmass) labels = Math.max(labels, label + 1);
         boolean[] hasRoad = new boolean[labels];
         for (RoadPath road : roads) {
-            for (Vector3 point : road.points) {
-                int cell = nearestPassableCell(point.x, point.z);
+            for (SpherePosition point : road.points) {
+                int cell = nearestPassableCell(point);
                 if (cell >= 0 && landmass[cell] >= 0) hasRoad[landmass[cell]] = true;
             }
         }
@@ -882,39 +858,34 @@ public class RoadNetworkBuilder {
         }
         Random rand = new Random(seed + 7171717L);
         int made = 0;
-        float clip = Planet.clipHalfHeight() * 0.95f;
         for (int k = 0; k < labels; k++) {
             List<Integer> island = cells.get(k);
             if (island.isEmpty() || rand.nextFloat() >= ISLAND_TRACK_CHANCE) continue;
             int middle = island.get(island.size() / 2);
-            int nation = nationManager.getNationAtWorld(cellCentreX(middle % routingResolution), cellCentreZ(middle / routingResolution), totalRegionWidth);
+            int nation = nationManager.getNationAt(cellCentre[middle]);
             float wealth = (float) (nationRichness.applyAsDouble(nation) * Math.exp(rand.nextGaussian() * ISLAND_WEALTH_SPREAD + ISLAND_WEALTH_SHIFT));
             wealth = Math.max(0.03f, Math.min(1f, wealth));
             // (and the shore cells round it, where its roads and houses can reach)
             for (int c : island) {
-                int ci = c % routingResolution, cj = c / routingResolution;
-                for (int dj = -1; dj <= 1; dj++) {
-                    for (int di = -1; di <= 1; di++) {
-                        int ni = ci + di, nj = cj + dj;
-                        if (ni < 0 || nj < 0 || ni >= routingResolution || nj >= routingResolution) continue;
-                        int n = nj * routingResolution + ni;
-                        if (n == c || (!cellPassable[n] && Float.isNaN(islandRichness[n]))) islandRichness[n] = wealth;
-                    }
+                islandRichness[c] = wealth;
+                for (int n : cellNeighbours[c]) {
+                    if (!cellPassable[n] && Float.isNaN(islandRichness[n])) islandRichness[n] = wealth;
                 }
             }
             RoadPath.RoadClass roadClass = wealth >= ISLAND_TARMAC_RICHNESS ? RoadPath.RoadClass.LANE : RoadPath.RoadClass.DIRT;
             int wanted = 1 + Math.min(4, island.size() / 8);
             for (int t = 0, attempts = 0; t < wanted && attempts < wanted * 6; attempts++) {
                 int cell = island.get(rand.nextInt(island.size()));
-                float x = cellCentreX(cell % routingResolution) + (rand.nextFloat() - 0.5f) * ROUTING_CELL_SIZE * 0.6f;
-                float z = cellCentreZ(cell / routingResolution) + (rand.nextFloat() - 0.5f) * ROUTING_CELL_SIZE * 0.6f;
-                if (Math.abs(x) > halfRegion || Math.abs(z) > clip) continue;
-                if (TerrainMesh.getLayeredHeight(x, z, terrainNoise) <= seaLevelHeight + 2f) continue;
-                if (settlementManager.getUrbanness(x, z) > TRACK_MAX_URBANNESS) continue;
+                float jx = (rand.nextFloat() - 0.5f) * cellSpacing * 0.6f;
+                float jz = (rand.nextFloat() - 0.5f) * cellSpacing * 0.6f;
+                SpherePosition start = SphereFrame.at(SphereMath.atAltitude(cellCentre[cell], 0.0)).toSphere(jx, 0.0, jz);
+                if (Math.abs(Planet.latitude(start)) > TRACK_MAX_LATITUDE) continue;
+                if (height(start) <= seaLevelHeight + 2f) continue;
+                if (settlementManager.getUrbanness(start) > TRACK_MAX_URBANNESS) continue;
                 // Out one way, then the other from the same spot, so it crosses the island
                 float heading = rand.nextFloat() * (float) Math.PI * 2f;
-                boolean one = growIslandRoad(x, z, heading, -1, rand, roadClass);
-                boolean other = growIslandRoad(x, z, heading + (float) Math.PI, one ? roads.size() - 1 : -1, rand, roadClass);
+                boolean one = growIslandRoad(start, heading, -1, rand, roadClass);
+                boolean other = growIslandRoad(start, heading + (float) Math.PI, one ? roads.size() - 1 : -1, rand, roadClass);
                 if (one || other) {
                     t++;
                     made++;
@@ -924,45 +895,46 @@ public class RoadNetworkBuilder {
         System.out.printf("[ROADS] %d roads on islands the main network missed%n", made);
     }
 
-    private boolean growIslandRoad(float startX, float startZ, float heading, int originPath, Random random, RoadPath.RoadClass roadClass) {
-        if (!growTrack(startX, startZ, heading, originPath, random, 3, roadClass)) return false;
+    private boolean growIslandRoad(SpherePosition start, float heading, int originPath, Random random, RoadPath.RoadClass roadClass) {
+        if (!growTrack(start, heading, originPath, random, 3, roadClass)) return false;
         roads.get(roads.size() - 1).island = true;
         return true;
     }
 
-    private boolean growTrack(float startX, float startZ, float heading, int originPath, Random random, int minPoints) {
-        return growTrack(startX, startZ, heading, originPath, random, minPoints, RoadPath.RoadClass.DIRT);
+    private boolean growTrack(SpherePosition start, float heading, int originPath, Random random, int minPoints) {
+        return growTrack(start, heading, originPath, random, minPoints, RoadPath.RoadClass.DIRT);
     }
 
-    private boolean growTrack(float startX, float startZ, float heading, int originPath, Random random, int minPoints, RoadPath.RoadClass roadClass) {
+    private boolean growTrack(SpherePosition start, float heading, int originPath, Random random, int minPoints, RoadPath.RoadClass roadClass) {
         float length = TRACK_MIN_LENGTH + random.nextFloat() * (TRACK_MAX_LENGTH - TRACK_MIN_LENGTH);
         int steps = (int) (length / ROAD_STEP);
         RoadPath path = new RoadPath(roadClass);
-        path.points.add(groundPoint(startX, startZ));
-        float x = startX, z = startZ;
+        path.points.add(ground(start));
+        SpherePosition at = start;
+        float atHeight = height(at);
         float drift = (random.nextFloat() - 0.5f) * 0.04f;
-        float clip = Planet.clipHalfHeight() * 0.95f;
-        int startNation = nationManager.getNationAtWorld(startX, startZ, totalRegionWidth);
+        int startNation = nationManager.getNationAt(start);
         for (int step = 0; step < steps; step++) {
             heading += drift + (random.nextFloat() - 0.5f) * 0.45f;
-            heading = flattestHeading(x, z, heading);
-            float nx = x + (float) Math.cos(heading) * ROAD_STEP, nz = z + (float) Math.sin(heading) * ROAD_STEP;
-            float height = TerrainMesh.getLayeredHeight(nx, nz, terrainNoise);
-            // Peters out at the shore, the chart's edge, steep ground or the edge of a town
-            if (Math.abs(nx) > halfRegion || Math.abs(nz) > clip || height <= seaLevelHeight + 0.5f) break;
-            if (Math.abs(height - TerrainMesh.getLayeredHeight(x, z, terrainNoise)) > ROAD_STEP * 0.22f) break;
-            if (settlementManager.getUrbanness(nx, nz) > TRACK_MAX_URBANNESS + 0.08f) break;
+            heading = flattestHeading(at, heading);
+            SpherePosition next = SphereMath.move(at, heading, ROAD_STEP);
+            float height = height(next);
+            // Peters out at the shore, far north or south, on steep ground or at the edge of a town
+            if (Math.abs(Planet.latitude(next)) > TRACK_MAX_LATITUDE || height <= seaLevelHeight + 0.5f) break;
+            if (Math.abs(height - atHeight) > ROAD_STEP * 0.22f) break;
+            if (settlementManager.getUrbanness(next) > TRACK_MAX_URBANNESS + 0.08f) break;
             // and at a fenced border
-            if (hostile.test(startNation, nationManager.getNationAtWorld(nx, nz, totalRegionWidth))) break;
-            x = nx;
-            z = nz;
+            if (hostile.test(startNation, nationManager.getNationAt(next))) break;
+            heading = (float) SphereMath.carryHeading(at, next, heading);
+            at = next;
+            atHeight = height;
             // Meeting another road: on to it, and done
-            RoadHit hit = nearestRoad(x, z, LANE_JOIN_DISTANCE, step < 5 ? originPath : -1, null, -1.0f);
+            RoadHit hit = nearestRoad(at, LANE_JOIN_DISTANCE, step < 5 ? originPath : -1, Double.NaN, -1.0f);
             if (hit != null && step >= 3) {
-                path.points.add(groundPoint(hit.x, hit.z));
+                path.points.add(ground(hit.point));
                 break;
             }
-            path.points.add(groundPoint(x, z));
+            path.points.add(ground(at));
         }
         if (path.points.size() < minPoints) return false;
         roads.add(path);
@@ -992,35 +964,31 @@ public class RoadNetworkBuilder {
 
     private void closeEnd(int pathIndex, boolean atStart) {
         RoadPath path = roads.get(pathIndex);
-        List<Vector3> points = path.points;
-        Vector3 end = atStart ? points.get(0) : points.get(points.size() - 1);
-        Vector3 inner = atStart ? points.get(1) : points.get(points.size() - 2);
-        float dirX = end.x - inner.x;
-        float dirZ = end.z - inner.z;
-        float length = (float) Math.sqrt(dirX * dirX + dirZ * dirZ);
-        if (length < 1e-3f) {
+        List<SpherePosition> points = path.points;
+        SpherePosition end = atStart ? points.get(0) : points.get(points.size() - 1);
+        SpherePosition inner = atStart ? points.get(1) : points.get(points.size() - 2);
+        if (SphereMath.distance(end, inner) < 1e-3) {
             return;
         }
-        dirX /= length;
-        dirZ /= length;
+        // The way the road is going as it ends
+        double heading = headingFrom(inner, end);
 
         // Already running into another road?
-        RoadHit touching = nearestRoad(end.x, end.z, RoadPath.RoadClass.HIGHWAY.width * 0.5f + 2.0f, pathIndex, null, -1.0f);
+        RoadHit touching = nearestRoad(end, RoadPath.RoadClass.HIGHWAY.width * 0.5f + 2.0f, pathIndex, Double.NaN, -1.0f);
         if (touching != null && touching.distance <= roads.get(touching.pathIndex).roadClass.width * 0.5f + 2.0f) {
             return;
         }
 
         float reach = path.roadClass == RoadPath.RoadClass.HIGHWAY ? HIGHWAY_JOIN_DISTANCE : STREET_JOIN_DISTANCE;
-        RoadHit ahead = nearestRoad(end.x, end.z, reach, pathIndex, new float[] { dirX, dirZ }, JOIN_CONE_COS);
+        RoadHit ahead = nearestRoad(end, reach, pathIndex, heading, JOIN_CONE_COS);
         if (ahead != null) {
-            List<Vector3> connector = new ArrayList<>();
+            List<SpherePosition> connector = new ArrayList<>();
             int steps = Math.max(1, (int) Math.ceil(ahead.distance / ROAD_STEP));
             for (int step = 1; step <= steps; step++) {
-                float t = (float) step / steps;
-                connector.add(groundPoint(end.x + (ahead.x - end.x) * t, end.z + (ahead.z - end.z) * t));
+                connector.add(ground(SphereMath.slerp(end, ahead.point, (double) step / steps)));
             }
             if (atStart) {
-                for (Vector3 point : connector) {
+                for (SpherePosition point : connector) {
                     points.add(0, point);
                 }
             } else {
@@ -1032,18 +1000,17 @@ public class RoadNetworkBuilder {
 
         // Heading for the sea? Run the road on to the water's edge
         for (float d = SHORE_SEARCH_STEP; d <= SHORE_SEARCH_DISTANCE; d += SHORE_SEARCH_STEP) {
-            if (TerrainMesh.getLayeredHeight(end.x + dirX * d, end.z + dirZ * d, terrainNoise) > seaLevelHeight) {
+            if (height(SphereMath.move(end, heading, d)) > seaLevelHeight) {
                 continue;
             }
             float reachShore = d - SHORE_STOP_BACK;
-            List<Vector3> toShore = new ArrayList<>();
+            List<SpherePosition> toShore = new ArrayList<>();
             int steps = Math.max(1, (int) Math.ceil(reachShore / ROAD_STEP));
             for (int step = 1; step <= steps && reachShore > 0; step++) {
-                float t = reachShore * step / steps;
-                toShore.add(groundPoint(end.x + dirX * t, end.z + dirZ * t));
+                toShore.add(ground(SphereMath.move(end, heading, reachShore * step / steps)));
             }
             if (atStart) {
-                for (Vector3 point : toShore) {
+                for (SpherePosition point : toShore) {
                     points.add(0, point);
                 }
             } else {
@@ -1061,108 +1028,66 @@ public class RoadNetworkBuilder {
     // ==========================================
 
     private static final class RoadHit {
-        private float x;
-        private float z;
-        private float distance;
+        private SpherePosition point;
+        private double distance;
         private int pathIndex;
     }
 
     /** (Re)indexes every segment of a path, replacing any entries it had before. */
     private void indexPath(int pathIndex) {
-        List<Vector3> points = roads.get(pathIndex).points;
-        List<Long> previousCells = indexedCellsByPath.remove(pathIndex);
-        if (previousCells != null) {
-            for (long key : previousCells) {
-                List<int[]> bucket = segmentIndex.get(key);
-                if (bucket != null) {
-                    bucket.removeIf(entry -> entry[0] == pathIndex);
-                }
+        List<SpherePosition> points = roads.get(pathIndex).points;
+        List<Filed> previous = filedByPath.remove(pathIndex);
+        if (previous != null) {
+            for (Filed filed : previous) {
+                segmentIndex.remove(filed.position(), filed.segment());
             }
             indexedPoints.removeIf(entry -> entry[0] == pathIndex);
         }
 
-        List<Long> cells = new ArrayList<>();
+        List<Filed> filed = new ArrayList<>();
         for (int i = 0; i < points.size(); i++) {
             indexedPoints.add(new int[] { pathIndex, i });
             if (i == points.size() - 1) {
                 break;
             }
-            Vector3 a = points.get(i);
-            Vector3 b = points.get(i + 1);
-            int minI = indexCell(Math.min(a.x, b.x));
-            int maxI = indexCell(Math.max(a.x, b.x));
-            int minJ = indexCell(Math.min(a.z, b.z));
-            int maxJ = indexCell(Math.max(a.z, b.z));
-            for (int j = minJ; j <= maxJ; j++) {
-                for (int k = minI; k <= maxI; k++) {
-                    long key = indexKey(k, j);
-                    segmentIndex.computeIfAbsent(key, ignored -> new ArrayList<>()).add(new int[] { pathIndex, i });
-                    cells.add(key);
-                }
-            }
+            SpherePosition a = points.get(i);
+            SpherePosition b = points.get(i + 1);
+            SpherePosition middle = SphereMath.slerp(a, b, 0.5);
+            SegmentRef segment = new SegmentRef(pathIndex, i);
+            segmentIndex.add(middle, SphereMath.distance(a, b) * 0.5, segment);
+            filed.add(new Filed(middle, segment));
         }
-        indexedCellsByPath.put(pathIndex, cells);
+        filedByPath.put(pathIndex, filed);
     }
 
     /**
-     * Closest point on any indexed road within maxDistance, skipping one path.
-     * With a direction, only points ahead within the cone (cosine limit) count.
+     * Closest point on any indexed road within maxDistance (along the surface), skipping one
+     * path. With a heading (not NaN), only points ahead within the cone (cosine limit) count.
      */
-    private RoadHit nearestRoad(float x, float z, float maxDistance, int excludedPath, float[] direction, float coneCos) {
-        RoadHit best = null;
-        int minI = indexCell(x - maxDistance);
-        int maxI = indexCell(x + maxDistance);
-        int minJ = indexCell(z - maxDistance);
-        int maxJ = indexCell(z + maxDistance);
-        for (int j = minJ; j <= maxJ; j++) {
-            for (int k = minI; k <= maxI; k++) {
-                List<int[]> bucket = segmentIndex.get(indexKey(k, j));
-                if (bucket == null) {
-                    continue;
-                }
-                for (int[] entry : bucket) {
-                    if (entry[0] == excludedPath) {
-                        continue;
-                    }
-                    List<Vector3> points = roads.get(entry[0]).points;
-                    Vector3 a = points.get(entry[1]);
-                    Vector3 b = points.get(entry[1] + 1);
-                    float dx = b.x - a.x;
-                    float dz = b.z - a.z;
-                    float lengthSquared = dx * dx + dz * dz;
-                    float t = lengthSquared > 0.0f ? ((x - a.x) * dx + (z - a.z) * dz) / lengthSquared : 0.0f;
-                    t = Math.max(0.0f, Math.min(1.0f, t));
-                    float px = a.x + dx * t;
-                    float pz = a.z + dz * t;
-                    float offsetX = px - x;
-                    float offsetZ = pz - z;
-                    float distance = (float) Math.sqrt(offsetX * offsetX + offsetZ * offsetZ);
-                    if (distance > maxDistance || (best != null && distance >= best.distance)) {
-                        continue;
-                    }
-                    if (direction != null && (distance < 1e-3f
-                            || (offsetX * direction[0] + offsetZ * direction[1]) / distance < coneCos)) {
-                        continue;
-                    }
-                    if (best == null) {
-                        best = new RoadHit();
-                    }
-                    best.x = px;
-                    best.z = pz;
-                    best.distance = distance;
-                    best.pathIndex = entry[0];
-                }
+    private RoadHit nearestRoad(SpherePosition place, float maxDistance, int excludedPath, double heading, float coneCos) {
+        RoadHit[] best = { null };
+        segmentIndex.forEachNear(place, maxDistance, segment -> {
+            if (segment.path() == excludedPath) {
+                return;
             }
-        }
-        return best;
-    }
-
-    private int indexCell(float coordinate) {
-        return (int) Math.floor((coordinate + halfRegion) / INDEX_CELL_SIZE);
-    }
-
-    private static long indexKey(int i, int j) {
-        return ((long) i << 32) | (j & 0xFFFFFFFFL);
+            List<SpherePosition> points = roads.get(segment.path()).points;
+            SpherePosition onRoad = SphereMath.nearestOnArc(place, points.get(segment.index()), points.get(segment.index() + 1));
+            double distance = SphereMath.distance(place, onRoad);
+            if (distance > maxDistance || (best[0] != null && distance >= best[0].distance)) {
+                return;
+            }
+            if (!Double.isNaN(heading) && (distance < 1e-3
+                    || Math.cos(SphereMath.heading(place, onRoad) - heading) < coneCos)) {
+                return;
+            }
+            if (best[0] == null) {
+                best[0] = new RoadHit();
+            }
+            best[0].point = onRoad;
+            best[0].distance = distance;
+            best[0].pathIndex = segment.path();
+        });
+        return best[0];
     }
 
     private static float wrapAngle(float angle) {
@@ -1179,66 +1104,67 @@ public class RoadNetworkBuilder {
     //              GEOMETRY HELPERS
     // ==========================================
 
-    /** Corner cutting that keeps both end points fixed. */
-    private static List<float[]> chaikin(List<float[]> points) {
+    /** Corner cutting along great circles that keeps both end points fixed. */
+    private static List<SpherePosition> chaikin(List<SpherePosition> points) {
         if (points.size() < 3) {
             return points;
         }
-        List<float[]> result = new ArrayList<>();
+        List<SpherePosition> result = new ArrayList<>();
         result.add(points.get(0));
         for (int i = 0; i < points.size() - 1; i++) {
-            float[] a = points.get(i);
-            float[] b = points.get(i + 1);
+            SpherePosition a = points.get(i);
+            SpherePosition b = points.get(i + 1);
             if (i > 0) {
-                result.add(new float[] { a[0] * 0.75f + b[0] * 0.25f, a[1] * 0.75f + b[1] * 0.25f });
+                result.add(SphereMath.slerp(a, b, 0.25));
             }
             if (i < points.size() - 2) {
-                result.add(new float[] { a[0] * 0.25f + b[0] * 0.75f, a[1] * 0.25f + b[1] * 0.75f });
+                result.add(SphereMath.slerp(a, b, 0.75));
             }
         }
         result.add(points.get(points.size() - 1));
         return result;
     }
 
-    /** Re-spaces a polyline so consecutive points sit about stepLength apart. */
-    private static List<float[]> resample(List<float[]> points, float stepLength) {
-        float totalLength = 0.0f;
+    /** Re-spaces a polyline so consecutive points sit about stepLength apart along the surface. */
+    private static List<SpherePosition> resample(List<SpherePosition> points, float stepLength) {
+        double totalLength = 0.0;
         for (int i = 0; i < points.size() - 1; i++) {
-            totalLength += distance(points.get(i), points.get(i + 1));
+            totalLength += SphereMath.distance(points.get(i), points.get(i + 1));
         }
-        int stepCount = Math.max(1, Math.round(totalLength / stepLength));
-        float spacing = totalLength / stepCount;
+        int stepCount = Math.max(1, (int) Math.round(totalLength / stepLength));
+        double spacing = totalLength / stepCount;
 
-        List<float[]> result = new ArrayList<>();
+        List<SpherePosition> result = new ArrayList<>();
         result.add(points.get(0));
         int segment = 0;
-        float segmentStart = 0.0f;
+        double segmentStart = 0.0;
         for (int step = 1; step < stepCount; step++) {
-            float target = step * spacing;
+            double target = step * spacing;
             while (segment < points.size() - 2
-                    && segmentStart + distance(points.get(segment), points.get(segment + 1)) < target) {
-                segmentStart += distance(points.get(segment), points.get(segment + 1));
+                    && segmentStart + SphereMath.distance(points.get(segment), points.get(segment + 1)) < target) {
+                segmentStart += SphereMath.distance(points.get(segment), points.get(segment + 1));
                 segment++;
             }
-            float[] a = points.get(segment);
-            float[] b = points.get(segment + 1);
-            float length = distance(a, b);
-            float t = length > 0.0f ? Math.min(1.0f, (target - segmentStart) / length) : 0.0f;
-            result.add(new float[] { a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t });
+            SpherePosition a = points.get(segment);
+            SpherePosition b = points.get(segment + 1);
+            double length = SphereMath.distance(a, b);
+            double t = length > 0.0 ? Math.max(0.0, Math.min(1.0, (target - segmentStart) / length)) : 0.0;
+            result.add(SphereMath.slerp(a, b, t));
         }
         result.add(points.get(points.size() - 1));
         return result;
     }
 
     /** Splits a path where it crosses real water; short dips are kept and become causeways. */
-    private List<RoadPath> splitOverWater(List<float[]> points, RoadPath.RoadClass roadClass) {
+    private List<RoadPath> splitOverWater(List<SpherePosition> points, RoadPath.RoadClass roadClass) {
         List<RoadPath> pieces = new ArrayList<>();
         RoadPath current = new RoadPath(roadClass);
-        List<Vector3> pendingWater = new ArrayList<>();
-        for (float[] point : points) {
-            Vector3 ground = groundPoint(point[0], point[1]);
-            if (ground.y <= seaLevelHeight + 0.5f) {
-                pendingWater.add(ground);
+        List<SpherePosition> pendingWater = new ArrayList<>();
+        for (SpherePosition point : points) {
+            float height = height(point);
+            SpherePosition onGround = SphereMath.atAltitude(point, height);
+            if (height <= seaLevelHeight + 0.5f) {
+                pendingWater.add(onGround);
                 continue;
             }
             if (pendingWater.size() > MAX_CAUSEWAY_POINTS) {
@@ -1250,7 +1176,7 @@ public class RoadNetworkBuilder {
                 current.points.addAll(pendingWater);
             }
             pendingWater.clear();
-            current.points.add(ground);
+            current.points.add(onGround);
         }
         if (current.points.size() >= 2) {
             pieces.add(current);
@@ -1262,13 +1188,12 @@ public class RoadNetworkBuilder {
      * Of a few headings either side of the one wanted, the one that climbs or falls least
      * over the next step, with a little preference for turning less.
      */
-    private float flattestHeading(float x, float z, float heading) {
-        float here = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+    private float flattestHeading(SpherePosition at, float heading) {
+        float here = height(at);
         float best = heading, bestScore = Float.MAX_VALUE;
         for (float offset : new float[] { 0f, 0.3f, -0.3f, 0.6f, -0.6f, 0.95f, -0.95f }) {
             float h = heading + offset;
-            float nx = x + (float) Math.cos(h) * ROAD_STEP, nz = z + (float) Math.sin(h) * ROAD_STEP;
-            float grade = Math.abs(TerrainMesh.getLayeredHeight(nx, nz, terrainNoise) - here) / ROAD_STEP;
+            float grade = Math.abs(height(SphereMath.move(at, h, ROAD_STEP)) - here) / ROAD_STEP;
             float steep = Math.max(0f, grade - GENTLE_GRADE);
             float score = grade * grade * 8.0f + steep * steep * 300.0f + Math.abs(offset) * 0.15f;
             if (score < bestScore) {
@@ -1284,77 +1209,64 @@ public class RoadNetworkBuilder {
      * wherever that eases the climb to and from its neighbours, so the road bends round
      * steep ground; a small bending penalty keeps it from zigzagging.
      */
-    private List<float[]> easeGradients(List<float[]> points, int fixedEnds) {
+    private List<SpherePosition> easeGradients(List<SpherePosition> points, int fixedEnds) {
         int n = points.size();
         if (n < fixedEnds * 2 + 1) return points;
-        float[][] p = points.toArray(new float[0][]);
+        SpherePosition[] p = points.toArray(new SpherePosition[0]);
         float[] h = new float[n];
-        for (int i = 0; i < n; i++) h[i] = TerrainMesh.getLayeredHeight(p[i][0], p[i][1], terrainNoise);
+        for (int i = 0; i < n; i++) h[i] = height(p[i]);
         for (int pass = 0; pass < EASE_PASSES; pass++) {
             for (int i = fixedEnds; i < n - fixedEnds; i++) {
-                float[] a = p[i - 1], c = p[i + 1];
-                float tx = c[0] - a[0], tz = c[1] - a[1];
-                float tl = (float) Math.hypot(tx, tz);
-                if (tl < 1e-3f) continue;
-                float nx = -tz / tl, nz = tx / tl;
-                float midX = (a[0] + c[0]) * 0.5f, midZ = (a[1] + c[1]) * 0.5f;
-                float bestX = p[i][0], bestZ = p[i][1], bestH = h[i];
+                SpherePosition a = p[i - 1], c = p[i + 1];
+                if (SphereMath.distance(a, c) < 1e-3) continue;
+                // Sideways: square to the way from a to c, here
+                double across = headingFrom(a, c, p[i]) + Math.PI * 0.5;
+                SpherePosition middle = SphereMath.slerp(a, c, 0.5);
+                SpherePosition bestPoint = p[i];
+                float bestH = h[i];
                 float bestScore = Float.MAX_VALUE;
                 for (float offset : new float[] { 0f, -EASE_OFFSET * 0.5f, EASE_OFFSET * 0.5f, -EASE_OFFSET, EASE_OFFSET }) {
-                    float x = p[i][0] + nx * offset, z = p[i][1] + nz * offset;
-                    float height = offset == 0f ? h[i] : TerrainMesh.getLayeredHeight(x, z, terrainNoise);
+                    SpherePosition candidate = offset == 0f ? p[i] : SphereMath.move(p[i], across, offset);
+                    float height = offset == 0f ? h[i] : height(candidate);
                     if (height <= seaLevelHeight + 1.0f) continue;
-                    float la = (float) Math.hypot(x - a[0], z - a[1]), lc = (float) Math.hypot(x - c[0], z - c[1]);
+                    float la = (float) SphereMath.distance(candidate, a), lc = (float) SphereMath.distance(candidate, c);
                     float ga = Math.abs(height - h[i - 1]) / Math.max(1f, la), gc = Math.abs(h[i + 1] - height) / Math.max(1f, lc);
-                    float bend = (float) Math.hypot(x - midX, z - midZ) / ROAD_STEP;
+                    float bend = (float) SphereMath.distance(candidate, middle) / ROAD_STEP;
                     float steepA = Math.max(0f, ga - GENTLE_GRADE), steepC = Math.max(0f, gc - GENTLE_GRADE);
                     float score = (ga * ga * la + gc * gc * lc) * 10.0f + (steepA * steepA * la + steepC * steepC * lc) * 200.0f + bend * bend * 6.0f;
                     if (score < bestScore) {
                         bestScore = score;
-                        bestX = x;
-                        bestZ = z;
+                        bestPoint = candidate;
                         bestH = height;
                     }
                 }
-                p[i] = new float[] { bestX, bestZ };
+                p[i] = bestPoint;
                 h[i] = bestH;
             }
         }
-        return new ArrayList<>(java.util.Arrays.asList(p));
+        return new ArrayList<>(Arrays.asList(p));
     }
 
-    private Vector3 groundPoint(float x, float z) {
-        return new Vector3(x, TerrainMesh.getLayeredHeight(x, z, terrainNoise), z);
+    /** The heading at `to` of the way from `from` to `to` (for points close together). */
+    private static double headingFrom(SpherePosition from, SpherePosition to) {
+        return headingFrom(from, to, to);
     }
 
-    private float cellCentreX(int i) {
-        return (i + 0.5f) * ROUTING_CELL_SIZE - halfRegion;
+    /** The heading, in the frame at `at`, of the way from `from` to `to` (all close together). */
+    private static double headingFrom(SpherePosition from, SpherePosition to, SpherePosition at) {
+        return SphereFrame.at(at).headingOf(to.x() - from.x(), to.y() - from.y(), to.z() - from.z());
     }
 
-    private float cellCentreZ(int j) {
-        return (j + 0.5f) * ROUTING_CELL_SIZE - halfRegion;
+    private float height(SpherePosition place) {
+        return TerrainMesh.getLayeredHeight(place, terrainNoise);
     }
 
-    private int clampCell(int index) {
-        return Math.max(0, Math.min(routingResolution - 1, index));
+    private SpherePosition ground(SpherePosition place) {
+        return TerrainMesh.groundAt(place, terrainNoise);
     }
 
-    private long routingCellKey(float x, float z) {
-        int ci = (int) Math.floor((x + halfRegion) / ROUTING_CELL_SIZE);
-        int cj = (int) Math.floor((z + halfRegion) / ROUTING_CELL_SIZE);
-        return ((long) ci << 32) ^ cj;
-    }
-
-    private static float distance(float[] a, float[] b) {
-        float dx = b[0] - a[0];
-        float dz = b[1] - a[1];
-        return (float) Math.sqrt(dx * dx + dz * dz);
-    }
-
-    private static float distanceSquared(SettlementManager.Settlement a, SettlementManager.Settlement b) {
-        float dx = a.x - b.x;
-        float dz = a.z - b.z;
-        return dx * dx + dz * dz;
+    private static double distance(SettlementManager.Settlement a, SettlementManager.Settlement b) {
+        return SphereMath.distance(a.centre, b.centre);
     }
 
     /** Binary min-heap of int payloads keyed by float priority; duplicates allowed. */

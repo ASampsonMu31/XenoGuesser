@@ -1,8 +1,10 @@
 import java.util.ArrayList;
 import java.util.List;
-import com.xenoguesser.math.Vector3;
 
-/** One continuous polyline of road, sampled at roughly even spacing along the ground. */
+/**
+ * One continuous polyline of road on the sphere, sampled at roughly even spacing along the
+ * ground (great-circle distance); each point is on the ground, at the terrain's height.
+ */
 public class RoadPath {
     public enum RoadClass {
         // Rank orders who has priority at junctions: minor roads give way to higher ranks
@@ -22,7 +24,7 @@ public class RoadPath {
     }
 
     public final RoadClass roadClass;
-    public final List<Vector3> points = new ArrayList<>();
+    public final List<SpherePosition> points = new ArrayList<>();
     // A road on an island the main network never reached (see RoadNetworkBuilder.buildIslandTracks):
     // houses are built along it even when it's a dirt track
     public boolean island;

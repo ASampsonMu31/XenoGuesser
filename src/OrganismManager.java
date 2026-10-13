@@ -1,9 +1,9 @@
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.function.Predicate;
 import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL3;
 import com.jogamp.opengl.util.texture.Texture;
@@ -11,22 +11,24 @@ import com.xenoguesser.math.Matrix4;
 import com.xenoguesser.math.Vector3;
 
 /**
- * The world's creatures: generates a handful of bug species, populates the land around the
- * viewer with individuals of whichever species live there, walks them about, and draws them.
- *
- * Individuals belong to chunks and are recreated identically whenever their chunk comes
- * back into range, so the same place always has the same creatures.
+ * The world's creatures: generates species, populates the land around the viewer, simulates
+ * their motion, and draws them, all on the sphere. Individuals belong to geodesic cells and are
+ * recreated identically (within a round) whenever their cell comes back into range, so the same
+ * place has the same creatures; each cell has as many as its own area and the species' ranges
+ * there call for. A creature's heading is D10's: radians from east towards south in the local
+ * frame where it stands, carried along with it as it walks.
  */
 public class OrganismManager {
 
     private static final int SPECIES_COUNT = 8;
-    // Creatures are kept within this many chunks of the viewer and drawn out to DRAW_DISTANCE
-    private static final int SPAWN_RADIUS_CHUNKS = 7;
-    private static final int KEEP_RADIUS_CHUNKS = 9;
+    // Creatures are kept within KEEP_RADIUS of the viewer, made out to SPAWN_RADIUS and drawn
+    // out to DRAW_DISTANCE
+    private static final double SPAWN_RADIUS = 700.0, KEEP_RADIUS = 900.0;
     private static final float DRAW_DISTANCE = 900f;
-    // Expected individuals per chunk where a species is at its most abundant
-    // Expected creatures per chunk in total, however many species share the ground; each
-    // species takes its share by how well suited the place is to it and how common it is
+    private static final int POPULATION_LEVEL = 7;
+    // Expected creatures per chunk's area (100 by 100) in total, however many species share
+    // the ground; each species takes its share by how well suited the place is to it and how
+    // common it is
     private static final float PEAK_PER_CHUNK = 0.05f;
     private static final float ROAM_RADIUS = 90f;
 
@@ -36,9 +38,8 @@ public class OrganismManager {
         int morph;
         float sizeScale, legScale;
         float[] baseColour, accentColour, bellyColour, limbColour;
-        float homeX, homeZ;
-        float x, z, heading;
-        float targetX, targetZ;
+        SpherePosition home, position, target;
+        double heading;
         float pause;
         // Off somewhere further, steadily and a little quicker, rather than grazing about
         boolean travelling;
@@ -47,22 +48,24 @@ public class OrganismManager {
         Random rand;
         // Finding a way round things: the heading chosen, when to look again, and progress
         // over the last few seconds to tell when it is stuck
-        float steerHeading = Float.NaN, steerTimer;
+        double steerHeading = Double.NaN;
+        float steerTimer;
         // A hop over a rock in the way: how far through it (seconds, 0 when not hopping) and how high
         float hopTime, hopHeight;
         // Drawn standing level (for a picture), not leaning with the slope it's on
         boolean level;
-        // Points round its body as last drawn (see forEachOutline), and which drawing that was
-        float[] outline;
+        // Points round its body as last drawn, in the world (see forEachOutline), and which drawing that was
+        double[] outline;
         int outlineDrawing;
-        float progressTimer, progressX, progressZ, progressExpected;
+        float progressTimer, progressExpected;
+        SpherePosition progressFrom;
     }
 
-    private Collision collision;
+    private GeodesicCollision collision;
     private static final float STUCK_SECONDS = 2.0f;
 
     /** Shares the world's solid things, so creatures walk round them and not through. */
-    public void setCollision(Collision collision) {
+    public void setCollision(GeodesicCollision collision) {
         this.collision = collision;
     }
 
@@ -72,7 +75,9 @@ public class OrganismManager {
     }
 
     private final List<OrganismSpecies> species = new ArrayList<>();
-    private final Map<Long, List<Creature>> creaturesByChunk = new HashMap<>();
+    private final Map<Long, List<Creature>> creaturesByCell = new HashMap<>();
+    private final GeodesicChunkGrid populationGrid = new GeodesicChunkGrid(POPULATION_LEVEL);
+    private long lastCentreCell = Long.MIN_VALUE;
     private final List<Creature> showcase = new ArrayList<>();
     private final long seed;
     private final float chunkSize;
@@ -80,39 +85,29 @@ public class OrganismManager {
     private final PerlinNoise terrainNoise;
     private final float[] bones = new float[OrganismSpecies.MAX_BONES * 16];
     private Shader shader;
-    private int lastCentreX = Integer.MIN_VALUE, lastCentreZ = Integer.MIN_VALUE;
-    // Creatures keep to the countryside: built-up places would have them walking through walls
-    private UrbannessLookup urbanness = (x, z) -> 0f;
+    // Creatures keep to the countryside (built-up places would have them walking through walls),
+    // and neither start nor stop on a road, where the crash barriers along highways would hem
+    // them in (they may cross)
+    private Predicate<SpherePosition> wild = p -> true;
+    private RoadLookup roads = (p, clearance) -> false;
 
-    @FunctionalInterface
-    public interface UrbannessLookup {
-        float at(float worldX, float worldZ);
-    }
-
-    public void setUrbanness(UrbannessLookup lookup) {
-        this.urbanness = lookup;
-    }
-
-    private boolean isWild(float x, float z) {
-        return urbanness.at(x, z) < 0.12f;
-    }
-
-    // Whether a point is on (or within so far of) a road: creatures neither start nor stop on
-    // one, where the crash barriers along highways would hem them in (they may cross)
     @FunctionalInterface
     public interface RoadLookup {
-        boolean near(float worldX, float worldZ, float clearance);
+        boolean near(SpherePosition position, float clearance);
     }
 
-    private RoadLookup roads = (x, z, clearance) -> false;
+    /** Where creatures may live: anywhere not built up. */
+    public void setWild(Predicate<SpherePosition> wild) {
+        this.wild = wild;
+    }
 
     public void setRoads(RoadLookup lookup) {
         this.roads = lookup;
     }
 
     /** Somewhere a walking creature can be: dry land in the wild, off the roads. */
-    private boolean walkable(float x, float z) {
-        return TerrainMesh.getLayeredHeight(x, z, terrainNoise) > seaLevel + 1f && isWild(x, z) && !roads.near(x, z, 10f);
+    private boolean walkable(SpherePosition p) {
+        return TerrainMesh.getLayeredHeight(p, terrainNoise) > seaLevel + 1f && wild.test(p) && !roads.near(p, 10f);
     }
 
     public OrganismManager(long seed, float chunkSize, float seaLevel, PerlinNoise terrainNoise,
@@ -150,42 +145,48 @@ public class OrganismManager {
      * drawn by the GPU from three-quarters on, lit from the side (for the map's choices).
      */
     public java.awt.image.BufferedImage portrait(GL3 gl, int i, int size) {
-        java.awt.image.BufferedImage view = view(gl, i, 384, (float) Math.toRadians(-40), 0f, 0f);
+        java.awt.image.BufferedImage view = view(gl, i, 384, (float) Math.toRadians(-40), Planet.position(0.0, 0.0, 0.0));
         return view == null ? null : Offscreen.cropTogether(new java.awt.image.BufferedImage[] { view }, size)[0];
     }
 
     /**
-     * An individual of species i, standing at (x, z) and turned to heading, seen from
-     * three-quarters on in a wide view (render pixels square, clear round it): to be cut down to
-     * the creature with Offscreen.cropTogether. Drawn where the viewer is keeps the planet's
-     * curve out of it.
+     * An individual of species i as it would be at a place (its size and colouring vary across
+     * the range), turned to heading (radians, its nose from local +z towards +x), seen from
+     * three-quarters on in a wide view (render pixels square, clear round it): to be cut down
+     * to the creature with Offscreen.cropTogether. It is drawn in its own space, standing
+     * level on flat ground at the origin.
      */
-    public java.awt.image.BufferedImage view(GL3 gl, int i, int render, float heading, float x, float z) {
+    public java.awt.image.BufferedImage view(GL3 gl, int i, int render, float heading, SpherePosition at) {
         if (shader == null || i < 0 || i >= species.size()) return null;
         OrganismSpecies s = species.get(i);
-        Creature c = create(s, x, z, new Random(seed * 131L + i));
-        c.heading = heading;
+        Creature c = create(s, at, new Random(seed * 131L + i));
+        c.heading = Math.PI * 0.5 - heading;
         c.walking = 0f;
         c.gaitPhase = 0.25f;
         c.hopTime = 0f;
         c.level = true;
-        float ground = TerrainMesh.getLayeredHeight(x, z, terrainNoise);
         float reach = s.reachRadius() * c.sizeScale * c.legScale;
-        // (where draw puts it, at time 0)
-        float centreY = s.locomotion == OrganismSpecies.Locomotion.FLYER ? Math.max(ground, seaLevel) + s.bodyHeight
-                : s.locomotion == OrganismSpecies.Locomotion.FLOATER ? Math.max(ground, seaLevel) + (s.bodyHeight + (float) Math.sin(c.homeX) * 2.5f) * c.sizeScale
-                : ground + s.bodyHeight * c.legScale * c.sizeScale * 0.7f;
-        Vector3 centre = new Vector3(x, centreY, z);
+        float centreY = bodyHeight(c, 0f, 0f, 0f, 0f);
+        Vector3 centre = new Vector3(0f, centreY, 0f);
         float distance = reach * 5f + 25f;
-        Vector3 eye = new Vector3(x + distance * 0.62f, centreY + distance * 0.42f, z + distance * 0.66f);
+        Vector3 eye = new Vector3(distance * 0.62f, centreY + distance * 0.42f, distance * 0.66f);
         Matrix4 view = com.xenoguesser.math.Matrix4Transform.lookAt(eye, centre, new Vector3(0f, 1f, 0f));
         Matrix4 projection = com.xenoguesser.math.Matrix4Transform.perspective(45f, 1f, distance * 0.02f, distance * 4f);
         Matrix4 viewProjection = Matrix4.multiply(projection, view);
-        Frustum frustum = new Frustum();
-        frustum.update(viewProjection);
         Vector3 sun = new Vector3(eye.x + distance * 3f, eye.y + distance * 6f, eye.z - distance * 1f);
-        return Offscreen.capture(gl, render, () -> renderCreatures(gl, viewProjection, frustum, eye, sun, new float[] { 1f, 0.97f, 0.92f },
-                new Vector3(0.55f, 0.55f, 0.6f), new Matrix4(1), null, 0f, List.of(c)));
+        return Offscreen.capture(gl, render, () -> {
+            shader.use(gl);
+            shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+            gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, new Matrix4(1).toFloatArrayForGLSL(), 0);
+            shader.setVec3(gl, "viewPos", eye);
+            shader.setVec3(gl, "sunPos", sun);
+            shader.setVec3(gl, "sunColour", new Vector3(1f, 0.97f, 0.92f));
+            shader.setVec3(gl, "ambientLight", new Vector3(0.55f, 0.55f, 0.6f));
+            SphereRender.setAnchor(gl, shader, null);
+            beginCreatures(gl, null);
+            drawPosed(gl, c, centreY, 0f, 0f);
+            gl.glEnable(GL.GL_CULL_FACE);
+        });
     }
 
     public int speciesCount() {
@@ -216,138 +217,123 @@ public class OrganismManager {
     /** Forgets every creature, e.g. when the viewer jumps to a new round; the next round's are a fresh draw. */
     public void clear() {
         roundSalt = new Random().nextLong();
-        creaturesByChunk.clear();
+        creaturesByCell.clear();
         showcase.clear();
-        lastCentreX = lastCentreZ = Integer.MIN_VALUE;
+        lastCentreCell = Long.MIN_VALUE;
     }
 
     /**
-     * Developer aid: a spot in the heart of some species' range, as {x, z}, and a creature of
-     * that species placed just in front of it.
+     * Developer aid: a spot in the heart of some species' range, and a creature of that species
+     * placed just in front of it.
      */
-    public float[] showcaseViewpoint(Random rand, float regionWidth) {
+    public Viewpoint showcaseViewpoint(Random rand) {
         for (int attempt = 0; attempt < 40000; attempt++) {
             OrganismSpecies s = species.get(attempt % species.size());
-            float x = (rand.nextFloat() - 0.5f) * regionWidth;
-            float z = (rand.nextFloat() - 0.5f) * regionWidth;
-            if (TerrainMesh.getLayeredHeight(x, z, terrainNoise) <= seaLevel + 2f || s.presenceAt(x, z, chunkSize) < 0.5f || !isWild(x, z)) continue;
-            float heading = rand.nextFloat() * (float) Math.PI * 2f;
-            float lookX = (float) Math.sin(heading), lookZ = (float) Math.cos(heading);
-            float distance = 30f + s.halfLength() * 3f;
-            float cx = x + lookX * distance, cz = z + lookZ * distance;
-            if (TerrainMesh.getLayeredHeight(cx, cz, terrainNoise) <= seaLevel + 2f) continue;
-            Creature creature = create(s, cx, cz, new Random(rand.nextLong()));
-            creature.heading = heading + (float) Math.PI * 0.6f;
+            SpherePosition p = SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE);
+            if (TerrainMesh.getLayeredHeight(p, terrainNoise) <= seaLevel + 2f || s.presenceAt(p) < 0.5f || !wild.test(p)) continue;
+            double heading = rand.nextDouble() * Math.PI * 2.0;
+            SpherePosition at = SphereMath.move(p, heading, 30.0 + s.halfLength() * 3.0);
+            if (TerrainMesh.getLayeredHeight(at, terrainNoise) <= seaLevel + 2f) continue;
+            Creature creature = create(s, at, new Random(rand.nextLong()));
+            creature.heading = SphereMath.carryHeading(p, at, heading) - Math.PI * 0.6;
             showcase.add(creature);
-            return new float[] { x, z, lookX, lookZ };
+            return new Viewpoint(p, heading);
         }
         return null;
     }
 
     /**
-     * Developer aid: one of every species in an arc in front of a flat spot on dry land, as
-     * {x, z, lookX, lookZ} for the viewer, to compare them side by side.
+     * Developer aid: one of every species in an arc in front of a flat spot on dry land, facing
+     * south, to compare them side by side.
      */
-    public float[] zooViewpoint(Random rand, float regionWidth) {
+    public Viewpoint zooViewpoint(Random rand) {
         for (int attempt = 0; attempt < 20000; attempt++) {
-            float x = (rand.nextFloat() - 0.5f) * regionWidth * 0.8f;
-            float z = (rand.nextFloat() - 0.5f) * regionWidth * 0.8f;
-            if (!isWild(x, z)) continue;
+            SpherePosition p = SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE);
+            if (!wild.test(p)) continue;
+            SphereFrame frame = SphereFrame.at(p);
             float lowest = Float.MAX_VALUE, highest = -Float.MAX_VALUE;
             for (int i = 0; i < 25; i++) {
-                float h = TerrainMesh.getLayeredHeight(x + (i % 5 - 2) * 60f, z + (i / 5) * 60f, terrainNoise);
+                float h = TerrainMesh.getLayeredHeight(frame.toSphere((i % 5 - 2) * 60.0, 0.0, (i / 5) * 60.0), terrainNoise);
                 lowest = Math.min(lowest, h);
                 highest = Math.max(highest, h);
             }
             if (lowest <= seaLevel + 2f || highest - lowest > 25f) continue;
+            double facing = Math.PI * 0.5;
             for (int i = 0; i < species.size(); i++) {
-                float angle = (i - (species.size() - 1) * 0.5f) * 0.2f;
-                float distance = 110f + (i % 2) * 60f;
-                Creature c = create(species.get(i), x + (float) Math.sin(angle) * distance, z + (float) Math.cos(angle) * distance,
-                        new Random(rand.nextLong()));
-                c.heading = (float) Math.PI * 0.5f;
+                double angle = (i - (species.size() - 1) * 0.5) * 0.2;
+                double distance = 110.0 + (i % 2) * 60.0;
+                SpherePosition at = SphereMath.move(p, facing - angle, distance);
+                Creature c = create(species.get(i), at, new Random(rand.nextLong()));
+                // Side on to the viewer, facing east
+                c.heading = 0.0;
                 c.pause = 1000f;
                 if (c.species.locomotion == OrganismSpecies.Locomotion.FLYER) {
                     // Flyers wheel overhead, starting ahead of the viewer
-                    c.homeX = x + c.species.flightRadius;
-                    c.homeZ = z + c.species.flightRadius * 0.5f;
+                    c.home = frame.toSphere(c.species.flightRadius, 0.0, c.species.flightRadius * 0.5);
                     c.pause = (float) Math.PI + 0.15f * i;
                 }
                 showcase.add(c);
             }
-            return new float[] { x, z, 0f, 1f };
+            return new Viewpoint(p, facing);
         }
         return null;
     }
 
     /** Brings creatures into being near the viewer, retires distant ones, and moves them all on. */
-    public void update(float dt, float viewerX, float viewerZ) {
-        int centreX = (int) Math.floor(viewerX / chunkSize), centreZ = (int) Math.floor(viewerZ / chunkSize);
-        if (centreX != lastCentreX || centreZ != lastCentreZ) {
-            lastCentreX = centreX;
-            lastCentreZ = centreZ;
-            for (int dz = -SPAWN_RADIUS_CHUNKS; dz <= SPAWN_RADIUS_CHUNKS; dz++) {
-                for (int dx = -SPAWN_RADIUS_CHUNKS; dx <= SPAWN_RADIUS_CHUNKS; dx++) {
-                    if (dx * dx + dz * dz > SPAWN_RADIUS_CHUNKS * SPAWN_RADIUS_CHUNKS) continue;
-                    long key = chunkKey(centreX + dx, centreZ + dz);
-                    if (!creaturesByChunk.containsKey(key)) {
-                        creaturesByChunk.put(key, populate(centreX + dx, centreZ + dz));
-                    }
-                }
-            }
-            Iterator<Map.Entry<Long, List<Creature>>> it = creaturesByChunk.entrySet().iterator();
-            while (it.hasNext()) {
-                long key = it.next().getKey();
-                int cx = (int) (key >> 32), cz = (int) key;
-                int ddx = cx - centreX, ddz = cz - centreZ;
-                if (ddx * ddx + ddz * ddz > KEEP_RADIUS_CHUNKS * KEEP_RADIUS_CHUNKS) it.remove();
-            }
-        }
+    public void update(float dt, SpherePosition viewer) {
+        updatePopulation(viewer);
         float step = Math.min(dt, 0.1f);
-        for (List<Creature> list : creaturesByChunk.values()) {
+        for (List<Creature> list : creaturesByCell.values()) {
             for (Creature c : list) move(c, step);
         }
         for (Creature c : showcase) move(c, step);
     }
 
-    private static long chunkKey(int cx, int cz) {
-        return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
+    private void updatePopulation(SpherePosition viewer) {
+        GeodesicChunkGrid.Cell centre = populationGrid.cellAt(viewer);
+        if (centre.id() == lastCentreCell) return;
+        lastCentreCell = centre.id();
+        for (GeodesicChunkGrid.Cell cell : populationGrid.cellsWithin(SphereMath.direction(viewer), SPAWN_RADIUS / Planet.radius())) {
+            if (!creaturesByCell.containsKey(cell.id())) creaturesByCell.put(cell.id(), populate(cell));
+        }
+        double keep = KEEP_RADIUS / Planet.radius();
+        creaturesByCell.keySet().removeIf(id -> {
+            GeodesicChunkGrid.Cell cell = populationGrid.cell(id);
+            return SphereMath.angle(SphereMath.direction(viewer), cell.centre()) > keep + cell.angularRadius();
+        });
     }
 
     /**
-     * How many of species i would be expected in the chunk round a point were it wild (as
-     * populate works it out, sharing the ground with the other species there); towns, which
-     * none of them live in, are left out (populate keeps them out of towns itself).
+     * How many of species i would be expected in a chunk's area (100 by 100) round a place were
+     * it wild (as populate works it out, sharing the ground with the other
+     * species there); towns, which none of them live in, are left out (populate keeps them out
+     * of towns itself).
      */
-    public float expectedPerChunk(int i, float x, float z) {
+    public float expectedPerChunk(int i, SpherePosition place) {
         float total = 0f, mine = 0f;
         for (int k = 0; k < species.size(); k++) {
-            float p = species.get(k).presenceAt(x, z, chunkSize);
+            float p = species.get(k).presenceAt(place);
             total += p;
             if (k == i) mine = p;
         }
         return mine / Math.max(1f, total) * species.get(i).rarity * PEAK_PER_CHUNK;
     }
 
-    /** The most of species i a chunk can expect (where it's at its best, alone). */
-    public float peakPerChunk(int i) {
-        return species.get(i).rarity * PEAK_PER_CHUNK;
-    }
-
-    private List<Creature> populate(int cx, int cz) {
+    private List<Creature> populate(GeodesicChunkGrid.Cell cell) {
         List<Creature> list = new ArrayList<>();
-        Random rand = new Random(seed ^ roundSalt ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x0B6L);
-        float centreX = (cx + 0.5f) * chunkSize, centreZ = (cz + 0.5f) * chunkSize;
+        Random rand = new Random(seed ^ roundSalt ^ (cell.id() * 0x9E3779B97F4A7C15L) ^ 0x0B6L);
+        SpherePosition middle = SphereMath.atAltitude(cell.centre(), 0.0);
+        float areaInChunks = (float) (cell.area() * Planet.radius() * Planet.radius() / (chunkSize * chunkSize));
+        boolean wildHere = wild.test(middle);
         float[] presences = new float[species.size()];
         float total = 0f;
         for (int i = 0; i < species.size(); i++) {
-            presences[i] = species.get(i).presenceAt(centreX, centreZ, chunkSize) * (isWild(centreX, centreZ) ? 1f : 0f);
+            presences[i] = wildHere ? species.get(i).presenceAt(middle) : 0f;
             total += presences[i];
         }
         for (int k = 0; k < species.size(); k++) {
             OrganismSpecies s = species.get(k);
-            float presence = presences[k];
-            float expected = presence / Math.max(1f, total) * s.rarity * PEAK_PER_CHUNK;
+            float expected = presences[k] / Math.max(1f, total) * s.rarity * PEAK_PER_CHUNK * areaInChunks;
             int count = 0;
             float roll = rand.nextFloat();
             while (expected > 0f && roll < expected) {
@@ -355,21 +341,20 @@ public class OrganismManager {
                 expected -= 1f;
             }
             for (int i = 0; i < count; i++) {
-                float x = cx * chunkSize + rand.nextFloat() * chunkSize;
-                float z = cz * chunkSize + rand.nextFloat() * chunkSize;
+                SpherePosition p = SphereMath.atAltitude(cell.point(rand.nextDouble(), rand.nextDouble()), 0.0);
                 boolean flies = s.locomotion == OrganismSpecies.Locomotion.FLYER;
-                if (!flies && !walkable(x, z)) continue;
-                list.add(create(s, x, z, new Random(rand.nextLong())));
+                if (!flies && !walkable(p)) continue;
+                list.add(create(s, p, new Random(rand.nextLong())));
             }
         }
         return list;
     }
 
-    private Creature create(OrganismSpecies s, float x, float z, Random rand) {
+    private Creature create(OrganismSpecies s, SpherePosition at, Random rand) {
+        float[] traits = s.traitsAt(at, rand);
         Creature c = new Creature();
         c.species = s;
         c.rand = rand;
-        float[] traits = s.traitsAt(x, z, rand);
         c.sizeScale = traits[0];
         c.legScale = traits[1];
         c.morph = (int) traits[3];
@@ -377,9 +362,8 @@ public class OrganismManager {
         c.accentColour = shiftHue(s.accentColour, traits[2]);
         c.bellyColour = shiftHue(s.bellyColour, traits[2] * 0.5f);
         c.limbColour = shiftHue(s.limbColour, traits[2]);
-        c.homeX = c.x = x;
-        c.homeZ = c.z = z;
-        c.heading = rand.nextFloat() * (float) Math.PI * 2f;
+        c.home = c.position = c.progressFrom = SphereMath.atAltitude(at, 0.0);
+        c.heading = rand.nextFloat() * Math.PI * 2.0;
         c.gaitPhase = rand.nextFloat();
         c.pause = rand.nextFloat() * 3f;
         pickTarget(c);
@@ -398,28 +382,26 @@ public class OrganismManager {
      */
     private void pickTarget(Creature c) {
         c.travelling = c.rand.nextFloat() < 0.65f;
-        float fromHome = (float) Math.hypot(c.x - c.homeX, c.z - c.homeZ);
-        float towardsHome = (float) Math.atan2(c.homeX - c.x, c.homeZ - c.z);
+        double fromHome = SphereMath.distance(c.position, c.home);
+        double towardsHome = fromHome < 1e-6 ? c.heading : SphereMath.heading(c.position, c.home);
         for (int attempt = 0; attempt < 10; attempt++) {
-            float angle, r;
+            double angle, r;
             if (c.travelling) {
-                float base = fromHome > ROAM_RADIUS * 3f ? towardsHome : c.heading;
+                double base = fromHome > ROAM_RADIUS * 3f ? towardsHome : c.heading;
                 angle = base + (c.rand.nextFloat() - 0.5f) * 1.6f;
                 r = ROAM_RADIUS * (1.2f + 1.6f * c.rand.nextFloat());
             } else {
-                angle = c.rand.nextFloat() * (float) Math.PI * 2f;
+                angle = c.rand.nextFloat() * Math.PI * 2.0;
                 r = 10f + 25f * c.rand.nextFloat();
             }
-            float tx = c.x + r * (float) Math.sin(angle), tz = c.z + r * (float) Math.cos(angle);
-            if (walkable(tx, tz)) {
-                c.targetX = tx;
-                c.targetZ = tz;
+            SpherePosition t = SphereMath.move(c.position, angle, r);
+            if (walkable(t)) {
+                c.target = t;
                 return;
             }
         }
         c.travelling = false;
-        c.targetX = c.homeX;
-        c.targetZ = c.homeZ;
+        c.target = c.home;
     }
 
     /** A new goal roughly behind it, for when the way ahead is blocked. */
@@ -427,15 +409,20 @@ public class OrganismManager {
         for (int attempt = 0; attempt < 8; attempt++) {
             double angle = c.heading + Math.PI + (c.rand.nextDouble() - 0.5) * 2.2;
             float r = ROAM_RADIUS * (0.3f + 0.4f * c.rand.nextFloat());
-            float tx = c.x + r * (float) Math.sin(angle), tz = c.z + r * (float) Math.cos(angle);
-            if (TerrainMesh.getLayeredHeight(tx, tz, terrainNoise) > seaLevel + 1f && !roads.near(tx, tz, 10f)) {
-                c.targetX = tx;
-                c.targetZ = tz;
+            SpherePosition t = SphereMath.move(c.position, angle, r);
+            if (TerrainMesh.getLayeredHeight(t, terrainNoise) > seaLevel + 1f && !roads.near(t, 10f)) {
+                c.target = t;
                 c.travelling = true;
                 return;
             }
         }
         pickTarget(c);
+    }
+
+    /** Goes a distance along its heading, carrying the heading along the step. */
+    private static void step(Creature c, SpherePosition to) {
+        c.heading = SphereMath.carryHeading(c.position, to, c.heading);
+        c.position = to;
     }
 
     /** Walks towards its current goal, turning as it goes, and stops for a while on arrival. */
@@ -445,9 +432,8 @@ public class OrganismManager {
             float radius = c.species.flightRadius;
             float angular = c.species.walkSpeed * c.sizeScale / radius;
             c.pause += dt * angular;                      // the angle round the circle
-            c.x = c.homeX + radius * (float) Math.cos(c.pause);
-            c.z = c.homeZ + radius * (float) Math.sin(c.pause);
-            c.heading = (float) Math.atan2(-Math.sin(c.pause), Math.cos(c.pause));
+            c.position = SphereMath.move(c.home, c.pause, radius);
+            c.heading = SphereMath.carryHeading(c.home, c.position, c.pause + Math.PI * 0.5);
             c.walking = 1f;
             c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond) % 1f;
             return;
@@ -457,57 +443,53 @@ public class OrganismManager {
         if (resting) {
             c.pause -= dt;
         } else {
-            float dx = c.targetX - c.x, dz = c.targetZ - c.z;
-            float distance = (float) Math.sqrt(dx * dx + dz * dz);
-            if (distance < 4f) {
+            double distance = SphereMath.distance(c.position, c.target);
+            if (distance < 4.0) {
                 // A short stop after a trip; a longer one grazing
                 c.pause = c.travelling ? 0.3f + c.rand.nextFloat() * 1.7f : 2f + c.rand.nextFloat() * 6f;
                 pickTarget(c);
             } else {
-                float desired = (float) Math.atan2(dx, dz);
+                double desired = SphereMath.heading(c.position, c.target);
                 if (collision != null) {
                     // Look a little way ahead every so often and bear round anything in the way
                     float r = bodyRadius(c);
                     c.steerTimer -= dt;
                     if (c.steerTimer <= 0f) {
                         c.steerTimer = 0.25f + c.rand.nextFloat() * 0.1f;
-                        // Looking ahead from its nose, so a long body doesn't lead its head into things
-                        float nose = noseReach(c);
-                        c.steerHeading = collision.steer(c.x + (float) Math.sin(c.heading) * nose, c.z + (float) Math.cos(c.heading) * nose,
-                                endRadius(c), desired, Math.max(6f, r * 2.5f), c);
-                        if (Float.isNaN(c.steerHeading)) {
+                        // Looking ahead from its nose, so a long body doesn't lead its head into
+                        // things (the headings carried to the nose and back)
+                        SpherePosition nose = SphereMath.move(c.position, c.heading, noseReach(c));
+                        double steered = collision.steer(nose, endRadius(c), SphereMath.carryHeading(c.position, nose, desired),
+                                Math.max(6f, r * 2.5f), c, 0.0);
+                        c.steerHeading = Double.isNaN(steered) ? Double.NaN : SphereMath.carryHeading(nose, c.position, steered);
+                        if (Double.isNaN(c.steerHeading)) {
                             // Hemmed in on every side: stop, then try somewhere else
                             c.pause = 0.5f + c.rand.nextFloat();
                             pickTargetAway(c);
                         }
                     }
-                    if (!Float.isNaN(c.steerHeading)) desired = c.steerHeading;
+                    if (!Double.isNaN(c.steerHeading)) desired = c.steerHeading;
                 }
-                float turn = desired - c.heading;
-                turn = (float) Math.atan2(Math.sin(turn), Math.cos(turn));
-                float maxTurn = 1.2f * dt;
+                double turn = Math.atan2(Math.sin(desired - c.heading), Math.cos(desired - c.heading));
+                double maxTurn = 1.2 * dt;
                 c.heading += Math.max(-maxTurn, Math.min(maxTurn, turn));
                 // Slow down for sharp turns so it doesn't skid round them
-                float pace = c.walking * (1f - 0.6f * Math.min(1f, Math.abs(turn)));
-                float nx = c.x + (float) Math.sin(c.heading) * speed * pace * dt;
-                float nz = c.z + (float) Math.cos(c.heading) * speed * pace * dt;
-                if (TerrainMesh.getLayeredHeight(nx, nz, terrainNoise) > seaLevel + 0.5f) {
+                float pace = c.walking * (1f - 0.6f * (float) Math.min(1.0, Math.abs(turn)));
+                SpherePosition next = SphereMath.move(c.position, c.heading, speed * pace * dt);
+                if (TerrainMesh.getLayeredHeight(next, terrainNoise) > seaLevel + 0.5f) {
                     if (collision != null) {
                         // Small rocks it simply steps over; walking into a bigger one, it hops
                         // over it, carrying on forwards (a wall or anything too tall still stops it)
                         float legs = legHeight(c);
-                        if (c.hopTime <= 0f && collision.blocked(nx, nz, bodyRadius(c), c, legs * STEP_OVER)
-                                && !collision.blocked(nx, nz, bodyRadius(c), c, legs * HOP_OVER)) {
+                        if (c.hopTime <= 0f && collision.blocked(next, bodyRadius(c), c, legs * STEP_OVER)
+                                && !collision.blocked(next, bodyRadius(c), c, legs * HOP_OVER)) {
                             c.hopTime = HOP_SECONDS;
                             c.hopHeight = legs * HOP_OVER;
                         }
-                        float[] free = resolveBody(c, nx, nz, c.hopTime > 0f ? c.hopHeight : legs * STEP_OVER);
-                        nx = free[0];
-                        nz = free[1];
+                        next = resolveBody(c, next, c.hopTime > 0f ? c.hopHeight : legs * STEP_OVER);
                     }
                     c.progressExpected += speed * pace * dt;
-                    c.x = nx;
-                    c.z = nz;
+                    step(c, next);
                 } else {
                     pickTarget(c);
                 }
@@ -515,15 +497,14 @@ public class OrganismManager {
                 // this way and heads off somewhere else
                 c.progressTimer += dt;
                 if (c.progressTimer > STUCK_SECONDS) {
-                    float moved = (float) Math.hypot(c.x - c.progressX, c.z - c.progressZ);
+                    double moved = SphereMath.distance(c.position, c.progressFrom);
                     if (c.progressExpected > 4f && moved < c.progressExpected * 0.3f) {
                         pickTargetAway(c);
                         c.steerTimer = 0f;
                     }
                     c.progressTimer = 0f;
                     c.progressExpected = 0f;
-                    c.progressX = c.x;
-                    c.progressZ = c.z;
+                    c.progressFrom = c.position;
                 }
             }
         }
@@ -531,12 +512,11 @@ public class OrganismManager {
         float targetWalking = resting ? 0f : 1f;
         c.walking += (targetWalking - c.walking) * Math.min(1f, dt * 3f);
         c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond * c.walking) % 1f;
-        if (collision != null && c.species.locomotion != OrganismSpecies.Locomotion.FLYER) {
+        if (collision != null) {
             // The whole length is solid to others: middle, nose and tail
-            float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
-            collision.addBody(c, c.x, c.z, bodyRadius(c));
-            collision.addBody(c, c.x + sin * noseReach(c), c.z + cos * noseReach(c), endRadius(c));
-            collision.addBody(c, c.x - sin * tailReach(c), c.z - cos * tailReach(c), endRadius(c));
+            collision.addBody(c, c.position, bodyRadius(c));
+            collision.addBody(c, SphereMath.move(c.position, c.heading, noseReach(c)), endRadius(c));
+            collision.addBody(c, SphereMath.move(c.position, c.heading + Math.PI, tailReach(c)), endRadius(c));
         }
     }
 
@@ -570,61 +550,60 @@ public class OrganismManager {
         return c.hopHeight * 4f * t * (1f - t);
     }
 
-    /** Moves the whole body, middle, nose and tail, out of anything it has walked into (anything lower than clearance it passes over). */
-    private float[] resolveBody(Creature c, float x, float z, float clearance) {
-        float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
-        float nose = noseReach(c), tail = tailReach(c), end = endRadius(c);
+    /**
+     * Moves the whole body, middle, nose and tail, out of anything it has walked into (anything
+     * lower than clearance it passes over), in the tangent frame where it now is.
+     */
+    private SpherePosition resolveBody(Creature c, SpherePosition p, float clearance) {
+        double nose = noseReach(c), tail = tailReach(c), end = endRadius(c);
         for (int pass = 0; pass < 2; pass++) {
-            float[] middle = collision.resolve(x, z, bodyRadius(c), c, clearance);
-            x = middle[0];
-            z = middle[1];
-            float[] head = collision.resolve(x + sin * nose, z + cos * nose, end, c, clearance);
-            x = head[0] - sin * nose;
-            z = head[1] - cos * nose;
-            float[] back = collision.resolve(x - sin * tail, z - cos * tail, end, c, clearance);
-            x = back[0] + sin * tail;
-            z = back[1] + cos * tail;
+            p = collision.resolve(p, bodyRadius(c), c, clearance);
+            SphereFrame frame = SphereFrame.at(p);
+            double hx = Math.cos(c.heading), hz = Math.sin(c.heading);
+            double[] head = frame.fromSphere(collision.resolve(frame.toSphere(hx * nose, 0.0, hz * nose), end, c, clearance));
+            double x = head[0] - hx * nose, z = head[2] - hz * nose;
+            double[] back = frame.fromSphere(collision.resolve(frame.toSphere(x - hx * tail, 0.0, z - hz * tail), end, c, clearance));
+            p = frame.toSphere(back[0] + hx * tail, SphereMath.altitude(p), back[2] + hz * tail);
         }
-        return new float[] { x, z };
+        return p;
     }
 
-    public void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
-                       float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
-        List<Creature> all = new ArrayList<>(showcase);
-        for (List<Creature> list : creaturesByChunk.values()) all.addAll(list);
-        renderCreatures(gl, viewProjection, frustum, viewPos, sunPos, sunColour, ambient, skyRotation, sky, time, all);
-    }
-
-    private void renderCreatures(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos,
-                                 float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky, float time, List<Creature> creatures) {
+    /**
+     * Draws the creatures near enough to see, relative to the camera, lit by the sun in
+     * sunDirection (a world direction).
+     */
+    public void render(GL3 gl, Camera camera, Vector3 sunDirection, float[] sunColour,
+            Vector3 ambient, Matrix4 skyRotation, Texture sky, float time) {
         if (shader == null) return;
-        shader.use(gl);
-        shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
-        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        shader.setVec3(gl, "viewPos", viewPos);
-        shader.setVec3(gl, "sunPos", sunPos);
-        shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
-        shader.setVec3(gl, "ambientLight", ambient);
+        SphereRender.configure(gl, shader, camera.getSphereViewProjection(), sunDirection, sunColour, ambient, skyRotation);
+        beginCreatures(gl, sky);
+        SpherePosition eye = camera.getSpherePosition();
+        Vector3 forward = camera.getSphereForwardDirection();
+        for (Creature c : showcase) draw(gl, c, eye, forward, time);
+        for (List<Creature> list : creaturesByCell.values()) {
+            for (Creature c : list) draw(gl, c, eye, forward, time);
+        }
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    private void beginCreatures(GL3 gl, Texture sky) {
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             sky.bind(gl);
             shader.setInt(gl, "skyTexture", 2);
         }
-        int bonesLocation = gl.glGetUniformLocation(shader.getID(), "bones");
         // Creatures keep to dry land, so nothing of theirs is under water
         shader.setFloat(gl, "waterLevel", -1e9f);
         shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
         // Thin parts are open lathes seen from all sides
         gl.glDisable(GL.GL_CULL_FACE);
         drawing++;
-        for (Creature c : creatures) draw(gl, c, frustum, viewPos, bonesLocation, time);
-        gl.glEnable(GL.GL_CULL_FACE);
     }
 
-    /** A creature's outline as drawn: its species, where it stands, and points round its body in the world {x, y, z, ...}. */
+    /** A creature's outline as drawn: its species, and points round its body in the world {x, y, z, ...}. */
     @FunctionalInterface
     public interface CreatureOutline {
-        void at(int species, float x, float z, float[] points);
+        void at(int species, double[] points);
     }
 
     // Whether each creature's outline is worked out as it's drawn (while something wants them)
@@ -638,64 +617,93 @@ public class OrganismManager {
 
     /** Every creature drawn last time (while outlines are kept), with its outline as drawn. */
     public void forEachOutline(CreatureOutline visit) {
-        java.util.List<List<Creature>> lists = new ArrayList<>(creaturesByChunk.values());
+        List<List<Creature>> lists = new ArrayList<>(creaturesByCell.values());
         lists.add(showcase);
         for (List<Creature> list : lists) {
             for (Creature c : list) {
-                if (c.outline != null && c.outlineDrawing == drawing) visit.at(species.indexOf(c.species), c.x, c.z, c.outline);
+                if (c.outline != null && c.outlineDrawing == drawing) visit.at(species.indexOf(c.species), c.outline);
             }
         }
     }
 
-    private void draw(GL3 gl, Creature c, Frustum frustum, Vector3 viewPos, int bonesLocation, float time) {
+    /**
+     * How high a creature's body stands above the ground under its middle, given the ground's
+     * height there, ahead of it and behind it, and the sea's (relative to the same datum).
+     */
+    private float bodyHeight(Creature c, float ground, float frontGround, float backGround, float time) {
         OrganismSpecies s = c.species;
-        float dx = c.x - viewPos.x, dz = c.z - viewPos.z;
-        if (dx * dx + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) return;
-        float ground = TerrainMesh.getLayeredHeight(c.x, c.z, terrainNoise);
-        float radius = s.reachRadius() * c.sizeScale * c.legScale;
-        // (a flyer is tested where it flies, not on the ground below)
-        float middle = s.locomotion == OrganismSpecies.Locomotion.FLYER ? Math.max(ground, seaLevel) + s.bodyHeight : ground + radius * 0.3f;
-        if (!frustum.intersectsSphere(c.x, middle, c.z, radius + (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 10f : 0f))) return;
+        if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
+            // Holding its height above the land or sea below
+            return Math.max(ground, seaLevel) + s.bodyHeight + (c.level ? 0f : (float) Math.sin(time * 0.4f + phase(c.home)) * 8f) - ground;
+        }
+        if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
+            // Floaters drift level, bobbing gently
+            return Math.max(ground, seaLevel) + (s.bodyHeight + (float) Math.sin(time * 0.7f + phase(c.home)) * 2.5f) * c.sizeScale - ground;
+        }
+        float bob = s.locomotion == OrganismSpecies.Locomotion.WALKER
+                ? (float) Math.abs(Math.sin(c.gaitPhase * Math.PI * 4)) * 0.03f * s.bodyHeight * c.walking : 0f;
+        return Math.max(ground, (frontGround + backGround) * 0.5f) + (s.bodyHeight * c.legScale + bob) * c.sizeScale + hopLift(c) - ground;
+    }
+
+    private void draw(GL3 gl, Creature c, SpherePosition eye, Vector3 forward, float time) {
+        OrganismSpecies s = c.species;
+        double dx = c.position.x() - eye.x(), dy = c.position.y() - eye.y(), dz = c.position.z() - eye.z();
+        if (dx * dx + dy * dy + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE) return;
+        float radius = s.reachRadius() * c.sizeScale * c.legScale + (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 60f : 0f);
+        if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) return;
 
         // Level the body along the slope beneath it
-        float sin = (float) Math.sin(c.heading), cos = (float) Math.cos(c.heading);
+        float ground = TerrainMesh.getLayeredHeight(c.position, terrainNoise);
         float front = s.halfLength() * c.sizeScale, back = s.tailLength() * c.sizeScale;
-        float frontGround = TerrainMesh.getLayeredHeight(c.x + sin * front, c.z + cos * front, terrainNoise);
-        float backGround = TerrainMesh.getLayeredHeight(c.x - sin * back, c.z - cos * back, terrainNoise);
-        if (c.level) frontGround = backGround = ground;
-        float pitch = (float) Math.atan2(frontGround - backGround, front + back);
-        float height;
-        if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
-            // Banked into the turn, holding its height above the land or sea below
-            pitch = c.level ? 0f : 0.05f * (float) Math.sin(c.gaitPhase * Math.PI * 2);
-            height = Math.max(ground, seaLevel) + s.bodyHeight + (float) Math.sin(time * 0.4f + c.homeZ) * 8f;
-        } else if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
-            // Floaters drift level, bobbing gently
-            pitch = 0f;
-            height = Math.max(ground, seaLevel) + (s.bodyHeight + (float) Math.sin(time * 0.7f + c.homeX) * 2.5f) * c.sizeScale;
-        } else {
-            float bob = s.locomotion == OrganismSpecies.Locomotion.WALKER
-                    ? (float) Math.abs(Math.sin(c.gaitPhase * Math.PI * 4)) * 0.03f * s.bodyHeight * c.walking : 0f;
-            height = Math.max(ground, (frontGround + backGround) * 0.5f) + (s.bodyHeight * c.legScale + bob) * c.sizeScale + hopLift(c);
+        float frontGround = ground, backGround = ground;
+        if (!c.level && s.locomotion != OrganismSpecies.Locomotion.FLYER && s.locomotion != OrganismSpecies.Locomotion.FLOATER) {
+            frontGround = TerrainMesh.getLayeredHeight(SphereMath.move(c.position, c.heading, front), terrainNoise);
+            backGround = TerrainMesh.getLayeredHeight(SphereMath.move(c.position, c.heading + Math.PI, back), terrainNoise);
         }
-        float[] body = Affine.multiply(Affine.translation(c.x, height, c.z),
-                Affine.multiply(Affine.rotationY(c.heading),
-                        Affine.multiply(Affine.rotationX(-pitch), Affine.scale(c.sizeScale, c.sizeScale, c.sizeScale))));
-
-        s.pose(body, c.legScale, c.gaitPhase, c.walking, time + c.homeX * 0.01f, bones);
+        float pitch;
+        if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
+            // Banked into the turn
+            pitch = c.level ? 0f : 0.05f * (float) Math.sin(c.gaitPhase * Math.PI * 2);
+        } else if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
+            pitch = 0f;
+        } else {
+            pitch = (float) Math.atan2(frontGround - backGround, front + back);
+        }
+        float height = bodyHeight(c, ground, frontGround, backGround, time);
+        // Posed in the frame where it stands on the ground
+        SphereFrame frame = SphereFrame.at(SphereMath.atAltitude(c.position, ground));
+        SphereRender.setAnchor(gl, shader, frame.modelMatrix(1f, eye));
+        drawPosed(gl, c, height, pitch, time);
         if (keepOutlines) {
             float[] local = s.outline(c.morph);
-            if (c.outline == null || c.outline.length != local.length / 4 * 3) c.outline = new float[local.length / 4 * 3];
+            if (c.outline == null || c.outline.length != local.length / 4 * 3) c.outline = new double[local.length / 4 * 3];
             for (int k = 0, o = 0; k < local.length; k += 4, o += 3) {
                 int m = (int) local[k + 3] * 16;
                 float x = local[k], y = local[k + 1], z = local[k + 2];
-                c.outline[o] = bones[m] * x + bones[m + 4] * y + bones[m + 8] * z + bones[m + 12];
-                c.outline[o + 1] = bones[m + 1] * x + bones[m + 5] * y + bones[m + 9] * z + bones[m + 13];
-                c.outline[o + 2] = bones[m + 2] * x + bones[m + 6] * y + bones[m + 10] * z + bones[m + 14];
+                SpherePosition p = frame.toWorld(bones[m] * x + bones[m + 4] * y + bones[m + 8] * z + bones[m + 12],
+                        bones[m + 1] * x + bones[m + 5] * y + bones[m + 9] * z + bones[m + 13],
+                        bones[m + 2] * x + bones[m + 6] * y + bones[m + 10] * z + bones[m + 14]);
+                c.outline[o] = p.x();
+                c.outline[o + 1] = p.y();
+                c.outline[o + 2] = p.z();
             }
             c.outlineDrawing = drawing;
         }
-        gl.glUniformMatrix4fv(bonesLocation, s.boneCount, false, bones, 0);
+    }
+
+    /**
+     * Poses a creature in its own frame (its body height up, turned to its heading and leaning
+     * by pitch) and draws it there.
+     */
+    private void drawPosed(GL3 gl, Creature c, float height, float pitch, float time) {
+        OrganismSpecies s = c.species;
+        // (the body's nose is along its local +z, turned from +z towards +x by the angle,
+        // which runs the other way to a heading)
+        float[] body = Affine.multiply(Affine.translation(0f, height, 0f),
+                Affine.multiply(Affine.rotationY((float) (Math.PI * 0.5 - c.heading)),
+                        Affine.multiply(Affine.rotationX(-pitch), Affine.scale(c.sizeScale, c.sizeScale, c.sizeScale))));
+        s.pose(body, c.legScale, c.gaitPhase, c.walking, time + phase(c.home) * 0.01f, bones);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), s.boneCount, false, bones, 0);
         shader.setVec3(gl, "baseColour", vec(c.baseColour));
         shader.setVec3(gl, "accentColour", vec(c.accentColour));
         shader.setVec3(gl, "bellyColour", vec(c.bellyColour));
@@ -706,6 +714,11 @@ public class OrganismManager {
         shader.setFloat(gl, "gloss", s.gloss);
         shader.setVec3(gl, "trimColour", vec(c.limbColour));
         s.mesh(c.morph).render(gl);
+    }
+
+    /** A creature's own phase for its bobbing and idling, from where it lives. */
+    private static float phase(SpherePosition home) {
+        return (float) (Planet.longitude(home) * 1000.0 + Planet.latitude(home) * 370.0);
     }
 
     private static Vector3 vec(float[] c) {

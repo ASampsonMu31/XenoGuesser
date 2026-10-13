@@ -10,7 +10,7 @@ public class InfrastructureObject {
 
     // How much of the snow that would lie on a road has been cleared off it
     private static final float ROAD_SNOW_CLEARED = 0.5f;
-    /** SIGN is a single roadside or garden sign; BATCH is pre-merged world-space geometry (roads, rails, houses, fences). */
+    /** SIGN is a single roadside or garden sign; BATCH is pre-merged world-space geometry (roads, rails, houses, fences) for one geodesic cell. */
     public enum Type { SIGN, BATCH }
 
     public Type type;
@@ -21,15 +21,16 @@ public class InfrastructureObject {
     public Matrix4 leftPostMatrix;
     public Matrix4 rightPostMatrix;
     public Matrix4 frontBoardMatrix;
-    // The regional soil colour map, for drawing dirt tracks as the ground they run over
-    public static Texture soilRegions;
+    // The regional soil colour cube map (a texture id), for drawing dirt tracks as the ground they run over
+    public static int soilRegions;
     // How far a poster on a round wall bends back at its edges (see vs_standard), 0 for flat
     private float bend;
     // Whether it's pasted on a wall that leans or curves, and so leans or curves with it
     public boolean shaped;
     public Matrix4 backBoardMatrix;
 
-    // Extra reach beyond the object's anchor point, used for behind-camera culling
+    // A batch's middle in the world, and how far what it holds reaches from there (for culling)
+    public SpherePosition centre;
     public float boundingRadius;
 
     // --- TEXT DATA ---
@@ -65,6 +66,14 @@ public class InfrastructureObject {
     public boolean banner;
     public boolean bothSides;
     public float boardWidth = 30f, boardHeight = 22f;
+
+    // --- WHERE A SIGN STANDS ---
+    // A sign is built in a frame of its own (D3 in GEODESIC_MIGRATION_PLAN.txt): its matrices
+    // are in that frame (its foot at the origin, the board's face towards local +z) and it is
+    // drawn on the sphere through it. Null for a batch.
+    public SphereFrame frame;
+    // How far either side of a standing sign's middle its posts are
+    public static final float SIGN_POST_SPACING = 15.0f;
 
     public void addPicture(int kind, float[] rect, int variant) {
         if (pictureCount >= MAX_PICTURES) return;
@@ -127,6 +136,11 @@ public class InfrastructureObject {
 
     private final List<BatchPart> batchParts = new ArrayList<>();
 
+    /** A batch's meshes, one per material (empty for a sign). */
+    List<BatchPart> batchParts() {
+        return batchParts;
+    }
+
     public InfrastructureObject(Type type, Vector3 position, int nationId, float rotationY, int[] textString) {
         this.type = type;
         this.position = position;
@@ -147,7 +161,7 @@ public class InfrastructureObject {
         this.modelMatrix = Matrix4.multiply(this.modelMatrix, Matrix4Transform.rotateAroundY(rotationY));
 
         if (this.type == Type.SIGN) {
-            float postSpacing = 15.0f;
+            float postSpacing = SIGN_POST_SPACING;
             float postHeight = 45.0f;
             Matrix4 postScale = Matrix4Transform.scale(1.0f, postHeight, 1.0f);
 
@@ -177,23 +191,16 @@ public class InfrastructureObject {
     }
 
     /**
-     * A board fixed to a wall: centred on position, facing the way rotationY turns a standing
-     * sign to face, width by height. bothSides draws the same face on the back too, for a sign
-     * that sticks out from a wall into the street.
+     * A board fixed to a wall, in its own frame: centred on its origin, facing local +z, width by
+     * height. bothSides draws the same face on the back too, for a sign that sticks out from a
+     * wall into the street. For a wall that leans (its face tipped up by tiltDegrees) or curves
+     * (round a cylinder of the given radius, 0 for flat), the poster leans and curves with it.
      */
-    public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
-                                                      boolean banner, boolean bothSides, int[] textString) {
-        return createWallSign(position, nationId, rotationY, width, height, banner, bothSides, textString, 0f, 0f);
-    }
-
-    /**
-     * As createWallSign, for a wall that leans (its face tipped up by tiltDegrees) or curves
-     * (round a cylinder of the given radius, 0 for flat): the poster leans and curves with it.
-     */
-    public static InfrastructureObject createWallSign(Vector3 position, int nationId, float rotationY, float width, float height,
+    public static InfrastructureObject createWallSign(SphereFrame frame, int nationId, float width, float height,
                                                       boolean banner, boolean bothSides, int[] textString,
                                                       float tiltDegrees, float curveRadius) {
-        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, position, nationId, rotationY, textString);
+        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, new Vector3(0f, 0f, 0f), nationId, 0f, textString);
+        sign.frame = frame;
         sign.bend = curveRadius > 0f ? width * width / (2f * curveRadius) : 0f;
         sign.shaped = curveRadius > 0f || tiltDegrees != 0f;
         if (tiltDegrees != 0f) sign.modelMatrix = Matrix4.multiply(sign.modelMatrix, Matrix4Transform.rotateAroundX(-tiltDegrees));
@@ -208,25 +215,34 @@ public class InfrastructureObject {
         return sign;
     }
 
-    public static InfrastructureObject createBatch(Vector3 position, int nationId, float boundingRadius, List<BatchPart> parts) {
-        InfrastructureObject batch = new InfrastructureObject(Type.BATCH, position, nationId, 0.0f, null);
+    /** A standing sign in its own frame (origin at its foot, between the posts; text facing local +z). */
+    public static InfrastructureObject createSign(SphereFrame frame, int nationId, int[] textString) {
+        InfrastructureObject sign = new InfrastructureObject(Type.SIGN, new Vector3(0f, 0f, 0f), nationId, 0f, textString);
+        sign.frame = frame;
+        return sign;
+    }
+
+    /** A batch: its parts' vertices are in world coordinates (planet-centred), centre the middle of what they hold. */
+    public static InfrastructureObject createBatch(SpherePosition centre, int nationId, float boundingRadius, List<BatchPart> parts) {
+        InfrastructureObject batch = new InfrastructureObject(Type.BATCH, new Vector3(0f, 0f, 0f), nationId, 0.0f, null);
+        batch.centre = centre;
         batch.boundingRadius = boundingRadius;
         batch.batchParts.addAll(parts);
         return batch;
     }
 
-        /** Uploads the batch meshes; must run on the GL thread. Textured parts use the texturing shader. */
-    public void initializeBatch(GL3 gl, Shader shader, Shader texturedShader, Renderer renderer, Light[] lights, Camera camera) {
+    /** Uploads the batch's meshes the first time it is drawn; must run on the GL thread. Textured parts use the texturing shader. */
+    public void initializeBatch(GL3 gl, Shader shader, Shader texturedShader, Renderer renderer, Camera camera) {
         for (BatchPart part : batchParts) {
             if (part.model == null && part.indices.length > 0) {
                 Mesh mesh = new Mesh(gl, part.vertices, part.indices);
                 part.model = new Model("infrastructure_batch", mesh, new Matrix4(1), part.textured ? texturedShader : shader,
-                        part.material, renderer, lights, camera);
+                        part.material, renderer, camera);
             }
         }
     }
 
-    /** Draws the see-through parts (window glass) with whatever shader is in use. */
+    /** Draws the see-through parts (window glass) with whatever shader is in use, once uploaded. */
     public void renderTransparent(GL3 gl) {
         for (BatchPart part : batchParts) {
             if (part.transparent && part.model != null && part.model.getMesh() != null) part.model.getMesh().render(gl);
@@ -289,6 +305,57 @@ public class InfrastructureObject {
         }
     }
 
+    /** Draws a batch's solid parts, one per material, camera-relative (see Renderer). */
+    public void renderBatch(GL3 gl, Vector3 ambientLight, float nightProportion,
+            Shader shader, Shader texturedShader, Renderer renderer, Camera camera) {
+        if (type != Type.BATCH) return;
+        initializeBatch(gl, shader, texturedShader, renderer, camera);
+        for (BatchPart part : batchParts) {
+            if (part.model == null || part.transparent) continue;
+            if (part.drawDistance > 0f && beyond(part.drawDistance)) continue;
+            if (part.doubleSided) gl.glDisable(GL3.GL_CULL_FACE);
+            if (part.paint) {
+                gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(-1f, -2f);
+            }
+            boolean track = part.trackGrit > 0f;
+            if (track) {
+                Shader trackShader = part.model.shader;
+                trackShader.use(gl);
+                if (soilRegions != 0) {
+                    gl.glActiveTexture(GL3.GL_TEXTURE6);
+                    gl.glBindTexture(GL3.GL_TEXTURE_CUBE_MAP, soilRegions);
+                    gl.glActiveTexture(GL3.GL_TEXTURE0);
+                    trackShader.setInt(gl, "soilRegionMap", 6);
+                }
+                trackShader.setFloat(gl, "useSoilRegions", 1f);
+                trackShader.setFloat(gl, "trackGrit", part.trackGrit);
+                gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(-2f, -8f);
+            }
+            if (part.weathering > 0f) {
+                part.model.shader.use(gl);
+                part.model.shader.setFloat(gl, "weathering", part.weathering);
+            }
+            boolean cleared = part.name.equals("asphalt") || part.name.equals("line")
+                    || part.name.equals("dirt") || part.name.equals("driveway");
+            if (cleared) {
+                part.model.shader.use(gl);
+                part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
+            }
+            part.model.render(gl, ambientLight, nightProportion);
+            if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
+            if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
+            if (track) {
+                part.model.shader.setFloat(gl, "useSoilRegions", 0f);
+                part.model.shader.setFloat(gl, "trackGrit", 0f);
+                gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
+            }
+            if (part.paint) gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
+            if (part.doubleSided) gl.glEnable(GL3.GL_CULL_FACE);
+        }
+    }
+
     public void render(GL3 gl, Vector3 ambientLight, float nightProportion,
                     Map<Integer, Model> signModelsByNation,
                     Map<Integer, Model> postModelsByNation,
@@ -308,75 +375,15 @@ public class InfrastructureObject {
                     Map<Integer, Model> signModelsByNation,
                     Map<Integer, Model> postModelsByNation,
                     Texture alphabetAtlas, int atlasSize, int writingDirection, Texture flag, int[] people) {
-        if (this.type == Type.BATCH) {
-            for (BatchPart part : batchParts) {
-                if (part.model == null || part.transparent) {
-                    continue;
-                }
-                if (part.drawDistance > 0f && beyond(part.drawDistance)) {
-                    continue;
-                }
-                if (part.doubleSided) {
-                    gl.glDisable(GL3.GL_CULL_FACE);
-                }
-                if (part.paint) {
-                    // Pull the paint towards the camera so it never z-fights the asphalt
-                    gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
-                    gl.glPolygonOffset(-1.0f, -2.0f);
-                }
-                boolean track = part.trackGrit > 0f;
-                if (track) {
-                    // The ground's own soil, from the regional soil map, with grit
-                    Shader shader = part.model.shader;
-                    shader.use(gl);
-                    if (soilRegions != null) {
-                        gl.glActiveTexture(GL3.GL_TEXTURE6);
-                        soilRegions.bind(gl);
-                        shader.setInt(gl, "soilRegionMap", 6);
-                    }
-                    shader.setFloat(gl, "useSoilRegions", 1f);
-                    shader.setFloat(gl, "trackGrit", part.trackGrit);
-                    // Drawn over the ground it lies on, even where the distant ground is drawn coarsely
-                    gl.glEnable(GL3.GL_POLYGON_OFFSET_FILL);
-                    gl.glPolygonOffset(-2.0f, -8.0f);
-                }
-                if (part.weathering > 0f) {
-                    part.model.shader.use(gl);
-                    part.model.shader.setFloat(gl, "weathering", part.weathering);
-                }
-                // Roads (and their paint, tracks and driveways) are kept clearer of snow than the land round them
-                boolean cleared = part.name.equals("asphalt") || part.name.equals("line") || part.name.equals("dirt") || part.name.equals("driveway");
-                if (cleared) {
-                    part.model.shader.use(gl);
-                    part.model.shader.setFloat(gl, "snowCleared", ROAD_SNOW_CLEARED);
-                }
-                part.model.render(gl, ambientLight, nightProportion);
-                if (cleared) part.model.shader.setFloat(gl, "snowCleared", 0f);
-                if (part.weathering > 0f) part.model.shader.setFloat(gl, "weathering", 0f);
-                if (track) {
-                    part.model.shader.setFloat(gl, "useSoilRegions", 0f);
-                    part.model.shader.setFloat(gl, "trackGrit", 0f);
-                    gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
-                }
-                if (part.paint) {
-                    gl.glDisable(GL3.GL_POLYGON_OFFSET_FILL);
-                }
-                if (part.doubleSided) {
-                    gl.glEnable(GL3.GL_CULL_FACE);
-                }
-            }
-        } else if (this.type == Type.SIGN) {
+        if (this.type == Type.SIGN) {
             Model billboardModel = signModelsByNation.get(this.nationId);
             Model postModel = postModelsByNation.get(this.nationId);
 
             if (billboardModel != null && postModel != null) {
                 // Render Support Posts
                 if (!wallMounted) {
-                    postModel.setModelMatrix(this.leftPostMatrix);
-                    postModel.render(gl, ambientLight, nightProportion);
-
-                    postModel.setModelMatrix(this.rightPostMatrix);
-                    postModel.render(gl, ambientLight, nightProportion);
+                    draw(gl, postModel, this.leftPostMatrix, ambientLight, nightProportion);
+                    draw(gl, postModel, this.rightPostMatrix, ambientLight, nightProportion);
                 }
 
                 // Setup Billboard Shader
@@ -450,14 +457,12 @@ public class InfrastructureObject {
                 // --- 1. FRONT SIDE (Draws full text) ---
                 signShader.setFloat(gl, "bend", bend);
                 signShader.setInt(gl, "stringLength", this.stringLength);
-                billboardModel.setModelMatrix(this.frontBoardMatrix);
-                billboardModel.render(gl, ambientLight, nightProportion);
+                draw(gl, billboardModel, this.frontBoardMatrix, ambientLight, nightProportion);
 
                 if (wallMounted || bothSides) signShader.setFloat(gl, "bend", 0f);
                 if (bothSides) {
                     // Sticking out into the street: the same face both ways
-                    billboardModel.setModelMatrix(this.backBoardMatrix);
-                    billboardModel.render(gl, ambientLight, nightProportion);
+                    draw(gl, billboardModel, this.backBoardMatrix, ambientLight, nightProportion);
                     return;
                 }
                 if (wallMounted) return;
@@ -468,9 +473,14 @@ public class InfrastructureObject {
                 for (int i = 0; i < MAX_PICTURES; i++) signShader.setInt(gl, "pictureKind[" + i + "]", 0);
                 signShader.setInt(gl, "titleLength", 0);
                 signShader.setInt(gl, "bannerMode", 0);
-                billboardModel.setModelMatrix(this.backBoardMatrix);
-                billboardModel.render(gl, ambientLight, nightProportion);
+                draw(gl, billboardModel, this.backBoardMatrix, ambientLight, nightProportion);
             }
         }
+    }
+
+    /** Draws one piece of a sign: given in its frame, it is drawn on the sphere through it, camera-relative (see Renderer). */
+    private void draw(GL3 gl, Model model, Matrix4 local, Vector3 ambientLight, float nightProportion) {
+        model.setModelMatrix(Matrix4.multiply(frame.modelMatrix(1f), local));
+        model.render(gl, ambientLight, nightProportion);
     }
 }

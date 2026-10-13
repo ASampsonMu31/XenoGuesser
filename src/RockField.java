@@ -6,33 +6,39 @@ import com.xenoguesser.math.Matrix4;
 import com.xenoguesser.math.Vector3;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 
 /**
  * Rocks lying about the land. How many there are, how big, what colour and what shape all
  * drift smoothly across the world on their own noise maps (independent of nations), and
  * high ground has more of them, so the rocks underfoot are a clue to where you are.
  *
- * Near the player each chunk's rocks are merged into one detailed mesh, coloured per vertex;
- * the bigger ones are solid. Out to the horizon the medium and large ones are drawn too, in
- * tiles of several chunks, each rock a coarser version of the same shape in the same place,
- * hidden wherever the detailed chunks have taken over.
+ * Rocks are placed per geodesic cell (ROCK_LEVEL, a little over half a chunk's area each),
+ * as many as the rockiness there and the cell's own area call for, each in the tangent frame
+ * where it lies, so they are the same size and as many to the hectare at the equator, at 70
+ * degrees and at a pole. Near the player the rocks of each tile (a coarser cell, DETAIL_LEVEL)
+ * are merged into one detailed mesh, coloured per vertex, and the bigger ones are solid. Out
+ * to the horizon the medium and large ones are drawn too, in bigger tiles (FAR_LEVEL, the
+ * parents of four detailed tiles), each rock a coarser version of the same shape in the same
+ * place, hidden in whichever quarters of the tile are drawn in detail. Every tile is stored
+ * relative to its centre and drawn relative to the camera.
  */
 public class RockField {
 
     private static final int VARIANTS = 10;
-    private static final int RADIUS_CHUNKS = 7;          // in full detail this many chunks out
-    private static final int BUILDS_PER_FRAME = 4;       // beyond the nearest few, built a few at a time
+    private static final int ROCK_LEVEL = 8, DETAIL_LEVEL = 6, FAR_LEVEL = 5;
+    // Detailed tiles within this far, coarse ones out to FAR_REACH
+    private static final double DETAIL_REACH = 700.0, FAR_REACH = 2400.0;
+    // How many rocks a chunk's area (100 by 100) has where it's rockiest
     private static final float MAX_PER_CHUNK = 26f;
-    // Beyond, out to the horizon: tiles of FAR_TILE by FAR_TILE chunks holding just the rocks
-    // big enough to see that far, in coarse meshes
-    private static final int FAR_TILE = 4;
-    private static final float FAR_REACH = 2400f;
     private static final float FAR_MIN_RADIUS = 2.8f;
-    private static final int FAR_BUILDS_PER_FRAME = 2;
     // Rocks whose tops stand lower than this are stepped over; taller ones are solid
     private static final float STEP_HEIGHT = 1.8f;
 
@@ -42,29 +48,46 @@ public class RockField {
     private final PerlinNoise terrain;
     private final PerlinNoise abundance, size, hue, shade, shape;
     private final float[] baseColour;
+    private final GeodesicChunkGrid rockGrid = new GeodesicChunkGrid(ROCK_LEVEL);
+    private final GeodesicChunkGrid detailGrid = new GeodesicChunkGrid(DETAIL_LEVEL);
+    private final GeodesicChunkGrid farGrid = new GeodesicChunkGrid(FAR_LEVEL);
 
     // A handful of lumpy rock shapes, unit size: {x, y, z, nx, ny, nz} per vertex, in detail
     // and coarse (the same lumps on a less divided ball)
     private final List<float[]> variantVertices = new ArrayList<>();
     private final List<float[]> coarseVertices = new ArrayList<>();
 
-    private static final class Chunk {
-        int vao, vbo, ebo, indexCount;
-        float[] solids;   // {x, z, radius, top} per solid rock
-        float centreX, centreY, centreZ, radius;
+    /** A solid rock: where it stands, how far round, and how high its top is above the ground there. */
+    private record Solid(SpherePosition centre, double radius, double top) {
     }
-    private final Map<Long, Chunk> chunks = new HashMap<>();
-    private final Map<Long, Chunk> farTiles = new HashMap<>();
-    // How many rings of detailed chunks round the player are complete, and round which chunk;
-    // the coarse rocks there are hidden
-    private int completeRings = -1, ringCentreX, ringCentreZ;
+
+    /** A tile's rocks, worked out off the GL thread: vertex data relative to its centre, and its solid rocks. */
+    private record Built(SpherePosition centre, double radius, float[] data, List<Solid> solids) {
+    }
+
+    private static final class Tile {
+        SpherePosition centre;
+        double radius;
+        int vao, vbo, vertexCount;
+        List<Solid> solids = List.of();
+    }
+    private final Map<Long, Tile> detailTiles = new HashMap<>();
+    private final Map<Long, Tile> farTiles = new HashMap<>();
+    private final Map<Long, Future<Built>> detailBuilding = new HashMap<>();
+    private final Map<Long, Future<Built>> farBuilding = new HashMap<>();
+    // The solid rocks of every detailed tile, for collision and for what rain lands on
+    private final CellIndex<Solid> solids = new CellIndex<>();
     private Shader shader;
+    private ExecutorService builders;
+    // The tiles in range of the viewer's tile, worked out again only when the viewer changes tile
+    private final Map<GeodesicChunkGrid, Long> inRangeFor = new HashMap<>();
+    private final Map<GeodesicChunkGrid, List<GeodesicChunkGrid.Cell>> inRange = new HashMap<>();
 
     /** Where rocks may not go: roads, buildings and gardens, the landing pod. */
     public interface Keepout {
-        boolean blocks(float x, float z, float radius);
+        boolean blocks(SpherePosition position, float radius);
     }
-    private Keepout keepout = (x, z, r) -> false;
+    private Keepout keepout = (p, r) -> false;
 
     public RockField(long seed, float chunkSize, float seaLevel, PerlinNoise terrain, float[] bedrock) {
         this.seed = seed;
@@ -84,49 +107,60 @@ public class RockField {
         this.keepout = keepout;
     }
 
-    public void initialise(GL3 gl) {
+    /** The shader, and the threads tiles are worked out on (their meshes are put up on the GL thread). */
+    public void initialise(GL3 gl, ExecutorService builders) {
+        this.builders = builders;
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_rock.txt", GamePaths.HOME + "assets/shaders/fs_rock.txt");
     }
 
     // ------------------------------------------------------------------ regional character
 
-    /** 0..1: how rocky the land is here. */
-    /** How many rocks a chunk round a point is expected to have (as they're spawned, before any on water or roads are dropped). */
-    public float expectedPerChunk(float x, float z) {
-        return rockinessAt(x, z) * MAX_PER_CHUNK;
+    /** The noise maps' sampling point for a place: on the datum sphere, as PerlinNoise.onSphere takes it. */
+    private static float[] surface(SpherePosition p) {
+        double scale = Planet.radius() / p.length();
+        return new float[] { (float) (p.x() * scale), (float) (p.y() * scale), (float) (p.z() * scale) };
     }
 
-    private float rockinessAt(float x, float z) {
-        float n = abundance.onSphere(Planet.surface(x, z), 0.00011f, 0f, 0f);
+    /**
+     * How many rocks a chunk's area (100 by 100) round a place is expected to have (as they're
+     * spawned, before any on water or roads are dropped), for the map's overlay.
+     */
+    public float expectedPerChunk(SpherePosition place) {
+        return rockinessAt(place) * MAX_PER_CHUNK;
+    }
+
+    /** 0..1: how rocky the land is here. */
+    private float rockinessAt(SpherePosition p) {
+        float n = abundance.onSphere(surface(p), 0.00011f, 0f, 0f);
         float base = smooth(-0.25f, 0.55f, n);
         // High ground is rockier
-        float height = TerrainMesh.getLayeredHeight(x, z, terrain) - seaLevel;
+        float height = TerrainMesh.getLayeredHeight(p, terrain) - seaLevel;
         float mountain = smooth(120f, 520f, height);
         return Math.min(1f, base * 0.85f + mountain * 0.7f);
     }
 
-    /** Typical rock radius here, from pebbles to boulders. */
     // The smallest and largest typical rock (radius) a region can have
     public static final float SMALLEST_TYPICAL = 1.5f, LARGEST_TYPICAL = 11f;
 
     /** How big the rocks are round a point: their typical radius (most are smaller, a few bigger). */
-    public float typicalSizeAt(float x, float z) {
-        float n = 0.5f + 0.5f * size.onSphere(Planet.surface(x, z), 0.00008f, 3.1f, -1.7f);
+    public float typicalSizeAt(SpherePosition p) {
+        float n = 0.5f + 0.5f * size.onSphere(surface(p), 0.00008f, 3.1f, -1.7f);
         return SMALLEST_TYPICAL + (LARGEST_TYPICAL - SMALLEST_TYPICAL) * n * n;
     }
 
     /** The colour of the stone here: this world's bedrock, shifted in hue and shade across regions. */
-    private float[] colourAt(float x, float z) {
-        float h = hue.onSphere(Planet.surface(x, z), 0.00006f, 0f, 0f);
-        float v = shade.onSphere(Planet.surface(x, z), 0.00009f, 7.7f, 2.2f);
+    private float[] colourAt(SpherePosition p) {
+        float[] s = surface(p);
+        float h = hue.onSphere(s, 0.00006f, 0f, 0f);
+        float v = shade.onSphere(s, 0.00009f, 7.7f, 2.2f);
         float[] hsv = WorldPalette.toHsv(baseColour);
         return WorldPalette.hsv(hsv[0] + h * 0.18f, Math.max(0f, Math.min(1f, hsv[1] + h * 0.2f + 0.05f)),
                 Math.max(0.12f, Math.min(0.85f, hsv[2] * (1f + v * 0.55f))));
     }
 
     /** 0 rounded and squat, 1 tall and angular. */
-    private float angularityAt(float x, float z) {
-        return 0.5f + 0.5f * shape.onSphere(Planet.surface(x, z), 0.0001f, -4.4f, 9.1f);
+    private float angularityAt(SpherePosition p) {
+        return 0.5f + 0.5f * shape.onSphere(surface(p), 0.0001f, -4.4f, 9.1f);
     }
 
     private static float smooth(float a, float b, float x) {
@@ -224,119 +258,88 @@ public class RockField {
         return points.size() - 1;
     }
 
-    // ------------------------------------------------------------------ chunks
-
-    /** Builds the rocks of chunks coming into range and drops those left behind. */
-    public void update(GL3 gl, float viewerX, float viewerZ, boolean all) {
-        int cx0 = (int) Math.floor(viewerX / chunkSize), cz0 = (int) Math.floor(viewerZ / chunkSize);
-        Iterator<Map.Entry<Long, Chunk>> it = chunks.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<Long, Chunk> e = it.next();
-            int cx = (int) (e.getKey() >> 32), cz = (int) (long) e.getKey();
-            if (Math.abs(cx - cx0) > RADIUS_CHUNKS + 1 || Math.abs(cz - cz0) > RADIUS_CHUNKS + 1) {
-                dispose(gl, e.getValue());
-                it.remove();
-            }
-        }
-        int built = 0;
-        ringCentreX = cx0;
-        ringCentreZ = cz0;
-        completeRings = -1;
-        boolean stopped = false;
-        for (int ring = 0; ring <= RADIUS_CHUNKS && !stopped; ring++) {
-            boolean ringComplete = true;
-            for (int dz = -ring; dz <= ring && !stopped; dz++) {
-                for (int dx = -ring; dx <= ring; dx++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dz)) != ring) continue;
-                    long key = key(cx0 + dx, cz0 + dz);
-                    if (chunks.containsKey(key)) continue;
-                    // The nearest chunks are built at once; further out a few a frame
-                    if (!all && ring > 1 && built >= BUILDS_PER_FRAME) {
-                        ringComplete = false;
-                        stopped = true;
-                        break;
-                    }
-                    chunks.put(key, build(gl, cx0 + dx, cz0 + dz, 1, false));
-                    built++;
-                }
-            }
-            if (ringComplete && !stopped) completeRings = ring;
-        }
-        updateFar(gl, viewerX, viewerZ, all);
-    }
-
-    /** Builds the coarse tiles out to the horizon, nearest first, and drops those left behind. */
-    private void updateFar(GL3 gl, float viewerX, float viewerZ, boolean all) {
-        float tileSize = chunkSize * FAR_TILE;
-        int tx0 = (int) Math.floor(viewerX / tileSize), tz0 = (int) Math.floor(viewerZ / tileSize);
-        int reach = (int) Math.ceil(FAR_REACH / tileSize);
-        Iterator<Map.Entry<Long, Chunk>> it = farTiles.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<Long, Chunk> e = it.next();
-            int tx = (int) (e.getKey() >> 32), tz = (int) (long) e.getKey();
-            if (Math.abs(tx - tx0) > reach + 1 || Math.abs(tz - tz0) > reach + 1) {
-                dispose(gl, e.getValue());
-                it.remove();
-            }
-        }
-        int built = 0;
-        for (int ring = 0; ring <= reach; ring++) {
-            for (int dz = -ring; dz <= ring; dz++) {
-                for (int dx = -ring; dx <= ring; dx++) {
-                    if (Math.max(Math.abs(dx), Math.abs(dz)) != ring) continue;
-                    long key = key(tx0 + dx, tz0 + dz);
-                    if (farTiles.containsKey(key)) continue;
-                    float centreX = (tx0 + dx + 0.5f) * tileSize, centreZ = (tz0 + dz + 0.5f) * tileSize;
-                    if (Math.hypot(centreX - viewerX, centreZ - viewerZ) > FAR_REACH + tileSize) continue;
-                    if (!all && built >= FAR_BUILDS_PER_FRAME) return;
-                    farTiles.put(key, build(gl, (tx0 + dx) * FAR_TILE, (tz0 + dz) * FAR_TILE, FAR_TILE, true));
-                    built++;
-                }
-            }
-        }
-    }
-
-    private static long key(int cx, int cz) {
-        return ((long) cx << 32) | (cz & 0xFFFFFFFFL);
-    }
+    // ------------------------------------------------------------------ tiles
 
     /**
-     * The rocks of span by span chunks from (firstX, firstZ) in one mesh: every rock in full
-     * detail, or (coarse) just those big enough to see from afar, each vertex also carrying
-     * its chunk so the detailed chunks can hide it.
+     * Puts up the tiles worked out since last time, sets the rest in range being worked out
+     * (nearest first), and drops those left behind. With all, every tile in range is built
+     * before returning (while loading, so the round starts with every rock in place).
      */
-    private Chunk build(GL3 gl, int firstX, int firstZ, int span, boolean coarse) {
-        Chunk chunk = new Chunk();
-        List<float[]> verts = new ArrayList<>();
-        List<Float> solids = new ArrayList<>();
-        float[] bounds = { Float.MAX_VALUE, -Float.MAX_VALUE };
-        for (int cz = firstZ; cz < firstZ + span; cz++) {
-            for (int cx = firstX; cx < firstX + span; cx++) {
-                addChunkRocks(cx, cz, coarse, verts, solids, bounds);
-            }
-        }
-        int vertexCount = verts.size();
-        chunk.solids = new float[solids.size()];
-        for (int i = 0; i < solids.size(); i++) chunk.solids[i] = solids.get(i);
-        chunk.centreX = (firstX + span * 0.5f) * chunkSize;
-        chunk.centreZ = (firstZ + span * 0.5f) * chunkSize;
-        chunk.centreY = vertexCount == 0 ? 0f : (bounds[0] + bounds[1]) * 0.5f;
-        chunk.radius = chunkSize * span * 0.75f + (vertexCount == 0 ? 0f : (bounds[1] - bounds[0]) * 0.5f + 10f);
-        chunk.indexCount = vertexCount;
-        if (vertexCount == 0) return chunk;
+    public void update(GL3 gl, SpherePosition viewer, boolean all) {
+        updateTiles(gl, viewer, all, detailGrid, DETAIL_REACH, detailTiles, detailBuilding, false);
+        updateTiles(gl, viewer, all, farGrid, FAR_REACH, farTiles, farBuilding, true);
+    }
 
-        int floats = coarse ? 11 : 9;
-        float[] data = new float[vertexCount * floats];
-        for (int i = 0; i < vertexCount; i++) System.arraycopy(verts.get(i), 0, data, i * floats, floats);
-        int[] ids = new int[3];
+    private void updateTiles(GL3 gl, SpherePosition viewer, boolean all, GeodesicChunkGrid grid, double reach,
+            Map<Long, Tile> tiles, Map<Long, Future<Built>> building, boolean coarse) {
+        GeodesicChunkGrid.Direction here = SphereMath.direction(viewer);
+        long viewerTile = grid.cellAt(here).id();
+        if (!Long.valueOf(viewerTile).equals(inRangeFor.get(grid))) {
+            inRangeFor.put(grid, viewerTile);
+            inRange.put(grid, grid.cellsWithin(here, reach / Planet.radius()));
+        }
+        List<GeodesicChunkGrid.Cell> inRange = this.inRange.get(grid);
+        Set<Long> wanted = new HashSet<>();
+        for (GeodesicChunkGrid.Cell cell : inRange) wanted.add(cell.id());
+        // Dropped once well out of range, so a tile at the edge isn't made again and again
+        double keep = reach / Planet.radius() + 2.0 * grid.cellAt(here).angularRadius();
+        Iterator<Map.Entry<Long, Tile>> it = tiles.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, Tile> e = it.next();
+            if (wanted.contains(e.getKey()) || SphereMath.angle(viewer, e.getValue().centre) <= keep) continue;
+            dispose(gl, e.getValue());
+            it.remove();
+        }
+        Iterator<Map.Entry<Long, Future<Built>>> pending = building.entrySet().iterator();
+        while (pending.hasNext()) {
+            Map.Entry<Long, Future<Built>> e = pending.next();
+            if (wanted.contains(e.getKey())) continue;
+            e.getValue().cancel(true);
+            pending.remove();
+        }
+        for (GeodesicChunkGrid.Cell cell : inRange) {
+            long id = cell.id();
+            if (tiles.containsKey(id)) continue;
+            Future<Built> future = building.get(id);
+            Built built = null;
+            if (future == null) {
+                if (all || builders == null) {
+                    built = build(grid, id, coarse);
+                } else {
+                    building.put(id, builders.submit(() -> build(grid, id, coarse)));
+                    continue;
+                }
+            } else if (future.isDone() || all) {
+                building.remove(id);
+                try {
+                    built = future.get();
+                } catch (Exception e) {
+                    // (cancelled, or failed: tried again next time)
+                    continue;
+                }
+            }
+            if (built != null) tiles.put(id, install(gl, built, coarse));
+        }
+    }
+
+    /** Puts a worked-out tile's mesh up on the GPU, and its solid rocks in the index. */
+    private Tile install(GL3 gl, Built built, boolean coarse) {
+        Tile tile = new Tile();
+        tile.centre = built.centre();
+        tile.radius = built.radius();
+        tile.solids = built.solids();
+        for (Solid solid : tile.solids) solids.add(solid.centre(), solid.radius(), solid);
+        int floats = coarse ? 10 : 9;
+        tile.vertexCount = built.data().length / floats;
+        if (tile.vertexCount == 0) return tile;
+        int[] ids = new int[2];
         gl.glGenVertexArrays(1, ids, 0);
-        gl.glGenBuffers(2, ids, 1);
-        chunk.vao = ids[0];
-        chunk.vbo = ids[1];
-        chunk.ebo = ids[2];
-        gl.glBindVertexArray(chunk.vao);
-        gl.glBindBuffer(GL.GL_ARRAY_BUFFER, chunk.vbo);
-        gl.glBufferData(GL.GL_ARRAY_BUFFER, (long) data.length * Float.BYTES, Buffers.newDirectFloatBuffer(data), GL.GL_STATIC_DRAW);
+        gl.glGenBuffers(1, ids, 1);
+        tile.vao = ids[0];
+        tile.vbo = ids[1];
+        gl.glBindVertexArray(tile.vao);
+        gl.glBindBuffer(GL.GL_ARRAY_BUFFER, tile.vbo);
+        gl.glBufferData(GL.GL_ARRAY_BUFFER, (long) built.data().length * Float.BYTES, Buffers.newDirectFloatBuffer(built.data()), GL.GL_STATIC_DRAW);
         int stride = floats * Float.BYTES;
         gl.glVertexAttribPointer(0, 3, GL.GL_FLOAT, false, stride, 0);
         gl.glEnableVertexAttribArray(0);
@@ -345,32 +348,59 @@ public class RockField {
         gl.glVertexAttribPointer(2, 3, GL.GL_FLOAT, false, stride, 6L * Float.BYTES);
         gl.glEnableVertexAttribArray(2);
         if (coarse) {
-            gl.glVertexAttribPointer(3, 2, GL.GL_FLOAT, false, stride, 9L * Float.BYTES);
+            gl.glVertexAttribPointer(3, 1, GL.GL_FLOAT, false, stride, 9L * Float.BYTES);
             gl.glEnableVertexAttribArray(3);
         }
         gl.glBindVertexArray(0);
-        return chunk;
+        return tile;
     }
 
-    /** Places one chunk's rocks, the same each time, adding their vertices (and solid ones). */
-    private void addChunkRocks(int cx, int cz, boolean coarse, List<float[]> verts, List<Float> solids, float[] bounds) {
-        float x0 = cx * chunkSize, z0 = cz * chunkSize;
-        Random rand = new Random(seed ^ (Planet.wrapChunk(cx, chunkSize) * 0x9E3779B97F4A7C15L) ^ (cz * 0xC2B2AE3D27D4EB4FL) ^ 0x70C5L);
-        float centreX = x0 + chunkSize * 0.5f, centreZ = z0 + chunkSize * 0.5f;
-        float expected = rockinessAt(centreX, centreZ) * MAX_PER_CHUNK;
+    /**
+     * The rocks of one tile (every rock in full detail, or, coarse, just those big enough to
+     * see from afar, each vertex also carrying which quarter of the tile it lies in), as
+     * vertices relative to the tile's centre. Safe off the GL thread.
+     */
+    private Built build(GeodesicChunkGrid grid, long id, boolean coarse) {
+        SpherePosition centre = SphereMath.atAltitude(grid.cell(id).centre(), 0.0);
+        int shift = 2 * (ROCK_LEVEL - grid.level());
+        long first = id << shift, cells = 1L << shift;
+        List<float[]> verts = new ArrayList<>();
+        List<Solid> solidRocks = new ArrayList<>();
+        for (long k = 0; k < cells; k++) {
+            if (Thread.currentThread().isInterrupted()) break;
+            addCellRocks(rockGrid.cell(first + k), centre, coarse, verts, solidRocks);
+        }
+        int floats = coarse ? 10 : 9;
+        float[] data = new float[verts.size() * floats];
+        double radius = 0.0;
+        for (int i = 0; i < verts.size(); i++) {
+            float[] v = verts.get(i);
+            System.arraycopy(v, 0, data, i * floats, floats);
+            radius = Math.max(radius, Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]));
+        }
+        return new Built(centre, radius, data, solidRocks);
+    }
+
+    /** Places one cell's rocks, the same each time, adding their vertices (relative to origin) and solid ones. */
+    private void addCellRocks(GeodesicChunkGrid.Cell cell, SpherePosition origin, boolean coarse, List<float[]> verts, List<Solid> solidRocks) {
+        double area = cell.area() * Planet.radius() * Planet.radius();
+        Random rand = new Random(seed ^ (cell.id() * 0x9E3779B97F4A7C15L) ^ 0x70C5L);
+        float expected = rockinessAt(SphereMath.atAltitude(cell.centre(), 0.0)) * MAX_PER_CHUNK
+                * (float) (area / (chunkSize * chunkSize));
         int count = (int) expected + (rand.nextFloat() < expected - (int) expected ? 1 : 0);
         // Rocks gather in loose clusters rather than spreading evenly
-        float clusterX = x0 + rand.nextFloat() * chunkSize, clusterZ = z0 + rand.nextFloat() * chunkSize;
+        double spread = Math.sqrt(area) * 0.18;
+        SphereFrame cluster = SphereFrame.at(SphereMath.atAltitude(cell.point(rand.nextDouble(), rand.nextDouble()), 0.0));
+        // (which quarter of its coarse tile, as the coarse tiles' hiding needs)
+        float child = (float) ((cell.id() >>> (2 * (ROCK_LEVEL - DETAIL_LEVEL))) & 3L);
         for (int i = 0; i < count; i++) {
-            float x, z;
+            SpherePosition at;
             if (rand.nextFloat() < 0.6f) {
-                x = clusterX + (float) rand.nextGaussian() * chunkSize * 0.18f;
-                z = clusterZ + (float) rand.nextGaussian() * chunkSize * 0.18f;
+                at = cluster.toSphere(rand.nextGaussian() * spread, 0.0, rand.nextGaussian() * spread);
             } else {
-                x = x0 + rand.nextFloat() * chunkSize;
-                z = z0 + rand.nextFloat() * chunkSize;
+                at = SphereMath.atAltitude(cell.point(rand.nextDouble(), rand.nextDouble()), 0.0);
             }
-            float typical = typicalSizeAt(x, z);
+            float typical = typicalSizeAt(at);
             // Mostly small, now and then a big one
             float r = typical * (0.35f + 1.3f * (float) Math.pow(rand.nextFloat(), 2.2f));
             // Every rock draws the same numbers whether or not it's kept, so each is always the same
@@ -379,121 +409,126 @@ public class RockField {
             float tone = 0.85f + 0.3f * rand.nextFloat();
             int variant = rand.nextInt(VARIANTS);
             if (coarse && r < FAR_MIN_RADIUS) continue;
-            float ground = TerrainMesh.getLayeredHeight(x, z, terrain);
-            if (ground < seaLevel + 0.5f || keepout.blocks(x, z, r)) continue;
-            float angular = angularityAt(x, z);
+            float ground = TerrainMesh.getLayeredHeight(at, terrain);
+            if (ground < seaLevel + 0.5f || keepout.blocks(at, r)) continue;
+            float angular = angularityAt(at);
             float squash = 0.45f + 0.45f * angular * (0.6f + 0.4f * angularRoll);
-            float[] colour = colourAt(x, z);
+            float[] colour = colourAt(at);
             float[] src = (coarse ? coarseVertices : variantVertices).get(variant);
             float cos = (float) Math.cos(yaw), sin = (float) Math.sin(yaw);
             float sink = r * squash * 0.25f;
+            // Built in the rock's own tangent frame, standing on the ground there
+            SpherePosition foot = SphereMath.atAltitude(at, ground);
+            SphereFrame frame = SphereFrame.at(foot);
             for (int v = 0; v < src.length; v += 6) {
                 float lx = src[v] * r, ly = src[v + 1] * r * squash, lz = src[v + 2] * r;
                 // A slight lean, then turned
                 ly += lx * tiltX + lz * tiltZ;
-                float wx = x + lx * cos + lz * sin, wz = z - lx * sin + lz * cos;
-                float wy = ground - sink + ly + r * squash * 0.35f;
+                SpherePosition world = frame.toWorld(lx * cos + lz * sin, -sink + ly + r * squash * 0.35f, -lx * sin + lz * cos);
                 float nx = src[v + 3], ny = src[v + 4] / Math.max(0.3f, squash), nz = src[v + 5];
-                float rnx = nx * cos + nz * sin, rnz = -nx * sin + nz * cos;
-                float len = (float) Math.sqrt(rnx * rnx + ny * ny + rnz * rnz);
+                double[] n = frame.worldDirection(nx * cos + nz * sin, ny, -nx * sin + nz * cos);
+                float len = (float) Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
                 // Darker low down where soil and shadow gather
                 float low = 0.65f + 0.35f * Math.max(0f, Math.min(1f, (src[v + 1] + 0.35f) / 1.0f));
-                float[] vertex = coarse
-                        ? new float[] { wx, wy, wz, rnx / len, ny / len, rnz / len, colour[0] * tone * low, colour[1] * tone * low, colour[2] * tone * low, cx, cz }
-                        : new float[] { wx, wy, wz, rnx / len, ny / len, rnz / len, colour[0] * tone * low, colour[1] * tone * low, colour[2] * tone * low };
-                verts.add(vertex);
-                bounds[0] = Math.min(bounds[0], wy);
-                bounds[1] = Math.max(bounds[1], wy);
+                float px = (float) (world.x() - origin.x()), py = (float) (world.y() - origin.y()), pz = (float) (world.z() - origin.z());
+                float r0 = colour[0] * tone * low, g0 = colour[1] * tone * low, b0 = colour[2] * tone * low;
+                verts.add(coarse
+                        ? new float[] { px, py, pz, (float) n[0] / len, (float) n[1] / len, (float) n[2] / len, r0, g0, b0, child }
+                        : new float[] { px, py, pz, (float) n[0] / len, (float) n[1] / len, (float) n[2] / len, r0, g0, b0 });
             }
             float top = r * squash * 1.1f;
-            if (!coarse && top > STEP_HEIGHT) {
-                solids.add(x);
-                solids.add(z);
-                solids.add(r * 0.85f);
-                solids.add(top);
-            }
+            if (!coarse && top > STEP_HEIGHT) solidRocks.add(new Solid(foot, r * 0.85f, top));
         }
     }
 
-    private void dispose(GL3 gl, Chunk chunk) {
-        if (chunk.vao == 0) return;
-        gl.glDeleteVertexArrays(1, new int[] { chunk.vao }, 0);
-        gl.glDeleteBuffers(2, new int[] { chunk.vbo, chunk.ebo }, 0);
+    private void dispose(GL3 gl, Tile tile) {
+        for (Solid solid : tile.solids) solids.remove(solid.centre(), solid);
+        if (tile.vao == 0) return;
+        gl.glDeleteVertexArrays(1, new int[] { tile.vao }, 0);
+        gl.glDeleteBuffers(1, new int[] { tile.vbo }, 0);
     }
 
-    /** Drops every chunk, for a new round (the pod may now be standing where rocks were). */
+    /** Drops every tile, for a new round (the pod may now be standing where rocks were). */
     public void clear(GL3 gl) {
-        for (Chunk chunk : chunks.values()) dispose(gl, chunk);
-        chunks.clear();
-        for (Chunk chunk : farTiles.values()) dispose(gl, chunk);
+        for (Tile tile : detailTiles.values()) dispose(gl, tile);
+        detailTiles.clear();
+        for (Tile tile : farTiles.values()) dispose(gl, tile);
         farTiles.clear();
-        completeRings = -1;
+        for (Future<Built> future : detailBuilding.values()) future.cancel(true);
+        detailBuilding.clear();
+        for (Future<Built> future : farBuilding.values()) future.cancel(true);
+        farBuilding.clear();
+        solids.clear();
     }
 
-    public void render(GL3 gl, Matrix4 viewProjection, Frustum frustum, Vector3 viewPos, Vector3 sunPos, float[] sunColour,
-                       Vector3 ambient, Matrix4 skyRotation, Texture sky) {
+    /**
+     * Draws the rocks relative to the camera at eye (looking along forward, a world
+     * direction), lit by the sun in sunDirection (a world direction).
+     */
+    public void render(GL3 gl, Matrix4 viewProjection, SpherePosition eye, Vector3 forward, Vector3 sunDirection,
+                       float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky) {
         if (shader == null) return;
         shader.use(gl);
         shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
-        shader.setVec3(gl, "viewPos", viewPos);
-        shader.setVec3(gl, "sunPos", sunPos);
+        shader.setVec3(gl, "viewPos", new Vector3(0f, 0f, 0f));
+        shader.setVec3(gl, "sunPos", SphereRender.sunPoint(sunDirection));
         shader.setVec3(gl, "sunColour", new Vector3(sunColour[0], sunColour[1], sunColour[2]));
         shader.setVec3(gl, "ambientLight", ambient);
+        double[] up = SphereFrame.at(eye).up();
+        shader.setVec3(gl, "up", new Vector3((float) up[0], (float) up[1], (float) up[2]));
+        // (for the snow)
+        shader.setVec3(gl, "sphereCamera", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
+        shader.setFloat(gl, "planetRadius", (float) Planet.radius());
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             sky.bind(gl);
             shader.setInt(gl, "skyTexture", 2);
         }
         shader.setInt(gl, "coarse", 0);
-        for (Chunk chunk : chunks.values()) {
-            if (chunk.indexCount == 0 || !frustum.intersectsSphere(chunk.centreX, chunk.centreY, chunk.centreZ, chunk.radius)) continue;
-            gl.glBindVertexArray(chunk.vao);
-            gl.glDrawArrays(GL.GL_TRIANGLES, 0, chunk.indexCount);
-        }
-        // The coarse rocks out to the horizon, except where the detailed ones are drawn
+        for (Tile tile : detailTiles.values()) draw(gl, tile, eye, forward);
+        // The coarse rocks out to the horizon, except in the quarters drawn in detail
         shader.setInt(gl, "coarse", 1);
-        shader.setFloat(gl, "detailedCentre", ringCentreX, ringCentreZ);
-        shader.setFloat(gl, "detailedRings", completeRings);
-        for (Chunk chunk : farTiles.values()) {
-            if (chunk.indexCount == 0 || !frustum.intersectsSphere(chunk.centreX, chunk.centreY, chunk.centreZ, chunk.radius)) continue;
-            gl.glBindVertexArray(chunk.vao);
-            gl.glDrawArrays(GL.GL_TRIANGLES, 0, chunk.indexCount);
+        for (Map.Entry<Long, Tile> e : farTiles.entrySet()) {
+            int detailed = 0;
+            for (int k = 0; k < 4; k++) {
+                if (detailTiles.containsKey((e.getKey() << 2) | k)) detailed |= 1 << k;
+            }
+            if (detailed == 15) continue;
+            shader.setInt(gl, "detailedChildren", detailed);
+            draw(gl, e.getValue(), eye, forward);
         }
         gl.glBindVertexArray(0);
     }
 
+    private void draw(GL3 gl, Tile tile, SpherePosition eye, Vector3 forward) {
+        if (tile.vertexCount == 0) return;
+        double dx = tile.centre.x() - eye.x(), dy = tile.centre.y() - eye.y(), dz = tile.centre.z() - eye.z();
+        // (nothing of it in front of the eyes)
+        if (dx * forward.x + dy * forward.y + dz * forward.z < -tile.radius) return;
+        shader.setVec3(gl, "tileOffset", new Vector3((float) dx, (float) dy, (float) dz));
+        gl.glBindVertexArray(tile.vao);
+        gl.glDrawArrays(GL.GL_TRIANGLES, 0, tile.vertexCount);
+    }
+
     /**
-     * How high the top of a rock is over a point (a dome over its footprint), given the
-     * ground there; NaN if no rock stands there.
+     * The altitude of the top of a rock over a place (a dome over its footprint), given the
+     * ground's there; NaN if no rock stands there.
      */
-    public float topAt(float x, float z, float ground) {
-        Chunk chunk = chunks.get(key((int) Math.floor(x / chunkSize), (int) Math.floor(z / chunkSize)));
-        if (chunk == null || chunk.solids == null) return Float.NaN;
-        float best = Float.NaN;
-        for (int i = 0; i < chunk.solids.length; i += 4) {
-            float dx = x - chunk.solids[i], dz = z - chunk.solids[i + 1], r = chunk.solids[i + 2];
-            float d2 = (dx * dx + dz * dz) / (r * r);
-            if (d2 >= 1f) continue;
-            float top = ground + chunk.solids[i + 3] * (float) Math.sqrt(1f - d2);
-            if (Float.isNaN(best) || top > best) best = top;
+    public double topAt(SpherePosition position, double ground) {
+        double best = Double.NaN;
+        for (Solid solid : solids.near(position, 0.0)) {
+            double d = SphereMath.distance(position, solid.centre()) / solid.radius();
+            if (d >= 1.0) continue;
+            double top = ground + solid.top() * Math.sqrt(1.0 - d * d);
+            if (Double.isNaN(best) || top > best) best = top;
         }
         return best;
     }
 
-    /** The bigger rocks near a point, as solid circles. */
-    public void obstaclesNear(float x, float z, float reach, Collision.Sink sink) {
-        int cx0 = (int) Math.floor((x - reach - 10f) / chunkSize), cx1 = (int) Math.floor((x + reach + 10f) / chunkSize);
-        int cz0 = (int) Math.floor((z - reach - 10f) / chunkSize), cz1 = (int) Math.floor((z + reach + 10f) / chunkSize);
-        for (int cz = cz0; cz <= cz1; cz++) {
-            for (int cx = cx0; cx <= cx1; cx++) {
-                Chunk chunk = chunks.get(key(cx, cz));
-                if (chunk == null) continue;
-                for (int i = 0; i < chunk.solids.length; i += 4) {
-                    sink.circle(chunk.solids[i], chunk.solids[i + 1], chunk.solids[i + 2], chunk.solids[i + 3]);
-                }
-            }
-        }
+    /** The bigger rocks near a place, as solid circles. */
+    public void obstaclesNear(SpherePosition centre, double reach, GeodesicCollision.Sink sink) {
+        solids.forEachNear(centre, reach, solid -> sink.circle(solid.centre(), solid.radius(), solid.top()));
     }
 
     private static float[] normalise(float[] v) {

@@ -1,0 +1,32 @@
+#version 330 core
+
+// The sky behind everything: the sky texture in the direction each pixel looks, turned by
+// skyRotation (in the world: the local frame here times the sky's turn for the sun), exactly
+// as the old sky dome showed it and as reflections sample it (skyAlong in the other shaders).
+// The clouds are drawn over it (fs_sphere_cloud).
+
+in vec2 uv;
+out vec4 fragColour;
+
+uniform sampler2D skyTexture;
+uniform int hasSkyTexture;
+uniform vec3 cameraForward;
+uniform vec3 cameraRight;
+uniform vec3 cameraUp;
+uniform float aspectRatio;
+uniform vec3 fallbackSky;
+uniform mat4 skyRotation;
+
+const float PI = 3.14159265359;
+
+void main() {
+    vec2 ndc = uv * 2.0 - 1.0;
+    vec3 ray = normalize(cameraForward + cameraRight * (ndc.x * aspectRatio * 0.41421356)
+            + cameraUp * (ndc.y * 0.41421356));
+    vec3 localSkyDir = transpose(mat3(skyRotation)) * ray;
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) theta += 2.0 * PI;
+    vec2 skyUv = vec2(theta / (2.0 * PI), asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5);
+    vec3 sky = hasSkyTexture != 0 ? texture(skyTexture, skyUv).rgb : fallbackSky;
+    fragColour = vec4(sky, 1.0);
+}
