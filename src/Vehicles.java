@@ -60,7 +60,11 @@ public final class Vehicles {
     // Lanes run this far out from the road's middle (as a share of its half width)
     private static final float LANE_SHARE = 0.32f;
 
-    /** One vehicle, parked or on the move. */
+    /**
+     * One vehicle, parked or on the move. It is where it is on the planet (on the datum) and
+     * faces a heading (D10) in the frame there; each step is worked out in that frame (D3) and
+     * the heading carried along with it.
+     */
     public static final class Vehicle {
         final int kind, variant;
         final float length, width, height;
@@ -68,18 +72,22 @@ public final class Vehicles {
         final int pattern;
         final float patternScale;
         final InfrastructureManager.Doorway home;
-        float x, z, heading, speed, spin, pitch;
+        SpherePosition position;
+        double heading;
+        // Which way it faces as a world direction, worked out once a step for the others' tests
+        double[] forward;
+        float speed, spin, pitch;
         boolean parked = true;
         // Where it's parked (or will park): which door's kerb, and which place along it
         long parkedAt;
         int slot;
-        // The way it's driving: points {x, z, side, half width, rank, dirt}; then its parking place {x, z, heading}
-        final List<float[]> route = new ArrayList<>();
+        // The way it's driving; then its parking place
+        final List<Stop> route = new ArrayList<>();
         int next;
-        float[] park;
+        Spot park;
         Runnable onArrive;
         // Reversing out of a driveway to here before setting off; turning in at a driveway from here
-        float[] backOut, approach;
+        SpherePosition backOut, approach;
         // Whoever has it for a trip (its owner or someone borrowing it), or null if it's free
         Object claimedBy;
         // Easing out round parked vehicles; how long it has been held up; when it may push through
@@ -96,7 +104,8 @@ public final class Vehicles {
         float checkWait;
         int detourSide, tries;
         // The road deck's height above the ground where it stands (slow to find), and where that was found
-        float lift, liftX = Float.NaN, liftZ;
+        float lift;
+        SpherePosition liftAt;
         boolean settling;
 
         private Vehicle(int kind, int variant, float scale, InfrastructureManager.Doorway home, Random rand) {
@@ -131,13 +140,34 @@ public final class Vehicles {
             return traffic;
         }
 
-        public float x() {
-            return x;
+        /** Where it is, on the datum. */
+        public SpherePosition position() {
+            return position;
         }
 
-        public float z() {
-            return z;
+        /** Which door's kerb it's parked at (or bound for). */
+        public long parkedAt() {
+            return parkedAt;
         }
+    }
+
+    /**
+     * A point of a vehicle's way: on the road's middle, the side its traffic keeps to (1 right,
+     * -1 left), the road's half width, its rank (2 highway) and 1 if it's a dirt track.
+     */
+    record Stop(SpherePosition place, float side, float half, float rank, float dirt) {
+    }
+
+    /**
+     * Where a vehicle parks: the place, which way it faces there (D10), its place along the
+     * door's kerb (-1 if none, or up a driveway), whether up a driveway, and where someone
+     * getting in or out stands.
+     */
+    public record Spot(SpherePosition place, double heading, int slot, boolean driveway, SpherePosition getIn) {
+    }
+
+    /** Where an open-topped vehicle's driver sits: the place under the seat, the rim's height above the datum, and the way it faces (D10). */
+    public record Seat(SpherePosition place, float rim, double heading) {
     }
 
     private final InfrastructureManager infrastructure;
@@ -153,9 +183,8 @@ public final class Vehicles {
     private final Map<Integer, Float> ownership = new HashMap<>();
     // Places taken along each door's kerb (by door id)
     private final Map<Long, boolean[]> slotsTaken = new HashMap<>();
-    private Collision collision;
-    private float viewerX, viewerZ;
-    private SpherePosition sphereViewer;
+    private GeodesicCollision collision;
+    private SpherePosition viewer;
     private final float[] bones = new float[OrganismSpecies.MAX_BONES * 16];
 
     public Vehicles(long seed, int nationCount, float personHeight, InfrastructureManager infrastructure, PerlinNoise terrainNoise) {
@@ -199,9 +228,10 @@ public final class Vehicles {
         }
     }
 
-    public void setCollision(Collision collision) {
+    public void setCollision(GeodesicCollision collision) {
         this.collision = collision;
     }
+
 
     public void clear() {
         slotsTaken.clear();
@@ -458,16 +488,14 @@ public final class Vehicles {
         seats[kind][variant] = new float[] { z, top };
     }
 
-    /**
-     * Where the driver of an open-topped vehicle sits, as {x, y of the rim, z, heading}; null if
-     * it's closed (and its driver can't be seen).
-     */
-    public float[] seat(Vehicle v) {
+    /** Where the driver of an open-topped vehicle sits; null if it's closed (and its driver can't be seen). */
+    public Seat seat(Vehicle v) {
         float[] seat = seats[v.kind][v.variant];
         if (seat == null) return null;
         float s = v.length / (KIND_SIZE[v.kind][0] * scale);
-        float fx = (float) Math.sin(v.heading), fz = (float) Math.cos(v.heading);
-        return new float[] { v.x + fx * seat[0] * s, standingHeight(v) + seat[1] * s, v.z + fz * seat[0] * s, v.heading };
+        double ahead = seat[0] * s;
+        SpherePosition at = SphereFrame.at(v.position).toSphere(Math.cos(v.heading) * ahead, 0.0, Math.sin(v.heading) * ahead);
+        return new Seat(at, standingHeight(v) + seat[1] * s, SphereMath.carryHeading(v.position, at, v.heading));
     }
 
     private final List<List<float[]>> wheelLists = new ArrayList<>();
@@ -496,9 +524,9 @@ public final class Vehicles {
             if (weights[k] > 0f) kind = k;
         }
         Vehicle v = new Vehicle(kind, pickVariant(rand), scale, home, rand);
-        float[] spot = parkingSpot(home, v);
+        Spot spot = parkingSpot(home, v);
         v.parkedAt = home.id;
-        v.slot = (int) spot[3];
+        v.slot = spot.slot();
         place(v, spot);
         return v;
     }
@@ -521,20 +549,21 @@ public final class Vehicles {
      * fits, nose in. Otherwise at the road's edge on the door's side, pulled right over and
      * facing the way traffic on that side goes, just clear of the gate (and any driveway) so it
      * never blocks the way in; further places run along the road from there, either way.
-     * Returns {x, z, heading, slot (-1 on a driveway), 1 if a driveway, where someone getting
-     * in or out stands: x, z}.
+     * Laid out in the house's frame.
      */
-    private float[] parkingSpot(InfrastructureManager.Doorway door, Vehicle v) {
-        float[] drive = door.driveway;
+    private Spot parkingSpot(InfrastructureManager.Doorway door, Vehicle v) {
+        float[] drive = door.localDriveway;
         if (drive != null && v.home == door && v.length <= drive[4] - 6f && v.width <= drive[5] - 3f) {
             float in = 3f + v.length * 0.5f, aside = v.width * 0.5f + 2.5f;
             float x = drive[0] + drive[2] * in, z = drive[1] + drive[3] * in;
-            return new float[] { x, z, (float) Math.atan2(drive[2], drive[3]), -1f, 1f, x + drive[6] * aside, z + drive[7] * aside };
+            SpherePosition at = door.at(x, z);
+            return new Spot(at, door.heading(at, drive[2], drive[3]), -1, true, door.at(x + drive[6] * aside, z + drive[7] * aside));
         }
         // Along the road from the door, either way, beyond the opening in the front, each place
         // fitted to the road's edge where it is (round bends too), and none across a junction
-        float nx = -door.roadDirZ, nz = door.roadDirX;
-        if (nx * (door.doorX - door.kerbX) + nz * (door.doorZ - door.kerbZ) < 0f) { nx = -nx; nz = -nz; }
+        float[] kerb = door.localKerb, road = door.localRoadDir, doorstep = door.localDoor;
+        float nx = -road[1], nz = road[0];
+        if (nx * (doorstep[0] - kerb[0]) + nz * (doorstep[1] - kerb[1]) < 0f) { nx = -nx; nz = -nz; }
         float pitch = KIND_SIZE[HAULER][0] * scale * 1.1f + 4f;
         float[] fallback = null;
         for (int tries = 0; tries < 8; tries++) {
@@ -542,8 +571,8 @@ public final class Vehicles {
             int n = slot / 2;
             float along = slot % 2 == 0 ? door.gapAfter + 3f + v.length * 0.5f + n * pitch
                     : door.gapBefore - 3f - v.length * 0.5f - n * pitch;
-            float ax = door.kerbX + door.roadDirX * along, az = door.kerbZ + door.roadDirZ * along;
-            float[] edge = infrastructure.kerbSpot(ax, az, ax + nx * 40f, az + nz * 40f, v.width);
+            float ax = kerb[0] + road[0] * along, az = kerb[1] + road[1] * along;
+            InfrastructureManager.Kerb edge = infrastructure.kerbSpot(door.at(ax, az), door.at(ax + nx * 40f, az + nz * 40f), v.width);
             if (edge == null) {
                 // At a junction: this place is no good (it stays taken), on to the next
                 if (fallback == null) fallback = new float[] { ax, az, slot };
@@ -552,26 +581,30 @@ public final class Vehicles {
             return kerbParking(v, edge, slot);
         }
         // Nowhere fit nearby: as near the kerb as can be where the first place was
-        float[] edge = infrastructure.kerbSpot(fallback[0], fallback[1], fallback[0] + nx * 40f, fallback[1] + nz * 40f, 0f);
-        if (edge == null) edge = new float[] { fallback[0], fallback[1], door.roadDirX, door.roadDirZ, nx, nz, 0f, door.nationId };
+        InfrastructureManager.Kerb edge = infrastructure.kerbSpot(door.at(fallback[0], fallback[1]),
+                door.at(fallback[0] + nx * 40f, fallback[1] + nz * 40f), 0f);
+        if (edge == null) {
+            SpherePosition at = door.at(fallback[0], fallback[1]);
+            edge = new InfrastructureManager.Kerb(at, door.heading(at, road[0], road[1]), door.heading(at, nx, nz), 0f, door.nationId);
+        }
         return kerbParking(v, edge, (int) fallback[2]);
     }
 
     /** A parking place at the road's edge (see InfrastructureManager.kerbSpot), facing with the traffic on that side. */
-    private float[] kerbParking(Vehicle v, float[] edge, int slot) {
-        float side = infrastructure.drivingSide((int) edge[7]);
-        float ex = edge[4], ez = edge[5];
+    private Spot kerbParking(Vehicle v, InfrastructureManager.Kerb edge, int slot) {
+        float side = infrastructure.drivingSide(edge.nationId());
+        double ex = Math.cos(edge.out()), ez = Math.sin(edge.out());
         // Facing so that the kerb is on the side it drives on: right of heading f is (-fz, fx)
-        float fx = side * ez, fz = -side * ex;
+        double fx = side * ez, fz = -side * ex;
         float aside = v.width * 0.5f + 2.5f;
-        return new float[] { edge[0], edge[1], (float) Math.atan2(fx, fz), slot, 0f, edge[0] + ex * aside, edge[1] + ez * aside };
+        SphereFrame frame = SphereFrame.at(edge.place());
+        return new Spot(edge.place(), Math.atan2(fz, fx), slot, false, frame.toSphere(ex * aside, 0.0, ez * aside));
     }
 
-    private static void place(Vehicle v, float[] spot) {
+    private static void place(Vehicle v, Spot spot) {
         v.park = spot;
-        v.x = spot[0];
-        v.z = spot[1];
-        v.heading = spot[2];
+        v.position = spot.place();
+        v.heading = spot.heading();
         v.parked = true;
         v.speed = 0f;
     }
@@ -587,16 +620,16 @@ public final class Vehicles {
     }
 
     /**
-     * A vehicle someone could borrow: parked outside its own home near (x, z), nobody using
-     * it, one of the nearest few; null if there's none.
+     * A vehicle someone could borrow: parked outside its own home within reach of a place,
+     * nobody using it, one of the nearest few; null if there's none.
      */
-    public Vehicle borrowable(List<Vehicle> all, float x, float z, float reach, Random rand) {
-        List<Vehicle> near = new ArrayList<>();
+    public Vehicle borrowable(List<Vehicle> all, SpherePosition near, float reach, Random rand) {
+        List<Vehicle> found = new ArrayList<>();
         for (Vehicle v : all) {
             if (!v.parked || v.claimedBy != null || v.home == null || v.parkedAt != v.home.id || v.traffic) continue;
-            if (Math.hypot(v.x - x, v.z - z) < reach) near.add(v);
+            if (SphereMath.distance(v.position, near) < reach) found.add(v);
         }
-        return near.isEmpty() ? null : near.get(rand.nextInt(near.size()));
+        return found.isEmpty() ? null : found.get(rand.nextInt(found.size()));
     }
 
     /** Where its owner's household lives (and so where it belongs). */
@@ -609,7 +642,8 @@ public final class Vehicles {
      * two far-off places: driving from the start of a way along the roads to its end, and
      * then onArrive. Null if there's no way by road.
      */
-    public Vehicle traffic(int nationId, InfrastructureManager.Doorway near, float[] from, float[] to, Random rand, Runnable onArrive) {
+    public Vehicle traffic(int nationId, InfrastructureManager.Doorway near, SpherePosition from, SpherePosition to,
+                           Random rand, Runnable onArrive) {
         float[] weights = kindWeights.getOrDefault(nationId, new float[] { 1f, 0f, 0f, 0f });
         float roll = rand.nextFloat();
         int kind = 0;
@@ -624,22 +658,30 @@ public final class Vehicles {
         return travel(v, from, to, onArrive) ? v : null;
     }
 
-    /** Sends a vehicle passing through on to somewhere else along the roads; false if there's no way. */
-    public boolean travel(Vehicle v, float[] from, float[] to, Runnable onArrive) {
-        List<float[]> centre = infrastructure.drivingRoute(from[0], from[1], to[0], to[1]);
-        if (centre.size() < 2) return false;
+    /** The way along the roads as a vehicle's stops, each with the road it's on there. */
+    private void setRoute(Vehicle v, List<SpherePosition> centre) {
         v.route.clear();
-        for (float[] p : centre) {
-            float[] road = infrastructure.roadAtPoint(p[0], p[1]);
-            v.route.add(new float[] { p[0], p[1], infrastructure.drivingSide((int) road[2]), road[0], road[1], road[3] });
+        for (SpherePosition p : centre) {
+            float[] road = infrastructure.roadAt(p);
+            v.route.add(new Stop(p, infrastructure.drivingSide((int) road[2]), road[0], road[1], road[3]));
         }
+    }
+
+    /** Sends a vehicle passing through on to somewhere else along the roads; false if there's no way. */
+    public boolean travel(Vehicle v, SpherePosition from, SpherePosition to, Runnable onArrive) {
+        List<SpherePosition> centre = infrastructure.drivingRoute(from, to);
+        if (centre.size() < 2) return false;
+        setRoute(v, centre);
         // At the end it pulls in at the side of the road (the side it drives on), out of the way
-        float[] end = centre.get(centre.size() - 1), before = centre.get(centre.size() - 2);
-        float dx = end[0] - before[0], dz = end[1] - before[1], dl = (float) Math.max(1e-3, Math.hypot(dx, dz));
-        float side = infrastructure.drivingSide((int) infrastructure.roadAtPoint(end[0], end[1])[2]);
-        float rx = -dz / dl * side, rz = dx / dl * side;
-        float[] edge = infrastructure.kerbSpot(end[0], end[1], end[0] + rx * 40f, end[1] + rz * 40f, v.width);
-        v.park = edge != null ? kerbParking(v, edge, -1) : new float[] { end[0] + rx * 8f, end[1] + rz * 8f, (float) Math.atan2(dx, dz), -1f, 0f, end[0], end[1] };
+        SpherePosition end = centre.get(centre.size() - 1);
+        SphereFrame frame = SphereFrame.at(end);
+        double[] before = frame.fromSphere(centre.get(centre.size() - 2));
+        double dx = -before[0], dz = -before[2], dl = Math.max(1e-3, Math.hypot(dx, dz));
+        float side = infrastructure.drivingSide((int) infrastructure.roadAt(end)[2]);
+        double rx = -dz / dl * side, rz = dx / dl * side;
+        InfrastructureManager.Kerb edge = infrastructure.kerbSpot(end, frame.toSphere(rx * 40.0, 0.0, rz * 40.0), v.width);
+        v.park = edge != null ? kerbParking(v, edge, -1)
+                : new Spot(frame.toSphere(rx * 8.0, 0.0, rz * 8.0), Math.atan2(dz, dx), -1, false, end);
         v.onArrive = onArrive;
         v.parked = false;
         v.settling = false;
@@ -649,12 +691,11 @@ public final class Vehicles {
         v.shift = 0f;
         // Starting out in its lane at the start, facing along the road
         v.next = 1;
-        float[] at = target(v);
-        float[] ahead = v.route.get(1);
-        v.x = at[0];
-        v.z = at[1];
-        v.heading = (float) Math.atan2(ahead[0] - v.route.get(0)[0], ahead[1] - v.route.get(0)[1]);
+        SpherePosition first = v.route.get(0).place(), second = v.route.get(1).place();
+        v.position = target(v);
+        v.heading = SphereMath.carryHeading(first, v.position, SphereMath.heading(first, second));
         v.speed = KIND_SPEED[v.kind][0] * 0.5f;
+        v.liftAt = null;
         return true;
     }
 
@@ -667,28 +708,21 @@ public final class Vehicles {
         v.backOut = null;
         int k = 1 + Math.min(v.route.size() - 2, (int) (share * (v.route.size() - 2)));
         v.next = k;
-        float[] at = target(v);
-        float[] before = v.route.get(k - 1), after = v.route.get(k);
-        v.x = at[0];
-        v.z = at[1];
-        v.heading = (float) Math.atan2(after[0] - before[0], after[1] - before[1]);
+        SpherePosition before = v.route.get(k - 1).place(), after = v.route.get(k).place();
+        v.position = target(v);
+        v.heading = SphereMath.carryHeading(before, v.position, SphereMath.heading(before, after));
         v.speed = KIND_SPEED[v.kind][0] * 0.6f;
-        v.liftX = Float.NaN;
+        v.liftAt = null;
     }
 
     /** Gives up a parking place kept but not used. */
-    public void cancel(Vehicle v, float[] spot) {
-        // (the place is kept under the door it's at; find it by the spot's slot at any door: the
-        // caller's door id isn't kept, so free the slot wherever it's marked for this vehicle's trip)
-        pendingRelease(v, spot);
-    }
-
-    private final Map<float[], Long> reservedAt = new java.util.IdentityHashMap<>();
-
-    private void pendingRelease(Vehicle v, float[] spot) {
+    public void cancel(Vehicle v, Spot spot) {
+        // (the place is kept under the door it's at, found by the spot itself)
         Long door = reservedAt.remove(spot);
-        if (door != null) freeSlot(door, (int) spot[3]);
+        if (door != null) freeSlot(door, spot.slot());
     }
+
+    private final Map<Spot, Long> reservedAt = new java.util.IdentityHashMap<>();
 
     /** The household has gone (its neighbourhood out of range): its car's place is free again. */
     public void release(Vehicle v) {
@@ -696,24 +730,19 @@ public final class Vehicles {
     }
 
     /** Where someone getting in stands: beside the vehicle where it's parked, on the kerb (or garden path) side. */
-    public float[] doorSide(Vehicle v, InfrastructureManager.Doorway door) {
-        if (v.park != null && v.park.length > 6) return new float[] { v.park[5], v.park[6] };
-        float nx = -door.roadDirZ, nz = door.roadDirX;
-        if (nx * (door.doorX - door.kerbX) + nz * (door.doorZ - door.kerbZ) < 0f) { nx = -nx; nz = -nz; }
-        float out = v.width * 0.5f + 2.5f;
-        return new float[] { v.x + nx * out, v.z + nz * out };
+    public SpherePosition doorSide(Vehicle v, InfrastructureManager.Doorway door) {
+        if (v.park != null) return v.park.getIn();
+        float[] road = door.localRoadDir;
+        float nx = -road[1], nz = road[0];
+        if (nx * (door.localDoor[0] - door.localKerb[0]) + nz * (door.localDoor[1] - door.localKerb[1]) < 0f) { nx = -nx; nz = -nz; }
+        return SphereMath.move(v.position, door.heading(v.position, nx, nz), v.width * 0.5f + 2.5f);
     }
 
     /** Where a vehicle will park at a door (keeping the place for it): see parkingSpot. */
-    public float[] reserve(Vehicle v, InfrastructureManager.Doorway door) {
-        float[] spot = parkingSpot(door, v);
-        if (spot[3] >= 0f) reservedAt.put(spot, door.id);
+    public Spot reserve(Vehicle v, InfrastructureManager.Doorway door) {
+        Spot spot = parkingSpot(door, v);
+        if (spot.slot() >= 0) reservedAt.put(spot, door.id);
         return spot;
-    }
-
-    /** Where someone stands to get out at a reserved place by a door. */
-    public float[] doorSideAt(Vehicle v, float[] spot, InfrastructureManager.Doorway door) {
-        return new float[] { spot[5], spot[6] };
     }
 
     // ------------------------------------------------------------------ driving
@@ -722,37 +751,31 @@ public final class Vehicles {
      * Sets off from where it's parked: along the roads (by way of somewhere, for a drive out
      * and back, if via isn't null) to its reserved place at a door, then onArrive.
      */
-    public boolean drive(Vehicle v, float[] via, InfrastructureManager.Doorway to, float[] spot, Runnable onArrive) {
+    public boolean drive(Vehicle v, SpherePosition via, InfrastructureManager.Doorway to, Spot spot, Runnable onArrive) {
         // Up a driveway: first back out into the road
-        float startX = v.x, startZ = v.z;
-        float[] backOut = null;
-        float[] home = v.home.driveway;
-        if (v.park != null && v.park.length > 4 && v.park[4] > 0f && home != null) {
+        SpherePosition start = v.position, backOut = null;
+        float[] home = v.home.localDriveway;
+        if (v.park != null && v.park.driveway() && home != null) {
             float back = 5f + v.length * 0.5f;
-            backOut = new float[] { home[0] - home[2] * back, home[1] - home[3] * back };
-            startX = backOut[0];
-            startZ = backOut[1];
+            backOut = v.home.at(home[0] - home[2] * back, home[1] - home[3] * back);
+            start = backOut;
         }
-        List<float[]> centre = new ArrayList<>();
+        List<SpherePosition> centre = new ArrayList<>();
         if (via != null) {
-            List<float[]> out = infrastructure.drivingRoute(startX, startZ, via[0], via[1]);
-            List<float[]> back = infrastructure.drivingRoute(via[0], via[1], spot[0], spot[1]);
+            List<SpherePosition> out = infrastructure.drivingRoute(start, via);
+            List<SpherePosition> back = infrastructure.drivingRoute(via, spot.place());
             if (out.size() < 2 || back.size() < 2) return false;
             centre.addAll(out);
             centre.addAll(back.subList(1, back.size()));
         } else {
-            centre.addAll(infrastructure.drivingRoute(startX, startZ, spot[0], spot[1]));
+            centre.addAll(infrastructure.drivingRoute(start, spot.place()));
         }
         if (centre.size() < 2) return false;
-        v.route.clear();
-        for (float[] p : centre) {
-            float[] road = infrastructure.roadAtPoint(p[0], p[1]);
-            v.route.add(new float[] { p[0], p[1], infrastructure.drivingSide((int) road[2]), road[0], road[1], road[3] });
-        }
+        setRoute(v, centre);
         freeSlot(v.parkedAt, v.slot);
         reservedAt.remove(spot);
         v.parkedAt = to.id;
-        v.slot = (int) spot[3];
+        v.slot = spot.slot();
         v.park = spot;
         v.onArrive = onArrive;
         v.next = 1;
@@ -762,26 +785,22 @@ public final class Vehicles {
         v.shift = 0f;
         v.backOut = backOut;
         v.approach = null;
-        if (spot[4] > 0f && to.driveway != null) {
+        if (spot.driveway() && to.localDriveway != null) {
             // Turning in: from out in the road across from the driveway
-            float out = 3f + infrastructure.roadAtPoint(to.kerbX, to.kerbZ)[0] * 0.45f;
-            v.approach = new float[] { to.driveway[0] - to.driveway[2] * out, to.driveway[1] - to.driveway[3] * out };
+            float out = 3f + infrastructure.roadAt(to.kerb)[0] * 0.45f;
+            float[] d = to.localDriveway;
+            v.approach = to.at(d[0] - d[2] * out, d[1] - d[3] * out);
         }
         return true;
     }
 
-    /** Moves every vehicle on, and lists them all as solid for this frame. */
-    public void update(List<Vehicle> all, float dt, float viewerX, float viewerZ) {
-        update(all, dt, viewerX, viewerZ, null);
-    }
-
-    /** Updates vehicles using true surface distance for viewer-relative simulation decisions. */
-    public void update(List<Vehicle> all, float dt, float viewerX, float viewerZ, SpherePosition sphereViewer) {
-        this.viewerX = viewerX;
-        this.viewerZ = viewerZ;
-        this.sphereViewer = sphereViewer == null
-                ? Planet.spherePosition(viewerX, viewerZ, 0.0)
-                : sphereViewer;
+    /**
+     * Moves every vehicle on, and lists them all as solid for this frame. Range decisions use
+     * true distance from the viewer.
+     */
+    public void update(List<Vehicle> all, float dt, SpherePosition viewer) {
+        this.viewer = viewer;
+        for (Vehicle v : all) v.forward = SphereFrame.at(v.position).headingDirection(v.heading);
         for (Vehicle v : all) {
             if (!v.parked) step(v, all, dt);
             else if (v.settling) settle(v, dt);
@@ -790,25 +809,29 @@ public final class Vehicles {
         for (Vehicle v : all) {
             // Solid along its whole length: overlapping circles from nose to tail
             int circles = Math.max(2, Math.round(v.length / v.width) + 1);
-            float fx = (float) Math.sin(v.heading), fz = (float) Math.cos(v.heading);
+            SphereFrame frame = SphereFrame.at(v.position);
+            double fx = Math.cos(v.heading), fz = Math.sin(v.heading);
             for (int i = 0; i < circles; i++) {
                 float t = (i / (float) (circles - 1) - 0.5f) * (v.length - v.width);
-                collision.addBody(v, v.x + fx * t, v.z + fz * t, v.width * HITBOX, true);
+                SpherePosition c = frame.toSphere(fx * t, 0.0, fz * t);
+                collision.addBody(v, c, v.width * HITBOX, true);
             }
         }
     }
 
     /** The point it's steering for: the next route point out in its lane, or at the end its parking place. */
-    private float[] target(Vehicle v) {
-        if (v.next >= v.route.size()) return v.approach != null ? v.approach : v.park;
-        float[] p = v.route.get(v.next);
-        float[] before = v.route.get(Math.max(0, v.next - 1)), after = v.route.get(Math.min(v.route.size() - 1, v.next + 1));
-        float dx = after[0] - before[0], dz = after[1] - before[1];
-        float length = (float) Math.hypot(dx, dz);
-        if (length < 1e-3f) return p;
-        float rx = -dz / length, rz = dx / length;
-        float lane = laneOffset(v, p[3]) - v.shift;
-        return new float[] { p[0] + rx * p[2] * lane, p[1] + rz * p[2] * lane };
+    private SpherePosition target(Vehicle v) {
+        if (v.next >= v.route.size()) return v.approach != null ? v.approach : v.park.place();
+        Stop p = v.route.get(v.next);
+        Stop before = v.route.get(Math.max(0, v.next - 1)), after = v.route.get(Math.min(v.route.size() - 1, v.next + 1));
+        SphereFrame frame = SphereFrame.at(p.place());
+        double[] b = frame.fromSphere(before.place()), a = frame.fromSphere(after.place());
+        double dx = a[0] - b[0], dz = a[2] - b[2];
+        double length = Math.hypot(dx, dz);
+        if (length < 1e-3) return p.place();
+        double rx = -dz / length, rz = dx / length;
+        float lane = laneOffset(v, p.half()) - v.shift;
+        return frame.toSphere(rx * p.side() * lane, 0.0, rz * p.side() * lane);
     }
 
     /**
@@ -821,6 +844,11 @@ public final class Vehicles {
 
     private static final java.util.function.Predicate<Object> IS_VEHICLE = o -> o instanceof Vehicle;
 
+    /** A vehicle's speed limit on ordinary roads or on highways (world units a second). */
+    static float speedLimit(Vehicle v, boolean highway) {
+        return KIND_SPEED[v.kind][highway ? 1 : 0];
+    }
+
     private static float laneOffset(Vehicle v, float half) {
         float wanted = Math.max(v.width * 0.6f, half * LANE_SHARE);
         return Math.max(half * 0.2f, Math.min(wanted, half - v.width * 0.5f - 0.5f));
@@ -829,6 +857,21 @@ public final class Vehicles {
     // How near a border check a vehicle stops, and for how long (seconds)
     private static final float BORDER_STOP_REACH = 70f, BORDER_WAIT_LOW = 3f, BORDER_WAIT_RANGE = 3f, BORDER_BRAKING = 25f;
 
+    /** Moves a vehicle to a place nearby, its heading carried along with it. */
+    private static void moveTo(Vehicle v, SpherePosition to) {
+        v.heading = SphereMath.carryHeading(v.position, to, v.heading);
+        v.position = to;
+    }
+
+    private static float wrap(double angle) {
+        return (float) Math.atan2(Math.sin(angle), Math.cos(angle));
+    }
+
+    /**
+     * One step of driving, worked out in the frame where the vehicle is (D3): it's at the
+     * origin, and everything it steers by (its target, the others, what's in its way) is put
+     * in that frame's (x, z), x east and z south, headings from x towards z.
+     */
     private void step(Vehicle v, List<Vehicle> all, float dt) {
         if (v.backOut != null) {
             backOut(v, dt);
@@ -838,18 +881,21 @@ public final class Vehicles {
             reverse(v, dt);
             return;
         }
-        float[] t = target(v);
+        SphereFrame frame = SphereFrame.at(v.position);
+        double[] aim = frame.fromSphere(target(v));
+        float dx = (float) aim[0], dz = (float) aim[2];
         if (v.detour > 0f) {
             // Going round what it was stuck on: aiming off to one side of its way for a while
             // (to the side of the way to the point, not of where it faces, which would turn with it)
             v.detour -= dt;
-            float wx = t[0] - v.x, wz = t[1] - v.z, wl = (float) Math.max(1e-3, Math.hypot(wx, wz));
+            float wl = (float) Math.max(1e-3, Math.hypot(dx, dz));
             float off = v.detourSide * (v.width * 0.9f + 3f);
-            t = new float[] { t[0] - wz / wl * off, t[1] + wx / wl * off };
+            float ox = -dz / wl * off, oz = dx / wl * off;
+            dx += ox;
+            dz += oz;
         }
         boolean approaching = v.next >= v.route.size() && v.approach != null;
         boolean final_ = v.next >= v.route.size() && !approaching;
-        float dx = t[0] - v.x, dz = t[1] - v.z;
         float distance = (float) Math.hypot(dx, dz);
         if (approaching && distance < 3f) {
             v.approach = null;
@@ -872,15 +918,13 @@ public final class Vehicles {
                 return;
             }
             if (distance < 20f) {
-                v.x = t[0];
-                v.z = t[1];
-                distance = 0f;
+                moveTo(v, frame.toSphere(dx, 0.0, dz));
+                return;
             }
         }
         if (final_ && distance < 1.5f) {
             // Arrived: pulled in, it straightens up and stops
-            v.x = t[0];
-            v.z = t[1];
+            moveTo(v, frame.toSphere(dx, 0.0, dz));
             v.speed = 0f;
             v.parked = true;
             v.settling = true;
@@ -892,20 +936,19 @@ public final class Vehicles {
             }
             return;
         }
-        float[] here = v.route.isEmpty() ? null : v.route.get(Math.min(v.next, v.route.size() - 1));
-        float limit = KIND_SPEED[v.kind][here != null && here[4] >= 2f ? 1 : 0];
-        if (here != null && here[5] > 0f) limit *= 0.55f;
-        float desired = (float) Math.atan2(dx, dz);
-        float turn = (float) Math.atan2(Math.sin(desired - v.heading), Math.cos(desired - v.heading));
+        Stop here = v.route.isEmpty() ? null : v.route.get(Math.min(v.next, v.route.size() - 1));
+        float limit = speedLimit(v, here != null && here.rank() >= 2f);
+        if (here != null && here.dirt() > 0f) limit *= 0.55f;
+        float desired = (float) Math.atan2(dz, dx);
+        float turn = wrap(desired - v.heading);
         // Slow for bends, and to pull in at the end
         limit *= Math.max(0.25f, (float) Math.cos(Math.min(Math.abs(turn), 1.4f)));
         // A sharp turn to make: slow enough to turn inside the distance to the point, or it would
         // circle round it for ever (at highway speed it can't turn tightly)
         if (Math.abs(turn) > 0.5f) limit = Math.min(limit, distance * 0.6f + 3f);
         if (final_ || approaching) limit = Math.min(limit, distance * 1.2f + 2f);
-        // At a border check it stops a while to be let through
         // At a border check it draws up level with the booth and stops a while to be let through
-        float[] check = infrastructure.borderStopAhead(v.x, v.z, (float) Math.sin(v.heading), (float) Math.cos(v.heading), BORDER_STOP_REACH);
+        float[] check = infrastructure.borderStopAhead(v.position, v.heading, BORDER_STOP_REACH);
         if (check != null && (int) check[0] != v.checkedAt) {
             if (check[1] < 1.0f) {
                 v.checkedAt = (int) check[0];
@@ -922,7 +965,7 @@ public final class Vehicles {
             v.speed = 0f;
         }
         // A border's traffic light that isn't its turn: it waits at the line until it is
-        float hold = infrastructure.borderHoldAhead(v.x, v.z, (float) Math.sin(v.heading), (float) Math.cos(v.heading), BORDER_STOP_REACH);
+        float hold = infrastructure.borderHoldAhead(v.position, v.heading, BORDER_STOP_REACH);
         if (!Float.isNaN(hold)) {
             if (hold < 1.0f) {
                 limit = 0f;
@@ -932,32 +975,37 @@ public final class Vehicles {
             }
         }
 
-        float fx = (float) Math.sin(v.heading), fz = (float) Math.cos(v.heading);
+        float fx = (float) Math.cos(v.heading), fz = (float) Math.sin(v.heading);
         float rx = -fz, rz = fx;
         float wantShift = 0f;
         float look = v.length * 0.5f + 10f + v.speed * 1.2f;
         // Out to the other side of the road to pass: from its lane to the far lane, keeping on the road
-        float lane = here != null ? laneOffset(v, here[3]) : v.width;
-        float passShift = here != null ? Math.min(lane * 2f, lane + here[3] - v.width * 0.5f) : lane * 2f;
+        float lane = here != null ? laneOffset(v, here.half()) : v.width;
+        float passShift = here != null ? Math.min(lane * 2f, lane + here.half() - v.width * 0.5f) : lane * 2f;
         Vehicle stopped = null;
         boolean oncoming = false;
         for (Vehicle o : all) {
             if (o == v) continue;
-            float ox = o.x - v.x, oz = o.z - v.z;
             float reach = Math.max(look, 90f) + o.length;
+            // (a quick test on the straight line between them before putting it in this frame)
+            double wx = o.position.x() - v.position.x(), wy = o.position.y() - v.position.y(), wz = o.position.z() - v.position.z();
+            if (wx * wx + wy * wy + wz * wz > 2.0 * reach * reach) continue;
+            double[] local = frame.fromSphere(o.position);
+            float ox = (float) local[0], oz = (float) local[2];
             if (Math.abs(ox) > reach || Math.abs(oz) > reach) continue;
             float ahead = ox * fx + oz * fz, across = ox * rx + oz * rz;
             if (ahead <= 0f) continue;
+            // How far the two face the same way (the frames at the two are as good as level with each other)
+            float alongDot = (float) (v.forward[0] * o.forward[0] + v.forward[1] * o.forward[1] + v.forward[2] * o.forward[2]);
             // Anything coming the other way on the stretch it would pass along
-            if (!o.parked && o.speed > 2f && ahead < 90f + o.length
-                    && (fx * (float) Math.sin(o.heading) + fz * (float) Math.cos(o.heading)) < -0.3f
+            if (!o.parked && o.speed > 2f && ahead < 90f + o.length && alongDot < -0.3f
                     && Math.abs(across) < passShift + (v.width + o.width) * 0.5f + 2f) {
                 oncoming = true;
             }
             if (ahead > look + o.length * 0.5f) continue;
             float clear = (v.width + o.width) * 0.5f + 1f;
             if (Math.abs(across) >= clear) continue;
-            boolean headOn = !o.parked && o.speed > 1f && (fx * (float) Math.sin(o.heading) + fz * (float) Math.cos(o.heading)) < -0.3f;
+            boolean headOn = !o.parked && o.speed > 1f && alongDot < -0.3f;
             if (headOn) {
                 // Meeting something coming the other way: both keep over to their own edge (up
                 // onto the verge a little if they must) and pass, slowing as they do; one out
@@ -967,7 +1015,6 @@ public final class Vehicles {
                 limit = Math.min(limit, Math.max(6f, ahead * 0.6f));
                 continue;
             }
-            float alongDot = fx * (float) Math.sin(o.heading) + fz * (float) Math.cos(o.heading);
             if (!o.parked && o.speed > 1f && alongDot < 0.5f && System.identityHashCode(v) < System.identityHashCode(o)) {
                 // Crossing its way (at a junction): one of the two gives way, the other goes on
                 continue;
@@ -1002,7 +1049,7 @@ public final class Vehicles {
             float reach = v.length * 0.5f + 2f + v.speed * 0.25f;
             float lx = distance > 1e-3f ? dx / distance : fx, lz = distance > 1e-3f ? dz / distance : fz;
             // (other vehicles are kept clear of above, by following, overtaking and passing)
-            if (collision.blocked(v.x + lx * reach, v.z + lz * reach, v.width * 0.42f, v, IS_VEHICLE)) {
+            if (collision.blocked(frame.toSphere(lx * reach, 0.0, lz * reach), v.width * 0.42f, v, 0.0, IS_VEHICLE)) {
                 limit = 0f;
                 obstacle = true;
             }
@@ -1011,12 +1058,9 @@ public final class Vehicles {
             v.stuck += dt;
             if (obstacle && final_ && v.stuck > 1.5f) {
                 // Pulling in at the end and something's in the way: it stops where it is
-                v.park = new float[] { v.x, v.z, v.heading, v.park != null ? v.park[3] : -1f, 0f, v.x, v.z };
-                if (v.park.length > 5) {
-                    float out = v.width * 0.5f + 2.5f;
-                    v.park[5] = v.x - fz * out;
-                    v.park[6] = v.z + fx * out;
-                }
+                float out = v.width * 0.5f + 2.5f;
+                v.park = new Spot(v.position, v.heading, v.park != null ? v.park.slot() : -1, false,
+                        frame.toSphere(rx * out, 0.0, rz * out));
                 v.stuck = 0f;
             } else if (obstacle && v.stuck > 2.5f && v.tries < 3) {
                 // Stuck on something: back off a little, then go round it on its clearer side
@@ -1025,20 +1069,17 @@ public final class Vehicles {
                 v.reversing = 1.4f;
                 v.detour = 3.5f;
                 float reach = v.length * 0.5f + 4f, aside = v.width * 0.8f;
-                boolean leftBlocked = collision.blocked(v.x + fx * reach - rx * aside, v.z + fz * reach - rz * aside, v.width * 0.4f, v);
-                boolean rightBlocked = collision.blocked(v.x + fx * reach + rx * aside, v.z + fz * reach + rz * aside, v.width * 0.4f, v);
+                boolean leftBlocked = collision.blocked(frame.toSphere(fx * reach - rx * aside, 0.0, fz * reach - rz * aside), v.width * 0.4f, v, 0.0);
+                boolean rightBlocked = collision.blocked(frame.toSphere(fx * reach + rx * aside, 0.0, fz * reach + rz * aside), v.width * 0.4f, v, 0.0);
                 v.detourSide = leftBlocked == rightBlocked ? (v.tries % 2 == 0 ? 1 : -1) : leftBlocked ? 1 : -1;
                 // Up against the road's edge (a crash barrier, say): always back in towards the middle
                 float lateral = lateralOffset(v);
-                float[] at = v.route.get(Math.min(v.next, v.route.size() - 1));
-                if (!Float.isNaN(lateral) && Math.abs(lateral) > at[3] - v.width - 2f) v.detourSide = lateral > 0f ? -1 : 1;
+                Stop at = v.route.get(Math.min(v.next, v.route.size() - 1));
+                if (!Float.isNaN(lateral) && Math.abs(lateral) > at.half() - v.width - 2f) v.detourSide = lateral > 0f ? -1 : 1;
             } else if (v.stuck > (obstacle ? 4f : 10f)) {
                 // Still held up after that: out of sight it moves on; in sight it edges through
-                if (SphereMath.distance(sphereViewer,
-                        Planet.spherePosition(v.x, v.z, 0.0)) > OUT_OF_SIGHT && !final_) {
-                    float[] p = target(v);
-                    v.x = p[0];
-                    v.z = p[1];
+                if (SphereMath.distance(viewer, v.position) > OUT_OF_SIGHT && !final_) {
+                    moveTo(v, target(v));
                     v.next = Math.min(v.next + 1, v.route.size());
                 } else {
                     v.ghost = 2f;
@@ -1060,72 +1101,78 @@ public final class Vehicles {
         // How far round it has turned chasing this point (a whole turn means it's going in circles)
         v.circling = Math.abs(v.circling + turned) > Math.abs(v.circling) ? v.circling + turned : turned;
         float move = v.speed * dt;
-        v.x += (float) Math.sin(v.heading) * move;
-        v.z += (float) Math.cos(v.heading) * move;
+        moveTo(v, frame.toSphere(Math.cos(v.heading) * move, 0.0, Math.sin(v.heading) * move));
         v.spin += move;
         // Solid: if it has run into anything (another vehicle, a wall, a post), it's pushed back
-        // out, nose and tail alike (but not turning into a driveway, close by the fence)
-        boolean intoDriveway = final_ && v.park != null && v.park.length > 4 && v.park[4] > 0f;
+        // out, nose and tail alike (but not turning into a driveway, close by the fence); worked
+        // in the frame where it has got to
+        boolean intoDriveway = final_ && v.park != null && v.park.driveway();
         if (collision != null && v.ghost <= 0f && !intoDriveway) {
+            SphereFrame moved = SphereFrame.at(v.position);
             float half = (v.length - v.width) * 0.5f, pushX = 0f, pushZ = 0f;
-            float hx = (float) Math.sin(v.heading), hz = (float) Math.cos(v.heading);
+            float hx = (float) Math.cos(v.heading), hz = (float) Math.sin(v.heading);
             for (float along : new float[] { -half, half }) {
-                float cx = v.x + hx * along, cz = v.z + hz * along;
-                float[] free = collision.resolve(cx, cz, v.width * HITBOX, v);
-                pushX += (free[0] - cx) * 0.5f;
-                pushZ += (free[1] - cz) * 0.5f;
+                float cx = hx * along, cz = hz * along;
+                double[] free = moved.fromSphere(collision.resolve(moved.toSphere(cx, 0.0, cz), v.width * HITBOX, v, 0.0));
+                pushX += ((float) free[0] - cx) * 0.5f;
+                pushZ += ((float) free[2] - cz) * 0.5f;
             }
             // Shoved back from the front (meeting something head on): pushed out sideways towards
             // its own edge instead, off the road if need be, so the two slide past; it steers back
             // into its lane further on
             float back = -(pushX * hx + pushZ * hz);
             if (back > 0f) {
-                float side = here != null ? here[2] : 1f;
+                float side = here != null ? here.side() : 1f;
                 // ... unless that's into a crash barrier or a wall: then towards the middle
-                float ox = v.x + pushX - hz * side * back * 3f, oz = v.z + pushZ + hx * side * back * 3f;
-                if (collision.blocked(ox, oz, v.width * HITBOX, v, IS_VEHICLE)) side = -side;
+                float ox = pushX - hz * side * back * 3f, oz = pushZ + hx * side * back * 3f;
+                if (collision.blocked(moved.toSphere(ox, 0.0, oz), v.width * HITBOX, v, 0.0, IS_VEHICLE)) side = -side;
                 pushX += hx * back - hz * side * back;
                 pushZ += hz * back + hx * side * back;
             }
-            v.x += pushX;
-            v.z += pushZ;
+            if (pushX != 0f || pushZ != 0f) moveTo(v, moved.toSphere(pushX, 0.0, pushZ));
         }
+        v.forward = SphereFrame.at(v.position).headingDirection(v.heading);
     }
 
     /**
      * How far it is to the right (positive) or left of the road's middle along the stretch of
-     * route it's on; NaN if it's not on one.
+     * route it's on (in the frame at the stretch's start); NaN if it's not on one.
      */
     private static float lateralOffset(Vehicle v) {
         if (v.route.size() < 2) return Float.NaN;
         int k = Math.max(1, Math.min(v.next, v.route.size() - 1));
-        float[] a = v.route.get(k - 1), b = v.route.get(k);
-        float dx = b[0] - a[0], dz = b[1] - a[1], length = (float) Math.hypot(dx, dz);
-        if (length < 1e-3f) return Float.NaN;
+        SphereFrame frame = SphereFrame.at(v.route.get(k - 1).place());
+        double[] b = frame.fromSphere(v.route.get(k).place()), p = frame.fromSphere(v.position);
+        double length = Math.hypot(b[0], b[2]);
+        if (length < 1e-3) return Float.NaN;
         // Right of the way along is (-dz, dx)
-        return ((v.x - a[0]) * -dz + (v.z - a[1]) * dx) / length;
+        return (float) ((p[0] * -b[2] + p[2] * b[0]) / length);
     }
 
     /** Backing off from what it's stuck on, the tail swinging away from the side it will go round by. */
     private void reverse(Vehicle v, float dt) {
         v.reversing -= dt;
-        float fx = (float) Math.sin(v.heading), fz = (float) Math.cos(v.heading);
+        SphereFrame frame = SphereFrame.at(v.position);
+        float fx = (float) Math.cos(v.heading), fz = (float) Math.sin(v.heading);
         // Unless something is behind it too
-        if (collision != null && collision.blocked(v.x - fx * (v.length * 0.5f + 2f), v.z - fz * (v.length * 0.5f + 2f), v.width * 0.42f, v)) {
+        float behind = v.length * 0.5f + 2f;
+        if (collision != null && collision.blocked(frame.toSphere(-fx * behind, 0.0, -fz * behind), v.width * 0.42f, v, 0.0)) {
             v.reversing = 0f;
             return;
         }
         float move = 7f * dt;
-        v.x -= fx * move;
-        v.z -= fz * move;
-        v.heading -= v.detourSide * 0.35f * dt;
+        moveTo(v, frame.toSphere(-fx * move, 0.0, -fz * move));
+        // (the nose swings towards the side it will go round by)
+        v.heading += v.detourSide * 0.35f * dt;
         v.spin -= move;
         v.speed = 0f;
     }
 
     /** Reversing slowly out of a driveway into the road, straightening up as it goes. */
     private void backOut(Vehicle v, float dt) {
-        float bx = v.backOut[0] - v.x, bz = v.backOut[1] - v.z;
+        SphereFrame frame = SphereFrame.at(v.position);
+        double[] b = frame.fromSphere(v.backOut);
+        float bx = (float) b[0], bz = (float) b[2];
         float d = (float) Math.hypot(bx, bz);
         if (d < 1.5f) {
             v.backOut = null;
@@ -1133,12 +1180,11 @@ public final class Vehicles {
             return;
         }
         // Facing away from where it's going
-        float desired = (float) Math.atan2(-bx, -bz);
-        float turn = (float) Math.atan2(Math.sin(desired - v.heading), Math.cos(desired - v.heading));
+        float desired = (float) Math.atan2(-bz, -bx);
+        float turn = wrap(desired - v.heading);
         v.heading += Math.max(-0.8f * dt, Math.min(0.8f * dt, turn));
         float move = Math.min(10f, d * 1.2f + 1.5f) * dt;
-        v.x += bx / d * move;
-        v.z += bz / d * move;
+        moveTo(v, frame.toSphere(bx / d * move, 0.0, bz / d * move));
         v.spin -= move;
         v.speed = 0f;
     }
@@ -1146,7 +1192,7 @@ public final class Vehicles {
     /** Just parked: turns square to the kerb. */
     private void settle(Vehicle v, float dt) {
         if (v.park == null) { v.settling = false; return; }
-        float turn = (float) Math.atan2(Math.sin(v.park[2] - v.heading), Math.cos(v.park[2] - v.heading));
+        float turn = wrap(SphereMath.carryHeading(v.park.place(), v.position, v.park.heading()) - v.heading);
         v.heading += Math.max(-1.5f * dt, Math.min(1.5f * dt, turn));
         if (Math.abs(turn) < 0.01f) v.settling = false;
     }
@@ -1156,29 +1202,24 @@ public final class Vehicles {
     /**
      * Draws the vehicles near enough to see, with the organism shader already set up: body
      * in its colour and pattern, glass, trim and tyres, the wheels turned as far as it has gone.
+     * Each is posed in the frame where it stands and drawn relative to the eye.
      */
-    public void render(GL3 gl, Shader shader, List<Vehicle> all, Frustum frustum, float viewX, float viewZ,
-            float drawDistance, boolean sphereNative, SpherePosition sphereEye) {
+    public void render(GL3 gl, Shader shader, List<Vehicle> all, float drawDistance, SpherePosition eye) {
         int bonesLocation = gl.glGetUniformLocation(shader.getID(), "bones");
         for (Vehicle v : all) {
-            float dx = v.x - viewX, dz = v.z - viewZ;
             float ground = standingHeight(v);
-            if (sphereNative) {
-                SpherePosition vehiclePosition = Planet.spherePosition(v.x, v.z, ground + v.height * 0.5f);
-                double ex = vehiclePosition.x() - sphereEye.x();
-                double ey = vehiclePosition.y() - sphereEye.y();
-                double ez = vehiclePosition.z() - sphereEye.z();
-                double reach = drawDistance + v.length * 0.6f;
-                if (ex * ex + ey * ey + ez * ez > reach * reach) continue;
-            } else {
-                if (dx * dx + dz * dz > drawDistance * drawDistance) continue;
-                if (!frustum.intersectsSphere(v.x, ground + v.height * 0.5f, v.z, v.length * 0.6f)) continue;
-            }
-            if (sphereNative) SphereRender.setAnchor(gl, shader, SphereRender.chartAnchor(v.x, v.z, sphereEye));
+            SpherePosition middle = SphereMath.atAltitude(v.position, ground + v.height * 0.5f);
+            double ex = middle.x() - eye.x(), ey = middle.y() - eye.y(), ez = middle.z() - eye.z();
+            double reach = drawDistance + v.length * 0.6f;
+            if (ex * ex + ey * ey + ez * ez > reach * reach) continue;
+            SphereRender.setAnchor(gl, shader, SphereFrame.at(v.position).modelMatrix(1f, eye));
             List<float[]> hubs = hubsOf(v);
             float s = v.length / (KIND_SIZE[v.kind][0] * scale);
-            float[] body = Affine.multiply(Affine.translation(v.x, ground, v.z),
-                    Affine.multiply(Affine.rotationY(v.heading), Affine.multiply(Affine.rotationX(-v.pitch), Affine.scale(s, s, s))));
+            // (the body's nose is along its local +z, turned from +z towards +x by the angle,
+            // which runs the other way to a heading)
+            float[] body = Affine.multiply(Affine.translation(0f, ground, 0f),
+                    Affine.multiply(Affine.rotationY((float) (Math.PI * 0.5 - v.heading)),
+                            Affine.multiply(Affine.rotationX(-v.pitch), Affine.scale(s, s, s))));
             System.arraycopy(body, 0, bones, 0, 16);
             int count = 1;
             for (float[] hub : hubs) {
@@ -1202,19 +1243,44 @@ public final class Vehicles {
         }
     }
 
-    /** The height of the road (or ground) under it, and its tilt along its length; the road's lift found again every few units. */
+    /**
+     * The height above the datum of the road (or ground) under it, and its tilt along its
+     * length; the road's lift found again every few units.
+     */
     private float standingHeight(Vehicle v) {
-        float ground = TerrainMesh.getLayeredHeight(v.x, v.z, terrainNoise);
-        if (Float.isNaN(v.liftX) || Math.abs(v.x - v.liftX) + Math.abs(v.z - v.liftZ) > 5f) {
-            v.liftX = v.x;
-            v.liftZ = v.z;
-            v.lift = infrastructure.walkingSurfaceY(v.x, v.z) - ground;
-            float fx = (float) Math.sin(v.heading), fz = (float) Math.cos(v.heading), half = v.length * 0.4f;
-            float front = TerrainMesh.getLayeredHeight(v.x + fx * half, v.z + fz * half, terrainNoise);
-            float back = TerrainMesh.getLayeredHeight(v.x - fx * half, v.z - fz * half, terrainNoise);
+        float ground = TerrainMesh.getLayeredHeight(v.position, terrainNoise);
+        if (v.liftAt == null || SphereMath.distance(v.position, v.liftAt) > 5.0) {
+            v.liftAt = v.position;
+            v.lift = infrastructure.walkingSurfaceY(v.position) - ground;
+            float half = v.length * 0.4f;
+            float front = TerrainMesh.getLayeredHeight(SphereMath.move(v.position, v.heading, half), terrainNoise);
+            float back = TerrainMesh.getLayeredHeight(SphereMath.move(v.position, v.heading + Math.PI, half), terrainNoise);
             v.pitch = (float) Math.atan2(front - back, half * 2f) * (v.lift > 0.5f ? 0.3f : 1f);
         }
         return ground + v.lift;
+    }
+
+    /**
+     * Developer aid: out in the road ahead of the nearest vehicle to a place (mode "moving": one
+     * on the move, or "driveway": one up a driveway, if there is one), a little to one side,
+     * looking back at it; null if there's none.
+     */
+    public Viewpoint viewpoint(List<Vehicle> all, SpherePosition near, String mode) {
+        boolean moving = "moving".equals(mode), driveway = "driveway".equals(mode);
+        Vehicle best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Vehicle v : all) {
+            if (moving && v.isParked()) continue;
+            if (driveway && !(v.isParked() && v.park != null && v.park.driveway())) continue;
+            double d = SphereMath.distance(v.position, near);
+            if (d < bestDistance) { bestDistance = d; best = v; }
+        }
+        if (best == null) return mode != null && !mode.isEmpty() && !"true".equals(mode) ? viewpoint(all, near, "") : null;
+        float fx = (float) Math.cos(best.heading), fz = (float) Math.sin(best.heading);
+        float back = (best.length * 1.5f + 25f) * (driveway ? -1.4f : 1f);
+        // (ahead, and a quarter as far to its right)
+        SpherePosition at = SphereFrame.at(best.position).toSphere(fx * back - fz * back * 0.25f, 0.0, fz * back + fx * back * 0.25f);
+        return new Viewpoint(at, SphereFrame.at(at).headingTo(best.position));
     }
 
     private static com.xenoguesser.math.Vector3 vec(float[] c) {

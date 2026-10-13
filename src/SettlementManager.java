@@ -28,9 +28,6 @@ public class SettlementManager {
         public final float radius;
         /** Urbanness at the centre, between 0 and 1. */
         public final float intensity;
-        // Chart bridge (D13): the centre on the Mercator chart, for the people's drives out
-        // (InfrastructureManager.settlementBetween); goes in Phase 4
-        public final float chartX, chartZ;
 
         private Settlement(SpherePosition centre, int rank, float radius, float intensity) {
             this.centre = centre;
@@ -38,9 +35,6 @@ public class SettlementManager {
             this.rank = rank;
             this.radius = radius;
             this.intensity = intensity;
-            double[] chart = Planet.mercatorPosition(centre);
-            this.chartX = (float) chart[0];
-            this.chartZ = (float) chart[2];
         }
 
         public float influenceAt(GeodesicChunkGrid.Direction place) {

@@ -14,7 +14,49 @@ in vec3 aPos;
 in vec3 aGrain;
 in vec3 aNormal;
 in vec3 aColour;
+in vec3 aWorld;
 out vec4 fragColour;
+
+// Snow lying on the rocks (as on the ground: see fs_standard_d), read at the place's point on
+// the climate map, settling on what faces away from the planet's centre
+uniform sampler2D snowCover;
+uniform vec4 snowMap;        // 1 / the world's width, half its width, whether it's ready, fresh snow (0 to 1)
+uniform vec4 snowClimate;    // the freezing point, degrees below it for snow to lie thickly, degrees colder per unit up, sea level
+uniform vec3 snowColour;
+uniform float snowToday;     // how much warmer (Celsius) today is than usual round the player
+uniform float planetRadius;
+uniform float sphereLongitudeOffset;
+float snowHash3(ivec3 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u + uint(c.z) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return float(h & 16777215u) / 16777216.0;
+}
+float snowNoise3(vec3 p) {
+    vec3 f = fract(p);
+    ivec3 i = ivec3(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    float a = mix(mix(snowHash3(i), snowHash3(i + ivec3(1, 0, 0)), f.x), mix(snowHash3(i + ivec3(0, 1, 0)), snowHash3(i + ivec3(1, 1, 0)), f.x), f.y);
+    float b = mix(mix(snowHash3(i + ivec3(0, 0, 1)), snowHash3(i + ivec3(1, 0, 1)), f.x), mix(snowHash3(i + ivec3(0, 1, 1)), snowHash3(i + ivec3(1, 1, 1)), f.x), f.y);
+    return mix(a, b, f.z);
+}
+float snowAt(vec3 world, vec3 n) {
+    if (snowMap.z < 0.5) return 0.0;
+    float r = length(world);
+    float lat = asin(clamp(world.y / r, -1.0, 1.0));
+    float lon = atan(-world.z, world.x) - sphereLongitudeOffset;
+    vec2 onMap = vec2(planetRadius * atan(sin(lon), cos(lon)), -planetRadius * log(tan(0.78539816339 + lat * 0.5)));
+    vec2 climate = texture(snowCover, (onMap + vec2(snowMap.y)) * snowMap.x).rg;
+    float celsius = climate.r * 100.0 - 60.0 - max(0.0, r - planetRadius - snowClimate.w) * snowClimate.z;
+    float falls = clamp((climate.g - 0.05) / 0.3, 0.0, 1.0);
+    float lying = smoothstep(0.0, 1.0, (snowClimate.x - celsius) / snowClimate.y) * falls;
+    float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
+    float amount = min(0.8, max(lying, snowMap.w * snowy)) * smoothstep(0.45, 0.8, dot(n, world / r));
+    if (amount <= 0.0) return 0.0;
+    float speckle = snowNoise3(world * 5.3) * 0.38 + snowNoise3(world * 1.1) * 0.34 + snowNoise3(world * 0.19) * 0.28;
+    speckle = smoothstep(0.22, 0.78, speckle);
+    return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
+}
 
 uniform vec3 viewPos;
 uniform vec3 sunPos;
@@ -48,6 +90,7 @@ void main() {
     // (in the rock's own tile, so it stays put as the camera moves)
     float grain = 0.84 + 0.2 * valueNoise(aGrain * 0.9) + 0.12 * valueNoise(aGrain * 4.3);
     vec3 albedo = aColour * grain;
+    albedo = mix(albedo, min(snowColour * 1.4, vec3(1.0)), snowAt(aWorld, n));
     // Faces turned up catch the sky; those turned down sit in shadow
     float sky = 0.75 + 0.35 * dot(n, up);
     vec3 colour = albedo * (ambientLight * 1.4 * sky + sunColour * diffuse * 0.85);

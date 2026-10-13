@@ -482,6 +482,10 @@ public class RockField {
         shader.setVec3(gl, "ambientLight", ambient);
         double[] up = SphereFrame.at(eye).up();
         shader.setVec3(gl, "up", new Vector3((float) up[0], (float) up[1], (float) up[2]));
+        // (for the snow)
+        shader.setVec3(gl, "sphereCamera", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
+        shader.setFloat(gl, "planetRadius", (float) Planet.radius());
+        shader.setFloat(gl, "sphereLongitudeOffset", (float) Planet.centreLongitude());
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);
             sky.bind(gl);

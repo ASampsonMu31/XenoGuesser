@@ -14,9 +14,12 @@ out vec3 aPos;
 out vec3 aGrain;
 out vec3 aNormal;
 out vec3 aColour;
+// Planet-centred, for the snow (float is fine for that)
+out vec3 aWorld;
 
 uniform mat4 viewProjection;
 uniform vec3 tileOffset;
+uniform vec3 sphereCamera;
 // Coarse rocks in quarters of their tile drawn in detail (bits of detailedChildren) are hidden
 uniform int coarse;
 uniform int detailedChildren;
@@ -24,6 +27,7 @@ uniform int detailedChildren;
 void main() {
     vec3 world = position + tileOffset;
     aPos = world;
+    aWorld = world + sphereCamera;
     aGrain = position;
     aNormal = normal;
     aColour = colour;

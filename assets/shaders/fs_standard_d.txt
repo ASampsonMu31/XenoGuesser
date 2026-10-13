@@ -36,23 +36,52 @@ float snowNoise(vec2 p) {
     f = f * f * (3.0 - 2.0 * f);
     return mix(mix(snowHash(i), snowHash(i + ivec2(1, 0)), f.x), mix(snowHash(i + ivec2(0, 1)), snowHash(i + ivec2(1, 1)), f.x), f.y);
 }
-float snowAt(vec3 p, vec3 n) {
-    if (sphereNativeTerrain != 0) return 0.0;
+// The same in three dimensions, for the sphere (no flattening or streaks anywhere on it)
+float snowHash3(ivec3 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u + uint(c.z) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return float(h & 16777215u) / 16777216.0;
+}
+float snowNoise3(vec3 p) {
+    vec3 f = fract(p);
+    ivec3 i = ivec3(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    float a = mix(mix(snowHash3(i), snowHash3(i + ivec3(1, 0, 0)), f.x), mix(snowHash3(i + ivec3(0, 1, 0)), snowHash3(i + ivec3(1, 1, 0)), f.x), f.y);
+    float b = mix(mix(snowHash3(i + ivec3(0, 0, 1)), snowHash3(i + ivec3(1, 0, 1)), f.x), mix(snowHash3(i + ivec3(0, 1, 1)), snowHash3(i + ivec3(1, 1, 1)), f.x), f.y);
+    return mix(a, b, f.z);
+}
+// On the sphere (sphereNativeTerrain), p is ignored: the place is world (planet-centred),
+// its climate read at its point on the map (D12: the climate maps are the map's), its height
+// its altitude, and what faces up faces away from the planet's centre
+float snowAt(vec3 p, vec3 world, vec3 n) {
     if (snowMap.z < 0.5) return 0.0;
-    vec2 climate = texture(snowCover, (p.xz + vec2(snowMap.y)) * snowMap.x).rg;
-    float celsius = climate.r * 100.0 - 60.0 - max(0.0, p.y - snowClimate.w) * snowClimate.z;
+    vec2 onMap = p.xz;
+    float height = p.y, facing = n.y;
+    if (sphereNativeTerrain != 0) {
+        float r = length(world);
+        float lat = asin(clamp(world.y / r, -1.0, 1.0));
+        float lon = atan(-world.z, world.x) - sphereLongitudeOffset;
+        onMap = vec2(planetRadius * atan(sin(lon), cos(lon)), -planetRadius * log(tan(0.78539816339 + lat * 0.5)));
+        height = r - planetRadius;
+        facing = dot(n, world / r);
+    }
+    vec2 climate = texture(snowCover, (onMap + vec2(snowMap.y)) * snowMap.x).rg;
+    float celsius = climate.r * 100.0 - 60.0 - max(0.0, height - snowClimate.w) * snowClimate.z;
     float falls = clamp((climate.g - 0.05) / 0.3, 0.0, 1.0);
     float lying = smoothstep(0.0, 1.0, (snowClimate.x - celsius) / snowClimate.y) * falls;
     // Fresh snow: flakes dotted about, then patches, then a full covering as it piles up
     float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
     // How much of the surface is under snow, less on steep faces...
     // (never quite all: there are always gaps where the surface shows through)
-    float amount = min(0.8, max(lying, snowMap.w * snowy)) * smoothstep(0.45, 0.8, n.y) * (1.0 - snowCleared);
+    float amount = min(0.8, max(lying, snowMap.w * snowy)) * smoothstep(0.45, 0.8, facing) * (1.0 - snowCleared);
     if (amount <= 0.0) return 0.0;
     // ...laid down as flakes and clumps of snow over the surface as it is (fine dots, then
     // patches, then drifts), each either snow or not, so a light dusting is scattered flakes
     // and a heavy fall covers all but a few gaps
-    float speckle = snowNoise(p.xz * 5.3) * 0.38 + snowNoise(p.xz * 1.1) * 0.34 + snowNoise(p.xz * 0.19) * 0.28;
+    float speckle = sphereNativeTerrain != 0
+            ? snowNoise3(world * 5.3) * 0.38 + snowNoise3(world * 1.1) * 0.34 + snowNoise3(world * 0.19) * 0.28
+            : snowNoise(p.xz * 5.3) * 0.38 + snowNoise(p.xz * 1.1) * 0.34 + snowNoise(p.xz * 0.19) * 0.28;
     // (spread out evenly, as the sum bunches round the middle, so the amount is the share covered)
     speckle = smoothstep(0.22, 0.78, speckle);
     return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
@@ -232,7 +261,7 @@ void main() {
 
     // Snow lying on the ground, roofs and anything else facing up
     // (snow is brighter than the ground it covers, so it reads as snow once lit)
-    texColor = mix(texColor, min(snowColour * 1.4, vec3(1.0)), snowAt(aPos, normalize(aNormal)));
+    texColor = mix(texColor, min(snowColour * 1.4, vec3(1.0)), snowAt(aPos, aWorldPos, normalize(aNormal)));
 
     // Multiplicative blending for ambient lighting
     vec3 ambient = ambientLight * material.ambient * texColor;

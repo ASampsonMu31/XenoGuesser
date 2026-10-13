@@ -244,6 +244,22 @@ public final class GeodesicCollision {
         return overlapsGathered(0.0, 0.0, r, self, clearance, near, places);
     }
 
+    /** As blocked, not counting any moving body whose owner ignore accepts. */
+    public boolean blocked(SpherePosition position, double r, Object self, double clearance,
+            java.util.function.Predicate<Object> ignore) {
+        requireRadius(r);
+        gatherNear(position, r + 4.0);
+        List<double[]> places = new ArrayList<>();
+        List<Body> near = nearbyBodies(r + 4.0, places);
+        for (int b = near.size() - 1; b >= 0; b--) {
+            if (ignore.test(near.get(b).owner)) {
+                near.remove(b);
+                places.remove(b);
+            }
+        }
+        return overlapsGathered(0.0, 0.0, r, self, clearance, near, places);
+    }
+
     /** As blocked, counting only the static shapes (walls, rocks and the like), not moving bodies. */
     public boolean blockedStatic(SpherePosition position, double r, double clearance) {
         requireRadius(r);
@@ -288,6 +304,146 @@ public final class GeodesicCollision {
             }
         }
         return Double.NaN;
+    }
+
+    // ------------------------------------------------------------------ finding a way round
+
+    /** Whether a circle of radius r could go straight from one place to another without touching anything static. */
+    public boolean clearLine(SpherePosition a, SpherePosition b, double r) {
+        requireRadius(r);
+        double length = SphereMath.distance(a, b);
+        gatherNear(SphereMath.slerp(SphereMath.atAltitude(a, 0.0), SphereMath.atAltitude(b, 0.0), 0.5), length * 0.5 + r + 4.0);
+        double[] la = frame.fromSphere(a), lb = frame.fromSphere(b);
+        return lineFree(la[0], la[2], lb[0], lb[2], r);
+    }
+
+    private boolean lineFree(double ax, double az, double bx, double bz, double r) {
+        double length = Math.hypot(bx - ax, bz - az);
+        int steps = Math.max(1, (int) Math.ceil(length / Math.max(0.5, r * 0.6)));
+        for (int i = 0; i <= steps; i++) {
+            double t = (double) i / steps;
+            if (hitsStatic(ax + (bx - ax) * t, az + (bz - az) * t, r)) return false;
+        }
+        return true;
+    }
+
+    /** Whether a circle at local (x, z) touches any gathered static shape, however low. */
+    private boolean hitsStatic(double x, double z, double r) {
+        for (int s = 0; s < shapeCount; s++) {
+            if (penetration(s, x, z, r) != null) return true;
+        }
+        return false;
+    }
+
+    /**
+     * A way on foot from one place to another round the walls, fences, posts, trees and rocks
+     * between (moving bodies are left to be stepped round as met): a grid search over the ground
+     * between them in the frame half way, the corners then cut wherever the way is clear.
+     * Returns the places to walk through after the first, ending at the second, on the datum;
+     * null if there's no way within reach (or it's too far to look). Someone starting pressed
+     * against a fence starts from the nearest clear spot.
+     */
+    public List<SpherePosition> findPath(SpherePosition from, SpherePosition to, double r, double maxSpan) {
+        requireRadius(r);
+        SpherePosition a0 = SphereMath.atAltitude(from, 0.0), b0 = SphereMath.atAltitude(to, 0.0);
+        SphereFrame here = SphereFrame.at(SphereMath.slerp(a0, b0, 0.5));
+        double[] la = here.fromSphere(a0), lb = here.fromSphere(b0);
+        double ax = la[0], az = la[2], bx = lb[0], bz = lb[2];
+        double margin = 30.0;
+        double minX = Math.min(ax, bx) - margin, maxX = Math.max(ax, bx) + margin;
+        double minZ = Math.min(az, bz) - margin, maxZ = Math.max(az, bz) + margin;
+        if (maxX - minX > maxSpan || maxZ - minZ > maxSpan) return null;
+        double cell = Math.max(1.5, r * 0.8);
+        int w = (int) Math.ceil((maxX - minX) / cell) + 1, h = (int) Math.ceil((maxZ - minZ) / cell) + 1;
+        if ((long) w * h > 40000) {
+            cell = Math.sqrt((maxX - minX) * (maxZ - minZ) / 40000.0) + 0.01;
+            w = (int) Math.ceil((maxX - minX) / cell) + 1;
+            h = (int) Math.ceil((maxZ - minZ) / cell) + 1;
+        }
+        gatherNear(here.origin(), Math.hypot(maxX - minX, maxZ - minZ) * 0.5 + r + 4.0);
+        // 0 not yet looked at, 1 clear, 2 blocked
+        byte[] state = new byte[w * h];
+        int start = nearestFree(state, w, h, cell, minX, minZ, r, (int) Math.round((ax - minX) / cell), (int) Math.round((az - minZ) / cell));
+        int goal = nearestFree(state, w, h, cell, minX, minZ, r, (int) Math.round((bx - minX) / cell), (int) Math.round((bz - minZ) / cell));
+        if (start < 0 || goal < 0) return null;
+        double[] cost = new double[w * h];
+        java.util.Arrays.fill(cost, Double.MAX_VALUE);
+        int[] cameFrom = new int[w * h];
+        java.util.PriorityQueue<double[]> open = new java.util.PriorityQueue<>((p, q) -> Double.compare(p[0], q[0]));
+        cost[start] = 0.0;
+        int gx = goal % w, gz = goal / w;
+        open.add(new double[] { 0.0, start });
+        int expanded = 0;
+        boolean found = false;
+        while (!open.isEmpty() && expanded++ < 30000) {
+            double[] top = open.poll();
+            int c = (int) top[1];
+            if (c == goal) { found = true; break; }
+            int cx = c % w, cz = c / w;
+            double base = cost[c];
+            if (top[0] > base + octile(cx, cz, gx, gz) + 1e-3) continue;
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dz == 0) continue;
+                    int nx = cx + dx, nz = cz + dz;
+                    if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
+                    int n = nz * w + nx;
+                    if (!clear(state, n, w, cell, minX, minZ, r)) continue;
+                    // No cutting a corner between two blocked squares
+                    if (dx != 0 && dz != 0 && (!clear(state, cz * w + nx, w, cell, minX, minZ, r) || !clear(state, nz * w + cx, w, cell, minX, minZ, r))) continue;
+                    double step = dx != 0 && dz != 0 ? 1.4142 : 1.0;
+                    if (base + step < cost[n]) {
+                        cost[n] = base + step;
+                        cameFrom[n] = c;
+                        open.add(new double[] { cost[n] + octile(nx, nz, gx, gz), n });
+                    }
+                }
+            }
+        }
+        if (!found) return null;
+        List<double[]> cells = new ArrayList<>();
+        for (int c = goal; c != start; c = cameFrom[c]) cells.add(0, new double[] { minX + (c % w) * cell, minZ + (c / w) * cell });
+        cells.add(0, new double[] { minX + (start % w) * cell, minZ + (start / w) * cell });
+        cells.set(cells.size() - 1, new double[] { bx, bz });
+        // Corners cut wherever the way between is clear
+        List<SpherePosition> way = new ArrayList<>();
+        double[] anchor = { ax, az };
+        int i = 0;
+        while (i < cells.size() - 1) {
+            int far = i + 1;
+            for (int j = cells.size() - 1; j > i + 1; j--) {
+                if (lineFree(anchor[0], anchor[1], cells.get(j)[0], cells.get(j)[1], r * 0.9)) { far = j; break; }
+            }
+            anchor = cells.get(far);
+            way.add(far == cells.size() - 1 ? b0 : here.toSphere(anchor[0], 0.0, anchor[1]));
+            i = far;
+        }
+        return way;
+    }
+
+    private static double octile(int ax, int az, int bx, int bz) {
+        int dx = Math.abs(ax - bx), dz = Math.abs(az - bz);
+        return Math.max(dx, dz) + 0.4142 * Math.min(dx, dz);
+    }
+
+    private boolean clear(byte[] state, int c, int w, double cell, double minX, double minZ, double r) {
+        if (state[c] == 0) state[c] = hitsStatic(minX + (c % w) * cell, minZ + (c / w) * cell, r) ? (byte) 2 : (byte) 1;
+        return state[c] == 1;
+    }
+
+    /** The clear square nearest (cx, cz), within a few squares; -1 if none. */
+    private int nearestFree(byte[] state, int w, int h, double cell, double minX, double minZ, double r, int cx, int cz) {
+        for (int ring = 0; ring <= 6; ring++) {
+            for (int dz = -ring; dz <= ring; dz++) {
+                for (int dx = -ring; dx <= ring; dx++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) != ring) continue;
+                    int x = cx + dx, z = cz + dz;
+                    if (x < 0 || z < 0 || x >= w || z >= h) continue;
+                    if (clear(state, z * w + x, w, cell, minX, minZ, r)) return z * w + x;
+                }
+            }
+        }
+        return -1;
     }
 
     /** How far to move a circle at local (x, z) to clear gathered shape s, or null if clear. */

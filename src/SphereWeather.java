@@ -6,7 +6,14 @@ import com.xenoguesser.math.Vector3;
 import java.nio.FloatBuffer;
 import java.util.Random;
 
-/** Local rain and snow whose positions and motion follow the sphere rather than the map chart. */
+/**
+ * The weather round the player: how cloudy it is, rain or snow falling (its drops placed and
+ * moved on the sphere round the eye), fresh snow settling on the ground, and the haze cloud
+ * puts in the distance. Today's cloud cover is drawn at random about the place's average
+ * rainfall (the rainfall map, looked up now and then): the wetter the place, the likelier a
+ * cloudy day, though any place can have a clear day or an overcast one. The more cloud, the
+ * darker, and where the clouds round about are dark enough it rains, or snows below freezing.
+ */
 public final class SphereWeather {
     private static final int PARTICLE_COUNT = 520;
     private static final double PARTICLE_REACH = 90.0;
@@ -24,6 +31,19 @@ public final class SphereWeather {
     private double windSouth;
     private double windSpeed;
     private double windChangeTime;
+    // Today: how much wetter (or drier) than usual, and the cloud cover and its darkness now
+    private float dayWetness, coverage = -1f, darkness, rainfallTimer;
+    // How cloudy the sky looks overhead now (the cover, broken into patches as the eye moves)
+    private float cloudiness;
+    // Fresh snow over the land: how much there is (0 to 1), how much settles as soon as it
+    // starts, how long (seconds) heavy snow takes to cover everything, and how long it takes to
+    // melt (longer for each degree below freezing)
+    private float freshSnow, coldness;
+    private static final float FRESH_AT_ONCE = 0.3f, FRESH_COVERING_TIME = 45f, FRESH_MELT_TIME = 30f;
+    // How far today's cloud cover can differ from the usual for a place; how dark the clouds
+    // must be for rain to start, and over how much more it gets to its heaviest
+    private static final float DAY_TO_DAY = 0.25f, RAIN_DARKNESS = 0.24f, RAIN_DARKNESS_RANGE = 0.36f;
+    private static final float CLOUD_SHADING = 0.6f, HAZE = 0.55f;
 
     private static final class Particle {
         SpherePosition position;
@@ -47,6 +67,7 @@ public final class SphereWeather {
         chooseWind();
     }
 
+    /** How hard it's raining (or snowing) where the player is, 0 to 1. */
     public float intensity() {
         return intensity;
     }
@@ -55,8 +76,61 @@ public final class SphereWeather {
         return snowing && intensity > 0.02f;
     }
 
+    /** How cloudy the sky overhead looks, 0 to 1 (for the sky's clouds). */
+    public float cloudiness() {
+        return cloudiness;
+    }
+
+    /** How much fresh snow has settled over the land round about, 0 none to 1 a full covering. */
+    public float freshSnow() {
+        return freshSnow;
+    }
+
+    /**
+     * A new day (each spawn): a new wind, and a day that may be wetter or drier than usual.
+     * The sky is set at once for wherever the player is next, rather than easing.
+     */
+    public void newDay(Random rand) {
+        double direction = rand.nextDouble() * Math.PI * 2.0;
+        windEast = Math.cos(direction);
+        windSouth = Math.sin(direction);
+        windSpeed = 2.0 + rand.nextDouble() * 5.0;
+        dayWetness = (float) rand.nextGaussian() * DAY_TO_DAY;
+        coverage = -1f;
+        intensity = 0f;
+        freshSnow = 0f;
+        for (Particle particle : particles) particle.position = null;
+    }
+
+    /**
+     * The colour cloud hazes the distance towards, and how much ({r, g, b, amount}): lit cloud
+     * by day, shaded the darker the clouds are.
+     */
+    public float[] haze(Vector3 skyColour, float daylight) {
+        float c = Math.max(0f, coverage);
+        float[] lit = { mix(skyColour.x * 0.35f + 0.06f, 0.97f, daylight), mix(skyColour.y * 0.35f + 0.06f, 0.97f, daylight),
+                mix(skyColour.z * 0.35f + 0.06f, 0.99f, daylight) };
+        float shade = CLOUD_SHADING * 0.5f * (0.2f + 0.8f * darkness);
+        float[] dark = { 0.30f, 0.31f, 0.34f };
+        return new float[] { lit[0] * (1f - shade + shade * dark[0]), lit[1] * (1f - shade + shade * dark[1]),
+                lit[2] * (1f - shade + shade * dark[2]), HAZE * c };
+    }
+
+    private static float mix(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    private static float smoothstep(float edge0, float edge1, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - edge0) / (edge1 - edge0)));
+        return t * t * (3f - 2f * t);
+    }
+
+    /**
+     * Moves the weather on and lets the rain fall, given how much rain the place usually gets
+     * (0 driest to 1 wettest: the rainfall map) and how many degrees below freezing it is.
+     */
     public void update(float deltaTime, float time, Camera camera, PerlinNoise noise,
-            float seaLevel, float freezingPoint) {
+            float seaLevel, java.util.function.DoubleSupplier rainfallHere, float degreesBelowFreezing) {
         float dt = Math.max(0f, Math.min(deltaTime, 0.1f));
         if (time >= windChangeTime) {
             chooseWind();
@@ -69,13 +143,41 @@ public final class SphereWeather {
                 eye.x() / eyeRadius, eye.y() / eyeRadius, eye.z() / eyeRadius);
         float[] surface = { (float) (local.x() * Planet.radius()),
                 (float) (local.y() * Planet.radius()), (float) (local.z() * Planet.radius()) };
-        float weatherNoise = noise.onSphere(surface, 0.0007f, 19.3f, -7.1f);
-        intensity = Math.max(0f, Math.min(1f, (weatherNoise + 0.16f) * 1.7f));
-        double latitude = Math.asin(local.y());
-        float temperature = 24f - (float) Math.abs(Math.toDegrees(latitude)) * 0.72f
-                - Math.max(0f, TerrainMesh.getLayeredHeight(
-                        new SpherePosition(surface[0], surface[1], surface[2]), noise)) * 0.006f;
-        snowing = temperature < freezingPoint;
+        // Today's cover, eased towards what suits the place (looked up now and then)
+        rainfallTimer -= dt;
+        if (coverage < 0f || rainfallTimer <= 0f) {
+            rainfallTimer = 0.5f;
+            float wantCoverage = Math.max(0.03f, Math.min(1f, 0.05f + 0.9f * (float) rainfallHere.getAsDouble() + dayWetness));
+            float wantDarkness = smoothstep(0.3f, 0.95f, wantCoverage);
+            if (coverage < 0f) {
+                coverage = wantCoverage;
+                darkness = wantDarkness;
+            } else {
+                // Weather changes over tens of seconds, not at once
+                coverage += (wantCoverage - coverage) * 0.04f;
+                darkness += (wantDarkness - darkness) * 0.04f;
+            }
+        }
+        // The cloud comes in patches, some darker, some breaking up, a few kilometres across
+        float patch = Math.max(0f, Math.min(1f, 0.5f + noise.onSphere(surface, 0.0007f, 19.3f, -7.1f) * 1.4f));
+        cloudiness = Math.max(0f, Math.min(1f, coverage * (0.7f + 0.6f * patch)));
+        // Rain (or snow) falls where the clouds overhead are dark, easing in and out rather than
+        // flicking on and off as the player moves
+        float darkHere = darkness * (0.55f + 0.9f * patch);
+        float wanted = Math.max(0f, Math.min(1f, (darkHere - RAIN_DARKNESS) / RAIN_DARKNESS_RANGE));
+        intensity += (wanted - intensity) * Math.min(1f, dt * 0.5f);
+        if (intensity < 0.01f && wanted == 0f) intensity = 0f;
+        // Snow where it's below freezing, rain where it's above
+        snowing = degreesBelowFreezing > 0f;
+        coldness = Math.max(0f, degreesBelowFreezing);
+        // Fresh snow piles up while it snows (some straight away), and melts off when it stops,
+        // the slower the colder
+        if (snowing && intensity > 0f) {
+            freshSnow = Math.max(freshSnow, FRESH_AT_ONCE);
+            freshSnow = Math.min(1f, freshSnow + dt * intensity / FRESH_COVERING_TIME);
+        } else {
+            freshSnow = Math.max(0f, freshSnow - dt / (FRESH_MELT_TIME * (1f + coldness)));
+        }
 
         int activeCount = Math.round(PARTICLE_COUNT * intensity);
         for (int i = 0; i < particles.length; i++) {

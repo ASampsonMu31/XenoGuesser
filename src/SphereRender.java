@@ -42,17 +42,6 @@ public final class SphereRender {
         setAnchor(gl, shader, null);
     }
 
-    /**
-     * The anchor for something still laid out on the Mercator chart (people and vehicles,
-     * until Phase 4 of GEODESIC_MIGRATION_PLAN.txt): its bones are in chart coordinates round
-     * (chartX, chartZ), so they are taken back to that point and lifted onto the sphere in the
-     * local frame there, relative to the camera at eye.
-     */
-    public static Matrix4 chartAnchor(float chartX, float chartZ, SpherePosition eye) {
-        return Matrix4.multiply(SphereFrame.at(Planet.spherePosition(chartX, chartZ, 0.0)).modelMatrix(1f, eye),
-                com.xenoguesser.math.Matrix4Transform.translate(-chartX, 0f, -chartZ));
-    }
-
     /** Places what is drawn next with the organism shader: its frame relative to the camera (null for the identity). */
     public static void setAnchor(GL3 gl, Shader shader, Matrix4 anchor) {
         shader.setFloatArray(gl, "anchor", anchor == null ? IDENTITY : anchor.toFloatArrayForGLSL());

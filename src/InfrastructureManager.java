@@ -185,9 +185,6 @@ public class InfrastructureManager {
         private final Vector3 end;
         private final Vector3 startTangent;
         private final Vector3 endTangent;
-        // Chart bridge (D13): its ends on the Mercator chart {x, height, z}, for what still works
-        // there (spawn points, people and vehicles)
-        private final Vector3 chartStart, chartEnd;
         private final int nationId;
         private final int pathIndex;
         private final RoadPath.RoadClass roadClass;
@@ -200,14 +197,12 @@ public class InfrastructureManager {
         private boolean railed;
 
         private RoadSegment(SphereFrame frame, SpherePosition from, SpherePosition to, Vector3 start, Vector3 end,
-                            Vector3 startTangent, Vector3 endTangent, Vector3 chartStart, Vector3 chartEnd, int nationId,
+                            Vector3 startTangent, Vector3 endTangent, int nationId,
                             int pathIndex, RoadPath.RoadClass roadClass, float startDistance, float length,
                             float width, boolean culDeSac) {
             this.frame = frame;
             this.from = from;
             this.to = to;
-            this.chartStart = chartStart;
-            this.chartEnd = chartEnd;
             this.start = start;
             this.end = end;
             this.startTangent = startTangent;
@@ -226,9 +221,9 @@ public class InfrastructureManager {
             return culDeSac ? 3 : roadClass.rank;
         }
 
-        /** Chart bridge (D13): the middle on the chart. */
+        /** Chart bridge (D13) for the sign maps (Phase 5): the middle's x on the chart. */
         private float chartMidX() {
-            return (chartStart.x + chartEnd.x) * 0.5f;
+            return (float) Planet.mercatorPosition(frame.origin())[0];
         }
     }
 
@@ -568,84 +563,109 @@ public class InfrastructureManager {
 
     /**
      * A house's way in and out, for the people who live there: a point just inside the front
-     * door, the doorstep, and a point on the pavement beside the road it faces, with that
-     * road's direction there. World coordinates.
+     * door, the doorstep, the gate, and a point on the pavement beside the road it faces, with
+     * that road's direction there. Worked out in the house's frame (local +z towards the road);
+     * the places are given on the planet too, on the datum.
      */
     public static final class Doorway {
-        public final float insideX, insideZ, doorX, doorZ, kerbX, kerbZ, roadDirX, roadDirZ;
+        // The house's frame, and in it {x, z}: the doorstep, the kerb point, the road's way
+        // there (unit), the gate
+        public final SphereFrame frame;
+        public final float[] localDoor, localKerb, localRoadDir, localGate;
+        public final SpherePosition inside, door, gate, kerb;
+        // The driveway in the house's frame, or null: {mouth x, z (where it meets the front),
+        // inward x, z (unit, towards the back), its length, its width, x, z (unit, across it
+        // towards the garden path)}
+        public final float[] localDriveway;
         public final int nationId;
         public final int path;
         public final float urbanness;
         public final long id;
         // A shop's door: people go in to shop, but nobody lives there
         public final boolean shop;
-        // The way through the front fence (or where it would be), straight out from the door
-        public final float gateX, gateZ;
         // How far the opening in the front runs each way along the road from the kerb point
         // (gate, and driveway if there is one), so nobody parks across it
         public final float gapBefore, gapAfter;
-        // The driveway, or null: {mouth x, z (where it meets the front), inward x, z (unit, towards
-        // the back), its length, its width, x, z (unit, across it towards the garden path)}
-        public final float[] driveway;
-        // The front door's corners {x, y, z} (bottom left, bottom right, top right, top left), once built
+        // The front door's corners in the house's frame {x, y above the datum, z} (bottom left,
+        // bottom right, top right, top left), once built
         public volatile float[][] doorCorners;
 
-        private Doorway(float[] inside, float[] door, float[] kerb, float[] roadDir, int nationId, int path, float urbanness, long id, boolean shop,
-                        float[] gate, float[] gap, float[] driveway) {
-            this.gateX = gate[0];
-            this.gateZ = gate[1];
+        private Doorway(SphereFrame frame, float[] localInside, float[] localDoor, float[] localKerb, float[] localRoadDir,
+                        float[] localGate, float[] localDriveway, int nationId, int path, float urbanness, long id,
+                        boolean shop, float[] gap) {
+            this.frame = frame;
+            this.localDoor = localDoor;
+            this.localKerb = localKerb;
+            this.localRoadDir = localRoadDir;
+            this.localGate = localGate;
+            this.localDriveway = localDriveway;
+            this.inside = at(localInside[0], localInside[1]);
+            this.door = at(localDoor[0], localDoor[1]);
+            this.gate = at(localGate[0], localGate[1]);
+            this.kerb = at(localKerb[0], localKerb[1]);
             this.gapBefore = gap[0];
             this.gapAfter = gap[1];
-            this.driveway = driveway;
-            this.insideX = inside[0];
-            this.insideZ = inside[1];
-            this.doorX = door[0];
-            this.doorZ = door[1];
-            this.kerbX = kerb[0];
-            this.kerbZ = kerb[1];
-            this.roadDirX = roadDir[0];
-            this.roadDirZ = roadDir[1];
             this.nationId = nationId;
             this.path = path;
             this.urbanness = urbanness;
             this.id = id;
             this.shop = shop;
         }
+
+        /** A point in the house's frame, on the datum. */
+        public SpherePosition at(double x, double z) {
+            return SphereMath.atAltitude(frame.toWorld(x, 0.0, z), 0.0);
+        }
+
+        /** A level direction in the house's frame as a heading (D10) at a place near the house. */
+        public double heading(SpherePosition place, double x, double z) {
+            double[] world = frame.worldDirection(x, 0.0, z);
+            return SphereFrame.at(place).headingOf(world[0], world[1], world[2]);
+        }
+
+        /** The place along the road from the kerb point by a distance (either way), on the datum. */
+        public SpherePosition alongRoad(double along) {
+            return at(localKerb[0] + localRoadDir[0] * along, localKerb[1] + localRoadDir[1] * along);
+        }
     }
 
     /**
-     * A way on foot along a road from near (ax, az) to near (bx, bz): points just inside the
-     * road's edge on A's side, following the road's bends, so walkers keep to the street
-     * rather than cutting across gardens. Empty if the road isn't known.
+     * A way on foot along a road from near one place to near another: points just inside the
+     * road's edge on the first place's side, following the road's bends, so walkers keep to
+     * the street rather than cutting across gardens. Empty if the road isn't known. Worked in
+     * each segment's frame (their x, z run the same way along the path).
      */
-    public List<float[]> streetWalk(int path, float ax, float az, float bx, float bz) {
-        List<float[]> points = new ArrayList<>();
+    public List<SpherePosition> streetWalk(int path, SpherePosition a, SpherePosition b) {
+        List<SpherePosition> points = new ArrayList<>();
         List<RoadSegment> all = segmentsByPath.get(path);
         if (all == null) return points;
         List<RoadSegment> segs = new ArrayList<>();
         for (RoadSegment segment : all) if (!segment.culDeSac) segs.add(segment);
         if (segs.isEmpty()) return points;
-        int ia = nearestSegment(segs, ax, az), ib = nearestSegment(segs, bx, bz);
+        a = SphereMath.atAltitude(a, 0.0);
+        b = SphereMath.atAltitude(b, 0.0);
+        int ia = nearestSegment(segs, a), ib = nearestSegment(segs, b);
         RoadSegment first = segs.get(ia);
-        float[] onA = nearestOnSegment(ax, az, first);
-        float dirX = first.chartEnd.x - first.chartStart.x, dirZ = first.chartEnd.z - first.chartStart.z;
-        float side = dirX * (az - onA[1]) - dirZ * (ax - onA[0]) >= 0f ? 1f : -1f;
-        points.add(walkPoint(first, ax, az, side));
+        // Which side of the road the first place is
+        double[] p = first.frame.fromSphere(a);
+        float[] on = nearestOnLine((float) p[0], (float) p[2], new float[] { first.start.x, first.start.z }, new float[] { first.end.x, first.end.z });
+        float dirX = first.end.x - first.start.x, dirZ = first.end.z - first.start.z;
+        float side = dirX * ((float) p[2] - on[1]) - dirZ * ((float) p[0] - on[0]) >= 0f ? 1f : -1f;
+        points.add(walkPoint(first, a, side));
         if (ia < ib) {
-            for (int k = ia; k < ib; k++) points.add(walkPoint(segs.get(k), segs.get(k).chartEnd.x, segs.get(k).chartEnd.z, side));
+            for (int k = ia; k < ib; k++) points.add(walkPoint(segs.get(k), segs.get(k).to, side));
         } else {
-            for (int k = ia; k > ib; k--) points.add(walkPoint(segs.get(k), segs.get(k).chartStart.x, segs.get(k).chartStart.z, side));
+            for (int k = ia; k > ib; k--) points.add(walkPoint(segs.get(k), segs.get(k).from, side));
         }
-        points.add(walkPoint(segs.get(ib), bx, bz, side));
+        points.add(walkPoint(segs.get(ib), b, side));
         return points;
     }
 
-    private static int nearestSegment(List<RoadSegment> segs, float x, float z) {
+    private static int nearestSegment(List<RoadSegment> segs, SpherePosition place) {
         int best = 0;
         float bestDistance = Float.MAX_VALUE;
         for (int i = 0; i < segs.size(); i++) {
-            float[] p = nearestOnSegment(x, z, segs.get(i));
-            float d = (p[0] - x) * (p[0] - x) + (p[1] - z) * (p[1] - z);
+            float d = distanceSquaredToSegment(place, segs.get(i));
             if (d < bestDistance) {
                 bestDistance = d;
                 best = i;
@@ -654,36 +674,28 @@ public class InfrastructureManager {
         return best;
     }
 
-    /** The point on a segment nearest (x, z), moved out to just inside the road edge on one side. */
-    private static float[] walkPoint(RoadSegment segment, float x, float z, float side) {
-        float[] on = nearestOnSegment(x, z, segment);
-        float dx = segment.chartEnd.x - segment.chartStart.x, dz = segment.chartEnd.z - segment.chartStart.z;
+    /** The point on a segment nearest a place, moved out to just inside the road edge on one side, on the datum. */
+    private static SpherePosition walkPoint(RoadSegment segment, SpherePosition place, float side) {
+        double[] p = segment.frame.fromSphere(place);
+        float[] on = nearestOnLine((float) p[0], (float) p[2], new float[] { segment.start.x, segment.start.z },
+                new float[] { segment.end.x, segment.end.z });
+        float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
         float length = (float) Math.sqrt(dx * dx + dz * dz);
-        if (length < 1e-4f) return on;
+        if (length < 1e-4f) return world(segment, on[0], on[1]);
         float offset = Math.max(1.5f, segment.width * 0.5f - 2.5f) * side;
-        return new float[] { on[0] - dz / length * offset, on[1] + dx / length * offset };
+        return world(segment, on[0] - dz / length * offset, on[1] + dx / length * offset);
     }
 
-    /**
-     * Chart bridge (D13) for the people, who live on the chart until Phase 4: every house's
-     * doorway with its centre inside a chart rectangle (found on the sphere round its middle).
-     */
-    public List<Doorway> doorwaysIn(float minX, float minZ, float maxX, float maxZ) {
+    /** Every house's doorway whose middle is in a BATCH_LEVEL geodesic cell. */
+    public List<Doorway> doorwaysInCell(long cell) {
         List<Doorway> result = new ArrayList<>();
-        float midX = (minX + maxX) * 0.5f, midZ = (minZ + maxZ) * 0.5f;
-        // (the true reach of the rectangle's corners: the chart is stretched least nearest the equator)
-        float nearestEquator = minZ <= 0f && maxZ >= 0f ? 0f : Math.min(Math.abs(minZ), Math.abs(maxZ));
-        float reach = (float) Math.hypot(maxX - minX, maxZ - minZ) * 0.5f / chartStretch(nearestEquator);
-        houseIndex.forEachNear(sphere(midX, midZ), reach, house -> {
-            if (house.x >= minX && house.x < maxX && house.z >= minZ && house.z < maxZ) result.add(doorwayOf(house));
-        });
+        for (House house : housesByCell.getOrDefault(cell, List.of())) result.add(doorwayOf(house));
         return result;
     }
 
-    /** Doorways of houses whose middle is within reach (true distance) of a chart point. */
-    public List<Doorway> doorwaysNear(float x, float z, float reach) {
+    /** Doorways of houses whose middle is within reach of a place. */
+    public List<Doorway> doorwaysNear(SpherePosition place, float reach) {
         List<Doorway> result = new ArrayList<>();
-        SpherePosition place = sphere(x, z);
         houseIndex.forEachNear(place, reach, house -> {
             if (SphereMath.distance(house.frame.origin(), place) <= reach) result.add(doorwayOf(house));
         });
@@ -692,7 +704,7 @@ public class InfrastructureManager {
 
     private Doorway doorwayOf(House house) {
         if (house.doorway != null) return house.doorway;
-        // Worked out in the house's frame, then put on the chart for the people, who live there until Phase 4
+        // Worked out in the house's frame
         float[] door = { 0f, house.depth * 0.5f + 2.5f };
         // The pavement: just off the road edge, between the carriageway and any front fence
         float[] kerb = { 0f, house.plotMaxZ };
@@ -716,26 +728,22 @@ public class InfrastructureManager {
         // The gate: on the line of the front fence, straight out from the door
         float[] gateLocal = followKerb(house, 0f);
         float gapMin = -GATE_HALF_WIDTH, gapMax = GATE_HALF_WIDTH;
-        float[] driveway = null;
+        float[] localDriveway = null;
         if (house.drivewaySide != 0 && house.shop == null) {
             gapMin = Math.min(gapMin, house.driveMinX - 1f);
             gapMax = Math.max(gapMax, house.driveMaxX + 1f);
             float cx = (house.driveMinX + house.driveMaxX) * 0.5f;
             float frontZ = followKerb(house, cx)[1];
-            float[] mouth = chartAt(house, cx, frontZ);
-            float[] in = chartDirection(house, 0f, -1f);
-            float[] across = chartDirection(house, -house.drivewaySide, 0f);
-            driveway = new float[] { mouth[0], mouth[1], in[0], in[1], frontZ + house.depth * 0.5f,
-                    house.driveMaxX - house.driveMinX, across[0], across[1] };
+            localDriveway = new float[] { cx, frontZ, 0f, -1f, frontZ + house.depth * 0.5f,
+                    house.driveMaxX - house.driveMinX, -house.drivewaySide, 0f };
         }
         // The opening measured along the road from the kerb point (the house's x runs along the road one way or the other)
         float sense = roadDir[0] >= 0f ? 1f : -1f;
         float a = (gapMin - kerb[0]) * sense, b = (gapMax - kerb[0]) * sense;
         float[] gap = { Math.min(a, b), Math.max(a, b) };
-        house.doorway = new Doorway(chartAt(house, 0f, house.depth * 0.5f - 5f), chartAt(house, door[0], door[1]),
-                chartAt(house, kerb[0], kerb[1]), chartDirection(house, roadDir[0], roadDir[1]), house.nationId, house.frontagePath,
-                settlementManager.getUrbanness(house.frame.origin()), house.seed, house.shop != null,
-                chartAt(house, 0f, gateLocal[1]), gap, driveway);
+        house.doorway = new Doorway(house.frame, new float[] { 0f, house.depth * 0.5f - 5f }, door, kerb, roadDir,
+                new float[] { 0f, gateLocal[1] }, localDriveway, house.nationId, house.frontagePath,
+                settlementManager.getUrbanness(house.frame.origin()), house.seed, house.shop != null, gap);
         house.doorway.doorCorners = house.doorCorners;
         return house.doorway;
     }
@@ -798,9 +806,8 @@ public class InfrastructureManager {
                 Vector3 startTangent = roadTangent(frame, points.get(i == 0 ? i : i - 1), points.get(i + 1));
                 Vector3 endTangent = roadTangent(frame, points.get(i), points.get(i + 1 == points.size() - 1 ? i + 1 : i + 2));
                 int nationId = nationManager.getNationAt(middle);
-                float chartMidX = (float) Planet.mercatorPosition(middle)[0];
                 RoadSegment segment = new RoadSegment(frame, from, to, inFrame(frame, from), inFrame(frame, to),
-                        startTangent, endTangent, onChart(from, chartMidX), onChart(to, chartMidX), nationId, pathIndex,
+                        startTangent, endTangent, nationId, pathIndex,
                         path.roadClass, distanceAlongPath, length, width, false);
 
                 GuardRailStyle railStyle = guardRailStyles.get(nationId);
@@ -990,8 +997,7 @@ public class InfrastructureManager {
     //          SPATIAL QUERIES
     // ==========================================
     // On the sphere (D5): each searches the CellIndex round the place, and every distance test
-    // is done in the segment's or house's own frame, so it matches what is drawn. The (x, z)
-    // overloads are chart bridges (D13) for the people and vehicles, on the chart until Phase 4.
+    // is done in the segment's or house's own frame, so it matches what is drawn.
 
     /**
      * Whether a place is on ground cleared for a road: within clearance of a made road's
@@ -1020,11 +1026,6 @@ public class InfrastructureManager {
         return false;
     }
 
-    /** Chart bridge: isRoadLocation at a chart point. */
-    public boolean isRoadLocation(float worldX, float worldZ, float clearance) {
-        return isRoadLocation(sphere(worldX, worldZ), clearance);
-    }
-
     /**
      * The altitude of what someone walking at a place stands on: the road's raised surface on
      * a road (eased down to the ground over a pace or so beyond its edge), otherwise the ground.
@@ -1039,11 +1040,6 @@ public class InfrastructureManager {
         float road = roadSurfaceY(place);
         float t = Math.min(1f, (inside + easing) / easing);
         return ground + (road - ground) * t;
-    }
-
-    /** Chart bridge: walkingSurfaceY at a chart point. */
-    public float walkingSurfaceY(float worldX, float worldZ) {
-        return walkingSurfaceY(sphere(worldX, worldZ));
     }
 
     /** How far inside the nearest made road's edge a place is (negative outside it). */
@@ -1071,11 +1067,6 @@ public class InfrastructureManager {
             }
         }
         return false;
-    }
-
-    /** Chart bridge: isBuildingLocation at a chart point. */
-    public boolean isBuildingLocation(float worldX, float worldZ, float clearance) {
-        return isBuildingLocation(sphere(worldX, worldZ), clearance);
     }
 
     /**
@@ -1108,11 +1099,6 @@ public class InfrastructureManager {
             }
         }
         return false;
-    }
-
-    /** Chart bridge: isPlotLocation at a chart point. */
-    private boolean isPlotLocation(float worldX, float worldZ, float clearance) {
-        return isPlotLocation(sphere(worldX, worldZ), clearance);
     }
 
     /** How far a house's land reaches from its middle: the far corner of its plot (or paddock). */
@@ -1727,23 +1713,6 @@ public class InfrastructureManager {
         });
     }
 
-    /**
-     * Chart bridge (D13) for the people and vehicles, on the chart until Phase 4: the shapes
-     * near a chart point, put on the chart (reach, widths and radii in chart units there).
-     */
-    public void obstaclesNear(float x, float z, float reach, Collision.Sink sink) {
-        float stretch = chartStretch(z);
-        obstacleIndex.forEachNear(sphere(x, z), reach / stretch, obstacle -> {
-            float[] a = chartPoint(obstacle.a(), 0f, x);
-            if (obstacle.b() == null) {
-                sink.circle(a[0], a[2], obstacle.size() * stretch, obstacle.top());
-            } else {
-                float[] b = chartPoint(obstacle.b(), 0f, x);
-                sink.segment(a[0], a[2], b[0], b[2], obstacle.size() * stretch, obstacle.top());
-            }
-        });
-    }
-
         /**
      * A white material carrying the named texture (which holds the colour itself), or a
      * plain coloured one if the texture isn't available.
@@ -1908,11 +1877,6 @@ public class InfrastructureManager {
             }
         }
         return Math.max(top, seaLevel + 1.0f) + ROAD_SURFACE_OFFSET;
-    }
-
-    /** Chart bridge (D13): roadSurfaceY at a chart point. */
-    private float roadSurfaceY(float x, float z) {
-        return roadSurfaceY(sphere(x, z));
     }
 
     /** Positions of a line offset sideways from the centreline, one per subdivision, mitred at the ends. */
@@ -2511,9 +2475,9 @@ public class InfrastructureManager {
         float doorHalfW = Math.min(style.doorWidth * scale, front.length * 0.7f) * 0.5f;
         float doorH = style.doorHeight * scale;
         float[][] door = wallPanel(batch.builder("door"), house, front, 0.5f, house.doorBase + doorH * 0.5f, doorHalfW, doorH * 0.5f, DOOR_OFFSET);
-        // (on the chart for the people going in and out, who are still there until Phase 4)
+        // (in the house's frame, for the people going in and out)
         house.doorCorners = new float[4][];
-        for (int i = 0; i < 4; i++) house.doorCorners[i] = chartPoint(house, door[i][0], door[i][1], door[i][2]);
+        for (int i = 0; i < 4; i++) house.doorCorners[i] = door[i].clone();
         if (house.doorway != null) house.doorway.doorCorners = house.doorCorners;
         if (house.drivewaySide != 0 && house.shop == null) bakeDriveway(batch, house);
         if (house.grand || (house.shop != null && house.richness > 0.6f)) dressUp(batch, house, walls, door, scale);
@@ -3255,36 +3219,37 @@ public class InfrastructureManager {
 
     /**
      * A way on foot from one place to another by the shortest way along the roads, keeping
-     * to the side of the road as on a pavement: {x, z} points. Empty if there's none.
+     * to the side of the road as on a pavement, as places on the datum. Empty if there's none.
      */
-    public List<float[]> walkingRoute(float ax, float az, float bx, float bz) {
-        List<float[]> way = routes().route(ax, az, bx, bz);
-        List<float[]> kept = new ArrayList<>(way.size());
+    public List<SpherePosition> walkingRoute(SpherePosition a, SpherePosition b) {
+        List<SpherePosition> way = routes().route(a, b);
+        List<SpherePosition> kept = new ArrayList<>(way.size());
         for (int i = 0; i < way.size(); i++) {
-            float[] p = way.get(i);
+            SpherePosition p = way.get(i);
             if (i == 0 || i == way.size() - 1) {
                 kept.add(p);
                 continue;
             }
-            float[] before = way.get(i - 1), after = way.get(i + 1);
-            float dx = after[0] - before[0], dz = after[1] - before[1];
-            float length = (float) Math.hypot(dx, dz);
-            if (length < 1e-3f) continue;
             // On the pavement, just off the edge of the carriageway where the traffic runs
-            float aside = roadAtPoint(p[0], p[1])[0] + 1.3f;
-            kept.add(new float[] { p[0] - dz / length * aside, p[1] + dx / length * aside });
+            SphereFrame frame = SphereFrame.at(p);
+            double[] before = frame.fromSphere(way.get(i - 1)), after = frame.fromSphere(way.get(i + 1));
+            double dx = after[0] - before[0], dz = after[2] - before[2];
+            double length = Math.hypot(dx, dz);
+            if (length < 1e-3) continue;
+            double aside = roadAt(p)[0] + 1.3;
+            kept.add(frame.toSphere(-dz / length * aside, 0.0, dx / length * aside));
         }
         return kept;
     }
 
     /**
-     * The road at a point: {half its width, its rank (2 highway, 1 street, 0 lane or track),
+     * The road at a place: {half its width, its rank (2 highway, 1 street, 0 lane or track),
      * the nation it runs through, 1 if a dirt track}, from the nearest road; a lane's if none is near.
      */
-    public float[] roadAtPoint(float x, float z) {
+    public float[] roadAt(SpherePosition place) {
         RoadSegment best = null;
         float nearest = Float.MAX_VALUE;
-        SpherePosition place = sphere(x, z);
+        place = SphereMath.atAltitude(place, 0.0);
         for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + 20f)) {
             float d = distanceSquaredToSegment(place, segment);
             if (d < nearest) { nearest = d; best = segment; }
@@ -3293,78 +3258,84 @@ public class InfrastructureManager {
         return new float[] { best.width * 0.5f, best.rank(), best.nationId, best.roadClass == RoadPath.RoadClass.DIRT ? 1f : 0f };
     }
 
-    /** The shortest way along the roads between two points, along the roads' middles: {x, z} points. */
-    public List<float[]> drivingRoute(float ax, float az, float bx, float bz) {
-        return routes().route(ax, az, bx, bz);
+    /** The shortest way along the roads between two places, along the roads' middles, as places on the datum. */
+    public List<SpherePosition> drivingRoute(SpherePosition a, SpherePosition b) {
+        return routes().route(a, b);
     }
 
     /**
      * Somewhere for a drive out: the middle of another settlement, between minDistance and
-     * maxDistance away, as {x, z}; null if there's none.
+     * maxDistance away; null if there's none.
      */
-    public float[] settlementBetween(float x, float z, float minDistance, float maxDistance, Random rand) {
-        List<SettlementManager.Settlement> all = settlementManager.getSettlements();
+    public SpherePosition settlementBetween(SpherePosition place, float minDistance, float maxDistance, Random rand) {
         List<SettlementManager.Settlement> fit = new ArrayList<>();
-        for (SettlementManager.Settlement s : all) {
-            float d = (float) Planet.surfaceDistance(x, z, s.chartX, s.chartZ);
+        for (SettlementManager.Settlement s : settlementManager.getSettlements()) {
+            double d = SphereMath.distance(place, s.centre);
             if (d >= minDistance && d <= maxDistance) fit.add(s);
         }
         if (fit.isEmpty()) return null;
-        SettlementManager.Settlement pick = fit.get(rand.nextInt(fit.size()));
-        return new float[] { pick.chartX, pick.chartZ };
+        return SphereMath.atAltitude(fit.get(rand.nextInt(fit.size())).centre, 0.0);
     }
 
     /**
-     * A place to leave a vehicle width wide at the edge of the road nearest (x, z), on the side
-     * towards (towardsX, towardsZ): pulled right over, partly up on the verge on a narrow road,
-     * so it never stands in the way. Returns {x, z, along x, along z (the road's direction
-     * there), out x, out z (unit, towards the edge it's at), the road's half width, its
-     * nation}; null if that's at a junction (or no road is near).
+     * A place to leave a vehicle at the edge of a road: on the datum, with the road's way there
+     * and the way out towards the edge it's at (headings, D10, at that place), the road's half
+     * width and its nation.
      */
-    public float[] kerbSpot(float x, float z, float towardsX, float towardsZ, float width) {
+    public record Kerb(SpherePosition place, double along, double out, float half, int nationId) {
+    }
+
+    /**
+     * A place to leave a vehicle width wide at the edge of the road nearest a place, on the side
+     * towards another: pulled right over, partly up on the verge on a narrow road, so it never
+     * stands in the way. Null if that's at a junction (or no road is near). Worked in the road
+     * segment's frame.
+     */
+    public Kerb kerbSpot(SpherePosition place, SpherePosition towards, float width) {
         RoadSegment best = null;
         float nearest = Float.MAX_VALUE;
-        SpherePosition place = sphere(x, z);
+        place = SphereMath.atAltitude(place, 0.0);
         for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + 30f)) {
             if (segment.culDeSac) continue;
             float d = distanceSquaredToSegment(place, segment);
             if (d < nearest) { nearest = d; best = segment; }
         }
         if (best == null) return null;
-        float[] centre = nearestOnSegment(x, z, best);
-        float ax = best.chartEnd.x - best.chartStart.x, az = best.chartEnd.z - best.chartStart.z, length = (float) Math.hypot(ax, az);
+        double[] p = best.frame.fromSphere(place), t = best.frame.fromSphere(towards);
+        float[] centre = nearestOnLine((float) p[0], (float) p[2], new float[] { best.start.x, best.start.z },
+                new float[] { best.end.x, best.end.z });
+        float ax = best.end.x - best.start.x, az = best.end.z - best.start.z, length = (float) Math.hypot(ax, az);
         if (length < 1e-3f) return null;
         ax /= length;
         az /= length;
         float nx = -az, nz = ax;
-        if (nx * (towardsX - centre[0]) + nz * (towardsZ - centre[1]) < 0f) { nx = -nx; nz = -nz; }
+        if (nx * ((float) t[0] - centre[0]) + nz * ((float) t[2] - centre[1]) < 0f) { nx = -nx; nz = -nz; }
         float half = best.width * 0.5f;
         // Up on the verge a little where there's one, but inside the crash barrier where there's that
         float out = best.railed || best.roadClass == RoadPath.RoadClass.HIGHWAY
                 ? Math.max(half * 0.32f, half - width * 0.5f - 2f)
                 : Math.max(half * 0.32f, half + 2.5f - width * 0.5f);
-        // (out from the middle by a true distance, stretched to the chart's)
-        float stretch = chartStretch(centre[1]);
-        float px = centre[0] + nx * out * stretch, pz = centre[1] + nz * out * stretch;
+        SpherePosition spot = world(best, centre[0] + nx * out, centre[1] + nz * out);
         // Not across the mouth of another road
-        SpherePosition spot = sphere(px, pz);
         for (RoadSegment other : segmentsNear(spot, MAX_ROAD_HALF_WIDTH + width + 10f)) {
             if (other.pathIndex == best.pathIndex || other.culDeSac) continue;
             float reach = other.width * 0.5f + width * 0.5f + 6f;
             if (distanceSquaredToSegment(spot, other) < reach * reach) return null;
         }
-        return new float[] { px, pz, ax, az, nx, nz, half, best.nationId };
+        SpherePosition middle = best.frame.origin();
+        return new Kerb(spot, SphereMath.carryHeading(middle, spot, Math.atan2(az, ax)),
+                SphereMath.carryHeading(middle, spot, Math.atan2(nz, nx)), half, best.nationId);
     }
 
     /**
-     * A point on a road's middle between minDistance and maxDistance from (x, z), likelier on
-     * bigger roads (highways most of all, dirt tracks hardly ever), as {x, z}; null if none.
+     * A place on a road's middle between minDistance and maxDistance from another, likelier on
+     * bigger roads (highways most of all, dirt tracks hardly ever), on the datum; null if none.
      */
-    public float[] roadPointBetween(float x, float z, float minDistance, float maxDistance, Random rand) {
+    public SpherePosition roadPointBetween(SpherePosition place, float minDistance, float maxDistance, Random rand) {
         List<RoadSegment> fit = new ArrayList<>();
         List<Float> weights = new ArrayList<>();
         float total = 0f;
-        SpherePosition place = sphere(x, z);
+        place = SphereMath.atAltitude(place, 0.0);
         for (RoadSegment segment : segmentsNear(place, maxDistance)) {
             if (segment.culDeSac) continue;
             float d = (float) SphereMath.distance(segment.frame.origin(), place);
@@ -3381,8 +3352,7 @@ public class InfrastructureManager {
             roll -= weights.get(i);
             if (roll <= 0f || i == fit.size() - 1) {
                 RoadSegment s = fit.get(i);
-                float t = rand.nextFloat();
-                return new float[] { s.chartStart.x + (s.chartEnd.x - s.chartStart.x) * t, s.chartStart.z + (s.chartEnd.z - s.chartStart.z) * t };
+                return SphereMath.atAltitude(SphereMath.slerp(s.from, s.to, rand.nextFloat()), 0.0);
             }
         }
         return null;
@@ -3393,9 +3363,9 @@ public class InfrastructureManager {
         return nationRandom(71L, nationId).nextFloat() < 0.6f ? 1f : -1f;
     }
 
-    /** The door of the shop nearest a point, within reach; null if there's none. */
-    public Doorway shopDoorNear(float x, float z, float reach, int nationId) {
-        Shop shop = nearestShop(sphere(x, z), reach, nationId);
+    /** The door of the shop nearest a place, within reach; null if there's none. */
+    public Doorway shopDoorNear(SpherePosition place, float reach, int nationId) {
+        Shop shop = nearestShop(place, reach, nationId);
         return shop == null ? null : doorwayOf(shop.house);
     }
 
@@ -4329,12 +4299,6 @@ public class InfrastructureManager {
         return new float[] { localX, z };
     }
 
-    /** Chart bridge (D13): the point on a segment nearest a chart point, on the chart (for people and vehicles). */
-    private static float[] nearestOnSegment(float x, float z, RoadSegment segment) {
-        return nearestOnLine(x, z, new float[] { segment.chartStart.x, segment.chartStart.z },
-                new float[] { segment.chartEnd.x, segment.chartEnd.z });
-    }
-
     /** The point on the line from a to b (each {x, z}) nearest (x, z). */
     private static float[] nearestOnLine(float x, float z, float[] a, float[] b) {
         float ax = a[0], az = a[1];
@@ -4462,8 +4426,6 @@ public class InfrastructureManager {
         // Traffic lights (the two sides drive on different sides of the road), and a fenced
         // border's checks and booths
         private final boolean lights, fenced;
-        // Chart bridge (D13) for the people (Phase 4): the crossing's x on the chart
-        private final float chartX;
 
         private BorderCheck(int index, SphereFrame frame, double heading, float half, int nearNation, int farNation,
                             boolean lights, boolean fenced) {
@@ -4475,17 +4437,12 @@ public class InfrastructureManager {
             this.farNation = farNation;
             this.lights = lights;
             this.fenced = fenced;
-            this.chartX = (float) Planet.mercatorPosition(frame.origin())[0];
         }
 
-        /**
-         * Chart bridge (D13) for the vehicles: a place and a chart heading direction there
-         * (the chart is conformal, so it is the local east/south one) in this check's frame, as
-         * {x, z, the way's x, z}.
-         */
-        private float[] localWay(SpherePosition place, float dirX, float dirZ) {
+        /** A place and a heading there (D10) in this check's frame, as {x, z, the way's x, z}. */
+        private float[] localWay(SpherePosition place, double facing) {
             double[] local = frame.fromSphere(place);
-            double way = SphereMath.carryHeading(place, frame.origin(), Math.atan2(dirZ, dirX)) - heading;
+            double way = SphereMath.carryHeading(place, frame.origin(), facing) - heading;
             return new float[] { (float) local[0], (float) local[2], (float) Math.cos(way), (float) Math.sin(way) };
         }
     }
@@ -4496,17 +4453,12 @@ public class InfrastructureManager {
         private final double heading;
         private final int nation;
         private final float guard;
-        // Chart bridge (D13) for the people (Phase 4): where it is on the chart
-        private final float chartX, chartZ;
 
         private Booth(SphereFrame frame, double heading, int nation, float guard) {
             this.frame = frame;
             this.heading = heading;
             this.nation = nation;
             this.guard = guard;
-            double[] chart = Planet.mercatorPosition(frame.origin());
-            this.chartX = (float) chart[0];
-            this.chartZ = (float) chart[2];
         }
     }
 
@@ -4643,18 +4595,16 @@ public class InfrastructureManager {
     }
 
     /**
-     * Chart bridge (D13) for the vehicles, on the chart until Phase 4: how far ahead (in chart
-     * units) the line is where a vehicle at (x, z) heading (dirX, dirZ) must wait at a border's
-     * traffic light that isn't its turn; NaN if it may go on (or there's none within reach).
-     * Worked in each check's frame, in true units.
+     * How far ahead the line is where a vehicle at a place, facing heading (D10), must wait at a
+     * border's traffic light that isn't its turn; NaN if it may go on (or there's none within
+     * reach). Worked in each check's frame.
      */
-    public float borderHoldAhead(float x, float z, float dirX, float dirZ, float reach) {
-        SpherePosition place = sphere(x, z);
-        float stretch = chartStretch(z), trueReach = reach / stretch;
+    public float borderHoldAhead(SpherePosition place, double heading, float reach) {
+        place = SphereMath.atAltitude(place, 0.0);
         float nearest = Float.NaN;
-        for (BorderCheck c : checkIndex.near(place, trueReach + LIGHT_STOP_BACK)) {
+        for (BorderCheck c : checkIndex.near(place, reach + LIGHT_STOP_BACK)) {
             if (!c.lights) continue;
-            float[] v = c.localWay(place, dirX, dirZ);
+            float[] v = c.localWay(place, heading);
             // (the way along the road: with it, from the booth's side, or against it)
             float with = v[2];
             if (Math.abs(with) < 0.3f) continue;
@@ -4662,75 +4612,73 @@ public class InfrastructureManager {
             if (borderTurn(c.index) == side) continue;
             float lx = (with > 0f ? -LIGHT_STOP_BACK : LIGHT_STOP_BACK) - v[0], lz = -v[1];
             float ahead = lx * v[2] + lz * v[3];
-            if (ahead < -1.5f || ahead > trueReach || Math.abs(lz) > c.half + 6f) continue;
+            if (ahead < -1.5f || ahead > reach || Math.abs(lz) > c.half + 6f) continue;
             if (Float.isNaN(nearest) || ahead < nearest) nearest = ahead;
         }
-        return Float.isNaN(nearest) ? nearest : nearest * stretch;
+        return nearest;
     }
 
     // Each world's two traffic light colours (one for each side's turn), and how they're arranged
     private float[][] lightColours;
 
     /**
-     * Chart bridge (D13) for the people, who draw the lights until Phase 4: the traffic lights
-     * at the crossings, placed in each check's frame, as {x, z (the pole's foot on the chart),
-     * the way the road runs there x, z, whether the lamps are one above the other (1) or side
-     * by side (0), the crossing's number, colour A rgb (the booth's side's turn), colour B rgb}.
+     * A traffic light at a crossing: the pole's foot on the datum, the way the road runs there
+     * (D10), whether the lamps are one above the other (or side by side), the crossing's number,
+     * and the colours of the booth's side's turn and the other side's.
      */
-    public List<float[]> borderLights() {
+    public record TrafficLight(SpherePosition foot, double heading, boolean vertical, int check, float[] colourA, float[] colourB) {
+    }
+
+    /** The traffic lights at the crossings, one at each end, across the road from that end's booth; placed in each check's frame. */
+    public List<TrafficLight> borderLights() {
         if (lightColours == null) {
             Random rand = new Random(worldSeed * 211L + 5L);
             float hue = rand.nextFloat();
             lightColours = new float[][] { WorldPalette.hsv(hue, 0.85f, 1f), WorldPalette.hsv(hue + 0.3f + rand.nextFloat() * 0.4f, 0.85f, 1f) };
         }
-        List<float[]> lights = new ArrayList<>();
+        List<TrafficLight> lights = new ArrayList<>();
         for (BorderCheck c : borderChecks) {
             if (!c.lights) continue;
-            float vertical = new Random(worldSeed * 7L + c.index).nextBoolean() ? 1f : 0f;
-            float[] a = lightColours[0], b = lightColours[1];
-            // One at each end of the crossover, across the road from that end's booth
+            boolean vertical = new Random(worldSeed * 7L + c.index).nextBoolean();
             for (float end = -1f; end <= 1f; end += 2f) {
                 SpherePosition foot = c.frame.toSphere(CROSS_HALF * end, 0.0, (c.half + 5f) * end);
-                float[] at = chartPoint(foot, 0f, c.chartX);
-                double way = SphereMath.carryHeading(c.frame.origin(), foot, c.heading);
-                lights.add(new float[] { at[0], at[2], (float) Math.cos(way), (float) Math.sin(way), vertical, c.index,
-                        a[0], a[1], a[2], b[0], b[1], b[2] });
+                lights.add(new TrafficLight(foot, SphereMath.carryHeading(c.frame.origin(), foot, c.heading), vertical, c.index,
+                        lightColours[0], lightColours[1]));
             }
         }
         return lights;
     }
 
-    /** Chart bridge (D13) for the people: the border checks' booths, {x, z, the way their guard faces x, z, nation}. */
-    public List<float[]> borderBooths() {
-        List<float[]> list = new ArrayList<>();
-        for (Booth b : booths) {
-            double facing = b.heading + b.guard * Math.PI * 0.5;
-            list.add(new float[] { b.chartX, b.chartZ, (float) Math.cos(facing), (float) Math.sin(facing), b.nation });
-        }
+    /** A border booth's guard: where they stand (the booth's middle, on the datum), the way they face (D10), their nation. */
+    public record Guard(SpherePosition place, double facing, int nation) {
+    }
+
+    /** The border checks' booths' guards. */
+    public List<Guard> borderGuards() {
+        List<Guard> list = new ArrayList<>();
+        for (Booth b : booths) list.add(new Guard(b.frame.origin(), b.heading + b.guard * Math.PI * 0.5, b.nation));
         return list;
     }
 
     /**
-     * Chart bridge (D13) for the vehicles: the next border check on the road ahead of a vehicle
-     * at (x, z) heading (dirX, dirZ), as {its number, how far ahead (in chart units) the place to
-     * stop beside its booth is}; null if none within reach. Vehicles from either way stop level
-     * with the booth. Worked in each check's frame, in true units.
+     * The next border check on the road ahead of a vehicle at a place facing heading (D10), as
+     * {its number, how far ahead the place to stop beside its booth is}; null if none within
+     * reach. Vehicles from either way stop level with the booth. Worked in each check's frame.
      */
-    public float[] borderStopAhead(float x, float z, float dirX, float dirZ, float reach) {
-        SpherePosition place = sphere(x, z);
-        float stretch = chartStretch(z), trueReach = reach / stretch;
+    public float[] borderStopAhead(SpherePosition place, double heading, float reach) {
+        place = SphereMath.atAltitude(place, 0.0);
         float[] best = null;
-        for (BorderCheck c : checkIndex.near(place, trueReach + CROSS_HALF)) {
+        for (BorderCheck c : checkIndex.near(place, reach + CROSS_HALF)) {
             if (!c.fenced) continue;   // (an open border: no check)
-            float[] v = c.localWay(place, dirX, dirZ);
+            float[] v = c.localWay(place, heading);
             // Level with the booth, on the road's middle line: at a crossover, the booth at the
             // end the vehicle comes in by
             float back = c.lights ? (v[2] >= 0f ? -CROSS_HALF : CROSS_HALF) : -BOOTH_BACK;
             float ox = back - v[0], oz = -v[1];
             float ahead = ox * v[2] + oz * v[3];
             // (how far off the road's line it is: within the road)
-            if (ahead < -2f || ahead > trueReach || Math.abs(oz) > c.half + 6f || Math.abs(ox) > trueReach) continue;
-            if (best == null || ahead * stretch < best[1]) best = new float[] { c.index, ahead * stretch };
+            if (ahead < -2f || ahead > reach || Math.abs(oz) > c.half + 6f || Math.abs(ox) > reach) continue;
+            if (best == null || ahead < best[1]) best = new float[] { c.index, ahead };
         }
         return best;
     }
@@ -5379,11 +5327,12 @@ public class InfrastructureManager {
         boolean route = false;
         java.awt.image.BufferedImage badge = null;
         if (shop != null) {
-            Doorway door = doorwayOf(shop.house);
-            destination = new float[] { door.doorX, door.doorZ };
-            cx = (px + door.doorX) * 0.5f;
-            cz = (pz + door.doorZ) * 0.5f;
-            halfWidth = Math.max(Math.abs(door.doorX - px) * 0.5f, Math.abs(door.doorZ - pz) * 0.5f * aspect) * 1.45f + 90f;
+            // (chart bridge, D13: the sign maps are on the chart until Phase 5)
+            float[] door = chartPoint(doorwayOf(shop.house).door, 0f, px);
+            destination = new float[] { door[0], door[2] };
+            cx = (px + door[0]) * 0.5f;
+            cz = (pz + door[2]) * 0.5f;
+            halfWidth = Math.max(Math.abs(door[0] - px) * 0.5f, Math.abs(door[2] - pz) * 0.5f * aspect) * 1.45f + 90f;
             here = rand.nextFloat() < 0.75f ? new float[] { px, pz } : null;
             route = here != null && rand.nextFloat() < 0.85f;
             int[] name = shopName(shop);
@@ -5407,12 +5356,22 @@ public class InfrastructureManager {
         float centreX = cx, centreZ = cz, half = halfWidth;
         SIGN_MAP_ARTIST.submit(() -> {
             try {
-                List<float[]> way = withRoute ? routes().route(hereMark[0], hereMark[1], shopMark[0], shopMark[1]) : null;
+                List<float[]> way = withRoute ? chartRoute(hereMark, shopMark) : null;
                 sign.mapPixels = SignMap.render(this, noise, sea, style, centreX, centreZ, half, mapW, mapH, hereMark, shopMark, way, letter);
             } catch (RuntimeException e) {
                 System.err.println("[SIGNS] Map failed: " + e);
             }
         });
+    }
+
+    /** Chart bridge (D13) for the sign maps (Phase 5): the way along the roads between two chart points, on the chart. */
+    private List<float[]> chartRoute(float[] from, float[] to) {
+        List<float[]> way = new ArrayList<>();
+        for (SpherePosition p : routes().route(sphere(from[0], from[1]), sphere(to[0], to[1]))) {
+            float[] c = chartPoint(p, 0f, from[0]);
+            way.add(new float[] { c[0], c[2] });
+        }
+        return way;
     }
 
     // ==========================================
@@ -5602,9 +5561,8 @@ public class InfrastructureManager {
     }
 
     // ------------------------------------------------------------------ chart bridge (D13)
-    // The people and vehicles (Phase 4), sign maps and the maps (Phase 5) and the border fences'
-    // tracing (D12) are still on the Mercator chart. Everything they get from the frames goes
-    // through here.
+    // The sign maps and the maps (Phase 5) and the border fences' tracing (D12) are still on
+    // the Mercator chart. Everything they get from the frames goes through here.
 
     /** Chart bridge: the place under a chart point, on the datum. */
     private static SpherePosition sphere(float chartX, float chartZ) {
@@ -5637,20 +5595,6 @@ public class InfrastructureManager {
     private static float[] chartAt(House house, float x, float z) {
         float[] p = chartPoint(house, x, 0f, z);
         return new float[] { p[0], p[2] };
-    }
-
-    /** Chart bridge: a point in a road segment's frame on the chart, {x, z}. */
-    private static float[] chartAt(RoadSegment segment, float x, float z) {
-        float[] p = chartPoint(world(segment, x, z), 0f, segment.chartMidX());
-        return new float[] { p[0], p[2] };
-    }
-
-    /** Chart bridge: a level direction in a house's frame as a unit chart direction {x, z} (the chart keeps angles). */
-    private static float[] chartDirection(House house, float x, float z) {
-        double[] world = house.frame.worldDirection(x, 0.0, z);
-        double[] local = SphereFrame.at(house.frame.origin()).localDirection(world[0], world[1], world[2]);
-        double length = Math.max(1e-9, Math.hypot(local[0], local[2]));
-        return new float[] { (float) (local[0] / length), (float) (local[2] / length) };
     }
 
     private static float dot(float[] a, float[] b) {

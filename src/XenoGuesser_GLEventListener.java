@@ -133,9 +133,6 @@ private static class SpeciesConfig {
     // The pod the player landed in, standing where each round starts
     private final LandingPod landingPod = new LandingPod();
     private RockField rockField;
-    // The people and vehicles, on the chart until they are ported (Phase 4); everything on the
-    // sphere uses geodesicCollision
-    private final Collision collision = new Collision();
     private static final Object PLAYER = "player";
     private static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
     // Developer aid: -Dxenoguesser.menushot photographs the pod for the main menu's background
@@ -156,7 +153,6 @@ private static class SpeciesConfig {
 
     private Model skyModel;
     // The clouds and rain
-    private Weather weather;
     // Grass dies back from this many degrees above the water's freezing point, and is gone by
     // this many below it
     private static final float GRASS_FROST_START = 6f, GRASS_FROST_DEATH = 6f;
@@ -395,7 +391,6 @@ private static class SpeciesConfig {
         this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
         
         this.regionalManager = new RegionalGenerationManager(worldSeed, TOTAL_REGION_WIDTH, seaLevelHeight);
-        this.weather = new Weather(worldSeed, seaLevelHeight);
         this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
         this.regionalManager.precalculateWaterDistanceField(TOTAL_REGION_WIDTH, this.worldNoise, PHYSICAL_CHUNK_SIZE);
 
@@ -618,15 +613,14 @@ private static class SpeciesConfig {
                                 seaLevelHeight, worldNoise, regionalManager, nationManager);
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
-        this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, TOTAL_REGION_WIDTH, worldNoise);
+        this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, worldNoise);
         System.out.println("[INHABITANTS] " + inhabitants.describe());
                 this.infraManager.prepareRoadNetwork(PHYSICAL_CHUNK_SIZE, TOTAL_REGION_WIDTH, seaLevelHeight, worldNoise);
         // (low frequencies: the soil's colour drifts over many kilometres)
         this.soilVariantAFactor = this.regionalManager.createNoiseMap(0.7e-5f);
         this.soilVariantBFactor = this.regionalManager.createNoiseMap(1.05e-5f);
         this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
-        collision.addSource(infraManager::obstaclesNear);
-        inhabitants.setCollision(collision);
+        inhabitants.setCollision(geodesicCollision);
         // What's solid on the sphere: the pod, trees, rocks, and the buildings, fences, rails and
         // sign posts
         geodesicCollision.addSource(landingPod::obstaclesNear);
@@ -1021,14 +1015,13 @@ private static class SpeciesConfig {
         if (VEHICLE_SHOT != null && loading.isFinished()) vehicleShotFrames++;
         if (VEHICLE_SHOT != null && vehicleShotFrames == VEHICLE_SHOT_FRAME + 20) saveFrame(gl, "vehicle_shot.png");
         if (VEHICLE_SHOT != null && loading.isFinished() && vehicleShotFrames == VEHICLE_SHOT_FRAME) {
-            Vector3 at = camera.getChartPosition();
-            float[] view = "door".equals(VEHICLE_SHOT) ? inhabitants.doorViewpoint(at.x, at.z)
-                    : inhabitants.vehicleViewpoint(at.x, at.z, VEHICLE_SHOT);
-            if (view != null) {
-                // (the people and vehicles are on the chart until Phase 4)
-                Viewpoint stand = chartViewpoint(view);
-                camera.setSphereView(SphereMath.atAltitude(stand.place(), at.y), (float) Math.toDegrees(stand.heading()), 0f);
-                camera.lookAt(SphereMath.atAltitude(SphereMath.move(stand.place(), stand.heading(), 50.0), at.y - 8.0));
+            SpherePosition at = camera.getSpherePosition();
+            double eyes = SphereMath.altitude(at);
+            Viewpoint stand = "door".equals(VEHICLE_SHOT) ? inhabitants.doorViewpoint(at)
+                    : inhabitants.vehicleViewpoint(at, VEHICLE_SHOT);
+            if (stand != null) {
+                camera.setSphereView(SphereMath.atAltitude(stand.place(), eyes), (float) Math.toDegrees(stand.heading()), 0f);
+                camera.lookAt(SphereMath.atAltitude(SphereMath.move(stand.place(), stand.heading(), 50.0), eyes - 8.0));
             }
         }
         renderScene(gl);
@@ -1781,13 +1774,6 @@ private static class SpeciesConfig {
                         && Math.abs(Planet.latitude(p)) < Math.toRadians(60.0));
     }
 
-    /** A place and facing {x, z, east, south} on the chart (from a system not yet ported off it) as a Viewpoint; null stays null. */
-    private static Viewpoint chartViewpoint(float[] view) {
-        if (view == null) return null;
-        // (the chart is conformal, so its directions are the local frame's)
-        return new Viewpoint(Planet.spherePosition(view[0], view[1], 0.0), Math.atan2(view[3], view[2]));
-    }
-
     /** A place as {x, altitude, z} on the Mercator chart, for the systems not yet ported off it (D6). */
     private static Vector3 chart(SpherePosition p) {
         double[] m = Planet.mercatorPosition(p);
@@ -1850,8 +1836,8 @@ private static class SpeciesConfig {
         }
         // Developer aids: on a town pavement among the inhabitants; across the street from a
         // shop, looking at its front; on a dirt track, looking along it; looking at a raised
-        // road's retaining wall from below (the inhabitants on the chart until Phase 4)
-        if ("street".equals(devView)) spawn = orElse(chartViewpoint(inhabitants.streetViewpoint(dynamicRand)), spawn);
+        // road's retaining wall from below
+        if ("street".equals(devView)) spawn = orElse(inhabitants.streetViewpoint(dynamicRand), spawn);
         if ("shop".equals(devView)) spawn = orElse(infraManager.shopViewpoint(dynamicRand), spawn);
         if ("track".equals(devView)) spawn = orElse(infraManager.trackViewpoint(dynamicRand), spawn);
         if ("raisedroad".equals(devView)) spawn = orElse(infraManager.raisedRoadViewpoint(dynamicRand), spawn);
@@ -1939,7 +1925,7 @@ private static class SpeciesConfig {
 
         chooseTimeOfDay(spawn.place(), dynamicRand);
         // A new day: new clouds and weather
-        weather.newDay(dynamicRand);
+        if (sphereWeather != null) sphereWeather.newDay(dynamicRand);
         landingPod.place(spawn.place(), spawn.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.frame().origin(), Math.max(40f, LandingPod.REACH) + 6f);
@@ -3004,8 +2990,10 @@ private static class SpeciesConfig {
         gl.glDisable(GL.GL_DEPTH_TEST);
         gl.glDisable(GL.GL_CULL_FACE);
 
-        sphereWeather.update((float) deltaTime, (float) elapsedTime, camera, worldNoise,
-                seaLevelHeight, freezingPoint);
+        // (the rainfall and temperature maps are read on the chart until Phase 5: D12)
+        Vector3 onChart = camera.getChartPosition();
+        sphereWeather.update((float) deltaTime, (float) elapsedTime, camera, worldNoise, seaLevelHeight,
+                () -> rainfallAt(onChart.x, onChart.z), freezingPoint - temperatureAt(onChart.x, onChart.z));
         rainSound.setRain(sphereWeather.snowing() ? 0f : sphereWeather.intensity());
 
         // The sky's turn: in the local frame here (for the player's body, posed in it), and
@@ -3015,7 +3003,7 @@ private static class SpeciesConfig {
 
         sphereSkyRenderer.render(gl, camera, textures.get("sky"), skyColour,
                 (float) currentWidth / Math.max(1, currentHeight), (float) elapsedTime,
-                0.38f + sphereWeather.intensity() * 0.55f);
+                sphereWeather.cloudiness());
 
         gl.glEnable(GL.GL_CULL_FACE);
         gl.glEnable(GL.GL_DEPTH_TEST);
@@ -3069,7 +3057,7 @@ private static class SpeciesConfig {
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
         geodesicCollision.endFrame();
         organismManager.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
-        inhabitants.renderSphereNative(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+        inhabitants.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
 
         // --- INSTANCED GRASS PASS ---
         if (drawnGrassInstances > 0) {
@@ -4514,7 +4502,7 @@ private static class SpeciesConfig {
         // (today's temperature here against the usual, so fresh snow lies all round wherever it's snowing)
         Vector3 here = camera.getChartPosition();
         float usual = snowClimate(here.x, here.z)[0] * 100f - 60f - Math.max(0f, here.y - seaLevelHeight) * 70f * RegionalGenerationManager.ALTITUDE_CHILL;
-        Shader.setSnowCover(gl, SNOW_UNIT, 1f / TOTAL_REGION_WIDTH, TOTAL_REGION_WIDTH * 0.5f, weather.freshSnow(), temperatureAt(here.x, here.z) - usual,
+        Shader.setSnowCover(gl, SNOW_UNIT, 1f / TOTAL_REGION_WIDTH, TOTAL_REGION_WIDTH * 0.5f, sphereWeather.freshSnow(), temperatureAt(here.x, here.z) - usual,
                 new float[] { freezingPoint, SNOW_LIES_THICK, 70f * RegionalGenerationManager.ALTITUDE_CHILL, seaLevelHeight }, snowColour());
     }
 
@@ -4525,7 +4513,8 @@ private static class SpeciesConfig {
     private float[] fogColour(Vector3 sky) {
         float grey = 0.3f * sky.x + 0.59f * sky.y + 0.11f * sky.z;
         float[] fog = { sky.x + (grey - sky.x) * FOG_GREYING, sky.y + (grey - sky.y) * FOG_GREYING, sky.z + (grey - sky.z) * FOG_GREYING };
-        float[] cloud = weather.haze(sky, 1.0f - nightProportion);
+        if (sphereWeather == null) return fog;
+        float[] cloud = sphereWeather.haze(sky, 1.0f - nightProportion);
         for (int k = 0; k < 3; k++) fog[k] += (cloud[k] - fog[k]) * cloud[3];
         return fog;
     }

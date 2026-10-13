@@ -111,6 +111,16 @@ D13 Chart bridges: while a system is still on the chart (buildings, roads,
     chart Collision's obstaclesNear, walkingSurfaceY(x, z), booth/check chartX);
     sign.position (sign maps, Phase 5); the border fences traced on the nation map's
     chart grid (D12; each grid square built by the geodesic cell its middle is in).
+    Since Phase 4 part 1 the vehicles are on the sphere (RoadRoutes, roadAt, kerbSpot,
+    drivingRoute, roadPointBetween, settlementBetween, borderStop/HoldAhead take and give
+    SpherePositions; Doorway has its house frame and local points; Settlement.chartX/Z gone).
+    Since Phase 4 part 2 the people are on the sphere too and every people/vehicle bridge is
+    gone (with the chart Collision, Frustum, SphereRender.chartAnchor, RoadSegment.chartStart/
+    End, the (x, z) overloads of isRoadLocation/isBuildingLocation/isPlotLocation/
+    walkingSurfaceY/roadSurfaceY/obstaclesNear). What is left on the chart, all Phase 5 or
+    D12: sign.position and the sign maps (chartRoute, chartMidX, the shop door put on the
+    chart in scheduleMap), forEachBuilding/chartAt(house) for the maps, areaRichness(x, z),
+    getUrbanness(x, z), the border fences traced on the nation map's grid.
 
 -------------------------------------------------------------------------------
 PHASE 0  BASELINE  (short)
@@ -222,14 +232,21 @@ Shop sign lettering reads the right way round (moved here from Phase 1).
 -------------------------------------------------------------------------------
 PHASE 4  VEHICLES AND PEOPLE
 -------------------------------------------------------------------------------
-[ ] Vehicles: position as SpherePosition, heading as a direction in the local
+[x] Vehicles: position as SpherePosition, heading as a direction in the local
     frame at its position (re-derived every step; parallel-transport the
     heading as it moves). Routes as SpherePositions. Steering, following,
     overtaking maths unchanged in the vehicle's current frame.
-[ ] Inhabitants: same pattern; streetWalk, detours, hops, doors, guards.
-[ ] Remove all Planet.stretch uses added by method 1 (they are not on this
-    branch, but check nothing was merged in).
+[x] Inhabitants: same pattern; streetWalk, detours, hops, doors, guards.
+    (Also: population per geodesic cell, not the chart CELL grid; the people on
+    GeodesicCollision (needs clearLine/findPath and hops' clearance); the open doors
+    and border traffic lights are not drawn on the sphere yet; the sign pictures of
+    people are blank (LOG 3b parts 3/4). Then delete the bridges listed in D13.)
+    (All done: see LOG Phase 4 part 2.)
+[x] Remove all Planet.stretch uses added by method 1 (they are not on this
+    branch, but check nothing was merged in). (None found.)
 CHECK: a car driving between two latitudes keeps its size and speed.
+[x] Passed 2026-10-13 (PlanningCheck's drive from 37.9 S to 57.2 S, and launches; see LOG).
+    Phase 4 is complete; Phase 5 can start.
 
 -------------------------------------------------------------------------------
 PHASE 5  MAP, HEATMAPS, GAME FLOW
@@ -678,3 +695,99 @@ LOG
     chartStretch uses (Phase 4), the minimap/sign maps/forEachBuilding (Phase 5), the
     thermometer (Phase 5), the border fence tracing on the chart (D12), Frustum (used by
     people/vehicles only), vs_water + waterPlaneModel (dead, Phase 6).
+2026-10-13  PHASE 4 PART 1 DONE (uncommitted): vehicles on the sphere.
+  - Vehicles: position (SpherePosition on the datum) + D10 heading; each step works in
+    SphereFrame.at(position) (target, other vehicles, probes all put in its local x, z),
+    moves with frame.toSphere and carries the heading (moveTo). Routes are Stops
+    {SpherePosition, side, half width, rank, dirt}; parking places are Spots {place,
+    heading, slot, driveway, getIn}, laid out in the house's frame or at a Kerb.
+    Collision on GeodesicCollision (new: blocked with an ignore predicate), so vehicles
+    now meet the player, creatures, trees, rocks and the pod (before: none of those).
+    Drawn with SphereFrame.modelMatrix (no chartAnchor); open-topped drivers posed from
+    Vehicles.Seat in the frame under the seat. Old flat render paths gone.
+  - Shared: RoadRoutes on SpherePositions (CellIndex, chord lengths); Doorway gains its
+    house frame and local door/kerb/road/gate/driveway; InfrastructureManager.roadAt,
+    kerbSpot (record Kerb), drivingRoute, roadPointBetween, settlementBetween,
+    doorwaysNear(place), borderStopAhead/HoldAhead(place, heading, reach) in true units.
+    Sign maps reach the route graph through chartRoute (bridge, Phase 5).
+  - Found and fixed: the chart Collision for people/vehicles never had endFrame called
+    since Phase 2 (bodies piled up every frame, nobody saw anyone). It is ended each frame
+    after inhabitants.update, and the player is put in it (bridge until part 2).
+  - Inhabitants (part 2 still to do) talks to vehicles on the sphere: through traffic
+    (roadPointBetween, farSide by great circle), borrowing and drives out by sphere; the
+    people's own route points convert with chart() (bridge). Unused flat render deleted.
+  - PlanningCheck (426839 pass): 32 cars parked round the two test towns, none in a
+    building, all at the road (or up a driveway); a car driven by road from 37.9 S to
+    57.2 S arrives (200 s), every step moves exactly speed x dt in true distance (0.0000%
+    off), reaches its street limit (40) in the south and highway limit (72) in the north
+    (true units: the same limits at every latitude), on the road 3973 of 4003 steps.
+    19 of 20 fenced crossings stop traffic level with the booth: the same in the last
+    commit's build (not a regression). SphereToolkitCheck 2928 pass.
+  - Launches (seed 123, vehicleshot=moving): equator town (3.297, 16.389): parked
+    crawler along the road, a stilt vehicle and a boxy pod driving off along the road,
+    upright, true size, 19 FPS. 67.461 N 139.716 E: a vehicle on the road by the pod,
+    the same size against the people as at the equator, 19 FPS. World ready 94-113 s.
+    No exceptions. (Frame rate 19 against 24-25 in 3b parts 5/6: views differ (close
+    up on vehicles) so not like for like; if it holds, profile the vehicles'
+    GeodesicCollision queries (two resolves + up to three blocked a vehicle a step).)
+  - Launch script gotcha: PowerShell turns -SpawnAt 3.297,16.389 into an array; quote it.
+2026-10-13  PHASE 4 PART 2 DONE (uncommitted): the people on the sphere; Phase 4 complete.
+  - Inhabitants: each person is a SpherePosition (datum) + D10 heading; route points are
+    Waypoints {SpherePosition, kind}. Walking, steering round things, unsticking, hops and
+    detours are worked in SphereFrame.at(position) (moveTo carries the heading and any
+    steer/wander/hop heading kept). Posed in the frame where they stand (rotationY(pi/2 -
+    heading)), drawn with that frame's modelMatrix; guards from InfrastructureManager.
+    borderGuards (records). Populated per BATCH_LEVEL geodesic cell (doorwaysInCell, from
+    housesByCell) out to ACTIVE_RADIUS, nearest first; cells dropped by true distance.
+  - GeodesicCollision gains clearLine and findPath (the grid search in the frame half way
+    between the two places, giving SpherePositions). People now walk round trees, rocks and
+    the pod too (the chart collision only had the infrastructure), and the player, creatures
+    and vehicles see them (before part 1 nobody did: see the endFrame bug there).
+  - Doorway is sphere only: frame + local door/kerb/road/gate/driveway, and inside/door/gate/
+    kerb on the datum, alongRoad(). Door corners are kept in the house's frame, so the open
+    doors are drawn in it; border traffic lights are TrafficLight records drawn in the frame
+    at their foot. Doors and lights had not been drawn on the sphere at all until now.
+  - streetWalk, walkingRoute, shopDoorNear, doorwaysNear take SpherePositions; doorwaysIn,
+    the chart obstaclesNear and the other (x, z) overloads are gone (list in D13).
+  - Deleted: Collision.java, Frustum.java, SphereRender.chartAnchor, the listener's chart
+    Collision and chartViewpoint, Inhabitants' regionWidth and flat render path.
+  - Fixed: the people's pictures on signs were blank because pictureCamera never set the
+    organism shader's anchor (a zero matrix, so nothing was drawn); it is now the identity.
+    Not yet looked at in a launch.
+  - PlanningCheck (426850 pass) adds a minute of life round each test town (cells built out
+    to 1100): equator 38584 street steps, 172 (0.4%) touching a building, 1 jump, pace 0.91
+    of their speed; 67 N 8635 steps, 0 in a building, 0 jumps, pace 0.90. People go in and
+    come out, some drive. SphereToolkitCheck 2928. (The runs differ a little each time: the
+    border waits use Math.random and the lights the clock.)
+  - Launches (seed 123): equator town, vehicleshot=door: the front door swings open on its
+    hinge and the person steps out, upright, facing out, 18 FPS. Border crossing at 70.3 S
+    0.2 E: both booths, a traffic light (pole and lamp housing), a hauler drawn up at the
+    booth, a guard in the far booth (mostly behind its front corner pillar from that angle;
+    this world's people are 15 tall against a 9 high wall), people walking up the street.
+    No exceptions.
+2026-10-13  PHASE 4 VERIFICATION before committing (and before Phase 5).
+  - Checked against the pre-migration commit c3482c9: no class lost but Collision and Frustum
+    (their jobs are GeodesicCollision's now); every render pass has a sphere counterpart
+    (clouds in SphereSkyRenderer, rain in SphereWeather, the sea as the geodesic water patch).
+  - Launches (seed 123): sign shots at the equator town: the sign pictures now show (an advert
+    with a person holding up a packet, a poster of the nation's goods; blank since Phase 2).
+    Normal spawn + hudtest=guess,shop,next: next round built in 14.0 s over 359 frames, no
+    exceptions (12.1 s in the Phase 3 review; not like for like). 70 N + round change: built
+    in 2.4 s. No shader compile errors.
+  - FOUND AND FIXED (pre-migration features no phase owned):
+    * Snow lay nowhere on the sphere since Phase 2 (fs_standard_d's snowAt returned 0 for
+      everything planet-centred; rocks had theirs taken out). snowAt now reads the climate map
+      at the place's map point (D12), uses the altitude and the normal against local up, and
+      3D noise for the flakes; rocks have the same (vs_rock passes aWorld). Seen at 70 N 27.5 E:
+      the ground and rocks under snow with gaps (confirmed by a TEMP red snow colour, removed).
+    * The weather was Copilot's stand-in: rain from bare noise, snow from a latitude formula,
+      and the old chart Weather (fresh snow settling, cloud haze in the fog) no longer updated.
+      SphereWeather now has the old climate rules: cover drawn about the place's rainfall plus
+      the day's wetness (newDay each spawn), rain under dark cloud, snow below the map's
+      temperature, fresh snow settling and melting, the haze; the sky's clouds follow its
+      cloudiness. Weather.java deleted. (Rainfall/temperature are read on the chart: D12.)
+  - PlanningCheck 426850 pass, SphereToolkitCheck 2928 pass after all of it.
+  - Still not looked at: the sliver of sky between coast and sea (Phase 1, seen not fixed),
+    window glass up close. Frame rate in the dense equator town 18-19 FPS (24-29 in Phases
+    2-3, with fewer things drawn: doors, lights, people's sphere collision are new); 29-30 at
+    70 N. Profile in Phase 6's frame-rate check if it holds.

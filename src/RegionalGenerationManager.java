@@ -89,7 +89,7 @@ public class RegionalGenerationManager {
 
     /**
      * How much rain falls at a place over a year on average, 0 driest to 1 wettest (the
-     * weather on any one day is drawn from this: see Weather). Mostly it's:
+     * weather on any one day is drawn from this: see SphereWeather). Mostly it's:
      * <ul>
      *   <li>moisture: rain comes from water evaporated off the sea, so it falls most where the
      *       moisture map is high and is dry far inland;</li>
