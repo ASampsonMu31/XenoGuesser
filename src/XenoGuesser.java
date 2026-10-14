@@ -242,6 +242,19 @@ public class XenoGuesser extends JFrame {
       // Where the map's left and right edges join: the meridian crossing the least land
       float joinLand = MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, worldNoise), seaLevelHeight);
       System.out.printf("[PLANET] The map's join crosses %.1f%% land%n", joinLand * 100f);
+
+      // The rivers, from the bare land: everything after sees the ground with their channels cut
+      loadingProgress.begin(LoadingProgress.Stage.RIVERS);
+      long riversStarted = System.currentTimeMillis();
+      // (the climate first: streams rise more readily, and run fuller, where it's wet)
+      RegionalGenerationManager climate = new RegionalGenerationManager(worldSeed, seaLevelHeight);
+      climate.precalculateWaterDistanceField(worldNoise);
+      climate.setMoistureMap(climate.createWaterPreference(0f, 8000f));
+      worldNoise.rivers = Rivers.generate(worldNoise, seaLevelHeight, climate.rainfallMap::evaluate);
+      // (and the moisture they bring to the land round them)
+      climate.addRivers(worldNoise.rivers);
+      worldNoise.climate = climate;
+      System.out.printf("[RIVERS] Worked out in %d ms%n", System.currentTimeMillis() - riversStarted);
       
       // (put in place by the first spawn)
       Camera camera = new Camera(Planet.position(0.0, 0.0, seaLevelHeight + 20.0), seaLevelHeight);

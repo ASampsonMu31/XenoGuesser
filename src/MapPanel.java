@@ -64,7 +64,7 @@ public class MapPanel extends JPanel {
 
     /** What can be drawn over the land and sea, in the order they're drawn. */
     public enum Layer {
-        CONTOURS("Contours"), ROADS("Roads"), BUILDINGS("Buildings"), SHOPS("Shops");
+        CONTOURS("Contours"), RIVERS("Rivers"), ROADS("Roads"), BUILDINGS("Buildings"), SHOPS("Shops");
 
         public final String label;
 
@@ -1648,7 +1648,8 @@ public class MapPanel extends JPanel {
             g2d.setColor(new Color(255, 255, 255, lon == 0 ? 70 : 38));
             g2d.drawLine(px, mapY, px, mapY + mapHeight());
         }
-        for (int lat = -80; lat <= 80; lat += lat == -80 || lat == 60 ? 20 : 30) {
+        // (every 30 degrees, as on the results' globe, so the two can be read alike)
+        for (int lat = -60; lat <= 60; lat += 30) {
             float fy = (float) ((MapProjection.z(Math.toRadians(lat)) + halfRegion) / totalRegionWidth);
             int py = Math.round(originY + fy * span);
             g2d.setColor(new Color(255, 255, 255, lat == 0 ? 70 : 38));

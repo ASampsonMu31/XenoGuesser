@@ -1,0 +1,123 @@
+#version 330 core
+
+// Rivers and lakes (see RiverRenderer and fs_sphere_water, whose look this follows): the sea's
+// ripple texture drawn out along the stream and carried down it (always downstream, at the
+// water's own speed: the pattern's laid along it by how long the water takes to get there, and
+// moved on at one pace everywhere), with white water where it races; a lake's water stirring
+// gently, a river stilling to look the same as it comes to one; the sky reflected and the sun
+// glinting; see-through where it's shallow over its bed, fading at its edges.
+
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
+in vec3 viewPosition;
+in vec3 worldPosition;
+in vec3 vTangent;
+in vec4 vFlow;
+in vec3 vCalm;
+in float PlanarDepth;
+
+out vec4 fragColour;
+
+uniform vec2 windowSize;
+uniform sampler2D diffuse_texture;
+uniform sampler2D terrainDepthTexture;
+uniform sampler2D skyTexture;
+uniform mat4 skyRotation;
+uniform vec3 sunDirection;
+uniform vec3 lightSpecular;
+uniform float time;
+uniform float nearPlane;
+uniform float farPlane;
+uniform vec3 u_ShallowTint;
+uniform vec3 u_DeepOceanColour;
+
+const float PI = 3.14159265359;
+const float SKY_REFLECTION = 0.5;
+// How fast the ripples' pattern moves down the stream (see RiverRenderer.FLOW_DRIFT)
+const float FLOW_DRIFT = 4.0;
+
+vec3 skyAlong(vec3 worldDir) {
+    vec3 localSkyDir = transpose(mat3(skyRotation)) * worldDir;
+    float theta = atan(localSkyDir.x, localSkyDir.z);
+    if (theta < 0.0) theta += 2.0 * PI;
+    return texture(skyTexture, vec2(theta / (2.0 * PI), asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5)).rgb;
+}
+
+float linearizeDepth(float rawDepth) {
+    float zNDC = rawDepth * 2.0 - 1.0;
+    return (2.0 * nearPlane * farPlane) / (farPlane + nearPlane - zNDC * (farPlane - nearPlane));
+}
+
+void main() {
+    vec3 up = normalize(worldPosition);
+    vec3 along = vTangent - up * dot(vTangent, up);
+    along = length(along) > 1e-6 ? normalize(along) : vec3(1.0, 0.0, 0.0);
+    vec3 across = cross(up, along);
+    vec3 viewDir = normalize(-viewPosition);
+    float u = vFlow.x, v = vFlow.y, speed = vFlow.z, edge = vFlow.w;
+
+    // How deep the water is over its bed (from the ground's depth drawn beforehand)
+    float landDistance = linearizeDepth(texture(terrainDepthTexture, gl_FragCoord.xy / windowSize).r);
+    float thickness = max(landDistance - PlanarDepth, 0.0) * max(abs(dot(viewDir, up)), 0.05);
+    float clear = exp(-thickness * 0.06);
+
+    // Ripples streaming down the river: stretched along it, carried at its speed (two layers
+    // at slightly different speeds and sizes, so they churn), and a finer set over them
+    float drift = time * FLOW_DRIFT;
+    vec3 tex1 = texture(diffuse_texture, vec2(v * 0.030, (u - drift) * 0.012)).rgb;
+    vec3 tex2 = texture(diffuse_texture, vec2(v * 0.026 + 0.37, (u - drift * 0.85) * 0.015)).rgb;
+    vec3 fine = texture(diffuse_texture, vec2(v * 0.09 + 0.61, (u - drift * 1.1) * 0.05)).rgb;
+    // (still water, a lake, just stirs gently: laid on the lake's own frame, which a river
+    // coming to it shares)
+    vec3 still = texture(diffuse_texture, vCalm.xy * 0.011 + vec2(time * 0.01, -time * 0.008)).rgb;
+    float flowing = smoothstep(0.2, 1.0, speed) * (1.0 - vCalm.z);
+    vec3 pattern = mix(still * still, tex1 * tex2, flowing);
+    float rippleHeight = dot(pattern, vec3(0.333)) + 0.5 * dot(fine, vec3(0.333)) * flowing;
+
+    vec3 surfaceTex = clamp(pattern * 1.5, 0.0, 1.0);
+    vec3 colour = mix(u_DeepOceanColour, mix(u_ShallowTint, surfaceTex, 0.5), clear);
+
+    // Ripple normals from the pattern's slope across the water (along and across it)
+    vec2 heightDerivs = vec2(dFdx(rippleHeight), dFdy(rippleHeight));
+    vec3 stepX = dFdx(viewPosition), stepY = dFdy(viewPosition);
+    mat2 groundDerivs = mat2(dot(stepX, across), dot(stepX, along), dot(stepY, across), dot(stepY, along));
+    float det = determinant(groundDerivs);
+    vec2 slope = abs(det) > 1e-6 ? inverse(transpose(groundDerivs)) * heightDerivs : vec2(0.0);
+    float rippleFade = 1.0 - smoothstep(60.0, 420.0, length(viewPosition));
+    vec2 tilt = -slope * (10.0 + 6.0 * flowing) * rippleFade;
+    vec3 normal = normalize(up + across * tilt.x + along * tilt.y);
+
+    vec3 lightDir = normalize(sunDirection);
+    vec3 halfway = normalize(lightDir + viewDir);
+    float facing = max(dot(normal, halfway), 0.0);
+    vec3 specular = lightSpecular * (0.6 * pow(facing, 64.0) + 0.9 * pow(facing, 160.0));
+    specular *= smoothstep(-0.05, 0.05, dot(lightDir, up));
+
+    vec3 reflected = reflect(-viewDir, normal);
+    float below = dot(reflected, up);
+    if (below < 0.0) reflected -= 2.0 * below * up;
+    float fresnel = 0.04 + 0.96 * pow(1.0 - max(dot(normal, viewDir), 0.0), 5.0);
+    colour = mix(colour, skyAlong(reflected), clamp(fresnel * SKY_REFLECTION, 0.0, SKY_REFLECTION));
+
+    // White water where it races, streaked down the stream
+    float rush = smoothstep(5.0, 15.0, speed) * (1.0 - vCalm.z);
+    float streaks = smoothstep(0.45, 0.8, dot(tex1 * fine, vec3(0.333)) * 2.4);
+    float foam = rush * streaks * 0.85;
+    colour = mix(colour, mix(vec3(0.93), u_ShallowTint, 0.12), foam);
+
+    // See-through where shallow (but never quite gone: a trickle over a stone still shows),
+    // fading out at its edges
+    float opacity = mix(0.45, 0.95, 1.0 - clear);
+    opacity = max(opacity, foam);
+    opacity *= 1.0 - smoothstep(0.7, 1.0, edge);
+
+    vec3 lit = colour + specular * (1.0 - foam);
+    float radialDistance = length(viewPosition);
+    vec3 haze = fogReady > 0.5 ? fogColour : skyAlong(normalize(viewPosition));
+    float fogFactor = smoothstep(0.0, 1.0, clamp((2200.0 - radialDistance) / 1200.0, 0.0, 1.0));
+    fragColour = vec4(mix(fogHaze(haze), lit, fogFactor), mix(opacity > 0.0 ? 1.0 : 0.0, opacity, fogFactor));
+}

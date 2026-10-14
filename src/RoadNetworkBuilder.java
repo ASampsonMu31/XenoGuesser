@@ -42,6 +42,17 @@ public class RoadNetworkBuilder {
     private static final int EASE_PASSES = 12;
     // Following an existing highway is cheaper, so routes merge into trunk roads
     private static final float EXISTING_ROAD_COST = 0.35f;
+    // Crossing a river costs as much as this much more road (and this much more for each unit of
+    // its width), many times more the more it runs along the river than across it, so roads keep
+    // to one bank and cross squarely where they must; running over a lake costs this much more
+    // for each unit of it, as well as the crossing
+    private static final float RIVER_CROSSING_COST = 1200f, RIVER_WIDTH_COST = 15f, ALONG_RIVER_COST = 10f, LAKE_COST = 40f;
+    // A lane, track or street runs across a river no more askew than this (|cos| of the angle
+    // between it and the river: 0 straight across); where it'd have to, it stops short instead
+    private static final float MOST_ASKEW_CROSSING = 0.6f;
+    // Running along in a river's water (further than crossing it takes, and this much slack)
+    // costs this much more for each unit of it; a lane, track or street never does
+    private static final float IN_RIVER_COST = 60f, IN_RIVER_SLACK = 12f;
     private static final float HEURISTIC_WEIGHT = 0.6f;
     private static final int MAX_ROUTE_EXPANSIONS = 400_000;
     private static final int NEIGHBOURS_PER_CITY = 3;
@@ -462,6 +473,7 @@ public class RoadNetworkBuilder {
                 if (cellHasHighway[next]) {
                     stepCost *= EXISTING_ROAD_COST;
                 }
+                stepCost += waterCost(cell, next);
 
                 float cost = routeCost[cell] + stepCost;
                 if (routeStamp[next] != currentStamp || cost < routeCost[next]) {
@@ -473,6 +485,42 @@ public class RoadNetworkBuilder {
             }
         }
         return null;
+    }
+
+    // Each step's cost of crossing water, once worked out (by the two cells, the lower first)
+    private final Map<Long, Float> waterCosts = new HashMap<>();
+
+    /** What crossing water costs on the step between two neighbouring routing cells (see RIVER_CROSSING_COST). */
+    private float waterCost(int cell, int next) {
+        Rivers rivers = terrainNoise.rivers;
+        if (rivers == null) return 0f;
+        long key = Math.min(cell, next) * (long) cellCount + Math.max(cell, next);
+        Float known = waterCosts.get(key);
+        if (known != null) return known;
+        float[] crossing = rivers.crossing(cellCentre[cell], cellCentre[next]);
+        float cost = 0f;
+        if (crossing != null) {
+            if (crossing[0] > 0f) {
+                cost += (RIVER_CROSSING_COST + RIVER_WIDTH_COST * crossing[0]) * (1f + ALONG_RIVER_COST * crossing[1] * crossing[1]);
+            }
+            cost += LAKE_COST * crossing[2];
+            // (and running along in a river's water, more than crossing it takes)
+            cost += IN_RIVER_COST * Math.max(0f, crossing[3] - 1.5f * crossing[0]);
+        }
+        waterCosts.put(key, cost);
+        return cost;
+    }
+
+    /** Whether a lane, track or street can go straight from a to b: not over a lake, nor across a river too askew (MOST_ASKEW_CROSSING). */
+    private boolean fairCrossing(SpherePosition a, SpherePosition b) {
+        float[] crossing = crossingBetween(a, b);
+        return crossing == null || (crossing[2] <= 0f && crossing[1] <= MOST_ASKEW_CROSSING && crossing[3] <= 1.5f * crossing[0] + IN_RIVER_SLACK);
+    }
+
+    /** The water the way straight from a to b crosses (see Rivers.crossing), null if none (or no rivers yet). */
+    private float[] crossingBetween(SpherePosition a, SpherePosition b) {
+        Rivers rivers = terrainNoise.rivers;
+        return rivers == null ? null : rivers.crossing(SphereMath.direction(a), SphereMath.direction(b));
     }
 
     private float heuristic(int cell, int goal) {
@@ -587,11 +635,12 @@ public class RoadNetworkBuilder {
                 boolean inTown = settlementManager.getUrbanness(direction) >= STREET_URBANNESS
                         && settlementManager.dominantSettlementAt(direction) == settlement
                         && height > seaLevelHeight + 0.5f;
-                // Too steep from the last point: the street stops short of the climb
+                // Too steep from the last point, or over water it can't cross squarely: the street
+                // stops short and starts again beyond
                 if (inTown && !run.isEmpty()) {
                     SpherePosition last = run.get(run.size() - 1);
                     float climb = Math.abs(height - lastHeight);
-                    if (climb > MAX_STREET_GRADE * (float) SphereMath.distance(point, last)) {
+                    if (climb > MAX_STREET_GRADE * (float) SphereMath.distance(point, last) || !fairCrossing(last, point)) {
                         emitStreet(run);
                         run = new ArrayList<>();
                     }
@@ -708,6 +757,10 @@ public class RoadNetworkBuilder {
             at = next;
 
             if (height(at) <= seaLevelHeight + 0.5f) {
+                return false;
+            }
+            // (it crosses rivers squarely or not at all, and never runs over a lake)
+            if (!fairCrossing(path.points.get(path.points.size() - 1), at)) {
                 return false;
             }
 
@@ -923,8 +976,9 @@ public class RoadNetworkBuilder {
             if (Math.abs(Planet.latitude(next)) > TRACK_MAX_LATITUDE || height <= seaLevelHeight + 0.5f) break;
             if (Math.abs(height - atHeight) > ROAD_STEP * 0.22f) break;
             if (settlementManager.getUrbanness(next) > TRACK_MAX_URBANNESS + 0.08f) break;
-            // and at a fenced border
+            // and at a fenced border, or at water it can't cross squarely
             if (hostile.test(startNation, nationManager.getNationAt(next))) break;
+            if (!fairCrossing(at, next)) break;
             heading = (float) SphereMath.carryHeading(at, next, heading);
             at = next;
             atHeight = height;
@@ -1186,16 +1240,22 @@ public class RoadNetworkBuilder {
 
     /**
      * Of a few headings either side of the one wanted, the one that climbs or falls least
-     * over the next step, with a little preference for turning less.
+     * over the next step, with a little preference for turning less, and keeping out of rivers
+     * and lakes where it can (crossing a river squarely if at all).
      */
     private float flattestHeading(SpherePosition at, float heading) {
         float here = height(at);
         float best = heading, bestScore = Float.MAX_VALUE;
         for (float offset : new float[] { 0f, 0.3f, -0.3f, 0.6f, -0.6f, 0.95f, -0.95f }) {
             float h = heading + offset;
-            float grade = Math.abs(height(SphereMath.move(at, h, ROAD_STEP)) - here) / ROAD_STEP;
+            SpherePosition ahead = SphereMath.move(at, h, ROAD_STEP);
+            float grade = Math.abs(height(ahead) - here) / ROAD_STEP;
             float steep = Math.max(0f, grade - GENTLE_GRADE);
             float score = grade * grade * 8.0f + steep * steep * 300.0f + Math.abs(offset) * 0.15f;
+            // (and not into water if it can help it: least of all running along a river)
+            float[] crossing = crossingBetween(at, ahead);
+            if (crossing != null) score += (crossing[0] > 0f ? 1.5f + 12f * crossing[1] * crossing[1] : 0f) + (crossing[2] > 0f ? 20f : 0f)
+                    + Math.max(0f, crossing[3] - 1.5f * crossing[0]) * 0.3f;
             if (score < bestScore) {
                 bestScore = score;
                 best = h;

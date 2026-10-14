@@ -380,6 +380,126 @@ public class BirdsEyeMaps {
         return finishLayer(canvas);
     }
 
+    // ------------------------------------------------------------------ rivers and lakes
+
+    private static final Color RIVER_COLOUR = new Color(64, 138, 232);
+    // The thinnest a river is drawn, in pixels of whatever it's drawn on
+    private static final float THINNEST_RIVER = 1.3f;
+    // Points of a river drawn as one line (its width the average of theirs)
+    private static final int RIVER_RUN = 8;
+
+    // The rivers in map units: runs of points {x..., z..., width...} (x unbroken across the map's
+    // join; width 0 out in a lake), each with its box; and the lakes as discs {x, z, radius}
+    private Rivers riverShapesOf;
+    private final List<float[][]> riverRuns = new ArrayList<>();
+    private final List<Rectangle2D> riverBoxes = new ArrayList<>();
+    private final List<float[]> lakeDiscs = new ArrayList<>();
+
+    private synchronized void riverShapes(Rivers rivers) {
+        if (riverShapesOf == rivers) return;
+        riverRuns.clear();
+        riverBoxes.clear();
+        lakeDiscs.clear();
+        for (Rivers.Reach reach : rivers.reaches()) {
+            for (int from = 0; from + 1 < reach.size(); from += RIVER_RUN) {
+                int to = Math.min(reach.size() - 1, from + RIVER_RUN);
+                int n = to - from + 1;
+                float[] xs = new float[n], zs = new float[n], ws = new float[n];
+                double lastX = 0;
+                boolean any = false;
+                for (int i = 0; i < n; i++) {
+                    double[] p = reach.points[from + i];
+                    double[] m = MapProjection.toMap(new GeodesicChunkGrid.Direction(p[0], p[1], p[2]));
+                    double x = i == 0 ? m[0] : lastX + MapProjection.wrapX(m[0] - lastX);
+                    lastX = x;
+                    xs[i] = (float) x;
+                    zs[i] = (float) m[1];
+                    // (the map stretches everything alike towards the poles)
+                    double stretch = 1.0 / Math.max(0.05, Math.sqrt(1.0 - p[1] * p[1]));
+                    ws[i] = reach.inLake[from + i] ? 0f : (float) (2.0 * reach.halfWidth[from + i] * stretch);
+                    any |= !reach.inLake[from + i];
+                }
+                if (!any) continue;
+                Path2D.Float line = new Path2D.Float();
+                line.moveTo(xs[0], zs[0]);
+                for (int i = 1; i < n; i++) line.lineTo(xs[i], zs[i]);
+                riverRuns.add(new float[][] { xs, zs, ws });
+                riverBoxes.add(line.getBounds2D());
+            }
+        }
+        for (Rivers.Lake lake : rivers.lakes()) {
+            for (int t = 0; t < lake.texels.size(); t++) {
+                double[] p = lake.texels.get(t);
+                double[] m = MapProjection.toMap(new GeodesicChunkGrid.Direction(p[0], p[1], p[2]));
+                double stretch = 1.0 / Math.max(0.05, Math.sqrt(1.0 - p[1] * p[1]));
+                lakeDiscs.add(new float[] { (float) m[0], (float) m[1], (float) (lake.radii.get(t) * stretch) });
+            }
+        }
+        riverShapesOf = rivers;
+    }
+
+    /** The rivers and lakes on graphics drawing in map units, none thinner than thinnest map units, those reaching into bounds (all, if null). */
+    private void drawRivers(Graphics2D g, Rivers rivers, float thinnest, float[] bounds) {
+        riverShapes(rivers);
+        g.setColor(RIVER_COLOUR);
+        for (float[] disc : lakeDiscs) {
+            float r = Math.max(disc[2], thinnest);
+            Rectangle2D box = new Rectangle2D.Float(disc[0] - r, disc[1] - r, 2 * r, 2 * r);
+            for (int k = -1; k <= 1; k++) {
+                if (!reaches(box, k, bounds)) continue;
+                g.fill(new java.awt.geom.Ellipse2D.Float(disc[0] - r + k * totalRegionWidth, disc[1] - r, 2 * r, 2 * r));
+            }
+        }
+        for (int i = 0; i < riverRuns.size(); i++) {
+            float[][] run = riverRuns.get(i);
+            Rectangle2D box = riverBoxes.get(i);
+            float width = 0f;
+            int counted = 0;
+            for (float w : run[2]) {
+                if (w > 0f) {
+                    width += w;
+                    counted++;
+                }
+            }
+            width = Math.max(thinnest, width / Math.max(1, counted));
+            g.setStroke(new BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            for (int k = -1; k <= 1; k++) {
+                if (!reaches(box, k, bounds)) continue;
+                Path2D.Float line = new Path2D.Float();
+                for (int j = 0; j < run[0].length; j++) {
+                    float x = run[0][j] + k * totalRegionWidth, z = run[1][j];
+                    // (the stretches out in a lake left out: the lake is drawn)
+                    boolean lakeStep = j > 0 && run[2][j - 1] == 0f && run[2][j] == 0f;
+                    if (j == 0 || lakeStep) line.moveTo(x, z);
+                    else line.lineTo(x, z);
+                }
+                g.draw(line);
+            }
+        }
+    }
+
+    /** The rivers and lakes over the whole map. */
+    public BufferedImage[] renderRiverLayer(Rivers rivers) {
+        BufferedImage canvas = newLayer();
+        Graphics2D g = onDetail(createGraphics(canvas));
+        // (a little bolder over the whole map, where nearly every river is far narrower than a pixel)
+        drawRivers(g, rivers, 2.4f * THINNEST_RIVER * totalRegionWidth / detailResolution, null);
+        g.dispose();
+        return finishLayer(canvas);
+    }
+
+    /** The rivers and lakes on a tile, to its scale (never thinner than a pixel or so). */
+    public MapTiles.Renderer riverTiles(Rivers rivers) {
+        return (level, tx, ty, size) -> {
+            BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = tileGraphics(tile, level, tx, ty, size);
+            float perUnit = (float) ((double) (1 << level) * size / totalRegionWidth);
+            drawRivers(g, rivers, THINNEST_RIVER / perUnit, tileBounds(level, tx, ty, 300f));
+            g.dispose();
+            return tile;
+        };
+    }
+
     private static final Color BUILDING_COLOUR = new Color(140, 140, 144);
 
     public BufferedImage[] renderBuildingLayer(InfrastructureManager infrastructure) {

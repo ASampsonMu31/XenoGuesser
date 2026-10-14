@@ -415,6 +415,8 @@ public class RockField {
             // (on the ground as it's drawn: its flat triangles cut beneath peaks and ridges)
             float ground = TerrainMesh.drawnHeight(at, terrain, groundHeights);
             if (ground < seaLevel + 0.5f || keepout.blocks(at, r)) continue;
+            // (none in a river or lake)
+            if (terrain.rivers != null && !Float.isNaN(terrain.rivers.waterAt(SphereMath.direction(at), ground + r * 0.3f))) continue;
             float angular = angularityAt(at);
             float squash = 0.45f + 0.45f * angular * (0.6f + 0.4f * angularRoll);
             float[] colour = colourAt(at);

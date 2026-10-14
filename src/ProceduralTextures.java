@@ -516,6 +516,201 @@ public final class ProceduralTextures {
         return new float[] {sorted[(int) (lo * last)], sorted[(int) (hi * last)]};
     }
 
+    // ==========================================
+    //        THE SOIL ON THE TRIANGULAR CELLS
+    // ==========================================
+
+    // Each edge's band (a share of the triangle's height) and the corners' zones (shares of an
+    // edge's length: wholly the corner's out to the first, easing into the rest by the second)
+    private static final double TILE_EDGE_BAND = 0.05, TILE_CORNER_FULL = 0.09, TILE_CORNER_EASE = 0.14;
+    // The triangle's corners' texture coordinates are this far in from the texture's edges, and
+    // what's beyond its edges there is what the cells beyond show (see triangleTile), so the
+    // texture's filtering and its smaller mip levels find the right soil round every edge
+    public static final double TILE_MARGIN = 1.0 / 64;
+
+    /**
+     * The soil laid on the ground's triangular cells (see TerrainMesh.buildGeodesicCellData),
+     * from a tileable square of it, so it runs on from cell to cell without a seam however the
+     * cells meet. A cell's texture coordinates are its corners' shares (u = b's and c's, v = c's:
+     * a at (0, 0), b at (1, 0), c at (1, 1)), so the texture is drawn on the triangle under that
+     * diagonal, laid out by those shares as an equilateral triangle the size of the square (its
+     * cells are near enough equilateral, all wound the same way round). Then:
+     * <ul>
+     *   <li>along each edge, a band of soil the same on all three edges, and the same turned
+     *       half way round about the edge's middle: two cells side by side run along the edge
+     *       they share opposite ways, so the band on one runs on into the band on the other;</li>
+     *   <li>round each corner, soil the same turned a sixth of the way round (six cells meet at
+     *       a corner, each taking a sixth of the way round it), so it runs on round the corner;</li>
+     *   <li>between, the square's soil as it is; blended so as to keep the grain's contrast
+     *       (the soil's own variation added up, weighted, over the root of the weights' squares),
+     *       so the bands and corners don't show as smoother or paler.</li>
+     * </ul>
+     * The triangle is inset by TILE_MARGIN, and beyond each edge (reached only by the texture's
+     * filtering and its smaller mip levels) is the soil the cell beyond that edge has there: the
+     * triangle turned half way round about the edge's middle.
+     */
+    public static BufferedImage triangleTile(BufferedImage square) {
+        int n = square.getWidth();
+        // The square's soil, each channel taken apart into broad patches, clumps and grain (and
+        // its mean colour): as each is summed up turned round, it must be scaled back to its own
+        // contrast by how alike its samples are, which depends on how broad it is (see TILE_BANDS)
+        float[][][] bands = new float[3][TILE_BANDS.length + 1][];
+        double[] mean = new double[3];
+        for (int ch = 0; ch < 3; ch++) {
+            float[] field = new float[n * n];
+            for (int y = 0; y < n; y++) {
+                for (int x = 0; x < n; x++) {
+                    field[y * n + x] = ((square.getRGB(x, y) >> (16 - 8 * ch)) & 255) / 255f;
+                    mean[ch] += field[y * n + x];
+                }
+            }
+            mean[ch] /= (double) n * n;
+            // (each band the soil blurred so much, less it blurred more; the coarsest less the mean)
+            float[] coarser = null;
+            for (int b = 0; b < TILE_BANDS.length; b++) {
+                int radius = (int) TILE_BANDS[b][0];
+                float[] blurred = TileableNoise.blurWrap(TileableNoise.blurWrap(TileableNoise.blurWrap(field, n, radius), n, radius), n, radius);
+                float[] band = new float[n * n];
+                for (int i = 0; i < n * n; i++) band[i] = (float) (blurred[i] - (coarser == null ? mean[ch] : coarser[i]));
+                bands[ch][b] = band;
+                coarser = blurred;
+            }
+            float[] grain = new float[n * n];
+            for (int i = 0; i < n * n; i++) grain[i] = field[i] - coarser[i];
+            bands[ch][TILE_BANDS.length] = grain;
+        }
+        // The triangle: a at (0, 0), b at (n, 0), c up at (n/2, n*sqrt(3)/2), anticlockwise
+        double height = n * Math.sqrt(3) / 2;
+        double[][] corner = { { 0, 0 }, { n, 0 }, { n * 0.5, height } };
+        BufferedImage out = new BufferedImage(n, n, BufferedImage.TYPE_INT_RGB);
+        java.util.stream.IntStream.range(0, n).parallel().forEach(py -> {
+            float[] value = new float[3];
+            for (int px = 0; px < n; px++) {
+                // (the triangle's texture coordinates, inside the margin; the picture's bottom row
+                // is the texture's first, as it's loaded, so v runs up it)
+                double u = ((px + 0.5) / n - TILE_MARGIN) / (1 - 2 * TILE_MARGIN), v = (1 - (py + 0.5) / n - TILE_MARGIN) / (1 - 2 * TILE_MARGIN);
+                double[] l = { 1 - u, u - v, v };
+                // Beyond an edge (opposite the corner whose share is below nothing): the cell there,
+                // the triangle turned half way round about that edge's middle
+                int beyond = -1;
+                for (int k = 0; k < 3; k++) if (l[k] < 0 && (beyond < 0 || l[k] < l[beyond])) beyond = k;
+                if (beyond >= 0) {
+                    for (int k = 0; k < 3; k++) l[k] = k == beyond ? -l[k] : 1 - l[k];
+                    // (past a corner as well: back to the nearest point of the triangle)
+                    double total = 0;
+                    for (int k = 0; k < 3; k++) total += l[k] = Math.max(0, l[k]);
+                    for (int k = 0; k < 3; k++) l[k] /= total;
+                }
+                tileValue(bands, mean, n, corner, l[0], l[1], l[2], value);
+                int colour = rgb(value[0], value[1], value[2]);
+                synchronized (out) {
+                    out.setRGB(px, py, colour);
+                }
+            }
+        });
+        return out;
+    }
+
+    // The soil's bands for the triangular tile, coarsest first: the soil blurred this much (box
+    // blurs of this radius, three times over) less it blurred more, and about how far apart
+    // (pixels) two of its samples must be to differ; and the grain left over, which differs over
+    // about GRAIN_LENGTH
+    private static final double[][] TILE_BANDS = { { 40, 81 }, { 2, 5 } };
+    private static final double GRAIN_LENGTH = 1.4;
+
+    /** How alike a band's samples are this far apart (1 the same, 0 unrelated), for how far apart they must be to differ. */
+    private static double alike(double distance, double length) {
+        return Math.exp(-(distance * distance) / (length * length));
+    }
+
+    /** The tile's colour at a point of the triangle (its corners' shares la, lb, lc), into value. */
+    private static void tileValue(float[][][] bands, double[] mean, int n, double[][] corner,
+                                  double la, double lb, double lc, float[] value) {
+        double x = la * corner[0][0] + lb * corner[1][0] + lc * corner[2][0];
+        double y = la * corner[0][1] + lb * corner[1][1] + lc * corner[2][1];
+        double[] share = { la, lb, lc };
+        // The nearest corner, and how much of the soil there is its
+        int nearest = 0;
+        double best = Double.MAX_VALUE;
+        for (int k = 0; k < 3; k++) {
+            double d = Math.hypot(x - corner[k][0], y - corner[k][1]);
+            if (d < best) {
+                best = d;
+                nearest = k;
+            }
+        }
+        double cornerWeight = 1 - smooth((best / n - TILE_CORNER_FULL) / (TILE_CORNER_EASE - TILE_CORNER_FULL));
+        // The edges (each from its corner k to the next, anticlockwise; the one opposite the
+        // corner after next): how much of the soil there is the edge's band, and where along it
+        // (s) and in from it (d) the point is
+        double[] edgeWeight = new double[3];
+        double edgeSum = 0;
+        double[][] along = new double[3][];
+        for (int k = 0; k < 3; k++) {
+            double band = 1 - smooth(share[(k + 2) % 3] / TILE_EDGE_BAND);
+            edgeWeight[k] = (1 - cornerWeight) * band;
+            edgeSum += band;
+            double[] from = corner[k], to = corner[(k + 1) % 3];
+            double ex = (to[0] - from[0]) / n, ey = (to[1] - from[1]) / n;
+            along[k] = new double[] { (x - from[0]) * ex + (y - from[1]) * ey, -(x - from[0]) * ey + (y - from[1]) * ex };
+        }
+        // (none of the square's own soil on an edge, so nothing but the band and corner there)
+        double interior = (1 - cornerWeight) * Math.max(0, 1 - edgeSum);
+        double weights = cornerWeight * cornerWeight + interior * interior;
+        for (int k = 0; k < 3; k++) weights += edgeWeight[k] * edgeWeight[k];
+        double norm = 1 / Math.sqrt(Math.max(1e-9, weights));
+        // Round the corner from its first edge (anticlockwise)
+        double[] at = corner[nearest], next = corner[(nearest + 1) % 3];
+        double angle = Math.atan2(y - at[1], x - at[0]) - Math.atan2(next[1] - at[1], next[0] - at[0]);
+        for (int ch = 0; ch < 3; ch++) {
+            double sum = 0;
+            for (int b = 0; b <= TILE_BANDS.length; b++) {
+                float[] field = bands[ch][b];
+                double length = b < TILE_BANDS.length ? TILE_BANDS[b][1] : GRAIN_LENGTH;
+                if (interior > 0) sum += interior * sampleWrap(field, n, x, y);
+                for (int k = 0; k < 3; k++) {
+                    if (edgeWeight[k] <= 0) continue;
+                    // The band, the same turned half way round about the edge's middle (two
+                    // samples, scaled back by how alike they are)
+                    double s = along[k][0], d = along[k][1];
+                    double apart = Math.hypot(n - 2 * s, 2 * d);
+                    sum += edgeWeight[k] * (sampleWrap(field, n, s + 0.31 * n, d + 0.57 * n) + sampleWrap(field, n, n - s + 0.31 * n, -d + 0.57 * n))
+                            / Math.sqrt(2 + 2 * alike(apart, length));
+                }
+                if (cornerWeight > 0) {
+                    // The soil the same each sixth of the way round (six samples, scaled back alike)
+                    double six = 0, likeness = 0;
+                    for (int t = 0; t < 6; t++) {
+                        double a = angle + t * Math.PI / 3;
+                        six += sampleWrap(field, n, best * Math.cos(a) + 0.73 * n, best * Math.sin(a) + 0.19 * n);
+                        likeness += alike(2 * best * Math.sin(t * Math.PI / 6), length);
+                    }
+                    sum += cornerWeight * six / Math.sqrt(6 * likeness);
+                }
+            }
+            value[ch] = (float) (mean[ch] + sum * norm);
+        }
+    }
+
+    /** A tileable square field (n a side) at a point, between its pixels, wrapping round. */
+    private static double sampleWrap(float[] field, int n, double x, double y) {
+        x = ((x % n) + n) % n;
+        y = ((y % n) + n) % n;
+        int x0 = (int) Math.floor(x), y0 = (int) Math.floor(y);
+        double fx = x - x0, fy = y - y0;
+        int x1 = (x0 + 1) % n, y1 = (y0 + 1) % n;
+        x0 %= n;
+        y0 %= n;
+        double top = field[y0 * n + x0] + (field[y0 * n + x1] - field[y0 * n + x0]) * fx;
+        double bottom = field[y1 * n + x0] + (field[y1 * n + x1] - field[y1 * n + x0]) * fx;
+        return top + (bottom - top) * fy;
+    }
+
+    private static double smooth(double t) {
+        t = Math.max(0, Math.min(1, t));
+        return t * t * (3 - 2 * t);
+    }
+
     private static int rgb(float r, float g, float b) {
         return (to8(r) << 16) | (to8(g) << 8) | to8(b);
     }

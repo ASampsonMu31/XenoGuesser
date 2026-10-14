@@ -1,0 +1,34 @@
+#version 330 core
+
+// Rivers and lakes (see RiverRenderer): planet-centred, drawn relative to the eyes so precision
+// holds far from the planet's centre
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 tangent;
+// How far down the river its ripples have been carried (see RiverRenderer.travel), how far
+// across it from the middle, how fast it flows there, and how near its edge (0 in the middle,
+// 1 at the edge)
+layout (location = 2) in vec4 flow;
+// Where it is on a lake's own flat frame (world units), and how still it is there (1 out on a
+// lake, easing from 0 as a river comes to one)
+layout (location = 3) in vec3 calm;
+
+out vec3 viewPosition;
+out vec3 worldPosition;
+out vec3 vTangent;
+out vec4 vFlow;
+out vec3 vCalm;
+out float PlanarDepth;
+
+uniform mat4 viewProjection;
+uniform vec3 sphereCamera;
+
+void main() {
+    worldPosition = position;
+    viewPosition = position - sphereCamera;
+    vTangent = tangent;
+    vFlow = flow;
+    vCalm = calm;
+    gl_Position = viewProjection * vec4(viewPosition, 1.0);
+    PlanarDepth = gl_Position.w;
+}
