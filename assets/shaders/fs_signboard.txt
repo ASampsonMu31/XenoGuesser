@@ -324,18 +324,22 @@ void main() {
 
     // --- SEAMLESS INSIDE-SPHERE FOG COORD MAPPING ---
     float radialDistance = length(viewPos - aPos);
-    vec3 worldLookDir = normalize(aPos - viewPos);
-    mat3 invSkyRot = transpose(mat3(skyRotation));
-    vec3 localSkyDir = invSkyRot * worldLookDir;
+    // (the sky's own colour is only the haze until the fog's colour is set: not worked out otherwise)
+    vec3 dynamicSkyColour = fogColour;
+    if (fogReady < 0.5) {
+        vec3 worldLookDir = normalize(aPos - viewPos);
+        mat3 invSkyRot = transpose(mat3(skyRotation));
+        vec3 localSkyDir = invSkyRot * worldLookDir;
 
-    float theta = atan(localSkyDir.x, localSkyDir.z);
-    if (theta < 0.0) {
-        theta += 2.0 * PI;
+        float theta = atan(localSkyDir.x, localSkyDir.z);
+        if (theta < 0.0) {
+            theta += 2.0 * PI;
+        }
+        float u = theta / (2.0 * PI);
+        float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+
+        dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
     }
-    float u = theta / (2.0 * PI);
-    float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
-
-    vec3 dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
 
     // --- CUBIC DISTANCE BLENDING ---
     float fogStart = 1000.0;

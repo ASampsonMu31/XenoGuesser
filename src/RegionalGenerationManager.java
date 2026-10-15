@@ -46,6 +46,9 @@ public class RegionalGenerationManager {
 
     private final PerlinNoise temperatureNoise;
 
+    // How much warmer (on the 0 to 1 scale) the poles are kept than the equator's fall-off alone gives
+    private static final float POLAR_MILDNESS = 0.2f;
+
     // How far inland (world units) the climate is fully continental (see temperatureAt)
     private static final float FULLY_INLAND = 8000f;
 
@@ -68,6 +71,9 @@ public class RegionalGenerationManager {
     private float temperatureAt(GeodesicChunkGrid.Direction d) {
         float warmth = (float) Math.cos(latitude(d));
         float temp = 0.06f + 0.94f * (float) Math.pow(Math.max(0.0, warmth), 1.6);
+        // (the far north and south kept milder than that alone, so the frozen polar regions
+        // aren't vast: the poles a few tenths of the scale warmer, the equator no different)
+        temp += POLAR_MILDNESS * (1f - warmth);
         if (waterDistance != null) {
             float distance = field.sample(waterDistance, d);
             if (distance > 0f) {
@@ -75,7 +81,7 @@ public class RegionalGenerationManager {
                 float inland = Math.min(1f, distance / FULLY_INLAND);
                 temp += 0.14f * inland * (warmth - 0.55f) * 2f;
             }
-            // About a third of the scale colder for every thousand units up
+            // Over half the scale colder for every thousand units up
             temp -= altitudeChill(d);
         }
         float[] surface = surface(d);
@@ -135,8 +141,9 @@ public class RegionalGenerationManager {
         return Math.max(0f, field.sample(altitude, d)) * ALTITUDE_CHILL;
     }
 
-    // How much colder it gets for each unit of height, on the temperature map's scale
-    public static final float ALTITUDE_CHILL = 0.00033f;
+    // How much colder it gets for each unit of height, on the temperature map's scale (about
+    // 40 Celsius colder a thousand units up, so the high peaks are frozen even near the equator)
+    public static final float ALTITUDE_CHILL = 0.00057f;
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
         return new RegionalFactor(1.0f, d -> {
@@ -150,7 +157,7 @@ public class RegionalGenerationManager {
     /** A preference for being a certain distance from the sea, both in world units. */
     public RegionalFactor createWaterPreference(float optimalDistance, float standardDeviation) {
         return new RegionalFactor(1.0f, d -> {
-            float diff = distanceToWater(d) - optimalDistance;
+            float diff = moistureDistance(d) - optimalDistance;
             double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
             return (float) Math.exp(exponent);
         });
@@ -158,6 +165,67 @@ public class RegionalGenerationManager {
 
     // What distanceToWater gives before the field is worked out
     private static final float UNKNOWN_DISTANCE = 99_900f;
+
+    // Rivers' water as moisture (see addRivers): by texel of the field, how much nearer the water a
+    // place by a river is as moist as, as a share of its distance from the sea (0 far from any)
+    private float[] riverWetting;
+    // Right by a stream a place is as moist as if it were this share of the way nearer the sea, by
+    // the biggest rivers this (going smoothly between with the river's half width over RIVER_SIZE),
+    // wearing off over this distance from a stream and this much further for each unit of its
+    // half width; looked at no further out than where it's this little
+    private static final float STREAM_WETTING = 0.35f, RIVER_WETTING = 0.85f, RIVER_SIZE = 12f;
+    private static final float STREAM_MOISTURE_REACH = 150f, MOISTURE_REACH_PER_WIDTH = 25f, LEAST_WETTING = 0.02f;
+
+    /**
+     * Lets the rivers moisten the land round them: by a river a place is as moist as if it were
+     * nearer the sea (see moistureDistance), much nearer by a great river, a little by a stream,
+     * wearing off with distance from it, the further the bigger the river.
+     */
+    public void addRivers(Rivers rivers) {
+        int size = field.size();
+        float[] wetting = new float[size], keep = new float[size];
+        java.util.PriorityQueue<long[]> open = new java.util.PriorityQueue<>((a, b) -> Long.compare(b[0], a[0]));
+        for (Rivers.Reach reach : rivers.reaches()) {
+            for (int k = 0; k < reach.size(); k += 2) {
+                if (reach.inLake[k]) continue;
+                double[] p = reach.points[k];
+                int t = field.index(p[0], p[1], p[2]);
+                float half = reach.halfWidth[k];
+                float size01 = half / (half + RIVER_SIZE);
+                float start = STREAM_WETTING + (RIVER_WETTING - STREAM_WETTING) * size01;
+                if (start > wetting[t]) {
+                    wetting[t] = start;
+                    // (how much of it is kept over each texel out from the river)
+                    keep[t] = (float) Math.exp(-(2.0 / FIELD_SIDE * Planet.radius()) / (STREAM_MOISTURE_REACH + MOISTURE_REACH_PER_WIDTH * half));
+                    open.add(new long[] { Float.floatToIntBits(start), t });
+                }
+            }
+        }
+        // Out from them, wearing off, the wettest first
+        while (!open.isEmpty()) {
+            long[] e = open.poll();
+            int t = (int) e[1];
+            float here = Float.intBitsToFloat((int) e[0]);
+            if (here < wetting[t]) continue;
+            float next = here * keep[t];
+            if (next < LEAST_WETTING) continue;
+            for (int k = 0; k < 4; k++) {
+                int n = field.neighbour(t, k);
+                if (next > wetting[n]) {
+                    wetting[n] = next;
+                    keep[n] = keep[t];
+                    open.add(new long[] { Float.floatToIntBits(next), n });
+                }
+            }
+        }
+        riverWetting = wetting;
+    }
+
+    /** How far from the sea a place is as moist as: its own distance, or nearer if it's by a river (see addRivers). */
+    public float moistureDistance(GeodesicChunkGrid.Direction d) {
+        float sea = distanceToWater(d);
+        return riverWetting == null ? sea : sea * (1f - field.sample(riverWetting, d));
+    }
 
     /** World units along the ground from a place to the nearest sea (0 on the sea), blended between texels. */
     public float distanceToWater(GeodesicChunkGrid.Direction d) {

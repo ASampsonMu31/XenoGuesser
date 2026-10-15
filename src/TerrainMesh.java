@@ -12,6 +12,10 @@ public class TerrainMesh {
     }
 
     private static float getLayeredHeight(float[] surface, PerlinNoise noise) {
+        return getLayeredHeight(surface, noise, true);
+    }
+
+    private static float getLayeredHeight(float[] surface, PerlinNoise noise, boolean withRivers) {
         // LAYER 1: the continents. A handful of separate landmasses spread round the planet
         // (see continentField), their coasts broken up by broad noise so they're irregular,
         // now and then split into two or joined by an isthmus
@@ -62,8 +66,8 @@ public class TerrainMesh {
         float baseHeight = mountainLayer + continentLayer2 + continentLayer1;
         // As on Earth, land thins out towards the poles: the crust sinks away at high latitudes
         float sinLatitude = Math.abs(surface[1]) / (float) Planet.radius();
-        float polar = Math.max(0f, Math.min(1f, (sinLatitude - 0.62f) / 0.38f));
-        baseHeight -= 120f * polar * polar * (3f - 2f * polar);
+        float polar = Math.max(0f, Math.min(1f, (sinLatitude - 0.7f) / 0.3f));
+        baseHeight -= 100f * polar * polar * (3f - 2f * polar);
 
         // LAYER 4: hillLayer (Mid-scale hills with low altitude suppression)
         float f4 = 0.001f;
@@ -87,7 +91,10 @@ public class TerrainMesh {
         float roughnessLayer = (1.0f - Math.abs(rawNoise5)) * a5;
 
         float height = baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
-        return flattenLowlands(height, surface, continent, noise);
+        height = flattenLowlands(height, surface, continent, noise);
+        // The rivers' channels cut into it (once they've been worked out from the bare land)
+        Rivers rivers = noise.rivers;
+        return rivers == null || !withRivers ? height : rivers.carve(surface[0], surface[1], surface[2], height);
     }
 
     /**
@@ -106,6 +113,18 @@ public class TerrainMesh {
         return getLayeredHeight(surface, noise);
     }
 
+    /** The ground's height above the datum under a place as it was before the rivers' channels were cut into it (what a bridge spans). */
+    public static float getBareHeight(SpherePosition position, PerlinNoise noise) {
+        double length = position.length();
+        if (!(length > 0.0)) throw new IllegalArgumentException("Terrain cannot be sampled at the planet centre");
+        float[] surface = {
+                (float) (position.x() * Planet.radius() / length),
+                (float) (position.y() * Planet.radius() / length),
+                (float) (position.z() * Planet.radius() / length)
+        };
+        return getLayeredHeight(surface, noise, false);
+    }
+
     /** The ground's height above the datum in a direction from the planet's centre. */
     public static float getLayeredHeight(GeodesicChunkGrid.Direction direction, PerlinNoise noise) {
         return getLayeredHeight(new SpherePosition(direction.x(), direction.y(), direction.z()), noise);
@@ -122,22 +141,25 @@ public class TerrainMesh {
      */
     public static Object[] buildGeodesicCellData(GeodesicChunkGrid.Cell cell, int segments, PerlinNoise noise) {
         if (segments < 1) throw new IllegalArgumentException("A geodesic terrain cell needs at least one segment");
+        // (finer where a river's channel is cut, its edges stitched to coarser neighbours)
+        segments = segmentsFor(cell, noise, segments);
+        boolean[] coarse = coarseEdges(cell, segments, noise);
         int vertexCount = (segments + 1) * (segments + 2) / 2;
         float[] vertices = new float[vertexCount * 8];
-        GeodesicChunkGrid.Direction a = cell.a(), b = cell.b(), c = cell.c();
+        float[][] heights = new float[segments + 1][];
+        for (int row = 0; row <= segments; row++) {
+            heights[row] = new float[row + 1];
+            for (int column = 0; column <= row; column++) {
+                heights[row][column] = getLayeredHeight(meshVertex(cell, segments, row, column), noise);
+            }
+        }
+        final int s = segments;
+        VertexHeight raw = (row, column) -> heights[row][column];
         int vertex = 0;
         for (int row = 0; row <= segments; row++) {
             for (int column = 0; column <= row; column++) {
-                double wa = (segments - row) / (double) segments;
-                double wb = (row - column) / (double) segments;
-                double wc = column / (double) segments;
-                GeodesicChunkGrid.Direction direction = new GeodesicChunkGrid.Direction(
-                        wa * a.x() + wb * b.x() + wc * c.x(),
-                        wa * a.y() + wb * b.y() + wc * c.y(),
-                        wa * a.z() + wb * b.z() + wc * c.z()).normalized();
-                SpherePosition ground = new SpherePosition(direction.x() * Planet.radius(),
-                        direction.y() * Planet.radius(), direction.z() * Planet.radius());
-                float height = getLayeredHeight(ground, noise);
+                GeodesicChunkGrid.Direction direction = meshVertex(cell, segments, row, column);
+                float height = stitchedHeight(s, row, column, coarse, raw);
                 float radius = (float) (Planet.radius() + height);
                 vertices[vertex++] = (float) direction.x() * radius;
                 vertices[vertex++] = (float) direction.y() * radius;
@@ -145,8 +167,10 @@ public class TerrainMesh {
                 vertices[vertex++] = (float) direction.x();
                 vertices[vertex++] = (float) direction.y();
                 vertices[vertex++] = (float) direction.z();
-                vertices[vertex++] = (float) (wb + wc);
-                vertices[vertex++] = (float) wc;
+                // (the corners' shares, inset in the soil's triangular tile: see ProceduralTextures.triangleTile)
+                float margin = (float) ProceduralTextures.TILE_MARGIN, inner = 1f - 2f * margin;
+                vertices[vertex++] = margin + inner * ((float) (row - column) / segments + (float) column / segments);
+                vertices[vertex++] = margin + inner * (float) column / segments;
             }
         }
 
@@ -173,6 +197,129 @@ public class TerrainMesh {
         orientTrianglesOutward(vertices, indices);
         smoothGeodesicNormals(vertices, indices);
         return new Object[] { vertices, indices };
+    }
+
+    /** The ground as drawn: cells of this level of the geodesic grid, each cut into this many segments along an edge. */
+    public static final int DRAWN_LEVEL = 6, DRAWN_SEGMENTS = 32;
+    private static final GeodesicChunkGrid DRAWN_GRID = new GeodesicChunkGrid(DRAWN_LEVEL);
+
+    /**
+     * The height above the datum of the ground as it's drawn in a direction (see meshHeight),
+     * for setting things on it so none hovers. Vertex heights are kept in cache (if given) by
+     * cell, row and column, as neighbours share them.
+     */
+    public static float drawnHeight(GeodesicChunkGrid.Direction direction, PerlinNoise noise, java.util.Map<Long, Float> cache) {
+        GeodesicChunkGrid.Cell cell = DRAWN_GRID.cellAt(direction);
+        int segments = segmentsFor(cell, noise, DRAWN_SEGMENTS);
+        boolean[] coarse = coarseEdges(cell, segments, noise);
+        VertexHeight raw = (row, column) -> {
+            if (cache == null) return getLayeredHeight(meshVertex(cell, segments, row, column), noise);
+            return cache.computeIfAbsent((cell.id() << 20) | ((long) row << 10) | column,
+                    key -> getLayeredHeight(meshVertex(cell, segments, row, column), noise));
+        };
+        return (float) meshHeight(cell, segments, direction, (row, column) -> stitchedHeight(segments, row, column, coarse, raw));
+    }
+
+    // Where a river's channel is cut, the ground is drawn this much finer (twice: every other
+    // vertex along an edge is one of the coarse cell's), so the channel shows
+    public static final int RIVER_SEGMENTS = DRAWN_SEGMENTS * 2;
+
+    /** How many segments a cell of the drawn ground is cut into: finer if a river's channel is cut into it. */
+    public static int segmentsFor(GeodesicChunkGrid.Cell cell, PerlinNoise noise, int usual) {
+        Rivers rivers = noise.rivers;
+        return rivers != null && cell.level() == DRAWN_LEVEL && rivers.cuts(cell.id()) ? usual * 2 : usual;
+    }
+
+    /**
+     * For a cell drawn finer than usual, which of its edges (ab, bc, ca) border a cell drawn
+     * coarser, so their in-between vertices are laid along the coarse cell's edge and no crack
+     * opens between them; null if it isn't finer.
+     */
+    private static boolean[] coarseEdges(GeodesicChunkGrid.Cell cell, int segments, PerlinNoise noise) {
+        Rivers rivers = noise.rivers;
+        if (rivers == null || segments <= DRAWN_SEGMENTS || cell.level() != DRAWN_LEVEL) return null;
+        return rivers.coarseEdges.computeIfAbsent(cell.id(), id -> {
+            GeodesicChunkGrid.Direction[] corner = { cell.a(), cell.b(), cell.c() };
+            GeodesicChunkGrid.Direction centre = cell.centre();
+            boolean[] coarse = new boolean[3];
+            for (int e = 0; e < 3; e++) {
+                GeodesicChunkGrid.Direction p = corner[e], q = corner[(e + 1) % 3];
+                double mx = (p.x() + q.x()) * 0.5, my = (p.y() + q.y()) * 0.5, mz = (p.z() + q.z()) * 0.5;
+                // (just across the edge's middle, away from this cell's)
+                GeodesicChunkGrid.Direction across = new GeodesicChunkGrid.Direction(mx + (mx - centre.x()) * 0.05,
+                        my + (my - centre.y()) * 0.05, mz + (mz - centre.z()) * 0.05).normalized();
+                coarse[e] = !rivers.cuts(DRAWN_GRID.cellAt(across).id());
+            }
+            return coarse;
+        });
+    }
+
+    /**
+     * A vertex's height as drawn: the ground's own, except that on an edge bordering a coarser
+     * cell the in-between vertices lie halfway between their neighbours along it (ab is column
+     * 0, bc row segments, ca the diagonal column = row).
+     */
+    private static float stitchedHeight(int segments, int row, int column, boolean[] coarse, VertexHeight raw) {
+        if (coarse != null) {
+            if (column == 0 && coarse[0] && row % 2 == 1) return (raw.at(row - 1, 0) + raw.at(row + 1, 0)) * 0.5f;
+            if (row == segments && coarse[1] && column % 2 == 1) return (raw.at(row, column - 1) + raw.at(row, column + 1)) * 0.5f;
+            if (column == row && coarse[2] && row % 2 == 1) return (raw.at(row - 1, row - 1) + raw.at(row + 1, row + 1)) * 0.5f;
+        }
+        return raw.at(row, column);
+    }
+
+    public static float drawnHeight(SpherePosition place, PerlinNoise noise, java.util.Map<Long, Float> cache) {
+        return drawnHeight(SphereMath.direction(place), noise, cache);
+    }
+
+    /** A cell's mesh vertex (as buildGeodesicCellData lays them out), as a direction from the planet's centre. */
+    public static GeodesicChunkGrid.Direction meshVertex(GeodesicChunkGrid.Cell cell, int segments, int row, int column) {
+        double wa = (segments - row) / (double) segments;
+        double wb = (row - column) / (double) segments;
+        double wc = column / (double) segments;
+        GeodesicChunkGrid.Direction a = cell.a(), b = cell.b(), c = cell.c();
+        return new GeodesicChunkGrid.Direction(
+                wa * a.x() + wb * b.x() + wc * c.x(),
+                wa * a.y() + wb * b.y() + wc * c.y(),
+                wa * a.z() + wb * b.z() + wc * c.z()).normalized();
+    }
+
+    /** The ground's height at a mesh vertex (row, column) of a cell. */
+    @FunctionalInterface
+    public interface VertexHeight {
+        float at(int row, int column);
+    }
+
+    /**
+     * The height above the datum of the ground as the mesh draws it (buildGeodesicCellData, with
+     * the same segments) in a direction inside the cell: where the ray meets the flat triangle
+     * there, not the true terrain, which the triangles cut below on humps and above in hollows.
+     */
+    public static double meshHeight(GeodesicChunkGrid.Cell cell, int segments, GeodesicChunkGrid.Direction direction, VertexHeight heights) {
+        GeodesicChunkGrid.Address address = cell.address(direction);
+        double r = Math.max(0.0, Math.min(segments, segments * (address.b() + address.c())));
+        double c = Math.max(0.0, Math.min(r, segments * address.c()));
+        int row = Math.min(segments - 1, (int) Math.floor(r));
+        int column = Math.min(row, (int) Math.floor(c));
+        double fr = r - row, fc = c - column;
+        // (the square between rows is cut corner to corner: below the cut, top / lower left /
+        // lower right; above it, top / top's right / lower right)
+        int[][] corners = fc <= fr || column >= row
+                ? new int[][] { { row, column }, { row + 1, column }, { row + 1, column + 1 } }
+                : new int[][] { { row, column }, { row, column + 1 }, { row + 1, column + 1 } };
+        double[][] p = new double[3][];
+        for (int k = 0; k < 3; k++) {
+            GeodesicChunkGrid.Direction v = meshVertex(cell, segments, corners[k][0], corners[k][1]);
+            double radius = Planet.radius() + heights.at(corners[k][0], corners[k][1]);
+            p[k] = new double[] { v.x() * radius, v.y() * radius, v.z() * radius };
+        }
+        double ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
+        double vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
+        double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        GeodesicChunkGrid.Direction d = direction.normalized();
+        double along = nx * d.x() + ny * d.y() + nz * d.z();
+        if (Math.abs(along) < 1e-12) return heights.at(row, column);
+        return (nx * p[0][0] + ny * p[0][1] + nz * p[0][2]) / along - Planet.radius();
     }
 
     private static void smoothGeodesicNormals(float[] vertices, int[] indices) {
@@ -235,21 +382,27 @@ public class TerrainMesh {
                 new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z()), angularRadius);
         if (cells.isEmpty()) throw new IllegalStateException("Geodesic terrain patch contains no cells");
 
-        int verticesPerCell = (segments + 1) * (segments + 2) / 2;
-        int indicesPerCell = segments * segments * 3;
-        float[] vertices = new float[Math.multiplyExact(Math.multiplyExact(cells.size(), verticesPerCell), 8)];
-        int[] indices = new int[Math.multiplyExact(cells.size(), indicesPerCell)];
-        int vertexOffset = 0;
-        int indexOffset = 0;
+        // (cells may be cut into different numbers of segments: see segmentsFor)
+        List<Object[]> built = new java.util.ArrayList<>(cells.size());
+        int vertexFloats = 0, indexCount = 0;
         for (GeodesicChunkGrid.Cell cell : cells) {
             Object[] cellData = buildGeodesicCellData(cell, segments, noise);
+            built.add(cellData);
+            vertexFloats += ((float[]) cellData[0]).length;
+            indexCount += ((int[]) cellData[1]).length;
+        }
+        float[] vertices = new float[vertexFloats];
+        int[] indices = new int[indexCount];
+        int vertexOffset = 0;
+        int indexOffset = 0;
+        for (Object[] cellData : built) {
             float[] cellVertices = (float[]) cellData[0];
             int[] cellIndices = (int[]) cellData[1];
             System.arraycopy(cellVertices, 0, vertices, vertexOffset * 8, cellVertices.length);
             for (int i = 0; i < cellIndices.length; i++) {
                 indices[indexOffset + i] = cellIndices[i] + vertexOffset;
             }
-            vertexOffset += verticesPerCell;
+            vertexOffset += cellVertices.length / 8;
             indexOffset += cellIndices.length;
         }
         return new Object[] { vertices, indices };
@@ -359,7 +512,7 @@ public class TerrainMesh {
         for (int k = 0; k < count; k++) {
             float[] centre = null;
             for (int attempt = 0; attempt < 200; attempt++) {
-                float[] d = randomDirection(rand, 55);
+                float[] d = randomDirection(rand, 65);
                 boolean apart = true;
                 for (float[] other : middles) {
                     if (dot(d, other) > Math.cos(0.85 - attempt * 0.002)) { apart = false; break; }
@@ -397,7 +550,7 @@ public class TerrainMesh {
         // Island chains along curving arcs
         int chains = 2 + rand.nextInt(4);
         for (int c = 0; c < chains; c++) {
-            float[] at = randomDirection(rand, 60);
+            float[] at = randomDirection(rand, 70);
             float heading = rand.nextFloat() * (float) Math.PI * 2f, bend = (rand.nextFloat() - 0.5f) * 0.5f;
             int islands = 4 + rand.nextInt(9);
             float scale = 0.012f + rand.nextFloat() * 0.025f;
@@ -411,7 +564,7 @@ public class TerrainMesh {
         // Lone islands, some long, some with a spit or a hook
         int lone = 8 + rand.nextInt(10);
         for (int i = 0; i < lone; i++) {
-            float[] at = randomDirection(rand, 62);
+            float[] at = randomDirection(rand, 72);
             float length = 0.01f + rand.nextFloat() * 0.05f, width = length * (0.5f + rand.nextFloat() * 0.45f);
             float turn = rand.nextFloat() * (float) Math.PI;
             pieces.add(piece(at, turn, length, width, rand.nextFloat() * 0.5f, false));

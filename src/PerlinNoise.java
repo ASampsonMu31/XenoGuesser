@@ -7,6 +7,10 @@ public class PerlinNoise {
     public final long seed;
     // The world's continents, worked out from the seed when first needed (see TerrainMesh)
     volatile float[][] continentCores;
+    // The world's rivers, once worked out from the bare land (see Rivers; null until then)
+    volatile Rivers rivers;
+    // The world's climate, if it was worked out with the rivers (see XenoGuesser; null if not)
+    volatile RegionalGenerationManager climate;
 
     public PerlinNoise(long seed) {
         this.seed = seed;

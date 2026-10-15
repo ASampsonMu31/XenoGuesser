@@ -40,6 +40,7 @@ public final class SphereSkyRenderer {
         shader.setVec3(gl, "cameraUp", correctedUp);
         shader.setVec3(gl, "fallbackSky", fallbackSky);
         shader.setFloat(gl, "aspectRatio", aspect);
+        shader.setFloat(gl, "tanHalfFov", camera.tanHalfFov());
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
         gl.glBindVertexArray(vertexArray[0]);
         gl.glDrawArrays(GL.GL_TRIANGLES, 0, 3);

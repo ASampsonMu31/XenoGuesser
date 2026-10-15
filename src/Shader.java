@@ -51,8 +51,8 @@ public class Shader {
         int c = shader.location(gl, "fogColour");
         if (c == -1) continue;
         gl.glUseProgram(shader.ID);
-        gl.glUniform3f(c, r, g, b);
-        gl.glUniform1f(shader.location(gl, "fogReady"), 1f);
+        shader.setFloat(gl, "fogColour", r, g, b);
+        shader.setFloat(gl, "fogReady", 1f);
       }
     }
   }
@@ -75,12 +75,12 @@ public class Shader {
         int c = shader.location(gl, "snowCover");
         if (c == -1) continue;
         gl.glUseProgram(shader.ID);
-        gl.glUniform1i(c, unit);
-        gl.glUniform2f(shader.location(gl, "snowState"), 1f, fresh);
-        gl.glUniform4f(shader.location(gl, "snowClimate"), climate[0], climate[1], climate[2], climate[3]);
-        gl.glUniform3f(shader.location(gl, "snowColour"), colour[0], colour[1], colour[2]);
-        gl.glUniform1f(shader.location(gl, "snowToday"), today);
-        gl.glUniform1f(shader.location(gl, "planetRadius"), planetRadius);
+        shader.setInt(gl, "snowCover", unit);
+        shader.setFloat(gl, "snowState", 1f, fresh);
+        shader.setFloat(gl, "snowClimate", climate[0], climate[1], climate[2], climate[3]);
+        shader.setFloat(gl, "snowColour", colour[0], colour[1], colour[2]);
+        shader.setFloat(gl, "snowToday", today);
+        shader.setFloat(gl, "planetRadius", planetRadius);
       }
     }
   }
@@ -102,46 +102,81 @@ public class Shader {
     gl.glUseProgram(ID);
   }
   
+  // The values last given to each uniform (by location), so setting one to what it already
+  // holds costs no driver call: the same lights, material and matrices are set for every part
+  // of every building, a thousand times a frame. Only the set* methods are remembered, so a
+  // uniform must always be set through them or never (as the bones and sky rotation are not).
+  private float[][] lastValues = new float[64][];
+
+  /** Whether a uniform already holds these values; if not, they're remembered as what it will hold. */
+  private boolean unchanged(int location, float a, float b, float c, float d, int count) {
+    if (location < 0) return true;
+    if (location >= 4096) return false;
+    if (location >= lastValues.length) lastValues = java.util.Arrays.copyOf(lastValues, Math.max(location + 1, lastValues.length * 2));
+    float[] last = lastValues[location];
+    if (last != null && last.length == count
+        && Float.floatToRawIntBits(last[0]) == Float.floatToRawIntBits(a)
+        && (count < 2 || Float.floatToRawIntBits(last[1]) == Float.floatToRawIntBits(b))
+        && (count < 3 || Float.floatToRawIntBits(last[2]) == Float.floatToRawIntBits(c))
+        && (count < 4 || Float.floatToRawIntBits(last[3]) == Float.floatToRawIntBits(d))) return true;
+    if (last == null || last.length != count) lastValues[location] = last = new float[count];
+    last[0] = a;
+    if (count > 1) last[1] = b;
+    if (count > 2) last[2] = c;
+    if (count > 3) last[3] = d;
+    return false;
+  }
+
   public void setInt(GL3 gl, String name, int value) {
     int location = location(gl, name);
+    if (unchanged(location, Float.intBitsToFloat(value), 0f, 0f, 0f, 1)) return;
     gl.glUniform1i(location, value);
   }
   
   public void setFloat(GL3 gl, String name, float value) {
     int location = location(gl, name);
+    if (unchanged(location, value, 0f, 0f, 0f, 1)) return;
     gl.glUniform1f(location, value);
   }
   
   public void setFloat(GL3 gl, String name, float f1, float f2) {
     int location = location(gl, name);
+    if (unchanged(location, f1, f2, 0f, 0f, 2)) return;
     gl.glUniform2f(location, f1, f2);
   }
   
   public void setFloat(GL3 gl, String name, float f1, float f2, float f3) {
     int location = location(gl, name);
+    if (unchanged(location, f1, f2, f3, 0f, 3)) return;
     gl.glUniform3f(location, f1, f2, f3);
   }
   
   public void setFloat(GL3 gl, String name, float f1, float f2, float f3, float f4) {
     int location = location(gl, name);
+    if (unchanged(location, f1, f2, f3, f4, 4)) return;
     gl.glUniform4f(location, f1, f2, f3, f4);
   }
   
   public void setFloatArray(GL3 gl, String name, float[] f) {
     int location = location(gl, name);
+    if (location < 0) return;
+    if (location < 4096) {
+      if (location >= lastValues.length) lastValues = java.util.Arrays.copyOf(lastValues, Math.max(location + 1, lastValues.length * 2));
+      float[] last = lastValues[location];
+      if (last != null && java.util.Arrays.equals(last, 0, 16, f, 0, 16)) return;
+      lastValues[location] = java.util.Arrays.copyOf(f, 16);
+    }
     gl.glUniformMatrix4fv(location, 1, false, f, 0);
   }
   
   /* I declare that the modifications here are my own work based on setVec3 */
   public void setVec2(GL3 gl, String name, Vector2 v) {
-    int location = location(gl, name);
-    gl.glUniform2f(location, v.x, v.y);
+    setFloat(gl, name, v.x, v.y);
   }
   /* Modified by Alexander Sampson, asampson1@sheffield.ac.uk */
 
   public void setVec3(GL3 gl, String name, Vector3 v) {
-    int location = location(gl, name);
-    gl.glUniform3f(location, v.x, v.y, v.z);
+    setFloat(gl, name, v.x, v.y, v.z);
   }
   
   private void display() {

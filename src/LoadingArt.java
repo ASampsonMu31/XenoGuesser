@@ -28,6 +28,8 @@ public final class LoadingArt {
     public static final String SPACEMAN = DIR + "/spaceman_turntable.png";
     // The main menu's background: a frame of the game itself, made with -Dxenoguesser.menushot
     public static final String MENU = DIR + "/main_menu.png";
+    // The backgrounds the main menu chooses between (background_1.png and on; see MainMenu)
+    public static final String MENU_BACKGROUNDS = DIR + "/menu";
     public static final String FABRIC = DIR + "/suit_fabric.png";
     public static final String LAYOUT = DIR + "/cockpit_layout.properties";
 

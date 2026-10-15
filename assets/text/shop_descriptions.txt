@@ -11,6 +11,7 @@ Identification kit = A magnifying glass and a naturalist's handbook. Hold the gl
 
 # Map markings (drawn over the map)
 Contours = Lines of equal height across the land, showing hills, valleys and mountains.
+Rivers = Every river and stream, from mountain springs down to the sea, and the lakes along them.
 Roads = Every road on the planet, from highways to dirt tracks.
 Buildings = Where the planet's buildings stand, from lone farms to the hearts of cities.
 Shops = Where the inhabitants go shopping.

@@ -22,7 +22,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private double lastElapsedTime = 0;
 
     private TextureLibrary textures;
-    private final GeodesicChunkGrid geodesicTerrainGrid = new GeodesicChunkGrid(6);
+    private final GeodesicChunkGrid geodesicTerrainGrid = new GeodesicChunkGrid(TerrainMesh.DRAWN_LEVEL);
     private Model geodesicTerrainModel;
     private java.util.concurrent.Future<Object[]> geodesicTerrainBuild;
     private SpherePosition geodesicTerrainBuildCentre;
@@ -32,6 +32,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // vs_sphere_water; the land hides it where it is higher (see renderSea)
     private Mesh seaGrid;
     private Shader sphereWaterShader;
+    // The rivers and lakes: their shader, and their meshes (made in the background, see RiverRenderer)
+    private Shader riverShader;
+    private final RiverRenderer riverRenderer = new RiverRenderer();
+    private java.util.concurrent.Future<RiverRenderer.Built> riverBuild;
     private SphereSkyRenderer sphereSkyRenderer;
     private SphereWeather sphereWeather;
     private final GeodesicCollision geodesicCollision = new GeodesicCollision();
@@ -47,7 +51,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private CellStream<List<SphereFlora>> floraStream;
     private CellStream<float[]> grassStream;
     private final CellIndex<SphereFlora> trees = new CellIndex<>();
-    private static final int GEODESIC_TERRAIN_SEGMENTS = 32;
+    private static final int GEODESIC_TERRAIN_SEGMENTS = TerrainMesh.DRAWN_SEGMENTS;
     
 private static class SpeciesConfig {
         String name;
@@ -173,7 +177,8 @@ private static class SpeciesConfig {
     private float playerEyeHeight = 20.0f;
     
 
-    private MapPanel minimap;
+    // (set from the window's thread once it opens, and waited for by the map's: see awaitMinimap)
+    private volatile MapPanel minimap;
     private GameHUD gameHUD; 
 
     // --- Seasonal Simulation Fields ---
@@ -345,6 +350,10 @@ private static class SpeciesConfig {
         this.camera = camera;
         this.keyboard = keyboard;
         this.worldNoise = sharedNoise;
+        if (sharedNoise.rivers != null) {
+            Rivers rivers = sharedNoise.rivers;
+            riverBuild = java.util.concurrent.ForkJoinPool.commonPool().submit(() -> RiverRenderer.build(rivers, sharedNoise));
+        }
         this.seaLevelHeight = sharedSeaLevel;
         this.worldSeed = sharedSeed; 
         this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
@@ -375,9 +384,15 @@ private static class SpeciesConfig {
         java.util.Random seedRand = new java.util.Random(worldSeed);
         this.planetAxialTiltDegrees = 20.0f + seedRand.nextFloat() * 6.0f;
         
-        this.regionalManager = new RegionalGenerationManager(worldSeed, seaLevelHeight);
+        // (worked out with the rivers, if it was: see XenoGuesser)
+        if (this.worldNoise.climate != null) {
+            this.regionalManager = this.worldNoise.climate;
+        } else {
+            this.regionalManager = new RegionalGenerationManager(worldSeed, seaLevelHeight);
+            this.regionalManager.precalculateWaterDistanceField(this.worldNoise);
+            if (this.worldNoise.rivers != null) this.regionalManager.addRivers(this.worldNoise.rivers);
+        }
         this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
-        this.regionalManager.precalculateWaterDistanceField(this.worldNoise);
 
         float GRASS_TEMP_MEAN = 0.4f;
         float GRASS_TEMP_STD_DEV = 0.5f;
@@ -689,6 +704,9 @@ private static class SpeciesConfig {
             long startTime = System.currentTimeMillis();
 
             BufferedImage[] baseMap = maps.renderBaseMap();
+            // (nothing's handed over, nor the overlays made, until there's a map to take them: it's
+            // only made once the window opens, and anything handed over before then was lost)
+            awaitMinimap();
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) {
                     minimap.setBaseMapDetail(baseMap[1]);
@@ -710,13 +728,15 @@ private static class SpeciesConfig {
                 if (minimap != null) minimap.setNationLabels(labels);
             });
             // Drawn in tiles when zoomed in close
-            java.util.Map<MapPanel.Layer, MapTiles.Renderer> layerTiles = java.util.Map.of(
+            java.util.Map<MapPanel.Layer, MapTiles.Renderer> layerTiles = new java.util.EnumMap<>(java.util.Map.of(
                     MapPanel.Layer.CONTOURS, maps.contourTiles(), MapPanel.Layer.ROADS, maps.roadTiles(infraManager),
-                    MapPanel.Layer.BUILDINGS, maps.buildingTiles(infraManager), MapPanel.Layer.SHOPS, maps.shopTiles(infraManager));
+                    MapPanel.Layer.BUILDINGS, maps.buildingTiles(infraManager), MapPanel.Layer.SHOPS, maps.shopTiles(infraManager)));
+            if (worldNoise.rivers != null) layerTiles.put(MapPanel.Layer.RIVERS, maps.riverTiles(worldNoise.rivers));
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) minimap.setTileRenderers(maps.baseTiles(), layerTiles);
             });
             showLayer(MapPanel.Layer.CONTOURS, maps.renderContourLayer());
+            if (worldNoise.rivers != null) showLayer(MapPanel.Layer.RIVERS, maps.renderRiverLayer(worldNoise.rivers));
             showLayer(MapPanel.Layer.ROADS, maps.renderRoadLayer(infraManager));
             showLayer(MapPanel.Layer.BUILDINGS, maps.renderBuildingLayer(infraManager));
             showLayer(MapPanel.Layer.SHOPS, maps.renderShopLayer(infraManager));
@@ -729,6 +749,18 @@ private static class SpeciesConfig {
         }, "birds-eye-map-renderer");
         mapThread.setDaemon(true);
         mapThread.start();
+    }
+
+    /** Waits (on the map's own thread) until the map panel's been given to the game (see setMinimap). */
+    private void awaitMinimap() {
+        while (minimap == null) {
+            try {
+                Thread.sleep(50);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     /** Hands a finished layer's images to the map. */
@@ -892,7 +924,39 @@ private static class SpeciesConfig {
 
         private void applyProjection() {
         float aspect = (float) currentWidth / (float) Math.max(1, currentHeight);
-        camera.setPerspectiveMatrix(Matrix4Transform.perspective(45, aspect, currentNearPlane, FAR_PLANE));
+        camera.setPerspectiveMatrix(Matrix4Transform.perspective((float) Math.toDegrees(fieldOfView()), aspect, currentNearPlane, FAR_PLANE));
+        // (for what's drawn by casting rays through the screen, the sky and clouds, so they zoom too)
+        camera.setTanHalfFov((float) Math.tan(fieldOfView() / 2.0));
+    }
+
+    // Zooming in (GameMode.NO_MOVE only): how far in the view is (1 as usual, up to MOST_ZOOM), and
+    // how far it's going, each notch of the mouse wheel (or a pinch) going ZOOM_PER_NOTCH times
+    // further, eased there at ZOOM_EASE of the way a second
+    private static final float MOST_ZOOM = 4f, ZOOM_PER_NOTCH = 1.15f, ZOOM_EASE = 12f;
+    private static final double USUAL_FIELD_OF_VIEW = Math.toRadians(45.0);
+    private volatile float zoomWanted = 1f;
+    private float zoom = 1f;
+
+    /** The view's height as an angle: the usual, narrowed by the zoom (so zooming in keeps every pixel the screen has). */
+    private double fieldOfView() {
+        return 2.0 * Math.atan(Math.tan(USUAL_FIELD_OF_VIEW / 2.0) / zoom);
+    }
+
+    /** Zooms in (notches of the wheel or pinch, negative) or out, towards the middle of the screen, where the game mode allows it; safe from any thread. */
+    public void zoomBy(double notches) {
+        if (GameMode.current().moving) return;
+        zoomWanted = (float) Math.max(1.0, Math.min(MOST_ZOOM, zoomWanted * Math.pow(ZOOM_PER_NOTCH, -notches)));
+    }
+
+    /** Eases the zoom towards where it's wanted, the projection (and the grass's thinning) following. */
+    private void easeZoom(double deltaTime) {
+        if (GameMode.current().moving) zoomWanted = 1f;
+        float wanted = zoomWanted;
+        if (Math.abs(wanted - zoom) < 1e-4f) return;
+        float step = (float) Math.min(1.0, ZOOM_EASE * deltaTime);
+        zoom = Math.abs(wanted - zoom) < 0.002f ? wanted : zoom + (wanted - zoom) * step;
+        applyProjection();
+        grassDirty = true;
     }
 
     @Override
@@ -1087,21 +1151,103 @@ private static class SpeciesConfig {
         camera.lookAt(target);
     }
 
+    // The main menu's picture: of this many landing sites, the one whose view (as menuShot frames
+    // it) has the most of water, mountains behind and houses about, each counted up to its own
+    // fill: water over this share of the ground seen, the hills this steep (degrees up), this many
+    // houses near the pod
+    private static final int PICTURESQUE_SITES = 1500;
+    private static final double VIEW_WATER = 0.3, VIEW_MOUNTAINS = 5.0, VIEW_HOUSES = 12.0;
+
+    /** Developer aid: the landing site with the most picturesque view for the main menu's picture (see menuShot). */
+    private Viewpoint picturesqueSite(java.util.Random rand) {
+        Viewpoint best = null;
+        double bestScore = -1;
+        for (int i = 0; i < PICTURESQUE_SITES; i++) {
+            Viewpoint site = landingSite(rand);
+            if (site == null) continue;
+            LandingPod pod = new LandingPod();
+            pod.place(site.place(), site.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
+            SpherePosition[] view = menuView(pod);
+            // (on fairly level ground, so the view looks out over the land, not up a hillside)
+            double flatness = 0;
+            for (int k = 0; k < 8; k++) {
+                SpherePosition p = SphereMath.move(site.place(), k * Math.PI / 4, 250);
+                flatness = Math.max(flatness, Math.abs(TerrainMesh.getLayeredHeight(p, worldNoise) - pod.ground()));
+            }
+            if (flatness > 25) continue;
+            double eyeAltitude = SphereMath.altitude(view[0]);
+            double look = SphereMath.heading(view[0], view[1]);
+            // Water, mountains and houses across the view, near to far, counting only what the
+            // land nearer the camera doesn't hide
+            int seen = 0, wet = 0, houses = 0;
+            double steepest = -90;
+            SphereFrame frame = pod.frame();
+            for (double turn = -0.6; turn <= 0.601; turn += 0.15) {
+                double horizon = -90, nearHorizon = -90;
+                for (double out = 60; out <= 9000; out += out < 1500 ? 30 : out < 3000 ? 100 : 400) {
+                    SpherePosition p = SphereMath.move(view[0], look + turn, out);
+                    float ground = TerrainMesh.getLayeredHeight(p, worldNoise);
+                    boolean water = ground <= seaLevelHeight || underFreshWater(p, ground);
+                    double top = Math.max(ground, seaLevelHeight);
+                    double angle = Math.toDegrees(Math.atan2(top - eyeAltitude, out));
+                    boolean visible = angle >= horizon - 0.05;
+                    if (out <= 3000) {
+                        seen++;
+                        if (water && visible) wet++;
+                    }
+                    if (out <= 1200 && infraManager.isBuildingLocation(p, 0f)
+                            && Math.toDegrees(Math.atan2(ground + 60 - eyeAltitude, out)) > horizon) houses++;
+                    if (out < 1500) nearHorizon = Math.max(nearHorizon, angle);
+                    else if (angle > nearHorizon + 1.0) steepest = Math.max(steepest, angle);
+                    horizon = Math.max(horizon, angle);
+                }
+            }
+            double water = (double) wet / Math.max(1, seen);
+            // (each there at all, and nothing built between the camera and the pod)
+            boolean blocked = infraManager.isPrivateGround(view[0], 40f) || infraManager.isBuildingLocation(view[0], 40f)
+                    || infraManager.isRoadLocation(view[0], 15f);
+            for (double t = 0.15; t < 0.9; t += 0.15) {
+                SpherePosition p = SphereMath.move(view[0], SphereMath.heading(view[0], frame.toSphere(0, 0, 0)), 165 * t);
+                if (infraManager.isPrivateGround(p, 10f) || infraManager.isBuildingLocation(p, 12f) || infraManager.isRoadLocation(p, 6f)) blocked = true;
+            }
+            if (blocked) continue;
+            double waterScore = Math.min(water, VIEW_WATER) / VIEW_WATER - Math.max(0, water - 0.6);
+            double mountainScore = Math.max(0, Math.min(steepest, VIEW_MOUNTAINS)) / VIEW_MOUNTAINS;
+            double houseScore = Math.min(houses, VIEW_HOUSES) / VIEW_HOUSES;
+            // (some of each, not all of one)
+            double score = waterScore + mountainScore + houseScore + 2 * Math.min(waterScore, Math.min(mountainScore, houseScore));
+            if (score > bestScore) {
+                bestScore = score;
+                System.out.printf("[MENU] better site: water %.2f, hills %.1f degrees, houses %d%n", water, steepest, houses);
+                best = site;
+            }
+        }
+        if (best != null) System.out.printf("[MENU] Picturesque site chosen (score %.2f of 5)%n", bestScore);
+        return best;
+    }
+
+    /** Where the main menu's picture is taken from and what it looks at, round a pod (see menuShot): {eye, target}. */
+    private SpherePosition[] menuView(LandingPod landed) {
+        SphereFrame pod = landed.frame();
+        double side = Math.toRadians(Double.parseDouble(System.getProperty("xenoguesser.menuangle", "38")));
+        double distance = Double.parseDouble(System.getProperty("xenoguesser.menudistance", "165"));
+        double ex = Math.sin(side) * distance, ez = Math.cos(side) * distance;
+        SpherePosition standing = pod.toSphere(ex, 0.0, ez);
+        double eye = Math.max(TerrainMesh.getLayeredHeight(standing, worldNoise), seaLevelHeight) + 26.0;
+        // The pod sits just right of the middle: the menu takes the left, the spaceman the far right
+        double lookSide = side + Math.PI + Math.toRadians(Double.parseDouble(System.getProperty("xenoguesser.menuoffset", "1.5")));
+        return new SpherePosition[] { SphereMath.atAltitude(standing, eye),
+            pod.toSphere(ex + Math.sin(lookSide) * 100.0, landed.ground() + 24.0, ez + Math.cos(lookSide) * 100.0) };
+    }
+
     private void menuShot(GL3 gl) {
         if (framesRenderedSinceReady == 60) {
             hideFirstPerson = true;
             // In the pod's own space (x across, z the way its stairs run): off to one side of
-            // the stairs, a little above head height, looking at the pod
-            SphereFrame pod = landingPod.frame();
-            double side = Math.toRadians(Double.parseDouble(System.getProperty("xenoguesser.menuangle", "38")));
-            double distance = Double.parseDouble(System.getProperty("xenoguesser.menudistance", "165"));
-            double ex = Math.sin(side) * distance, ez = Math.cos(side) * distance;
-            SpherePosition standing = pod.toSphere(ex, 0.0, ez);
-            double eye = Math.max(TerrainMesh.getLayeredHeight(standing, worldNoise), seaLevelHeight) + 26.0;
-            camera.setSphereView(SphereMath.atAltitude(standing, eye), 0f, 0f);
-            // The pod sits just right of the middle: the menu takes the left, the spaceman the far right
-            double lookSide = side + Math.PI + Math.toRadians(Double.parseDouble(System.getProperty("xenoguesser.menuoffset", "1.5")));
-            camera.lookAt(pod.toSphere(ex + Math.sin(lookSide) * 100.0, landingPod.ground() + 24.0, ez + Math.cos(lookSide) * 100.0));
+            // the stairs, a little above head height, looking at the pod (see menuView)
+            SpherePosition[] view = menuView(landingPod);
+            camera.setSphereView(view[0], 0f, 0f);
+            camera.lookAt(view[1]);
             menuShotHold = true;
         } else if (framesRenderedSinceReady == 140) {
             saveFrameTo(gl, new File(LoadingArt.MENU));
@@ -1367,6 +1513,8 @@ private static class SpeciesConfig {
         textures = new TextureLibrary();
         // Repeating: dirt tracks lay it at world scale, well past one tile
         textures.addWrap(gl, "dirt_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL));
+        // (the ground's own, on its triangular cells: clamped, as it has its own margins round them)
+        textures.add(gl, "soil_tile", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_TILE));
         textures.add(gl, "water_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SEA));
         textures.add(gl, "sky", WorldArtGenerator.pathFor(WorldArtGenerator.SKY));
         textures.add(gl, "sun_glow", WorldArtGenerator.pathFor(WorldArtGenerator.SUN_GLOW));
@@ -1413,8 +1561,9 @@ private static class SpeciesConfig {
             new Vector3(0.1f, 0.1f, 0.1f), 
             4.0f                                                                                                                                                                                
         );
-        terrainMaterial.setDiffuseMap(textures.get("dirt_diffuse"));
+        terrainMaterial.setDiffuseMap(textures.get("soil_tile"));
                 enableAnisotropicFiltering(textures.get("dirt_diffuse"));
+        enableAnisotropicFiltering(textures.get("soil_tile"));
         soilRegionTexture = uploadCubeMap(SOIL_REGION_SIDE, 3, soilRegionTexels);
         soilRegionTexels = null;
         InfrastructureObject.soilRegions = soilRegionTexture;
@@ -1621,6 +1770,7 @@ private static class SpeciesConfig {
     private void initialiseWaterAndGrass() {
         sphereWaterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_water.txt",
                 GamePaths.HOME + "assets/shaders/fs_sphere_water.txt");
+        riverShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_river.txt", GamePaths.HOME + "assets/shaders/fs_river.txt");
         
         waterMaterial = new Material(
             new Vector3(0.01f, 0.31f, 0.55f),  
@@ -1767,8 +1917,11 @@ private static class SpeciesConfig {
     private Viewpoint landingSite(java.util.Random rand) {
         return infraManager.landingSite(rand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
                 p -> TerrainMesh.getLayeredHeight(p, worldNoise) > seaLevelHeight + 1.0f
+                        && !underFreshWater(p, TerrainMesh.getLayeredHeight(p, worldNoise))
                         // (within the map's top and bottom edges, so the place can be guessed)
-                        && Math.abs(Planet.latitude(p)) < MapProjection.CLIP_LATITUDE);
+                        && Math.abs(Planet.latitude(p)) < MapProjection.CLIP_LATITUDE,
+                // (in the country, along the roads, or in town, as chosen for the game)
+                MapKind.current());
     }
 
     // ------------------------------------------------------------------ the next round, got ready ahead
@@ -1825,6 +1978,8 @@ private static class SpeciesConfig {
             queuedPod = null;
             if (site != null) spawn = site;
         }
+        // Developer aid: the main menu's picture (-Dxenoguesser.menushot) is taken somewhere picturesque
+        if (MENU_SHOT && devView == null) spawn = orElse(picturesqueSite(dynamicRand), spawn);
         // Developer aids: on a town pavement among the inhabitants; across the street from a
         // shop, looking at its front; on a dirt track, looking along it; looking at a raised
         // road's retaining wall from below
@@ -1835,6 +1990,10 @@ private static class SpeciesConfig {
         // One of every animal side by side; some species' range with one of them just ahead
         if ("zoo".equals(devView)) spawn = orElse(organismManager.zooViewpoint(dynamicRand), spawn);
         if ("bug".equals(devView)) spawn = orElse(organismManager.showcaseViewpoint(dynamicRand), spawn);
+        // On a river's bank (-Dxenoguesser.riverwidth=20: one at least that wide), looking across and up it
+        if ("river".equals(devView)) spawn = orElse(riverViewpoint(dynamicRand), spawn);
+        // Beside one of the bigger lakes, looking out over it
+        if ("lake".equals(devView)) spawn = orElse(lakeViewpoint(dynamicRand), spawn);
 
         // Developer aid: -Dxenoguesser.spawnat=latitude,longitude (degrees, north and east
         // positive) starts the round there
@@ -1899,7 +2058,8 @@ private static class SpeciesConfig {
 
         while (spawn == null) {
             SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
-            if (TerrainMesh.getLayeredHeight(p, worldNoise) > seaLevelHeight) spawn = new Viewpoint(p, dynamicRand.nextDouble() * Math.PI * 2);
+            float ground = TerrainMesh.getLayeredHeight(p, worldNoise);
+            if (ground > seaLevelHeight && !underFreshWater(p, ground)) spawn = new Viewpoint(p, dynamicRand.nextDouble() * Math.PI * 2);
         }
 
         this.timeOfDay = dynamicRand.nextFloat();
@@ -1917,7 +2077,17 @@ private static class SpeciesConfig {
         landingPod.place(spawn.place(), spawn.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.frame().origin(), Math.max(40f, LandingPod.REACH) + 6f);
+        // (where the player stays where they land, out past the foot of the pod's stairs, where
+        // there's more to see than the pod: settled clear of anything solid once that's there)
+        if (!GameMode.current().moving && devView == null) {
+            spawn = standingClear(spawn);
+            settleUntil = System.nanoTime() * 1e-9 + SETTLE_SECONDS;
+        }
         moveToLocation(spawn);
+        // (each round starts with the view as usual)
+        zoomWanted = 1f;
+        zoom = 1f;
+        applyProjection();
         // Developer aid: -Dxenoguesser.lookatsun starts the round looking straight at the sun
         if (System.getProperty("xenoguesser.lookatsun") != null) {
             SpherePosition eye = camera.getSpherePosition();
@@ -1934,6 +2104,87 @@ private static class SpeciesConfig {
             camera.updateYawPitch(yaw == null ? 0f : Float.parseFloat(yaw) / camera.MOUSE_SPEED,
                     pitch == null ? 0f : Float.parseFloat(pitch) / camera.MOUSE_SPEED);
         }
+    }
+
+    // Where the player stays where they land (GameMode.NO_MOVE): this far out past where they'd
+    // stand on the pod's stairs at most, nearer if need be, on dry ground clear of houses and
+    // roads; and for this long after, put back towards the pod if they turn out to be in
+    // something solid (trees, rocks and the like are only there once their ground's been built)
+    private static final float[] STAND_OUT = { 60f, 52f, 44f, 36f, 28f, 20f, 12f };
+    private static final double SETTLE_SECONDS = 8.0;
+    private static final float SETTLE_STEP = 3f;
+    private double settleUntil = -1.0;
+
+    /** Where a player who can't move stands, out along the pod's stairs' way from spawn (see STAND_OUT). */
+    private Viewpoint standingClear(Viewpoint spawn) {
+        for (float out : STAND_OUT) {
+            SpherePosition p = SphereMath.move(spawn.place(), spawn.heading(), out);
+            float ground = TerrainMesh.getLayeredHeight(p, worldNoise);
+            if (ground <= seaLevelHeight + 1f || underFreshWater(p, ground)) continue;
+            // (nor on anyone's land: their plot, garden or driveway)
+            if (infraManager.isPrivateGround(p, PLAYER_RADIUS + 2f)) continue;
+            // (never on a road or track, nor at its very edge)
+            if (infraManager.isRoadLocation(p, PLAYER_RADIUS + 2f)) continue;
+            if (infraManager.blocksWalker(p, ground, ground + playerEyeHeight + 2f)) continue;
+            if (sphereTooSteep(spawn.place(), p)) continue;
+            return new Viewpoint(p, SphereMath.carryHeading(spawn.place(), p, spawn.heading()));
+        }
+        return spawn;
+    }
+
+    /** For a while after landing, puts a player who can't move back towards the pod if they're in something solid. */
+    private void settleClear() {
+        if (System.nanoTime() * 1e-9 > settleUntil || landingPod.frame() == null) return;
+        SpherePosition at = camera.getSpherePosition();
+        if (!geodesicCollision.blockedStatic(at, PLAYER_RADIUS, 0.0)) return;
+        SpherePosition pod = landingPod.frame().origin();
+        if (SphereMath.distance(at, pod) <= LandingPod.SPAWN_DISTANCE) return;
+        SpherePosition back = SphereMath.move(at, SphereMath.heading(at, pod), SETTLE_STEP);
+        camera.setSpherePosition(SphereMath.atAltitude(back, SphereMath.altitude(at)));
+    }
+
+    /** Developer aid: on the bank of a river at least -Dxenoguesser.riverwidth wide (default 12), looking upstream across it. */
+    private Viewpoint riverViewpoint(java.util.Random rand) {
+        Rivers rivers = worldNoise.rivers;
+        if (rivers == null || rivers.reaches().isEmpty()) return null;
+        float wide = Float.parseFloat(System.getProperty("xenoguesser.riverwidth", "12"));
+        for (int attempt = 0; attempt < 2000; attempt++) {
+            Rivers.Reach r = rivers.reaches().get(rand.nextInt(rivers.reaches().size()));
+            int k = 2 + rand.nextInt(Math.max(1, r.size() - 4));
+            if (k + 1 >= r.size() || r.inLake[k] || r.halfWidth[k] * 2f < wide) continue;
+            double[] p = r.points[k], q = r.points[k + 1];
+            SpherePosition here = SphereMath.atAltitude(new GeodesicChunkGrid.Direction(p[0], p[1], p[2]), 0.0);
+            SpherePosition down = SphereMath.atAltitude(new GeodesicChunkGrid.Direction(q[0], q[1], q[2]), 0.0);
+            double downstream = SphereMath.heading(here, down);
+            SpherePosition bank = SphereMath.move(here, downstream + Math.PI / 2, r.halfWidth[k] + Double.parseDouble(System.getProperty("xenoguesser.riverback", "14")));
+            if (TerrainMesh.getLayeredHeight(bank, worldNoise) <= seaLevelHeight + 1f) continue;
+            // (back down the bank a little, looking up the river and across it)
+            return new Viewpoint(bank, downstream - Math.PI * 0.62);
+        }
+        return null;
+    }
+
+    /** Developer aid: on the shore of a lake of a dozen texels or more, looking across it. */
+    private Viewpoint lakeViewpoint(java.util.Random rand) {
+        Rivers rivers = worldNoise.rivers;
+        if (rivers == null) return null;
+        List<Rivers.Lake> big = new ArrayList<>();
+        for (Rivers.Lake lake : rivers.lakes()) if (lake.texels.size() >= 12) big.add(lake);
+        if (big.isEmpty()) return null;
+        Rivers.Lake lake = big.get(rand.nextInt(big.size()));
+        double[] c = lake.texels.get(0);
+        SpherePosition middle = SphereMath.atAltitude(new GeodesicChunkGrid.Direction(c[0], c[1], c[2]), 0.0);
+        // Out from the middle until the ground rises above the water, then a little further
+        for (int attempt = 0; attempt < 32; attempt++) {
+            double heading = rand.nextDouble() * Math.PI * 2;
+            for (double out = 10; out < 2000; out += 10) {
+                SpherePosition p = SphereMath.move(middle, heading, out);
+                if (TerrainMesh.getLayeredHeight(p, worldNoise) > lake.level + 1f) {
+                    return new Viewpoint(SphereMath.move(middle, heading, out + 25), heading + Math.PI);
+                }
+            }
+        }
+        return null;
     }
 
     private static Viewpoint orElse(Viewpoint view, Viewpoint otherwise) {
@@ -1988,11 +2239,19 @@ private static class SpeciesConfig {
         if (distance < 1e-6) return;
         int steps = Math.max(1, (int) Math.ceil(distance / 1.5));
         SpherePosition lastFree = from;
+        // (where the feet and head are: raised roads and bridges stop the body beside them)
+        float feet = (airborne ? airborneEyeY : (float) SphereMath.altitude(to)) - playerEyeHeight, head = feet + playerEyeHeight + 2f;
+        boolean startsInRoad = infraManager != null && infraManager.blocksWalker(from, feet, head);
         for (int i = 1; i <= steps; i++) {
             SpherePosition candidate = SphereMath.slerp(from, to, i / (double) steps);
-            if (jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
+            // (while swimming, the slope of the bed beneath doesn't matter: only ground that
+            // comes up out of the water, where the swimmer would stand, can be too steep)
+            boolean floating = swimming && TerrainMesh.getLayeredHeight(candidate, worldNoise) + playerEyeHeight
+                    < waterSurfaceHere + SWIM_EYE_HEIGHT;
+            if (!floating && jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
             SpherePosition resolved = geodesicCollision.resolveFirm(lastFree, candidate, PLAYER_RADIUS, PLAYER, jumpHeight);
             if (geodesicCollision.blockedStatic(resolved, PLAYER_RADIUS * 0.98, jumpHeight)) break;
+            if (!startsInRoad && infraManager != null && infraManager.blocksWalker(resolved, feet, head)) break;
             lastFree = resolved;
         }
         // (the eyes keep the height they had)
@@ -2022,6 +2281,8 @@ private static class SpeciesConfig {
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
     public void jump() {
+        // (not where the game mode keeps the player where they landed: it'd serve no purpose)
+        if (!GameMode.current().moving) return;
         jumpWanted = true;
     }
 
@@ -2054,7 +2315,8 @@ private static class SpeciesConfig {
                 if (obj.type != InfrastructureObject.Type.BATCH || !obj.hasTransparentParts()) continue;
                 double dx = obj.centre.x() - eye.x(), dy = obj.centre.y() - eye.y(), dz = obj.centre.z() - eye.z();
                 double far = reach + obj.boundingRadius;
-                if (dx * dx + dy * dy + dz * dz > far * far || dx * forward.x + dy * forward.y + dz * forward.z < -obj.boundingRadius) continue;
+                double distanceSquared = dx * dx + dy * dy + dz * dz;
+                if (distanceSquared > far * far || !mayBeInView(dx, dy, dz, distanceSquared, obj.boundingRadius, forward)) continue;
                 obj.renderTransparent(gl);
             }
         }
@@ -2096,6 +2358,16 @@ private static class SpeciesConfig {
         } else {
             ground = TerrainMesh.getLayeredHeight(p, worldNoise);
         }
+        return Math.max(ground, landingPod.floorAt(p));
+    }
+
+    /**
+     * What the player stands on at a place with their feet at feet: a raised road or bridge
+     * only if they're up on it already (or come down onto it), or it's low enough to step onto
+     * (see InfrastructureManager.walkingSurfaceY); the pod's stairs where they are higher.
+     */
+    private double groundHeightAt(SpherePosition p, float feet) {
+        double ground = infraManager != null ? infraManager.walkingSurfaceY(p, feet) : TerrainMesh.getLayeredHeight(p, worldNoise);
         return Math.max(ground, landingPod.floorAt(p));
     }
 
@@ -2238,7 +2510,7 @@ private static class SpeciesConfig {
                 float scale = 0.70f + cRand.nextFloat() * 0.60f;
                 float rotation = cRand.nextFloat() * 360.0f;
                 float ground = TerrainMesh.getLayeredHeight(at, worldNoise);
-                if (ground <= seaLevelHeight + 0.1f || slopeAt(at) >= 0.9f || podCovers(at, 8f)) continue;
+                if (ground <= seaLevelHeight + 0.1f || slopeAt(at) >= 0.9f || podCovers(at, 8f) || underFreshWater(at, ground)) continue;
                 if (infraManager.isClearedForRoad(at, 11.0f, 3.0f) || infraManager.isBuildingLocation(at, 6.0f)) continue;
                 plants.add(plant(SphereMath.atAltitude(at, ground), s, model, scale, rotation));
             }
@@ -2297,6 +2569,8 @@ private static class SpeciesConfig {
 
         float[] blades = new float[attempts * 5];
         int writeIdx = 0;
+        // The terrain mesh's vertex heights, each worked out once for the cell (by terrain cell, row and column)
+        java.util.Map<Long, Float> meshHeights = new java.util.HashMap<>();
         for (int i = 0; i < attempts; i++) {
             long bladeSeed = worldSeed ^ (id * 73731703L) ^ ((long) i * 2147483647L);
 
@@ -2314,14 +2588,18 @@ private static class SpeciesConfig {
             double root = Math.sqrt(rand1);
             double wa = 1.0 - root, wb = root * (1.0 - rand2), wc = root * rand2;
             GeodesicChunkGrid.Direction direction = blend(cell, wa, wb, wc);
-            float ground = TerrainMesh.getLayeredHeight(direction, worldNoise);
+            // (on the ground as it's drawn, so no blade hovers where the mesh's flat triangles
+            // cut beneath a hump, nor is buried where they bridge a hollow)
+            float ground = TerrainMesh.drawnHeight(direction, worldNoise, meshHeights);
 
             // Grass thins out on steep ground and gives way to bare rock
             float slope = latticeSlope(lattice, n, wb, wc);
             float keep = 1f - Math.max(0f, Math.min(1f, (slope - 0.6f) / 0.6f));
             boolean onSlope = ((rand1 * 7.31f + rand2 * 3.17f) % 1f) >= keep;
-            if (ground <= seaLevelHeight + 0.1f || onSlope) continue;
-            SpherePosition at = SphereMath.atAltitude(direction, ground);
+            if (ground <= seaLevelHeight + 0.1f || onSlope || underFreshWater(SphereMath.atAltitude(direction, 0.0), ground)) continue;
+            // (a blade is a flat card turned to face the eyes: seen across a slope, its downhill
+            // corner would stand clear of the ground, so its root is sunk by about that much)
+            SpherePosition at = SphereMath.atAltitude(direction, ground - GRASS_SLOPE_SINK * Math.min(slope, 1.2f));
             if (podCovers(at, -2f)) continue;
             if (infraManager.isClearedForRoad(at, 11.0f, 1.5f)) continue;
 
@@ -2463,11 +2741,33 @@ private static class SpeciesConfig {
                         GEODESIC_TERRAIN_SEGMENTS, worldNoise));
     }
 
+    /**
+     * Whether a ball (its centre dx, dy, dz from the eyes, of a radius) may be in view: within the
+     * cone round the way the camera looks that holds the whole picture, corners and all.
+     */
+    private boolean mayBeInView(double dx, double dy, double dz, double distanceSquared, double radius, Vector3 forward) {
+        if (distanceSquared <= radius * radius) return true;
+        double distance = Math.sqrt(distanceSquared);
+        double along = (dx * forward.x + dy * forward.y + dz * forward.z) / distance;
+        double angle = Math.acos(Math.max(-1.0, Math.min(1.0, along)));
+        return angle - Math.asin(radius / distance) <= viewConeHalfAngle();
+    }
+
+    /** Half the angle across the picture's diagonal (the perspective is 45 degrees up and down), a little over. */
+    private double viewConeHalfAngle() {
+        double up = Math.tan(fieldOfView() / 2.0), across = up * currentWidth / Math.max(1, currentHeight);
+        return Math.atan(Math.hypot(up, across)) + Math.toRadians(3.0);
+    }
+
+    // The building batches in view this frame, nearest first (see renderGeodesicInfrastructure)
+    private final List<InfrastructureObject> visibleBatches = new ArrayList<>();
+
     private void renderGeodesicInfrastructure(GL3 gl, Matrix4 skyRotation) {
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
         float drawDistance = Math.max(VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE, FAR_PLANE);
         List<InfrastructureObject> signs = new ArrayList<>();
+        visibleBatches.clear();
         for (List<InfrastructureObject> objects : infraCache.values()) {
             for (InfrastructureObject object : objects) {
                 if (object.type == InfrastructureObject.Type.SIGN) {
@@ -2481,11 +2781,16 @@ private static class SpeciesConfig {
                 double distanceSquared = dx * dx + dy * dy + dz * dz;
                 double radius = object.boundingRadius;
                 if (distanceSquared > (drawDistance + radius) * (drawDistance + radius)) continue;
-                if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
+                if (!mayBeInView(dx, dy, dz, distanceSquared, radius, forward)) continue;
                 object.setViewerDistanceSquared((float) distanceSquared);
-                object.renderBatch(gl, ambientLight, nightProportion,
-                        solidShader, terrainShader, terrainRenderer, camera);
+                visibleBatches.add(object);
             }
+        }
+        // Nearest first, so what's hidden behind them fails the depth test before it's shaded
+        visibleBatches.sort((a, b) -> Float.compare(a.viewerDistanceSquared(), b.viewerDistanceSquared()));
+        for (InfrastructureObject object : visibleBatches) {
+            object.renderBatch(gl, ambientLight, nightProportion,
+                    solidShader, terrainShader, terrainRenderer, camera);
         }
         renderSigns(gl, signs, eye, forward, skyRotation);
     }
@@ -2523,6 +2828,76 @@ private static class SpeciesConfig {
      * the water, so the coast is where the sea's surface meets the ground. Shallows let the
      * ground show through, by how much water lies over it (the depth pre-pass's terrain).
      */
+    /** The height of a river's or lake's water at a place, if it's in one (NaN if not). */
+    private float freshWaterAt(SpherePosition place) {
+        Rivers rivers = worldNoise.rivers;
+        if (rivers == null) return Float.NaN;
+        return rivers.waterAt(SphereMath.direction(place), TerrainMesh.getLayeredHeight(place, worldNoise));
+    }
+
+    /** Whether a place's ground is under a river's or lake's water. */
+    private boolean underFreshWater(SpherePosition place, float ground) {
+        Rivers rivers = worldNoise.rivers;
+        return rivers != null && !Float.isNaN(rivers.waterAt(SphereMath.direction(place), ground));
+    }
+
+    /** The rivers and lakes, once their meshes are made: after the sea, see-through like it. */
+    private void renderRivers(GL3 gl, Matrix4 skyRotation, Texture sky, float time) {
+        if (!riverRenderer.ready()) {
+            if (riverBuild == null || !riverBuild.isDone()) return;
+            try {
+                riverRenderer.upload(gl, riverBuild.get());
+            } catch (Exception e) {
+                System.err.println("Could not make the rivers' meshes: " + e);
+                riverBuild = null;
+                return;
+            }
+        }
+        SpherePosition eye = camera.getSpherePosition();
+        Vector3 forward = camera.getSphereForwardDirection();
+        Vector3 sunDirection = SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude));
+        gl.glEnable(GL.GL_DEPTH_TEST);
+        gl.glDisable(GL.GL_CULL_FACE);
+        gl.glEnable(GL.GL_BLEND);
+        gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
+        // (writing depth, so where pieces overlap - a lake's patches, a bend - the water isn't laid on twice;
+        // drawn a touch nearer than the ground it lies on)
+        gl.glDepthMask(true);
+        gl.glEnable(GL.GL_POLYGON_OFFSET_FILL);
+        gl.glPolygonOffset(-1f, -4f);
+        Shader s = riverShader;
+        s.use(gl);
+        s.setFloatArray(gl, "viewProjection", camera.getSphereViewProjection().toFloatArrayForGLSL());
+        s.setVec3(gl, "sphereCamera", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
+        s.setFloat(gl, "time", time);
+        s.setVec2(gl, "windowSize", new Vector2((float) currentWidth, (float) currentHeight));
+        s.setFloat(gl, "nearPlane", currentNearPlane);
+        s.setFloat(gl, "farPlane", FAR_PLANE);
+        s.setVec3(gl, "sunDirection", sunDirection);
+        float[] sunTint = worldArt.palette().sunTint;
+        s.setVec3(gl, "lightSpecular", new Vector3(sunTint[0], sunTint[1], sunTint[2]));
+        float[] shallow = worldArt.palette().seaShallowTint();
+        float[] deep = worldArt.palette().seaDeepOcean();
+        s.setVec3(gl, "u_ShallowTint", new Vector3(shallow[0], shallow[1], shallow[2]));
+        s.setVec3(gl, "u_DeepOceanColour", new Vector3(deep[0], deep[1], deep[2]));
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(s.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
+        if (sky != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            sky.bind(gl);
+            s.setInt(gl, "skyTexture", 2);
+        }
+        gl.glActiveTexture(GL3.GL_TEXTURE1);
+        gl.glBindTexture(GL3.GL_TEXTURE_2D, depthTexture[0]);
+        s.setInt(gl, "terrainDepthTexture", 1);
+        gl.glActiveTexture(GL3.GL_TEXTURE0);
+        textures.get("water_diffuse").bind(gl);
+        s.setInt(gl, "diffuse_texture", 0);
+        riverRenderer.render(gl, eye, FAR_PLANE, (dx, dy, dz, d2, r) -> mayBeInView(dx, dy, dz, d2, r, forward));
+        gl.glDisable(GL.GL_POLYGON_OFFSET_FILL);
+        gl.glDisable(GL.GL_BLEND);
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
     private void renderSea(GL3 gl, Matrix4 skyRotation, Texture sky, float time) {
         if (geodesicTerrainModel == null || seaGrid == null) return;
         SpherePosition eye = camera.getSpherePosition();
@@ -2604,9 +2979,11 @@ private static class SpeciesConfig {
                 double distanceSquared = dx * dx + dy * dy + dz * dz;
                 if (distanceSquared > reach * reach) continue;
                 float radius = FLORA_CULL_RADIUS * plant.scale();
-                if (dx * forward.x + dy * forward.y + dz * forward.z < -radius) continue;
+                if (!mayBeInView(dx, dy, dz, distanceSquared, radius, forward)) continue;
                 visibleFlora.add(plant);
-                visibleLods.add(distanceSquared > 135.0 * 135.0 ? 2 : (distanceSquared > 65.0 * 65.0 ? 1 : 0));
+                // (as near as it looks: zoomed in, as detailed as if it were that much nearer)
+                double seen = distanceSquared / (zoom * zoom);
+                visibleLods.add(seen > 135.0 * 135.0 ? 2 : (seen > 65.0 * 65.0 ? 1 : 0));
             }
         }
         if (visibleFlora.isEmpty()) return;
@@ -2760,7 +3137,8 @@ private static class SpeciesConfig {
             if (data.length == 0) continue;
             // Far grass is thinned: it shrinks below a pixel and fades into fog, but drawing
             // every blade out to the horizon was the costliest pass
-            int ring = (int) (SphereMath.distance(here, SphereMath.atAltitude(grassStream.grid().cell(entry.getKey()).centre(), 0.0)) / PHYSICAL_CHUNK_SIZE);
+            // (as near as it looks: zoomed in, thinned as if it were that much nearer)
+            int ring = (int) (SphereMath.distance(here, SphereMath.atAltitude(grassStream.grid().cell(entry.getKey()).centre(), 0.0)) / PHYSICAL_CHUNK_SIZE / zoom);
             int stride = ring <= 4 ? 1 : ring <= 8 ? 2 : ring <= 14 ? 4 : 8;
             cells.add(data);
             strides.add(stride);
@@ -2820,6 +3198,8 @@ private static class SpeciesConfig {
         boolean moveD = keyboard.d;
 
         if (moveW && moveS) { moveW = false; moveS = false; }
+        // (in the game modes where the player stays where they landed, they can't walk)
+        if (!GameMode.current().moving) { moveW = false; moveA = false; moveS = false; moveD = false; }
         if (moveA && moveD) { moveA = false; moveD = false; }
 
         SpherePosition sphereBeforeMove = camera.getSpherePosition();
@@ -2832,13 +3212,19 @@ private static class SpeciesConfig {
         if (!menuShotHold) {
             moveSolidly(sphereBeforeMove);
         }
+        settleClear();
+        easeZoom(deltaTime);
         float currentAltitude = camera.getAltitude();
-        // What's underfoot: the ground, a road's deck or the pod's stairs
-        float rawGroundHeight = (float) groundHeightAt(camera.getSpherePosition());
+        // What's underfoot: the ground, a road's deck (if they're up on it) or the pod's stairs
+        float feet = (airborne ? airborneEyeY : currentAltitude) - playerEyeHeight;
+        float rawGroundHeight = (float) groundHeightAt(camera.getSpherePosition(), feet);
         float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
         // Too deep to stand: swim, eyes just above the water
         waterSurfaceHere = regionalManager.waveSurfaceAt(camera.getSpherePosition(), (float) elapsedTime, seaLevelHeight);
+        // (or a river's or lake's, where that's higher)
+        float freshWater = freshWaterAt(camera.getSpherePosition());
+        if (!Float.isNaN(freshWater)) waterSurfaceHere = Math.max(waterSurfaceHere, freshWater);
         swimming = targetCameraHeight < waterSurfaceHere + SWIM_EYE_HEIGHT;
         if (swimming) {
             targetCameraHeight = waterSurfaceHere + SWIM_EYE_HEIGHT;
@@ -2980,10 +3366,6 @@ private static class SpeciesConfig {
         float[] sunColour = { sunTintNow[0] * daylight, sunTintNow[1] * daylight, sunTintNow[2] * daylight };
         // The fog everything fades into with distance
         float[] fog = fogColour(skyColour);
-        // --- CLOUDS, over the sky and the sun and behind everything else ---
-        sphereWeather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, daylight,
-                (float) elapsedTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
-                sunTintNow, fog, seaLevelHeight);
         Shader.setFog(gl, fog[0], fog[1], fog[2]);
         // The snow lying on the ground, once it's been worked out
         bindSnowCover(gl);
@@ -3067,14 +3449,20 @@ private static class SpeciesConfig {
         landingPod.render(gl, sphereViewProjection, eye, sunDirection, sunColour,
                 ambientLight, skyRotation, textures.get(skyTextureKey));
 
+        // --- CLOUDS, over the sky and the sun: only where nothing solid stands in front ---
+        sphereWeather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, daylight,
+                (float) elapsedTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
+                sunTintNow, fog, seaLevelHeight);
+
         // --- WINDOW GLASS ---
         drawWindowGlass(gl, sphereViewProjection, eye, camera.getSphereForwardDirection(), SphereRender.sunPoint(sunDirection),
                 sunColour, skyRotation, textures.get(skyTextureKey), GLASS_DRAW_DISTANCE);
 
         renderSea(gl, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
+        renderRivers(gl, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
         // --- RAIN, under dark clouds ---
         sphereWeather.renderRain(gl, sphereViewProjection, eye, worldArt.palette().seaShallowTint(), daylight,
-                (float) (currentHeight * 0.5 / Math.tan(Math.toRadians(45.0 / 2.0))));
+                (float) (currentHeight * 0.5 / Math.tan(fieldOfView() / 2.0)));
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         captureLensDepth(gl);
@@ -3281,6 +3669,11 @@ private static class SpeciesConfig {
         }, this::choiceIcon);
     }
 
+    /** A map's price factor: for one of what people have built (roads, buildings, shops, wealth, nations), as the kind of map makes it (see MapKind). */
+    private static float builtPriceFactor(boolean built) {
+        return built ? MapKind.current().builtPriceFactor : 1f;
+    }
+
     /**
      * Three things for the shop after this round (counting from 1), shuffled from everything
      * not yet bought (each item there ShopPanel.ITEM_COPIES times, though never dealt twice at
@@ -3303,7 +3696,8 @@ private static class SpeciesConfig {
         for (MapPanel.Layer layer : MapPanel.Layer.values()) {
             if (ownedLayers.contains(layer)) continue;
             deck.add(new ShopPanel.Card(layer.label, "Map marking", choiceIcon(layer.label), null, describe(descriptions, layer.label, layer.label),
-                    ShopPanel.price(round, 1f, rand), () -> {
+                    ShopPanel.price(round, builtPriceFactor(layer == MapPanel.Layer.ROADS || layer == MapPanel.Layer.BUILDINGS
+                            || layer == MapPanel.Layer.SHOPS), rand), () -> {
                 ownedLayers.add(layer);
                 // (shown straight away)
                 minimap.setLayerShown(layer, true);
@@ -3318,7 +3712,8 @@ private static class SpeciesConfig {
                 String key = plant ? "Flora" : animal ? "Fauna" : name;
                 String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : "Heatmap";
                 deck.add(new ShopPanel.Card(name, kind, choiceIcon(name), null, describe(descriptions, key, name),
-                        ShopPanel.price(round, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR : 1f, rand), () -> {
+                        ShopPanel.price(round, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR
+                                : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.NATIONS), rand), () -> {
                     ownedOverlays.add(o);
                     refreshMapChoices();
                 }));
@@ -3443,6 +3838,7 @@ private static class SpeciesConfig {
         }
         String file = switch (label) {
             case "Contours" -> "contours";
+            case "Rivers" -> "rivers";
             case "Roads" -> "roads";
             case "Buildings" -> "buildings";
             case "Shops" -> "shops";
@@ -3860,10 +4256,10 @@ private static class SpeciesConfig {
     // Mouse look gathered on the UI thread, applied at the start of the next frame
     private float lookYaw, lookPitch;
 
-    /** Turns the view; safe to call from any thread. */
+    /** Turns the view (more finely the more it's zoomed in, so it holds as steady); safe to call from any thread. */
     public synchronized void look(float yaw, float pitch) {
-        lookYaw += yaw;
-        lookPitch += pitch;
+        lookYaw += yaw / zoomWanted;
+        lookPitch += pitch / zoomWanted;
     }
 
     private synchronized void applyLook() {
@@ -3874,6 +4270,8 @@ private static class SpeciesConfig {
 
     // A grass blade's height in world units, before each blade's own height scales it
     private static final float GRASS_BLADE_HEIGHT = 4.8f;
+    // How far a blade's root is sunk per unit of slope (rise over run): about a typical blade's half width
+    private static final float GRASS_SLOPE_SINK = 0.8f;
     // The grass's height where it grows shortest and tallest, in metres (before each blade's own variation)
     private static final float GRASS_SHORTEST = 0.07f, GRASS_TALLEST = 1.0f;
     // The lowest and highest the grass's height and colour factors reach on the land, once worked out
@@ -4522,7 +4920,12 @@ private static class SpeciesConfig {
     }
 
     private float temperatureAt(SpherePosition place) {
-        float warmth = regionalManager.temperatureMap.evaluateAt(place);
+        // (the map's chill is for the height of the ground round about: swapped for the
+        // ground's own height here, so a peak reads colder than the valley beside it)
+        GeodesicChunkGrid.Direction d = SphereMath.direction(place);
+        float ground = Math.max(0f, TerrainMesh.getLayeredHeight(place, worldNoise) - seaLevelHeight);
+        float warmth = regionalManager.temperatureMap.evaluate(d) + regionalManager.altitudeChill(d)
+                - ground * RegionalGenerationManager.ALTITUDE_CHILL;
         float celsius = -30f + 70f * warmth;
         double latitude = Planet.latitude(place);
         double tilt = Math.toRadians(Math.max(1.0, planetAxialTiltDegrees));

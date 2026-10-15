@@ -366,9 +366,11 @@ public class RockField {
         long first = id << shift, cells = 1L << shift;
         List<float[]> verts = new ArrayList<>();
         List<Solid> solidRocks = new ArrayList<>();
+        // (the drawn ground's vertex heights, shared by neighbouring rocks)
+        java.util.Map<Long, Float> groundHeights = new java.util.HashMap<>();
         for (long k = 0; k < cells; k++) {
             if (Thread.currentThread().isInterrupted()) break;
-            addCellRocks(rockGrid.cell(first + k), centre, coarse, verts, solidRocks);
+            addCellRocks(rockGrid.cell(first + k), centre, coarse, verts, solidRocks, groundHeights);
         }
         int floats = coarse ? 10 : 9;
         float[] data = new float[verts.size() * floats];
@@ -382,7 +384,8 @@ public class RockField {
     }
 
     /** Places one cell's rocks, the same each time, adding their vertices (relative to origin) and solid ones. */
-    private void addCellRocks(GeodesicChunkGrid.Cell cell, SpherePosition origin, boolean coarse, List<float[]> verts, List<Solid> solidRocks) {
+    private void addCellRocks(GeodesicChunkGrid.Cell cell, SpherePosition origin, boolean coarse, List<float[]> verts, List<Solid> solidRocks,
+                              java.util.Map<Long, Float> groundHeights) {
         double area = cell.area() * Planet.radius() * Planet.radius();
         Random rand = new Random(seed ^ (cell.id() * 0x9E3779B97F4A7C15L) ^ 0x70C5L);
         float expected = rockinessAt(SphereMath.atAltitude(cell.centre(), 0.0)) * MAX_PER_CHUNK
@@ -409,24 +412,34 @@ public class RockField {
             float tone = 0.85f + 0.3f * rand.nextFloat();
             int variant = rand.nextInt(VARIANTS);
             if (coarse && r < FAR_MIN_RADIUS) continue;
-            float ground = TerrainMesh.getLayeredHeight(at, terrain);
+            // (on the ground as it's drawn: its flat triangles cut beneath peaks and ridges)
+            float ground = TerrainMesh.drawnHeight(at, terrain, groundHeights);
             if (ground < seaLevel + 0.5f || keepout.blocks(at, r)) continue;
+            // (none in a river or lake)
+            if (terrain.rivers != null && !Float.isNaN(terrain.rivers.waterAt(SphereMath.direction(at), ground + r * 0.3f))) continue;
             float angular = angularityAt(at);
             float squash = 0.45f + 0.45f * angular * (0.6f + 0.4f * angularRoll);
             float[] colour = colourAt(at);
             float[] src = (coarse ? coarseVertices : variantVertices).get(variant);
             float cos = (float) Math.cos(yaw), sin = (float) Math.sin(yaw);
             float sink = r * squash * 0.25f;
-            // Built in the rock's own tangent frame, standing on the ground there
+            // Built in the rock's own tangent frame, standing on the ground there, its up along
+            // the ground's normal so on a slope it sits into the hillside rather than upright
             SpherePosition foot = SphereMath.atAltitude(at, ground);
             SphereFrame frame = SphereFrame.at(foot);
+            double[][] lie = groundBasis(frame, Math.max(1.0, r), groundHeights);
+            // Sunk further wherever the ground falls away under its edges (round a peak, over
+            // a ridge) faster than its underside curves up, so no edge overhangs thin air
+            float settle = settleDepth(frame, lie, ground, r, r * squash, groundHeights);
             for (int v = 0; v < src.length; v += 6) {
                 float lx = src[v] * r, ly = src[v + 1] * r * squash, lz = src[v + 2] * r;
                 // A slight lean, then turned
                 ly += lx * tiltX + lz * tiltZ;
-                SpherePosition world = frame.toWorld(lx * cos + lz * sin, -sink + ly + r * squash * 0.35f, -lx * sin + lz * cos);
+                double[] p = onGround(lie, lx * cos + lz * sin, -sink + ly + r * squash * 0.35f, -lx * sin + lz * cos);
+                SpherePosition world = frame.toWorld(p[0], p[1] - settle, p[2]);
                 float nx = src[v + 3], ny = src[v + 4] / Math.max(0.3f, squash), nz = src[v + 5];
-                double[] n = frame.worldDirection(nx * cos + nz * sin, ny, -nx * sin + nz * cos);
+                double[] ln = onGround(lie, nx * cos + nz * sin, ny, -nx * sin + nz * cos);
+                double[] n = frame.worldDirection(ln[0], ln[1], ln[2]);
                 float len = (float) Math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
                 // Darker low down where soil and shadow gather
                 float low = 0.65f + 0.35f * Math.max(0f, Math.min(1f, (src[v + 1] + 0.35f) / 1.0f));
@@ -439,6 +452,58 @@ public class RockField {
             float top = r * squash * 1.1f;
             if (!coarse && top > STEP_HEIGHT) solidRocks.add(new Solid(foot, r * 0.85f, top));
         }
+    }
+
+    /**
+     * The ground's own axes at a frame's origin, in that frame: {across, the ground's normal,
+     * along}, the frame's x and z laid onto the slope (from the heights step either way).
+     */
+    private double[][] groundBasis(SphereFrame frame, double step, java.util.Map<Long, Float> groundHeights) {
+        double gx = (TerrainMesh.drawnHeight(frame.toSphere(step, 0.0, 0.0), terrain, groundHeights)
+                - TerrainMesh.drawnHeight(frame.toSphere(-step, 0.0, 0.0), terrain, groundHeights)) / (2.0 * step);
+        double gz = (TerrainMesh.drawnHeight(frame.toSphere(0.0, 0.0, step), terrain, groundHeights)
+                - TerrainMesh.drawnHeight(frame.toSphere(0.0, 0.0, -step), terrain, groundHeights)) / (2.0 * step);
+        double[] up = normalise(-gx, 1.0, -gz);
+        // (x along the slope, then z square to both, by Gram-Schmidt, so the handedness stays the frame's)
+        double[] x = normalise(1.0 - up[0] * up[0], -up[0] * up[1], -up[0] * up[2]);
+        double xz = x[2], uz = up[2];
+        double[] z = normalise(-uz * up[0] - xz * x[0], -uz * up[1] - xz * x[1], 1.0 - uz * up[2] - xz * x[2]);
+        return new double[][] { x, up, z };
+    }
+
+    /**
+     * How much further a rock of radius r and height h (its underside reaching about 0.9 h below
+     * the slope it lies along, rounding up towards its edge) must sink so that, all round, the
+     * drawn ground under it is no lower than its underside: from the ground's height in rings
+     * part way and nearly all the way out. Never more than the rock's height.
+     */
+    private float settleDepth(SphereFrame frame, double[][] lie, float ground, float r, float h, java.util.Map<Long, Float> groundHeights) {
+        float deepest = 0f;
+        for (double ring : new double[] { 0.6, 0.9 }) {
+            // (how far below the slope the underside is that far out, with something to spare
+            // for the lumps in the rock's shape)
+            double underside = 0.8 * h * (Math.sqrt(1.0 - ring * ring) - 0.1);
+            for (int k = 0; k < 8; k++) {
+                double angle = k * Math.PI / 4.0;
+                double[] p = onGround(lie, Math.cos(angle) * r * ring, 0.0, Math.sin(angle) * r * ring);
+                float below = TerrainMesh.drawnHeight(frame.toSphere(p[0], 0.0, p[2]), terrain, groundHeights) - ground;
+                deepest = Math.max(deepest, (float) (p[1] - below - underside));
+            }
+        }
+        return Math.min(deepest, h);
+    }
+
+    /** A point or direction in a ground basis's axes, in the frame's. */
+    private static double[] onGround(double[][] basis, double x, double y, double z) {
+        return new double[] {
+                basis[0][0] * x + basis[1][0] * y + basis[2][0] * z,
+                basis[0][1] * x + basis[1][1] * y + basis[2][1] * z,
+                basis[0][2] * x + basis[1][2] * y + basis[2][2] * z };
+    }
+
+    private static double[] normalise(double x, double y, double z) {
+        double length = Math.sqrt(x * x + y * y + z * z);
+        return new double[] { x / length, y / length, z / length };
     }
 
     private void dispose(GL3 gl, Tile tile) {

@@ -21,6 +21,8 @@ public final class WorldArtGenerator {
     public static final String OUTPUT_DIR = RunFiles.WORLD_DIR;
 
     public static final String SOIL = "soil";
+    // The soil laid on the ground's triangular cells, running on from one to the next (see ProceduralTextures.triangleTile)
+    public static final String SOIL_TILE = "soil_tile";
     public static final String SEA = "sea";
     public static final String SKY = "sky";
     public static final String SUN_GLOW = "sun_glow";
@@ -57,7 +59,16 @@ public final class WorldArtGenerator {
         List<Supplier<BufferedImage>> jobs = new ArrayList<>();
         List<String> names = new ArrayList<>();
 
-        names.add(SOIL);        jobs.add(() -> art.soil = ProceduralTextures.soil(worldSeed, art.palette));
+        names.add(SOIL);        jobs.add(() -> {
+            art.soil = ProceduralTextures.soil(worldSeed, art.palette);
+            // (and from it, the ground's triangular tile)
+            try {
+                ImageIO.write(ProceduralTextures.triangleTile(art.soil), "png", new File(pathFor(SOIL_TILE)));
+            } catch (java.io.IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+            return art.soil;
+        });
         names.add(SEA);         jobs.add(() -> art.sea = ProceduralTextures.sea(worldSeed, art.palette));
         names.add(SKY);         jobs.add(() -> art.sky = ProceduralTextures.sky(worldSeed, art.palette));
         names.add(SUN_GLOW);    jobs.add(() -> art.sunGlow = ProceduralTextures.sunGlow(art.palette));

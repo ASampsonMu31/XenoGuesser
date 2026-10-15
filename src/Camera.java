@@ -182,6 +182,17 @@ public class Camera {
     }
   }
 
+  // The tangent of half the view's height (the perspective's field of view, as zoomed)
+  private volatile float tanHalfFov = (float) Math.tan(Math.toRadians(22.5));
+
+  public float tanHalfFov() {
+    return tanHalfFov;
+  }
+
+  public void setTanHalfFov(float tanHalfFov) {
+    this.tanHalfFov = tanHalfFov;
+  }
+
   public void updateYawPitch(float deltaX, float deltaY) {
     yaw += (deltaX * MOUSE_SPEED);
     pitch += (deltaY * MOUSE_SPEED);

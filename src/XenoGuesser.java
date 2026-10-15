@@ -42,7 +42,8 @@ public class XenoGuesser extends JFrame {
   private volatile boolean inGame;
   private final Set<Integer> keysDown = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
-  private final long worldSeed;
+  // The world being played: a new one each game (the clock's time when it was chosen), unless -Dxenoguesser.seed fixes it
+  private long worldSeed;
   private LoadingProgress loadingProgress = new LoadingProgress();
   private LoadingScreen loadingScreen;
   private MainMenu mainMenu;
@@ -242,6 +243,19 @@ public class XenoGuesser extends JFrame {
       // Where the map's left and right edges join: the meridian crossing the least land
       float joinLand = MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, worldNoise), seaLevelHeight);
       System.out.printf("[PLANET] The map's join crosses %.1f%% land%n", joinLand * 100f);
+
+      // The rivers, from the bare land: everything after sees the ground with their channels cut
+      loadingProgress.begin(LoadingProgress.Stage.RIVERS);
+      long riversStarted = System.currentTimeMillis();
+      // (the climate first: streams rise more readily, and run fuller, where it's wet)
+      RegionalGenerationManager climate = new RegionalGenerationManager(worldSeed, seaLevelHeight);
+      climate.precalculateWaterDistanceField(worldNoise);
+      climate.setMoistureMap(climate.createWaterPreference(0f, 8000f));
+      worldNoise.rivers = Rivers.generate(worldNoise, seaLevelHeight, climate.rainfallMap::evaluate);
+      // (and the moisture they bring to the land round them)
+      climate.addRivers(worldNoise.rivers);
+      worldNoise.climate = climate;
+      System.out.printf("[RIVERS] Worked out in %d ms%n", System.currentTimeMillis() - riversStarted);
       
       // (put in place by the first spawn)
       Camera camera = new Camera(Planet.position(0.0, 0.0, seaLevelHeight + 20.0), seaLevelHeight);
@@ -313,6 +327,10 @@ public class XenoGuesser extends JFrame {
 
 
     canvas.addGLEventListener(glEventListener);
+    // The mouse wheel (and a touchpad's pinch, which comes as one) zooms the view where the game mode allows it
+    canvas.addMouseWheelListener(e -> {
+      if (inGame && mouseCaptured) glEventListener.zoomBy(e.getPreciseWheelRotation());
+    });
     installControls();
 
     layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);
@@ -584,6 +602,8 @@ public class XenoGuesser extends JFrame {
     keysDown.clear();
     loadingProgress = new LoadingProgress();
     loadingScreen = null;
+    // (the next game is on a new world)
+    if (FIXED_SEED == null) worldSeed = Math.max(System.currentTimeMillis(), worldSeed + 1);
     mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
     TransmissionMessage.prepare(worldSeed);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);

@@ -21,6 +21,7 @@ public final class LoadingProgress {
     public enum Stage {
         WRITING_SYSTEMS("Inventing writing systems", 2500),
         SEA_LEVEL("Measuring the oceans", 300),
+        RIVERS("Tracing the rivers", 4000),
         WORLD_LAYOUT("Shaping climate, nations and roads", 6000),
         WORLD_ART("Painting the world's textures", 2500),
         WINDOW("Opening the window", 800),
