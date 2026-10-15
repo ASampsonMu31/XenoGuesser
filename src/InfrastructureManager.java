@@ -912,10 +912,52 @@ public class InfrastructureManager {
      * @param dryLand    whether a point is above the sea
      */
     public Viewpoint landingSite(Random rand, float standsAt, float reach, java.util.function.Predicate<SpherePosition> dryLand) {
+        return landingSite(rand, standsAt, reach, dryLand, MapKind.BALANCED);
+    }
+
+    // Out in the country (MapKind.RURAL): no more urban than this, nor a house this near; a made
+    // road taken only this often (dirt tracks always), and higher ground preferred, from this
+    // often at the sea's level to always this high above it. In town (URBAN): at least this
+    // urban, with a house this near. Either looked for this many times before settling for anywhere
+    private static final float RURAL_MOST_URBANNESS = 0.05f, RURAL_HOUSE_CLEARANCE = 600f, RURAL_MADE_ROAD_CHANCE = 0.15f;
+    private static final float RURAL_LOWLAND_CHANCE = 0.3f, RURAL_HIGHLAND = 400f;
+    private static final float URBAN_LEAST_URBANNESS = 0.25f, URBAN_HOUSE_NEAR = 120f;
+    private static final int PARTICULAR_SITE_ATTEMPTS = 4000;
+
+    /**
+     * Where the pod comes down for a kind of map (see MapKind): as landingSite, beside a road,
+     * but in the country by a dirt track far from towns and houses (up in the hills where it can
+     * be), or in town with houses about; anywhere along the roads if nowhere like that turns up.
+     */
+    public Viewpoint landingSite(Random rand, float standsAt, float reach, java.util.function.Predicate<SpherePosition> dryLand, MapKind kind) {
         if (landSegments.isEmpty()) return null;
-        for (int attempt = 0; attempt < 400; attempt++) {
+        if (kind != MapKind.BALANCED) {
+            Viewpoint site = landingSite(rand, standsAt, reach, dryLand, kind, PARTICULAR_SITE_ATTEMPTS);
+            if (site != null) return site;
+        }
+        return landingSite(rand, standsAt, reach, dryLand, MapKind.BALANCED, 400);
+    }
+
+    /** Whether a road segment suits a kind of map's landing sites (see MapKind), drawing on rand for those that only sometimes do. */
+    private boolean suits(RoadSegment segment, MapKind kind, Random rand) {
+        SpherePosition middle = segment.frame.origin();
+        float urbanness = settlementManager.getUrbanness(middle);
+        if (kind == MapKind.RURAL) {
+            if (urbanness > RURAL_MOST_URBANNESS) return false;
+            if (segment.roadClass != RoadPath.RoadClass.DIRT && rand.nextFloat() > RURAL_MADE_ROAD_CHANCE) return false;
+            float high = Math.max(0f, Math.min(1f, (TerrainMesh.getLayeredHeight(middle, terrainNoise) - seaLevel) / RURAL_HIGHLAND));
+            return rand.nextFloat() <= RURAL_LOWLAND_CHANCE + (1f - RURAL_LOWLAND_CHANCE) * high;
+        }
+        if (kind == MapKind.URBAN) return urbanness >= URBAN_LEAST_URBANNESS;
+        return true;
+    }
+
+    private Viewpoint landingSite(Random rand, float standsAt, float reach, java.util.function.Predicate<SpherePosition> dryLand,
+                                  MapKind kind, int attempts) {
+        for (int attempt = 0; attempt < attempts; attempt++) {
             RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
             if (segment.railed) continue;   // not over a guard rail
+            if (!suits(segment, kind, rand)) continue;
             float t = rand.nextFloat();
             float dx = segment.end.x - segment.start.x, dz = segment.end.z - segment.start.z;
             float length = (float) Math.hypot(dx, dz);
@@ -931,7 +973,8 @@ public class InfrastructureManager {
             SpherePosition centre = world(segment, cx, cz);
             SpherePosition stands = world(segment, cx + dirX * standsAt, cz + dirZ * standsAt);
             SpherePosition foot = world(segment, cx + dirX * reach, cz + dirZ * reach);
-            if (isPlotLocation(centre, reach) || isPlotLocation(stands, 8f) || isPlotLocation(foot, 8f)) continue;
+            // (never on anyone's land: their plot, garden or driveway)
+            if (isPrivateGround(centre, reach) || isPrivateGround(stands, 8f) || isPrivateGround(foot, 8f)) continue;
             if (!dryLand.test(centre) || !dryLand.test(stands) || !dryLand.test(foot)) continue;
             boolean feetDry = true;
             for (int leg = 0; leg < 4 && feetDry; leg++) {
@@ -946,6 +989,9 @@ public class InfrastructureManager {
                 offRoad = !isRoadLocation(world(segment, cx + (float) Math.cos(a) * 36f, cz + (float) Math.sin(a) * 36f), 6f);
             }
             if (!offRoad) continue;
+            // (in the country far from any house; in town with one near)
+            if (kind == MapKind.RURAL && isBuildingLocation(centre, RURAL_HOUSE_CLEARANCE)) continue;
+            if (kind == MapKind.URBAN && !isBuildingLocation(centre, URBAN_HOUSE_NEAR)) continue;
             return viewpoint(segment.frame, cx + dirX * standsAt, cz + dirZ * standsAt, dirX, dirZ);
         }
         return null;
@@ -4665,6 +4711,18 @@ public class InfrastructureManager {
     }
 
     /** Whether a place (on the datum) is on a driveway, worked in its house's frame. */
+    /** Whether a place is on (or within clearance of) someone's land: a house's plot, its garden, or its driveway. */
+    public boolean isPrivateGround(SpherePosition place, float clearance) {
+        place = SphereMath.atAltitude(place, 0.0);
+        if (isPlotLocation(place, clearance)) return true;
+        for (House house : drivewayIndex.near(place, clearance)) {
+            float[] local = local(house, place);
+            if (local[0] >= house.driveMinX - clearance && local[0] <= house.driveMaxX + clearance
+                    && local[1] >= -house.depth * 0.5f - clearance && local[1] <= house.driveFrontZ + clearance) return true;
+        }
+        return false;
+    }
+
     private boolean onDriveway(SpherePosition place) {
         for (House house : drivewayIndex.near(place, 0.0)) {
             float[] local = local(house, place);

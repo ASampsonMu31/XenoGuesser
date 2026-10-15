@@ -122,6 +122,8 @@ public final class SphereWeather {
         dayOffsetX = dayRand.nextFloat() * 5000f;
         dayOffsetZ = dayRand.nextFloat() * 5000f;
         dayWetness = (float) dayRand.nextGaussian() * DAY_TO_DAY;
+        // (the main menu's picture, -Dxenoguesser.menushot, is taken on a fine day)
+        if (System.getProperty("xenoguesser.menushot") != null) dayWetness = -3f * DAY_TO_DAY;
         // How streaked along the wind today's clouds are: some days long fibrous streaks, some
         // days rounder heaps with hardly any direction to them
         streak = (float) Math.pow(dayRand.nextFloat(), 0.7);
@@ -430,6 +432,7 @@ public final class SphereWeather {
         s.setVec3(gl, "cameraRight", right);
         s.setVec3(gl, "cameraUp", correctedUp);
         s.setFloat(gl, "aspectRatio", aspect);
+        s.setFloat(gl, "tanHalfFov", camera.tanHalfFov());
         s.setVec3(gl, "eyeUp", new Vector3((float) eyeUp[0], (float) eyeUp[1], (float) eyeUp[2]));
         s.setVec3(gl, "eyePosition", new Vector3((float) eye.x(), (float) eye.y(), (float) eye.z()));
         s.setFloat(gl, "eyeRadius", (float) eyeRadius);

@@ -6,7 +6,6 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\BuildingStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Camera.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\CellIndex.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\CellStream.java
-C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Collision.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Matrix4.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Matrix4Transform.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\com\xenoguesser\math\Vector2.java
@@ -16,14 +15,12 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Cylinder.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\FenceStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\FlagDesigner.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Flora.java
-C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Frustum.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameHUD.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameMode.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GamePaths.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GameSettings.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicChunkGrid.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicCollision.java
-C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicRoadMesh.java
-C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GeodesicSettlementMesh.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GlyphGenerator.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\GuardRailStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\HudOverlay.java
@@ -31,7 +28,6 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\HudStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InfrastructureObject.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Inhabitants.java
-C:\Users\Alexs\coding_projects_local\XenoGuesser\src\InsideSphere.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LandingPod.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Light.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingArt.java
@@ -39,8 +35,10 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingProgress.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\LoadingScreen.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MainMenu.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapColours.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapKind.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapLayersPanel.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapPanel.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapProjection.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MapTiles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Material.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\MaterialConstants.java
@@ -63,6 +61,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PerlinNoise.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Planet.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlanetName.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlanetVoice.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlanningCheck.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PlayerBody.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\PreviewCard.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\ProceduralTextures.java
@@ -72,6 +71,9 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RainSound.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalFactor.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RegionalGenerationManager.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Renderer.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RevealGlobe.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RiverRenderer.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Rivers.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadLineStyle.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadNetworkBuilder.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\RoadPath.java
@@ -88,6 +90,7 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Sphere.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereFrame.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereMath.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SpherePosition.java
+C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereRaster.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereRender.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereSkyRenderer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\SphereToolkitCheck.java
@@ -99,7 +102,6 @@ C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TransmissionMessage.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\TwoTriangles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Vehicles.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Viewpoint.java
-C:\Users\Alexs\coding_projects_local\XenoGuesser\src\Weather.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WindowResizer.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WindowTitleBar.java
 C:\Users\Alexs\coding_projects_local\XenoGuesser\src\WorldArtGenerator.java

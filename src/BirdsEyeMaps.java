@@ -68,11 +68,16 @@ public class BirdsEyeMaps {
     // Each layer is drawn on a transparent canvas, to lie over the plain map (or a gradient
     // map) along with any of the others
 
-    // The contours' colours: the lowest yellow, through orange, to the map's highest red
-    private static final Color LOWEST_CONTOUR = new Color(255, 230, 40), HIGHEST_CONTOUR = new Color(215, 20, 10);
-    // A contour every this many metres of height above the sea, every so many of them heavier
+    // The contours' colours: the lowest a strong yellow, through orange, to the map's highest red
+    private static final Color LOWEST_CONTOUR = new Color(250, 200, 0), HIGHEST_CONTOUR = new Color(200, 10, 0);
+    // A contour every this many metres of height above the sea, every so many of them heavier;
+    // and how thick they're drawn (pixels of the detail canvas, which is shrunk DETAIL_FACTOR
+    // times for the whole map)
     private static final float CONTOUR_METRES = 10f;
     private static final int INDEX_EVERY = 5;
+    private static final float CONTOUR_WIDTH = 2.2f, INDEX_CONTOUR_WIDTH = 3.4f;
+    // The height between contours (world units), once worked out
+    private volatile float contourStep = Float.NaN;
     // Contours are traced on a grid this many detail pixels apart
     private static final int CONTOUR_STEP = 2;
 
@@ -89,6 +94,7 @@ public class BirdsEyeMaps {
         for (float h : heights) highest = Math.max(highest, h);
         float rise = highest - seaLevelHeight;
         contourRise = rise;
+        contourScale(heights);
         // The grid traced: every CONTOUR_STEP pixels, heights as levels (level k at value k)
         int g = n / CONTOUR_STEP;
         float[] value = new float[g * g];
@@ -103,7 +109,7 @@ public class BirdsEyeMaps {
         for (int level = 1; level <= contourLevels(rise); level++) {
             boolean index = level % INDEX_EVERY == 0;
             g2.setColor(contourColour(level, contourLevels(rise), index));
-            g2.setStroke(new BasicStroke(index ? 2.2f : 1.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g2.setStroke(new BasicStroke(index ? INDEX_CONTOUR_WIDTH : CONTOUR_WIDTH, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             for (Path2D.Float line : traceLevel(value, g, level)) {
                 line.transform(AffineTransform.getScaleInstance(scale, scale));
                 g2.draw(line);
@@ -860,10 +866,15 @@ public class BirdsEyeMaps {
         };
     }
 
+    /** Sets the height between contours: always CONTOUR_METRES. */
+    private void contourScale(float[] heights) {
+        contourStep = CONTOUR_METRES * PlayerBody.METRE;
+    }
+
     /** A height as contour levels: the k'th contour is at value k; the sea below the first. */
     private float contourValue(float height) {
         float above = height - seaLevelHeight;
-        return above <= 0f ? -1f : above / (CONTOUR_METRES * PlayerBody.METRE);
+        return above <= 0f ? -1f : above / contourStep;
     }
 
     /** A contour's colour: yellow for the first, red for the highest of all (levels), the heavier ones a little more solid. */
@@ -875,8 +886,8 @@ public class BirdsEyeMaps {
     }
 
     /** How many contours there are up to this height above the sea. */
-    private static int contourLevels(float rise) {
-        return (int) Math.floor(rise / (CONTOUR_METRES * PlayerBody.METRE));
+    private int contourLevels(float rise) {
+        return (int) Math.floor(rise / contourStep);
     }
 
     /** The contour lines, traced from the tile's own heights (the same levels as the whole map's). */
@@ -885,10 +896,11 @@ public class BirdsEyeMaps {
             int w = size + 2;
             float[] heights = smoothedSquare(tileHeights(level, tx, ty, size), w);
             float rise = contourRise;
-            if (Float.isNaN(rise)) {
+            if (Float.isNaN(rise) || Float.isNaN(contourStep)) {
                 float highest = seaLevelHeight + 1f;
                 for (float h : getDetailHeights()) highest = Math.max(highest, h);
                 rise = highest - seaLevelHeight;
+                contourScale(getDetailHeights());
                 contourRise = rise;
             }
             int mapLevels = contourLevels(rise);
@@ -906,7 +918,7 @@ public class BirdsEyeMaps {
             for (int lv = 1; lv <= contourLevels(rise); lv++) {
                 boolean index = lv % INDEX_EVERY == 0;
                 g2.setColor(contourColour(lv, mapLevels, index));
-                g2.setStroke(new BasicStroke((index ? 2.2f : 1.5f) * thicken, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.setStroke(new BasicStroke((index ? INDEX_CONTOUR_WIDTH : CONTOUR_WIDTH) / DETAIL_FACTOR * 1.6f * thicken, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 for (Path2D.Float line : traceLevel(value, w, lv)) g2.draw(line);
             }
             g2.dispose();

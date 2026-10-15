@@ -139,7 +139,6 @@ public class MapPanel extends JPanel {
     private int noteBtnHeight;
     private boolean isTypingNote = false;
     private JTextArea noteArea;
-    private JButton noteEnterBtn; 
     
     private static final int NOTE_CHARACTER_LIMIT = 112; 
 
@@ -236,17 +235,6 @@ public class MapPanel extends JPanel {
         ));
         noteArea.setVisible(false);
 
-        noteEnterBtn = new JButton("→");
-        noteEnterBtn.setFont(new Font("Arial", Font.BOLD, 32));
-        noteEnterBtn.setBackground(btnEnabledGreen);
-        noteEnterBtn.setForeground(btnTextWhite);
-        noteEnterBtn.setFocusPainted(false);
-        noteEnterBtn.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(new Color(40, 130, 40), 1),
-            BorderFactory.createEmptyBorder(4, 8, 4, 8)
-        ));
-        noteEnterBtn.setVisible(false);
-        noteEnterBtn.addActionListener(e -> commitNote());
 
         ((AbstractDocument) noteArea.getDocument()).setDocumentFilter(new DocumentFilter() {
             @Override
@@ -386,16 +374,9 @@ public class MapPanel extends JPanel {
                             if (!isTypingNote) {
                                 isTypingNote = true;
                                 MapPanel.this.add(noteArea);
-                                MapPanel.this.add(noteEnterBtn);
-                                
-                                int enterBtnWidth = 75;
-                                int gap = 8;
-                                
-                                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth - enterBtnWidth - gap, noteBtnHeight);
-                                noteEnterBtn.setBounds(noteBtnX + noteBtnWidth - enterBtnWidth, noteBtnY, enterBtnWidth, noteBtnHeight);
-                                
+                                // (the whole width: it's kept when the shop's opened, or with Enter)
+                                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight);
                                 noteArea.setVisible(true);
-                                noteEnterBtn.setVisible(true);
                                 noteArea.requestFocusInWindow();
                                 MapPanel.this.repaint();
                             }
@@ -650,10 +631,6 @@ public class MapPanel extends JPanel {
         noteArea.setVisible(false);
         isTypingNote = false;
         MapPanel.this.remove(noteArea);
-        if (noteEnterBtn != null) {
-            noteEnterBtn.setVisible(false);
-            MapPanel.this.remove(noteEnterBtn);
-        }
         MapPanel.this.requestFocusInWindow(); 
         MapPanel.this.repaint();
     }
@@ -996,12 +973,7 @@ public class MapPanel extends JPanel {
             this.btnY = noteBtnY + noteBtnHeight + 15; 
 
             if (noteArea != null && noteArea.isVisible()) {
-                int enterBtnWidth = 75;
-                int gap = 8;
-                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth - enterBtnWidth - gap, noteBtnHeight);
-                if (noteEnterBtn != null) {
-                    noteEnterBtn.setBounds(noteBtnX + noteBtnWidth - enterBtnWidth, noteBtnY, enterBtnWidth, noteBtnHeight);
-                }
+                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight);
             }
         } else {
             boolean needsExtraSpace = isLarge;
@@ -1024,10 +996,6 @@ public class MapPanel extends JPanel {
                 noteArea.setVisible(false);
                 isTypingNote = false;
                 this.remove(noteArea);
-            }
-            if (noteEnterBtn != null && noteEnterBtn.isVisible()) {
-                noteEnterBtn.setVisible(false);
-                this.remove(noteEnterBtn);
             }
         }
     }
@@ -1473,10 +1441,6 @@ public class MapPanel extends JPanel {
             this.noteArea.setText("");
             this.remove(this.noteArea);
         }
-        if (this.noteEnterBtn != null) {
-            this.noteEnterBtn.setVisible(false);
-            this.remove(this.noteEnterBtn);
-        }
         
         if (this.mainApp != null) {
             this.mainApp.unlockWindowDragging();
@@ -1565,8 +1529,12 @@ public class MapPanel extends JPanel {
         this.onProceedToShop = onProceedToShop;
     }
 
-    /** The results' button: the round's points go onto the score at once (should they still be flying there) and the shop opens. */
+    /**
+     * The results' button: the note being written (if any) is kept, the round's points go onto
+     * the score at once (should they still be flying there) and the shop opens.
+     */
     private void proceedToShop() {
+        if (isTypingNote) commitNote();
         if (!scoreBanked) {
             if (revealTimer != null) revealTimer.stop();
             currentDisplayScore = targetRoundScore;

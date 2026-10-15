@@ -11,6 +11,8 @@ out vec4 fragColour;
 
 uniform vec3 cameraForward, cameraRight, cameraUp;
 uniform float aspectRatio;
+// The tangent of half the view's height (as zoomed: 0.41421356 for the usual 45 degrees)
+uniform float tanHalfFov;
 uniform vec3 eyeUp;          // straight up at the eyes
 uniform vec3 eyePosition;    // the eyes, planet-centred
 uniform float eyeRadius;     // their distance from the planet's centre
@@ -69,8 +71,8 @@ float cloudNoise(vec2 place) {
 
 void main() {
     vec2 ndc = uv * 2.0 - 1.0;
-    vec3 ray = normalize(cameraForward + cameraRight * (ndc.x * aspectRatio * 0.41421356)
-            + cameraUp * (ndc.y * 0.41421356));
+    vec3 ray = normalize(cameraForward + cameraRight * (ndc.x * aspectRatio * tanHalfFov)
+            + cameraUp * (ndc.y * tanHalfFov));
     float rayUp = dot(ray, eyeUp);
     // Towards the horizon the layer is far off and seen edge on: it merges into the haze
     // that the distant land fades into too. (The horizon is the sea's, which on so small a

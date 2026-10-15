@@ -70,9 +70,9 @@ public class GameHUD extends JPanel {
         return (currentRound - 1) / ROUNDS_PER_QUARTER;
     }
 
-    /** The money needed by the end of this quarter. */
+    /** The money needed by the end of this quarter (lower in the harder game modes: see GameMode), to the nearest 50. */
     public int getTarget() {
-        return TARGETS[getQuarter()];
+        return Math.round(TARGETS[getQuarter()] * GameMode.current().targetShare / 50f) * 50;
     }
 
     /** Whether this round is the last of its quarter (so the target is checked after it). */

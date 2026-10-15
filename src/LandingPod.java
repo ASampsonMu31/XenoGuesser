@@ -17,7 +17,15 @@ import java.util.List;
  */
 public class LandingPod {
 
-    private static final int HULL = 0, STAIRS = 1, BONES = 2;
+    // Its bones: the hull (tilted to the ground), the stairs, and each landing leg (stretched or
+    // squashed from its shoulder so its foot meets the ground)
+    private static final int HULL = 0, STAIRS = 1, LEG = 2, BONES = LEG + 4;
+    // On a slope it leans this share of the way to the ground's angle, no further than this
+    private static final float TILT_SHARE = 0.75f, MOST_TILT = (float) Math.toRadians(15.0);
+    // Each leg can lengthen or shorten this much (world units) to put its foot on the ground
+    private static final float MOST_LEG_STRETCH = 8f;
+    // Where a leg's shoulder is (its height), and its foot (out from the middle, along each axis)
+    private static final float LEG_SHOULDER = 22f, FOOT_OUT = (float) (36.0 * Math.sin(Math.PI * 0.25));
 
     // The hull: a cone from the heat shield up to a rounded top
     private static final float HULL_BASE = 14f, HULL_TOP = 58f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
@@ -35,6 +43,7 @@ public class LandingPod {
     private final float[] bones = new float[BONES * 16];
     private boolean placed;
     private SphereFrame frame;
+    // The altitude of the pod's origin (under its middle), and of the ground at the stairs' foot
     private double ground, footGround;
     private float stairScale;
 
@@ -90,9 +99,10 @@ public class LandingPod {
         b.box(0f, PLATFORM_HEIGHT - 0.5f, (PLATFORM_FRONT + 20.5f) * 0.5f, STAIR_WIDTH + 1f, 1f, PLATFORM_FRONT - 20.5f);
         // Landing legs: a strut from the shoulder out to a foot pad, braced from the base
         for (int leg = 0; leg < 4; leg++) {
+            b.bone(LEG + leg);
             float a = (float) (Math.PI * 0.25 + leg * Math.PI * 0.5);
             float sx = (float) Math.sin(a), sz = (float) Math.cos(a);
-            float[] top = { sx * 20f, 22f, sz * 20f };
+            float[] top = { sx * 20f, LEG_SHOULDER, sz * 20f };
             float[] foot = { sx * 36f, 2f, sz * 36f };
             float[] brace = { sx * 24f, 11f, sz * 24f };
             strut(b, OrganismMesh.PART_BRASS, top, foot, 1.5f, 1.1f);
@@ -101,6 +111,7 @@ public class LandingPod {
             b.lathe(20, 8, puck(4f, 1.6f));
         }
         // Manoeuvring thrusters round the shoulder, and an aerial on top
+        b.bone(HULL);
         for (int i = 0; i < 4; i++) {
             float a = (float) (i * Math.PI * 0.5);
             float y = 52f;
@@ -211,32 +222,67 @@ public class LandingPod {
     /**
      * Stands the pod so that a player at spawn is on its stairs, facing along heading (D10:
      * radians from east towards south at spawn) away from it. terrain gives the ground's
-     * height at a place.
+     * height at a place. On a slope it leans most of the way to the ground (TILT_SHARE, at
+     * most MOST_TILT), each leg lengthened or shortened a little (MOST_LEG_STRETCH) so its foot
+     * is on the ground, and the stairs run from its platform down to the ground at their foot.
      */
     public void place(SpherePosition spawn, double heading, java.util.function.ToDoubleFunction<SpherePosition> terrain) {
         SpherePosition centre = SphereMath.atAltitude(SphereMath.move(spawn, heading + Math.PI, SPAWN_DISTANCE), 0.0);
         // The pod's own space: its local z (the way the stairs run) towards the spawn point
         SphereFrame level = SphereFrame.at(centre, SphereMath.heading(centre, spawn) - Math.PI * 0.5);
-        // Settled on the lowest of its feet, so none of them hangs in the air
-        ground = terrain.applyAsDouble(centre);
+        // The ground under each foot, and its slope across the pod (rise along x and along z)
+        double[] footX = new double[4], footZ = new double[4], footGround = new double[4];
+        double gx = 0, gz = 0;
         for (int leg = 0; leg < 4; leg++) {
             double a = Math.PI * 0.25 + leg * Math.PI * 0.5;
-            ground = Math.min(ground, terrain.applyAsDouble(level.toSphere(Math.sin(a) * 36.0, 0.0, Math.cos(a) * 36.0)));
+            footX[leg] = Math.signum(Math.sin(a)) * FOOT_OUT;
+            footZ[leg] = Math.signum(Math.cos(a)) * FOOT_OUT;
+            footGround[leg] = terrain.applyAsDouble(level.toSphere(footX[leg], 0.0, footZ[leg]));
+            gx += footGround[leg] * Math.signum(footX[leg]);
+            gz += footGround[leg] * Math.signum(footZ[leg]);
         }
-        float reach = PLATFORM_FRONT + STAIR_LENGTH;
-        double footGround = terrain.applyAsDouble(level.toSphere(0.0, 0.0, reach));
-        // The stairs stretch or squash to meet the ground at their foot
-        stairScale = (float) Math.max(0.35, Math.min(2.5, (ground + PLATFORM_HEIGHT - footGround) / PLATFORM_HEIGHT));
-        this.footGround = ground + PLATFORM_HEIGHT - stairScale * PLATFORM_HEIGHT;
+        gx /= 4.0 * FOOT_OUT;
+        gz /= 4.0 * FOOT_OUT;
+        // Leaning most of the way to it (each way no further than the most it leans overall)
+        double slope = Math.atan(Math.hypot(gx, gz)), lean = Math.min(MOST_TILT, slope * TILT_SHARE);
+        double share = slope > 1e-6 ? lean / slope : 0.0;
+        float[] tilt = Affine.multiply(Affine.rotationZ((float) (Math.atan(gx) * share)), Affine.rotationX((float) (-Math.atan(gz) * share)));
+        // Standing where its feet, as it leans, are nearest the ground all round; each leg
+        // stretched or squashed (as far as it can be) to make up the rest
+        double[] rest = new double[4];
+        double highest = -Double.MAX_VALUE, lowest = Double.MAX_VALUE;
+        for (int leg = 0; leg < 4; leg++) {
+            float[] foot = Affine.transformPoint(tilt, (float) footX[leg], 0f, (float) footZ[leg]);
+            rest[leg] = footGround[leg] - foot[1];
+            highest = Math.max(highest, rest[leg]);
+            lowest = Math.min(lowest, rest[leg]);
+        }
+        ground = (highest + lowest) * 0.5;
+        for (int leg = 0; leg < 4; leg++) {
+            // (lengthened as far down as its ground is below where it'd reach)
+            double stretch = Math.max(-MOST_LEG_STRETCH, Math.min(MOST_LEG_STRETCH, ground - rest[leg]));
+            float s = (float) ((LEG_SHOULDER + stretch) / LEG_SHOULDER);
+            float[] bone = Affine.multiply(tilt, Affine.multiply(Affine.translation(0f, LEG_SHOULDER, 0f),
+                    Affine.multiply(Affine.scale(1f, s, 1f), Affine.translation(0f, -LEG_SHOULDER, 0f))));
+            System.arraycopy(bone, 0, bones, (LEG + leg) * 16, 16);
+        }
         frame = level.movedTo(SphereMath.atAltitude(centre, ground));
-
-        System.arraycopy(Affine.translation(0f, 0f, 0f), 0, bones, HULL * 16, 16);
-        float[] stairs = Affine.multiply(Affine.translation(0f, (float) (this.footGround - ground), PLATFORM_FRONT),
+        System.arraycopy(tilt, 0, bones, HULL * 16, 16);
+        // The stairs: from the platform's edge, as it leans, down to the ground at their foot
+        float[] edge = Affine.transformPoint(tilt, 0f, PLATFORM_HEIGHT, PLATFORM_FRONT);
+        platformHeight = edge[1];
+        double footAt = terrain.applyAsDouble(level.toSphere(edge[0], 0.0, edge[2] + STAIR_LENGTH));
+        stairScale = (float) Math.max(0.35, Math.min(2.5, (ground + platformHeight - footAt) / PLATFORM_HEIGHT));
+        this.footGround = ground + platformHeight - stairScale * PLATFORM_HEIGHT;
+        float[] stairs = Affine.multiply(Affine.translation(edge[0], (float) (this.footGround - ground), edge[2]),
                 Affine.scale(1f, stairScale, 1f));
         System.arraycopy(stairs, 0, bones, STAIRS * 16, 16);
         placed = true;
         buildObstacles();
     }
+
+    // How high the hatch's platform stands above the pod's origin, as it leans
+    private float platformHeight = PLATFORM_HEIGHT;
 
     // The pod's solid outline in the world: segments {a, b} with their half widths, and the four feet
     private final List<SpherePosition[]> segments = new ArrayList<>();
@@ -291,7 +337,7 @@ public class LandingPod {
         if (!placed) return Double.NEGATIVE_INFINITY;
         double[] l = frame.toLocal(position);
         if (Math.abs(l[0]) > STAIR_WIDTH * 0.5f + 0.5f) return Double.NEGATIVE_INFINITY;
-        if (l[2] >= 18f && l[2] < PLATFORM_FRONT) return ground + PLATFORM_HEIGHT;
+        if (l[2] >= 18f && l[2] < PLATFORM_FRONT) return ground + platformHeight;
         double along = l[2] - PLATFORM_FRONT;
         if (along < 0.0 || along >= STAIR_LENGTH) return Double.NEGATIVE_INFINITY;
         int step = (int) (along / STAIR_RUN);
