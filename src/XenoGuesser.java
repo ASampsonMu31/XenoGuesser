@@ -391,6 +391,9 @@ public class XenoGuesser extends JFrame {
 
   /** Called on the UI thread once the first frame of the round has been drawn; the player then chooses when to start. */
   private void onWorldReady() {
+    // Multiplayer: the partner hears this PC is loaded (their Begin waits for it, M16)
+    Multiplayer session = Multiplayer.active();
+    if (session != null) session.sendWorldReady();
     // A HUD test run goes straight in
     if (System.getProperty("xenoguesser.hudtest") != null) enterGame();
     else loadingScreen.setWorldReady(this::enterGame);

@@ -109,6 +109,8 @@ public class LoadingScreen extends JComponent {
     private boolean buttonHovered;
     private boolean skipped;
     private Runnable enterGame;
+    // Multiplayer (M16): whether this player has pressed Begin; the game starts only when both have
+    private boolean begun;
     private final boolean multiplayer;
     // This PC's player in multiplayer (null in singleplayer)
     private final Multiplayer.Role role;
@@ -175,6 +177,9 @@ public class LoadingScreen extends JComponent {
         addMouseListener(turning);
         addMouseMotionListener(turning);
         repaintTimer = new Timer(REPAINT_MS, e -> {
+            // Multiplayer: both players have pressed Begin, so in we go (each PC sees both BEGINs
+            // within one message's trip of the other)
+            if (begun && bothBegun()) start();
             // Only the stars and the computer's screen change from tick to tick
             if (background == null) {
                 repaint();
@@ -247,31 +252,78 @@ public class LoadingScreen extends JComponent {
         enterGame = enter;
         // The button now appears, offering to start
         repaint(buttonBox);
+        // Developer aid: -Dxenoguesser.mpautobegin=ms presses Skip and Begin that long after the
+        // world is ready (trying again until Begin can be pressed), for testing two windows
+        Integer autoBegin = Integer.getInteger("xenoguesser.mpautobegin");
+        if (role != null && autoBegin != null) {
+            Timer press = new Timer(500, null);
+            press.setInitialDelay(autoBegin);
+            press.addActionListener(e -> {
+                if (enterGame == null || begun) {
+                    press.stop();
+                    return;
+                }
+                if (messagePlaying()) pressButton();
+                pressButton();
+            });
+            press.start();
+        }
     }
 
     private boolean messagePlaying() {
         return message != null && !skipped && !message.isFinished();
     }
 
-    /** The button appears only once the world is ready, and always starts the game. */
+    /**
+     * The button appears only once the world is ready. In singleplayer it always starts the
+     * game. In multiplayer (M16) Skip only stops the message; Begin is greyed, waiting, until the
+     * partner's world is ready too, and again after it's pressed until the partner presses theirs.
+     */
     private boolean buttonEnabled() {
-        return enterGame != null;
+        if (enterGame == null) return false;
+        if (role == null || messagePlaying()) return true;
+        return !waitingForPartner();
     }
 
     private String buttonText() {
-        return messagePlaying() ? "Skip" : "Begin";
+        if (messagePlaying()) return "Skip";
+        if (role != null && waitingForPartner()) return "Waiting for Player " + role.other().label;
+        return "Begin";
+    }
+
+    /** Multiplayer: the partner's world isn't ready yet, or this player has pressed Begin and the partner hasn't. */
+    private boolean waitingForPartner() {
+        Multiplayer session = Multiplayer.active();
+        if (session == null) return false;
+        return !session.remoteWorldReady() || (begun && !session.remoteBegun());
+    }
+
+    private boolean bothBegun() {
+        Multiplayer session = Multiplayer.active();
+        return session != null && session.remoteBegun();
     }
 
     private void pressButton() {
-        if (enterGame == null) return;
+        if (enterGame == null || !buttonEnabled()) return;
+        boolean skipping = messagePlaying();
         skipped = true;
         if (message != null) message.stop();
-        start();
+        if (role == null) {
+            start();
+        } else if (!skipping && !begun) {
+            begun = true;
+            Multiplayer session = Multiplayer.active();
+            if (session != null) session.sendBegin();
+            System.out.println("[MP] Begin pressed at " + System.currentTimeMillis());
+            buttonHovered = false;
+            repaint();
+        }
     }
 
     private void start() {
         Runnable enter = enterGame;
         enterGame = null;
+        if (role != null && enter != null) System.out.println("[MP] Both players pressed Begin: into the game at " + System.currentTimeMillis());
         if (enter != null) enter.run();
     }
 
@@ -308,7 +360,15 @@ public class LoadingScreen extends JComponent {
         int stripH = Math.max(44, h / 20);
         tickerBox = new Rectangle(0, h - stripH, w, stripH);
         int bw = Math.max(190, w / 9), bh = Math.max(40, stripH - 4);
-        buttonBox = new Rectangle(w - bw - 24, h - stripH - bh - 18, bw, bh);
+        // (wider for the multiplayer "Waiting for Player 119-B")
+        if (enterGame != null) {
+            java.awt.FontMetrics fm = getFontMetrics(HudStyle.font(Font.BOLD, bh * 0.42f));
+            bw = Math.max(bw, fm.stringWidth(buttonText()) + bh);
+        }
+        Rectangle box = new Rectangle(w - bw - 24, h - stripH - bh - 18, bw, bh);
+        // (a narrower button leaves the old one's edge behind unless that's drawn over too)
+        if (!box.equals(buttonBox)) repaint(buttonBox.union(box));
+        buttonBox = box;
     }
 
     private void drawTicker(Graphics2D target) {

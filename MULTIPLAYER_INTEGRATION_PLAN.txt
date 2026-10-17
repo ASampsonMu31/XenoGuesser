@@ -581,17 +581,21 @@ PHASE 3  Two spacemen on the loading screen (brief item 4b)                     
   Done when: both PCs show the two coloured spacemen the right way round, and the
       joiner's alphabet files are byte-identical to the host's.
 
-PHASE 4  Waiting for each other to load (brief item 5)                          [ ]
-  [ ] When the local world is ready (onWorldReady) send WORLD_READY.
-  [ ] LoadingScreen: in multiplayer the button shows, greyed out (buttonEnabled false),
+PHASE 4  Waiting for each other to load (brief item 5)                          [x]
+  [x] When the local world is ready (onWorldReady) send WORLD_READY.
+  [x] LoadingScreen: in multiplayer the button shows, greyed out (buttonEnabled false),
       "Waiting for Player 119-B" on the host / "Waiting for Player 119-A" on the
       joiner while the partner's WORLD_READY hasn't arrived (also while this PC is
       still loading, if the button is visible then). The message's Skip still works.
-  [ ] Once both are loaded: "Begin". Pressing it sends BEGIN; if the partner hasn't
+      (The button still appears only once this PC's world is ready, as in singleplayer. In
+      multiplayer Skip only stops the message; it never starts the game.)
+  [x] Once both are loaded: "Begin". Pressing it sends BEGIN; if the partner hasn't
       pressed theirs, the button goes grey again with "Waiting for Player 119-X"
       (M16). Only when BOTH have pressed Begin do both run enterGame(), so they start
       within one network trip of each other.
   [ ] The first shop (openFirstShop, round 0) is synchronised like the others (Phase 7).
+      (Left for Phase 7: both players now reach the first shop together, since they
+      enter together; leaving it in step is Phase 7's SHOP_DONE work.)
   Done when: a slow PC and a fast PC enter the game together.
 
 PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [ ]
@@ -782,6 +786,8 @@ TESTING NOTES
 - -Dxenoguesser.mpauto=host / =join opens the multiplayer panel at start and presses Host
   game / Join game (joining with code AAAAA, which LocalTransport doesn't check). With
   mpfake on both, two windows connect and load with no clicks.
+- -Dxenoguesser.mpautobegin=ms presses Skip and Begin that long after the world is ready
+  (retrying until Begin can be pressed), so two windows go in with no clicks.
 - Listening to a message with a planet name in it: java -cp <full classpath>
   TransmissionMessage <seed> single|multi|multib out.wav (multi = host's, multib = joiner's).
 - Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
@@ -870,3 +876,13 @@ LOG
             listening. Still to check by ear: the swapped letters' intonation ("119-B," now
             has the falling tone of a sentence end, "119-A." the rising one). Re-measure the
             cut times in MessageSplicer if the A recording ever changes. Not yet: two PCs.
+2026-10-18  PHASE 4 done (the first shop's own waiting stays with Phase 7). onWorldReady
+            sends WORLD_READY. LoadingScreen in multiplayer: Skip only stops the message;
+            the button is greyed "Waiting for Player 119-X" until the partner's world is
+            ready, then "Begin", which sends BEGIN and goes grey with the same text until the
+            partner's BEGIN; the repaint timer starts the game once both have pressed. The
+            button widens to fit its text (and the old area is repainted when it shrinks).
+            Singleplayer's button is as before. New dev flag -Dxenoguesser.mpautobegin.
+            Checked: two windows (joiner world ready at 131 s, host at 382 s); the joiner
+            waited, both pressed Begin and entered 7 ms apart; the waiting button rendered.
+            A partner quitting while the other waits still leaves it waiting (Phase 8).
