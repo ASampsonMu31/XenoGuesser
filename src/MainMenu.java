@@ -23,7 +23,8 @@ import javax.swing.JComponent;
  * the game's name and its options on the left, and the player's spaceman on the right, who
  * can be turned round by dragging. Play Singleplayer starts loading a world; beside it, the
  * game mode to play it in (see GameMode) and the kind of map (see MapKind), each one of a few
- * like radio buttons. Multiplayer is not available yet.
+ * like radio buttons. Play Multiplayer opens the multiplayer panel over the menu (see
+ * MultiplayerPanel), which dims it until the panel is closed (unchoose()).
  */
 public class MainMenu extends JComponent {
 
@@ -130,6 +131,13 @@ public class MainMenu extends JComponent {
         };
         addMouseListener(mouse);
         addMouseMotionListener(mouse);
+    }
+
+    /** Makes the menu usable again (undimmed) after the multiplayer panel over it has been closed. */
+    public void unchoose() {
+        chosen = false;
+        hovered = null;
+        repaint();
     }
 
     /** Which of a row of choices' buttons is at a point, -1 none. */
@@ -335,38 +343,7 @@ public class MainMenu extends JComponent {
     }
 
     private void paintButton(Graphics2D g, Rectangle r, String text, String note, boolean enabled, boolean primary, float unit) {
-        boolean over = enabled && hovered == r;
-        Path2D shape = HudStyle.chamfered(r.x + 0.5f, r.y + 0.5f, r.width - 1, r.height - 1, 12 * unit);
-        Color fill = !enabled ? new Color(40, 44, 52, 170)
-                : primary ? (over ? new Color(45, 165, 205, 240) : new Color(24, 110, 145, 225))
-                : (over ? new Color(70, 80, 96, 235) : new Color(24, 30, 40, 210));
-        g.setColor(fill);
-        g.fill(shape);
-        g.setColor(!enabled ? new Color(120, 130, 140, 110) : over ? Color.WHITE : HudStyle.EDGE);
-        g.setStroke(new BasicStroke(1.4f * Math.max(1f, unit)));
-        g.draw(shape);
-        g.setFont(HudStyle.font(Font.BOLD, r.height * 0.36f));
-        FontMetrics fm = g.getFontMetrics();
-        g.setColor(enabled ? Color.WHITE : new Color(150, 156, 166));
-        float tx = r.x + 26 * unit;
-        float ty = r.y + (r.height + fm.getAscent() - fm.getDescent()) / 2f;
-        g.drawString(text, tx, ty);
-        if (note != null) {
-            float noteSize = 11 * unit;
-            HudStyle.label(g, note, r.x + r.width - 22 * unit - HudStyle.labelWidth(g, note, noteSize), ty - 2 * unit, noteSize,
-                    new Color(150, 156, 166));
-        }
-        if (enabled && primary) {
-            // An arrow at the right-hand end
-            float ax = r.x + r.width - 34 * unit, cy = r.y + r.height / 2f, s = r.height * 0.14f;
-            Path2D tri = new Path2D.Float();
-            tri.moveTo(ax, cy - s);
-            tri.lineTo(ax + s * 1.2f, cy);
-            tri.lineTo(ax, cy + s);
-            tri.closePath();
-            g.setColor(Color.WHITE);
-            g.fill(tri);
-        }
+        HudStyle.button(g, r, text, note, enabled, primary, hovered == r, unit);
     }
 
     /** The spaceman standing with his feet at (feetX, feetY), heightPx tall. */

@@ -481,8 +481,8 @@ PHASE 1  Networking core (no UI)                         [x] (two-PC Steam test 
   Test hook: MultiplayerCheck.main (see its comment for the command lines): host / join
       CODE, sends every message type and 5-a-second poses, prints what arrived, PASS/FAIL.
 
-PHASE 2  The multiplayer panel on the main menu (brief items 1, 2 and 4a)       [ ]
-  [ ] MultiplayerPanel.java: a JComponent drawn with HudStyle.panel(..., HudStyle.GLASS)
+PHASE 2  The multiplayer panel on the main menu (brief items 1, 2 and 4a)       [x]
+  [x] MultiplayerPanel.java: a JComponent drawn with HudStyle.panel(..., HudStyle.GLASS)
       and buttons drawn exactly like MainMenu.paintButton (move paintButton to HudStyle
       or make it package-visible static so both use it). Shown over the main menu when
       Play Multiplayer is pressed (MainMenu stays behind it, dimmed like `chosen`).
@@ -501,17 +501,18 @@ PHASE 2  The multiplayer panel on the main menu (brief items 1, 2 and 4a)       
                    version mismatch) and "Back".
       Watch the window's global key handling in XenoGuesser (keysDown, the Esc
       listener) so typing a code doesn't also trigger game keys.
-  [ ] XenoGuesser.startMultiplayer(): replace the preview stub. Show the panel; start
+  [x] XenoGuesser.startMultiplayer(): replace the preview stub. Show the panel; start
       Steam (M2) on first use. When connected: set worldSeed (joiner: from START),
       GameMode.choose / MapKind.choose (joiner: from START), call
       TransmissionMessage.prepare(worldSeed) again, then go on as startSingleplayer
       does but with the multiplayer loading screen (share the code: a private
       startGame(boolean multiplayer) used by both).
-  [ ] Delete the "coming soon" preview path from LoadingScreen and XenoGuesser once
+  [x] Delete the "coming soon" preview path from LoadingScreen and XenoGuesser once
       the real one works (showComingSoon, drawComingSoon, onMultiplayerFinished,
       backToMenu(LoadingScreen)).
   Done when: host shows a 5-letter code, the joiner types it, both see "connected" and
       both reach the loading screen with the same seed (log it on both).
+      (Checked with two game windows on LocalTransport; the two-PC Steam run is still to do.)
 
 PHASE 3  Two spacemen on the loading screen (brief item 4b)                     [ ]
   [ ] LoadingArt: parameterise spaceman(fabric) with the trim colour (M6) and render two
@@ -528,8 +529,10 @@ PHASE 3  Two spacemen on the loading screen (brief item 4b)                     
       "119-A" / "119-B" in HudStyle.label, replacing "Drag to turn" with one hint.
       Host: blue left, red right. Joiner: red left, blue right.
   [ ] Terminal text in multiplayer: the real link steps ("Partner pod linked:
-      Employee 119-B", then the normal loading stages from LoadingProgress) instead of
-      LINK_STEPS' fake never-connecting sequence.
+      Employee 119-B", then the normal loading stages from LoadingProgress). (Phase 2
+      removed LINK_STEPS' fake sequence with the preview; the multiplayer terminal already
+      shows the normal stages under its "LINK 119-A <> 119-B" header, so only the
+      partner line is left to add.)
   [ ] Message (M12): make xenocorp_multiplayer_a and _b, each a .wav and a .txt in the
       existing format. Since the original tool isn't in the repo:
       - Write the two transcripts (host: "Employee 119-A ... paired with Employee
@@ -755,6 +758,9 @@ TESTING NOTES
   steam_appid.txt (480). Steam shows "Playing Spacewar" while it runs; that's expected.
 - Determinism check each time the world code changes: same seed on both PCs ->
   same printed counts and the same first landing site.
+- -Dxenoguesser.mpauto=host / =join opens the multiplayer panel at start and presses Host
+  game / Join game (joining with code AAAAA, which LocalTransport doesn't check). With
+  mpfake on both, two windows connect and load with no clicks.
 - Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
   sequence), -Dxenoguesser.hudtest (skips straight into the game).
 
@@ -791,3 +797,17 @@ LOG
             Phase 8: leave()/a version mismatch close the P2P session straight after sending
             LEAVE/START, which on Steam may drop that last message (the lobby Left event still
             reaches the partner); consider a short delay before closing.
+2026-10-17  PHASE 2 done. MultiplayerPanel (CHOOSE, HOSTING, JOIN, JOINING, CONNECTED,
+            ERROR; sized to its contents) over the dimmed menu (MainMenu.unchoose() on Back);
+            MainMenu.paintButton moved to HudStyle.button. XenoGuesser: startMultiplayer shows
+            the panel and calls Multiplayer.startTransport() (Steam starts in the background
+            as the panel opens, M2); multiplayerReady adopts the host's seed/mode/map on the
+            joiner, prepares the planet voice again, then startGame(true), shared with
+            singleplayer. Preview path deleted (showComingSoon, drawComingSoon,
+            onMultiplayerFinished, backToMenu(LoadingScreen), LINK_STEPS); the loading
+            screen's button says Begin in multiplayer too (Phase 4 adds the waiting).
+            Multiplayer gained startTransport() and isInRoom() (panel: "Joining room...").
+            New dev flag -Dxenoguesser.mpauto. Checked: every state rendered at 1080p and 720p;
+            two windows (mpfake + mpauto) connected and both loaded seed 1792274399691, MOVE,
+            BALANCED, same map join; singleplayer loads as before. Not yet: two PCs on Steam.
+            Note: the CONNECTED pause is 1.5 s, or 4 s when a Java version warning shows (M20).

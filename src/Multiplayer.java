@@ -149,6 +149,7 @@ public final class Multiplayer {
     private volatile long worldSeed;
     private volatile GameMode gameMode;
     private volatile MapKind mapKind;
+    private volatile boolean inRoom;
     private volatile boolean ready;
     private volatile boolean closed;
     private volatile String remoteJavaVersion;
@@ -200,12 +201,21 @@ public final class Multiplayer {
         Multiplayer session = new Multiplayer(role);
         if (listener != null) session.listeners.add(listener);
         active = session;
-        if (transport == null || !transport.isRunning()) {
-            transport = newTransport();
-            transport.start(new TransportEvents());
-        }
+        startTransport();
         System.out.println("[MP] " + (role == Role.HOST ? "Hosting" : "Joining") + " as Employee " + role.label);
         return session;
+    }
+
+    /**
+     * Starts the transport (Steam) if it isn't running yet, in the background: called as the
+     * multiplayer panel opens (M2), so Steam is usually up by the time Host or Join is pressed.
+     * If it can't start nothing is said here (no session is listening); hosting or joining
+     * then tries again and its Listener hears why it failed.
+     */
+    public static synchronized void startTransport() {
+        if (transport != null && transport.isRunning()) return;
+        transport = newTransport();
+        transport.start(new TransportEvents());
     }
 
     /** -Dxenoguesser.mpfake (=host or =join) plays over a socket on this PC; otherwise Steam. */
@@ -298,6 +308,11 @@ public final class Multiplayer {
 
     public MapKind mapKind() {
         return mapKind;
+    }
+
+    /** Whether both players are in the room (the handshake may still be going on). */
+    public boolean isInRoom() {
+        return inRoom;
     }
 
     /** Whether the handshake is done (both in the room, the world settled). */
@@ -660,6 +675,8 @@ public final class Multiplayer {
             if (session == null) return;
             System.out.println("[MP] In a room with Employee " + session.remoteLabel());
             session.lastHeardMs = System.currentTimeMillis();
+            session.inRoom = true;
+            session.notifyListeners(Listener::changed);
             // The joiner speaks first; on Steam this also opens the peer-to-peer connection
             if (session.role == Role.JOIN) session.sendHello();
         }

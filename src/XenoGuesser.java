@@ -173,39 +173,76 @@ public class XenoGuesser extends JFrame {
     if (System.getProperty("xenoguesser.skipmenu") != null || System.getProperty("xenoguesser.menushot") != null) {
       startSingleplayer();
     }
+    // Developer aid: -Dxenoguesser.mpauto=host (or =join) opens the multiplayer panel and presses
+    // Host game (or Join game with any code: for -Dxenoguesser.mpfake, which doesn't check it)
+    String mpAuto = System.getProperty("xenoguesser.mpauto");
+    if (mpAuto != null) {
+      startMultiplayer();
+      multiplayerPanel.autoStart(!mpAuto.equalsIgnoreCase("join"));
+    }
+  }
+
+  // Play Multiplayer's panel, over the main menu while it's up
+  private MultiplayerPanel multiplayerPanel;
+
+  /**
+   * Play Multiplayer: the multiplayer panel over the (dimmed) menu, to host a game or join
+   * one by its room code. Steam is started now, in the background (M2), never before. Once
+   * both players are in, both load the host's world (multiplayerReady).
+   */
+  private void startMultiplayer() {
+    if (loadingScreen != null || multiplayerPanel != null) return;
+    Multiplayer.startTransport();
+    multiplayerPanel = new MultiplayerPanel(() -> worldSeed, this::closeMultiplayerPanel, this::multiplayerReady);
+    layeredPane.add(multiplayerPanel, Integer.valueOf(JLayeredPane.DRAG_LAYER + 1));
+    layoutComponents();
+    layeredPane.repaint();
+    SwingUtilities.invokeLater(() -> {
+      if (multiplayerPanel != null) multiplayerPanel.takeFocus();
+    });
+  }
+
+  /** The panel's Back: the menu as it was. */
+  private void closeMultiplayerPanel() {
+    removeMultiplayerPanel();
+    if (mainMenu != null) mainMenu.unchoose();
+    requestFocus();
+  }
+
+  private void removeMultiplayerPanel() {
+    if (multiplayerPanel == null) return;
+    layeredPane.remove(multiplayerPanel);
+    multiplayerPanel = null;
+    layeredPane.repaint();
   }
 
   /**
-   * Play Multiplayer: not available yet. The cockpit plays the multiplayer message while
-   * trying to reach the partner pod, then says it's coming soon and returns to the menu.
+   * Both players are in the room: the world is the host's (M5). The joiner takes the host's
+   * seed, game mode and map kind over its own menu choices, and the planet's name is said
+   * afresh for it; then both load the world as singleplayer does.
    */
-  private void startMultiplayer() {
-    if (loadingScreen != null) return;
-    LoadingScreen[] holder = new LoadingScreen[1];
-    LoadingScreen preview = new LoadingScreen(new LoadingProgress(), worldSeed, true, () -> backToMenu(holder[0]));
-    holder[0] = preview;
-    loadingScreen = preview;
-    preview.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
-    layeredPane.add(preview, JLayeredPane.DRAG_LAYER);
-    layeredPane.remove(mainMenu);
-    layeredPane.repaint();
-  }
-
-  private void backToMenu(LoadingScreen preview) {
-    layeredPane.remove(preview);
-    loadingScreen = null;
-    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame);
-    // The planet's name is said (for the message from Xenocorp) while the menu is up
+  private void multiplayerReady(Multiplayer session) {
+    removeMultiplayerPanel();
+    worldSeed = session.worldSeed();
+    if (session.role == Multiplayer.Role.JOIN) {
+      GameMode.choose(session.gameMode());
+      MapKind.choose(session.mapKind());
+    }
     TransmissionMessage.prepare(worldSeed);
-    mainMenu.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
-    layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
-    layeredPane.repaint();
+    System.out.println("[MP] Loading the world as Employee " + session.localLabel() + ": seed " + worldSeed
+        + ", " + GameMode.current() + ", " + MapKind.current());
+    startGame(true);
   }
 
   /** Play Singleplayer: the loading screen replaces the menu while a world is generated. */
   private void startSingleplayer() {
+    startGame(false);
+  }
+
+  /** The loading screen replaces the menu while this.worldSeed's world is generated (singleplayer or multiplayer). */
+  private void startGame(boolean multiplayer) {
     if (loadingScreen != null) return;
-    loadingScreen = new LoadingScreen(loadingProgress, worldSeed);
+    loadingScreen = new LoadingScreen(loadingProgress, worldSeed, multiplayer);
     loadingScreen.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
     layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
     layeredPane.remove(mainMenu);
@@ -753,6 +790,7 @@ public class XenoGuesser extends JFrame {
       settingsMenu.setBounds((paneWidth - SettingsMenu.W) / 2, top + (paneHeight - SettingsMenu.H) / 2, SettingsMenu.W, SettingsMenu.H);
     }
     if (mainMenu != null) mainMenu.setBounds(0, top, paneWidth, paneHeight);
+    if (multiplayerPanel != null) multiplayerPanel.setBounds(0, top, paneWidth, paneHeight);
     if (loadingScreen != null) loadingScreen.setBounds(0, top, paneWidth, paneHeight);
     if (shopPanel != null) shopPanel.setBounds(0, top, paneWidth, paneHeight);
     if (quarterPanel != null) quarterPanel.setBounds(0, top, paneWidth, paneHeight);

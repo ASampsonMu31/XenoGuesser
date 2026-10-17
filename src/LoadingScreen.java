@@ -102,26 +102,19 @@ public class LoadingScreen extends JComponent {
     private boolean skipped;
     private Runnable enterGame;
     private final boolean multiplayer;
-    private final Runnable onMultiplayerFinished;
-    private final long startedAt;
-    private long comingSoonAt;
 
     public LoadingScreen(LoadingProgress progress, long worldSeed) {
-        this(progress, worldSeed, false, null);
+        this(progress, worldSeed, false);
     }
 
     /**
-     * The cockpit. For multiplayer (not available yet) nothing loads: the terminal tries to
-     * reach the partner pod while the multiplayer message plays, the button is there from the
-     * start, and pressing it shows that multiplayer is coming soon before onFinished runs.
+     * The cockpit while a world loads. In multiplayer (the partner already linked) the
+     * multiplayer message plays instead of the singleplayer one.
      */
-    public LoadingScreen(LoadingProgress progress, long worldSeed, boolean multiplayer, Runnable onFinished) {
+    public LoadingScreen(LoadingProgress progress, long worldSeed, boolean multiplayer) {
         this.progress = progress;
         this.worldSeed = worldSeed;
         this.multiplayer = multiplayer;
-        this.onMultiplayerFinished = onFinished;
-        this.startedAt = System.currentTimeMillis();
-        if (multiplayer) enterGame = this::showComingSoon;
         setOpaque(true);
         for (float[] star : stars) resetStar(star, true);
         loadArt();
@@ -166,8 +159,6 @@ public class LoadingScreen extends JComponent {
         addMouseListener(turning);
         addMouseMotionListener(turning);
         repaintTimer = new Timer(REPAINT_MS, e -> {
-            // Multiplayer: once the message has played out, on to the notice
-            if (multiplayer && comingSoonAt == 0 && message != null && message.isFinished()) start();
             // Only the stars and the computer's screen change from tick to tick
             if (background == null) {
                 repaint();
@@ -248,24 +239,7 @@ public class LoadingScreen extends JComponent {
     }
 
     private String buttonText() {
-        if (comingSoonAt > 0) return "Main menu";
-        return messagePlaying() ? "Skip" : multiplayer ? "Continue" : "Begin";
-    }
-
-    /** Multiplayer's ending: the message stops and a notice says it isn't ready yet. */
-    private void showComingSoon() {
-        comingSoonAt = System.currentTimeMillis();
-        enterGame = () -> {
-            stop();
-            if (onMultiplayerFinished != null) onMultiplayerFinished.run();
-        };
-        // Back to the menu after a few seconds anyway
-        Timer back = new Timer(4500, e -> {
-            if (enterGame != null) start();
-        });
-        back.setRepeats(false);
-        back.start();
-        repaint();
+        return messagePlaying() ? "Skip" : "Begin";
     }
 
     private void pressButton() {
@@ -301,7 +275,6 @@ public class LoadingScreen extends JComponent {
         layoutStrip(w, h);
         if (message != null && (clip == null || clip.intersects(tickerBox))) drawTicker(g);
         if (enterGame != null && (clip == null || clip.intersects(buttonBox))) drawButton(g);
-        if (comingSoonAt > 0) drawComingSoon(g);
         g.dispose();
         paintNanos += System.nanoTime() - paintStart;
     }
@@ -378,26 +351,6 @@ public class LoadingScreen extends JComponent {
         int dot = Math.round(stripH * 0.22f);
         g.fillOval(Math.round(stripH * 0.4f), tickerBox.y + (stripH - dot) / 2, dot, dot);
         HudStyle.label(g, "Xenocorp transmission", stripH * 0.4f + dot + 10, tickerBox.y + stripH * 0.6f, stripH * 0.25f, HudStyle.LABEL);
-        g.dispose();
-    }
-
-    private void drawComingSoon(Graphics2D target) {
-        int w = getWidth(), h = getHeight();
-        Graphics2D g = (Graphics2D) target.create();
-        HudStyle.smooth(g);
-        g.setColor(new Color(0, 0, 0, 120));
-        g.fillRect(0, 0, w, h);
-        int pw = Math.min(560, w - 40), ph = 190;
-        int px = (w - pw) / 2, py = (h - ph) / 2;
-        g.translate(px, py);
-        HudStyle.panel(g, 0, 0, pw, ph, HudStyle.GLASS_SOLID);
-        HudStyle.label(g, "Multiplayer", 34, 52, 13f, HudStyle.ACCENT);
-        g.setFont(HudStyle.font(Font.BOLD, 34f));
-        g.setColor(Color.WHITE);
-        g.drawString("Coming soon", 34, 100);
-        g.setFont(HudStyle.font(Font.PLAIN, 17f));
-        g.setColor(new Color(200, 210, 222));
-        g.drawString("Employee 119-B could not be reached.", 34, 140);
         g.dispose();
     }
 
@@ -546,25 +499,10 @@ public class LoadingScreen extends JComponent {
     // ==========================================
 
     /** Green phosphor text: the steps done so far, the one under way, a progress bar and the time left. */
-    private static final String[] LINK_STEPS = { "Opening comms array", "Finding Xenocorp relay",
-            "Searching for employee 119-B", "Handshaking with partner pod", "Awaiting partner" };
-
     private void drawTerminal(Graphics2D g) {
-        String label;
-        float target;
-        float secondsLeft;
-        if (multiplayer) {
-            // A link that creeps along and never quite connects
-            float t = (System.currentTimeMillis() - startedAt) / 1000f;
-            int step = Math.min(LINK_STEPS.length - 1, (int) (t / 9f));
-            label = LINK_STEPS[step];
-            target = Math.min(0.97f, t / 50f);
-            secondsLeft = step == LINK_STEPS.length - 1 ? 0f : 50f - t;
-        } else {
-            label = progress.currentLabel();
-            target = progress.overallFraction();
-            secondsLeft = progress.estimatedSecondsLeft();
-        }
+        String label = progress.currentLabel();
+        float target = progress.overallFraction();
+        float secondsLeft = progress.estimatedSecondsLeft();
         boolean failed = label.startsWith("Loading failed");
         if (lastLabel != null && !lastLabel.equals(label) && !failed) {
             finishedSteps.add(lastLabel);
