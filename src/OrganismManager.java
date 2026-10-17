@@ -122,10 +122,10 @@ public class OrganismManager {
         }
         // Each species' name, made as the planet's is, none the same as the planet's or another's
         java.util.Set<String> taken = new java.util.HashSet<>();
-        taken.add(PlanetName.forSeed(seed).spelling.toLowerCase());
+        taken.add(PlanetName.forSeed(seed).spelling.toLowerCase(java.util.Locale.ROOT));
         for (int i = 0; i < species.size(); i++) {
             String name = null;
-            for (int attempt = 0; name == null || !taken.add(name.toLowerCase()); attempt++) {
+            for (int attempt = 0; name == null || !taken.add(name.toLowerCase(java.util.Locale.ROOT)); attempt++) {
                 name = PlanetName.forSeed(seed * 0x2545F4914F6CDD1DL + (i + 1) * 1000003L + attempt * 7919L).spelling;
             }
             speciesNames.add(name);

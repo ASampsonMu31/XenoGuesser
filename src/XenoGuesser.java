@@ -262,13 +262,15 @@ public class XenoGuesser extends JFrame {
     Thread glWarmUp = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
     glWarmUp.setDaemon(true);
     glWarmUp.start();
+    // In multiplayer the joiner's writing systems come from the host (M18): it never makes its
+    // own, and only waits for them (if it must) before the nations are laid out
+    Multiplayer session = Multiplayer.active();
+    boolean receiving = session != null && session.role == Multiplayer.Role.JOIN;
     try {
-      loadingProgress.begin(LoadingProgress.Stage.WRITING_SYSTEMS);
-      try (GlyphGenerator generator = new GlyphGenerator()) {
-          generator.generateAllSystems(RunFiles.ALPHABETS_DIR, worldSeed);
-      } catch (Exception e) {
-          System.err.println("CRITICAL ERROR: Failed to generate writing systems.");
-          e.printStackTrace();
+      if (!receiving) {
+        // (the host's were begun when Host game was pressed: this waits for that same job)
+        loadingProgress.begin(LoadingProgress.Stage.WRITING_SYSTEMS);
+        WritingSystems.generate(worldSeed).join();
       }
 
       loadingProgress.begin(LoadingProgress.Stage.SEA_LEVEL);
@@ -297,6 +299,11 @@ public class XenoGuesser extends JFrame {
       // (put in place by the first spawn)
       Camera camera = new Camera(Planet.position(0.0, 0.0, seaLevelHeight + 20.0), seaLevelHeight);
       MyKeyboardInput keyboardInput = new MyKeyboardInput(); 
+
+      if (receiving) {
+        loadingProgress.begin(LoadingProgress.Stage.WRITING_SYSTEMS, "Receiving writing systems from " + session.remoteLabel());
+        WritingSystems.receive(session);
+      }
 
       loadingProgress.begin(LoadingProgress.Stage.WORLD_LAYOUT);
       XenoGuesser_GLEventListener listener = new XenoGuesser_GLEventListener(

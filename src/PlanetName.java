@@ -250,7 +250,7 @@ public final class PlanetName {
             "slut", "twat", "porn", "rape", "anal", "anus", "arse", "cum", "jizz", "bum", "poo", "nazi", "kkk", "sex", "pube", "smeg" };
 
     private static boolean acceptable(String spelling, Set<String> dictionary) {
-        String lower = spelling.toLowerCase();
+        String lower = spelling.toLowerCase(java.util.Locale.ROOT);
         if (dictionary.contains(lower) || KNOWN.contains(lower)) return false;
         // Nor just a real word with an "s" or "a" on the end
         if (lower.length() > 4 && (dictionary.contains(lower.substring(0, lower.length() - 1)))) return false;
@@ -268,7 +268,7 @@ public final class PlanetName {
         try (BufferedReader in = new BufferedReader(new InputStreamReader(new GZIPInputStream(new FileInputStream(DICTIONARY)), StandardCharsets.UTF_8))) {
             for (String line; (line = in.readLine()) != null; ) {
                 String w = line.trim();
-                if (!w.isEmpty()) set.add(w.toLowerCase());
+                if (!w.isEmpty()) set.add(w.toLowerCase(java.util.Locale.ROOT));
             }
         } catch (Exception e) {
             System.err.println("Dictionary unavailable: " + e.getMessage());

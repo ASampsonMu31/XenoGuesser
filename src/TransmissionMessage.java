@@ -27,7 +27,10 @@ public class TransmissionMessage {
 
     // Each message is a recording (.wav) and its transcript with word timings (.txt)
     public static final String SINGLEPLAYER = GamePaths.HOME + "assets/audio/xenocorp_singleplayer";
-    public static final String MULTIPLAYER = GamePaths.HOME + "assets/audio/xenocorp_multiplayer";
+    // The multiplayer message, addressed to each player (M12): the host, Employee 119-A, paired
+    // with 119-B, and the joiner the other way round (made from the A one by MessageSplicer)
+    public static final String MULTIPLAYER_A = GamePaths.HOME + "assets/audio/xenocorp_multiplayer_a";
+    public static final String MULTIPLAYER_B = GamePaths.HOME + "assets/audio/xenocorp_multiplayer_b";
     // Played in the shop before the first round: the free gift, and that everything after is to be paid for
     public static final String GIFT = GamePaths.HOME + "assets/audio/xenocorp_gift";
     // Played as April begins: surprise that the employee's alive, given how much of the planet is ocean
@@ -498,11 +501,12 @@ public class TransmissionMessage {
 
     /**
      * Developer aid: writes the message for a seed, planet name spoken, to a file and prints its
-     * transcript. Arguments: seed, "single" or "multi", output .wav.
+     * transcript. Arguments: seed, "single", "multi" (the host's) or "multib" (the joiner's), output .wav.
      */
     public static void main(String[] args) throws Exception {
         long seed = Long.parseLong(args[0]);
-        TransmissionMessage message = load("multi".equals(args[1]) ? MULTIPLAYER : SINGLEPLAYER, seed);
+        TransmissionMessage message = load("multi".equals(args[1]) ? MULTIPLAYER_A
+                : "multib".equals(args[1]) ? MULTIPLAYER_B : SINGLEPLAYER, seed);
         preparing.get(seed).get();
         message.settleName();
         int split = message.slotFrame * message.format.getFrameSize();

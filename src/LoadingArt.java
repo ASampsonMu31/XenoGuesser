@@ -15,7 +15,9 @@ import com.xenoguesser.math.Vector3;
  * <ul>
  *   <li>the spaceship's cockpit, seen from just behind the pilots' seats, with its front
  *       window left transparent so stars can stream past behind it;</li>
- *   <li>the spaceman turntable: the player in their suit seen from 48 angles;</li>
+ *   <li>the spaceman turntable: the player in their suit seen from 48 angles, with grey
+ *       boots, gloves, pack and collar, and again in multiplayer's blue (Employee 119-A,
+ *       the host) and red (119-B, the joiner);</li>
  *   <li>the suit's crumpled white fabric, also used on the player's body in the game;</li>
  *   <li>a layout file saying where the old computer's screen and the spaceman sit.</li>
  * </ul>
@@ -26,6 +28,10 @@ public final class LoadingArt {
     public static final String DIR = GamePaths.HOME + "assets/art";
     public static final String COCKPIT = DIR + "/cockpit.png";
     public static final String SPACEMAN = DIR + "/spaceman_turntable.png";
+    // Multiplayer's two players (M6): their packs and helmet collar in each one's colour, as lit in the world
+    public static final String SPACEMAN_BLUE = DIR + "/spaceman_turntable_blue.png";
+    public static final String SPACEMAN_RED = DIR + "/spaceman_turntable_red.png";
+    private static final float[] TRIM_GREY = { 0.2f, 0.21f, 0.23f };
     // The main menu's background: a frame of the game itself, made with -Dxenoguesser.menushot
     public static final String MENU = DIR + "/main_menu.png";
     // The backgrounds the main menu chooses between (background_1.png and on; see MainMenu)
@@ -52,9 +58,27 @@ public final class LoadingArt {
             new File(DIR).mkdirs();
             if (!new File(FABRIC).exists()) ImageIO.write(fabric(), "png", new File(FABRIC));
             if (!new File(COCKPIT).exists() || !new File(SPACEMAN).exists() || !new File(LAYOUT).exists()) renderAll();
+            ensureColoured();
         } catch (Exception e) {
             System.err.println("Could not make the loading screen art: " + e.getMessage());
         }
+    }
+
+    /** Makes the blue and red turntables if they're missing (a few seconds each). */
+    private static void ensureColoured() throws Exception {
+        if (new File(SPACEMAN_BLUE).exists() && new File(SPACEMAN_RED).exists()) return;
+        BufferedImage fabric = ImageIO.read(new File(FABRIC));
+        if (!new File(SPACEMAN_BLUE).exists()) {
+            ImageIO.write(spaceman(fabric, Multiplayer.Role.HOST.litTrimColour()), "png", new File(SPACEMAN_BLUE));
+        }
+        if (!new File(SPACEMAN_RED).exists()) {
+            ImageIO.write(spaceman(fabric, Multiplayer.Role.JOIN.litTrimColour()), "png", new File(SPACEMAN_RED));
+        }
+    }
+
+    /** The turntable for a multiplayer role's colour. */
+    public static String spaceman(Multiplayer.Role role) {
+        return role == Multiplayer.Role.HOST ? SPACEMAN_BLUE : SPACEMAN_RED;
     }
 
     public static boolean isReady() {
@@ -65,7 +89,9 @@ public final class LoadingArt {
         BufferedImage fabric = ImageIO.read(new File(FABRIC));
         Properties layout = new Properties();
         ImageIO.write(cockpit(layout), "png", new File(COCKPIT));
-        ImageIO.write(spaceman(fabric), "png", new File(SPACEMAN));
+        ImageIO.write(spaceman(fabric, TRIM_GREY), "png", new File(SPACEMAN));
+        ImageIO.write(spaceman(fabric, Multiplayer.Role.HOST.litTrimColour()), "png", new File(SPACEMAN_BLUE));
+        ImageIO.write(spaceman(fabric, Multiplayer.Role.JOIN.litTrimColour()), "png", new File(SPACEMAN_RED));
         try (FileWriter out = new FileWriter(LAYOUT)) {
             layout.store(out, "Where things sit in cockpit.png (pixels)");
         }
@@ -491,9 +517,11 @@ public final class LoadingArt {
     /**
      * The player in a white spacesuit with a helmet and dark visor, standing, seen from 48
      * evenly spaced angles; frames run left to right, top to bottom in an 8-wide grid.
-     * Lit like the cockpit's left side: warm from above, cool from the window ahead.
+     * Lit like the cockpit's left side: warm from above, cool from the window ahead. The boots,
+     * gloves, back pack and helmet collar (OrganismMesh.PART_TRIM) are grey; in multiplayer's
+     * sheets the packs and collar (PlayerBody.isColouredTrim) are in trimColour instead.
      */
-    private static BufferedImage spaceman(BufferedImage fabric) {
+    private static BufferedImage spaceman(BufferedImage fabric, float[] trimColour) {
         OrganismMesh.Builder builder = PlayerBody.buildMesh(true);
         float[] vertices = builder.vertices();
         int[] indices = builder.indices();
@@ -516,16 +544,17 @@ public final class LoadingArt {
                 float t = sample(fabric, u * 2f, v * 3f);
                 return new float[] { 0.97f * t, 0.97f * t, 0.95f * t };
             });
-            SoftwareRenderer.SurfaceShader trim = lit(lights, eye, 0.35f, 0f, flat(0.2f, 0.21f, 0.23f));
+            SoftwareRenderer.SurfaceShader trim = lit(lights, eye, 0.35f, 0f, flat(TRIM_GREY[0], TRIM_GREY[1], TRIM_GREY[2]));
+            SoftwareRenderer.SurfaceShader colouredTrim = lit(lights, eye, 0.35f, 0f, flat(trimColour[0], trimColour[1], trimColour[2]));
             SoftwareRenderer.SurfaceShader visor = lit(lights, eye, 2.5f, 0f, flat(0.12f, 0.09f, 0.03f));
             SoftwareRenderer.SurfaceShader stripe = lit(lights, eye, 0.2f, 0f, flat(0.9f, 0.4f, 0.08f));
             SoftwareRenderer.SurfaceShader shell = lit(lights, eye, 1.2f, 0f, flat(0.9f, 0.9f, 0.9f));
             for (int i = 0; i + 2 < indices.length; i += 3) {
                 float[][] tri = new float[3][];
-                int part = 0;
+                int part = 0, bone = 0;
                 for (int k = 0; k < 3; k++) {
                     int base = indices[i + k] * OrganismMesh.STRIDE;
-                    int bone = Math.round(vertices[base + 8]);
+                    bone = Math.round(vertices[base + 8]);
                     part = Math.round(vertices[base + 9]);
                     float[] m = new float[16];
                     System.arraycopy(bones, bone * 16, m, 0, 16);
@@ -534,7 +563,7 @@ public final class LoadingArt {
                     tri[k] = SoftwareRenderer.vertex(p, n, vertices[base + 6], vertices[base + 7]);
                 }
                 SoftwareRenderer.SurfaceShader shader = switch (part) {
-                    case OrganismMesh.PART_TRIM -> trim;
+                    case OrganismMesh.PART_TRIM -> PlayerBody.isColouredTrim(bone) ? colouredTrim : trim;
                     case OrganismMesh.PART_EYE -> visor;
                     case OrganismMesh.PART_SKIN -> shell;
                     default -> suit;

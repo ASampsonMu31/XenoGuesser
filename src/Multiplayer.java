@@ -320,6 +320,11 @@ public final class Multiplayer {
         return ready;
     }
 
+    /** Whether the session is over (left, failed or the partner gone): nothing more is sent or heard. */
+    public boolean isClosed() {
+        return closed;
+    }
+
     /** The partner's Java version (from HELLO or START), or null before the handshake. */
     public String remoteJavaVersion() {
         return remoteJavaVersion;

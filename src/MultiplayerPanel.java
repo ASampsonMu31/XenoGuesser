@@ -138,7 +138,10 @@ public class MultiplayerPanel extends JComponent {
 
     private void hostGame() {
         state = State.HOSTING;
-        session = Multiplayer.host(hostSeed.getAsLong(), GameMode.current(), MapKind.current(), sessionListener);
+        long seed = hostSeed.getAsLong();
+        session = Multiplayer.host(seed, GameMode.current(), MapKind.current(), sessionListener);
+        // The writing systems are made now, while the partner joins, and sent once they have (M18)
+        WritingSystems.shareWhenReady(session, seed);
         repaint();
     }
 

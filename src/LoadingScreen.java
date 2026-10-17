@@ -16,8 +16,10 @@ import javax.swing.Timer;
  * The loading screen, shown from launch until the round's first frame: the spaceship's
  * cockpit, stars streaming past the front window, the old computer in the middle of the
  * room reporting progress in green text, and the player standing on the left in their
- * spacesuit, who can be turned round by dragging across them. Until the art has loaded it
- * is plain grey.
+ * spacesuit, who can be turned round by dragging across them. In multiplayer both players
+ * stand there, this one on the left in their own colour and the partner to their right in
+ * theirs (the host blue, the joiner red), each turned by dragging on its own. Until the art
+ * has loaded it is plain grey.
  *
  * The cockpit and spaceman are pre-rendered art (see LoadingArt); the stars and the
  * computer's screen are drawn live. To stay smooth while the world loads, the cockpit is
@@ -57,7 +59,7 @@ public class LoadingScreen extends JComponent {
     private float smoothedFraction;
 
     // Art, and the layers made from it for the current window size
-    private BufferedImage cockpit, spacemanSheet;
+    private BufferedImage cockpit;
     private Properties layout = new Properties();
     private int layersWidth = -1, layersHeight = -1;
     private Image background;            // the whole cockpit, opaque, window black
@@ -81,12 +83,18 @@ public class LoadingScreen extends JComponent {
     private float[][] screenCorners = new float[4][];
     private BufferedImage warpedTerminal;
 
-    // The spaceman: which way he faces, and dragging him round
-    private float spacemanAngle = 200f;
+    // The spacemen: this player's (0, on the left) and in multiplayer the partner's (1, to
+    // their right): each one's turntable, which way he faces, where he is drawn, and which
+    // is being dragged round (-1 none)
+    private final BufferedImage[] spacemanSheets = new BufferedImage[2];
+    private final float[] spacemanAngles = { 200f, 160f };
+    private final Rectangle[] spacemanBounds = { new Rectangle(), new Rectangle() };
     private int dragStartX;
     private float dragStartAngle;
-    private boolean dragging;
-    private Rectangle spacemanBounds = new Rectangle();
+    private int dragging = -1;
+    // How far right of this player's feet the partner stands, as a share of a turntable frame's drawn width
+    // (the plan's 0.6 had their shoulders touching; this leaves a gap and stays clear of the computer)
+    private static final float PARTNER_ACROSS = 0.85f;
 
     // The message from Xenocorp: played once the cockpit appears, its words scrolling along
     // the bottom. The game starts only when the player presses the button: Skip while it
@@ -102,6 +110,8 @@ public class LoadingScreen extends JComponent {
     private boolean skipped;
     private Runnable enterGame;
     private final boolean multiplayer;
+    // This PC's player in multiplayer (null in singleplayer)
+    private final Multiplayer.Role role;
 
     public LoadingScreen(LoadingProgress progress, long worldSeed) {
         this(progress, worldSeed, false);
@@ -109,12 +119,16 @@ public class LoadingScreen extends JComponent {
 
     /**
      * The cockpit while a world loads. In multiplayer (the partner already linked) the
-     * multiplayer message plays instead of the singleplayer one.
+     * multiplayer message plays instead of the singleplayer one, addressed to this player.
      */
     public LoadingScreen(LoadingProgress progress, long worldSeed, boolean multiplayer) {
         this.progress = progress;
         this.worldSeed = worldSeed;
         this.multiplayer = multiplayer;
+        Multiplayer session = Multiplayer.active();
+        this.role = !multiplayer ? null : session != null ? session.role : Multiplayer.Role.HOST;
+        // The link to the partner's pod is already made; the loading stages follow it on the terminal
+        if (multiplayer) finishedSteps.add("Partner pod linked " + role.other().label);
         setOpaque(true);
         for (float[] star : stars) resetStar(star, true);
         loadArt();
@@ -125,25 +139,27 @@ public class LoadingScreen extends JComponent {
                     pressButton();
                     return;
                 }
-                if (spacemanBounds.contains(e.getPoint())) {
-                    dragging = true;
+                int man = spacemanAt(e.getX(), e.getY());
+                if (man >= 0) {
+                    dragging = man;
                     dragStartX = e.getX();
-                    dragStartAngle = spacemanAngle;
+                    dragStartAngle = spacemanAngles[man];
                 }
             }
 
             @Override
             public void mouseDragged(MouseEvent e) {
-                if (dragging) {
+                if (dragging >= 0) {
                     // Dragging right turns him to his left, as if spinning him by the arm
-                    spacemanAngle = dragStartAngle - (e.getX() - dragStartX) * 0.6f;
-                    repaint(spacemanBounds.x - 40, spacemanBounds.y - 20, spacemanBounds.width + 80, spacemanBounds.height + 60);
+                    spacemanAngles[dragging] = dragStartAngle - (e.getX() - dragStartX) * 0.6f;
+                    Rectangle b = spacemanBounds[dragging];
+                    repaint(b.x - 40, b.y - 20, b.width + 80, b.height + 60);
                 }
             }
 
             @Override
             public void mouseReleased(MouseEvent e) {
-                dragging = false;
+                dragging = -1;
             }
 
             @Override
@@ -153,7 +169,7 @@ public class LoadingScreen extends JComponent {
                     buttonHovered = overButton;
                     repaint(buttonBox);
                 }
-                setCursor(spacemanBounds.contains(e.getPoint()) || overButton ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
+                setCursor(spacemanAt(e.getX(), e.getY()) >= 0 || overButton ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
             }
         };
         addMouseListener(turning);
@@ -196,15 +212,19 @@ public class LoadingScreen extends JComponent {
             LoadingArt.ensure();
             try {
                 BufferedImage cockpitImage = ImageIO.read(new File(LoadingArt.COCKPIT));
-                BufferedImage sheet = ImageIO.read(new File(LoadingArt.SPACEMAN));
+                // (in multiplayer: this player's colour, and the partner's)
+                BufferedImage sheet = ImageIO.read(new File(role == null ? LoadingArt.SPACEMAN : LoadingArt.spaceman(role)));
+                BufferedImage partnerSheet = role == null ? null : ImageIO.read(new File(LoadingArt.spaceman(role.other())));
                 Properties loaded = LoadingArt.readLayout();
                 TransmissionMessage loadedMessage = TransmissionMessage.load(
-                        multiplayer ? TransmissionMessage.MULTIPLAYER : TransmissionMessage.SINGLEPLAYER, worldSeed);
+                        role == null ? TransmissionMessage.SINGLEPLAYER
+                                : role == Multiplayer.Role.HOST ? TransmissionMessage.MULTIPLAYER_A : TransmissionMessage.MULTIPLAYER_B, worldSeed);
                 javax.swing.SwingUtilities.invokeLater(() -> {
                     message = loadedMessage;
                     if (message != null && !skipped) message.play();
                     layout = loaded;
-                    spacemanSheet = sheet;
+                    spacemanSheets[0] = sheet;
+                    spacemanSheets[1] = partnerSheet;
                     cockpit = cockpitImage;
                     layersWidth = -1;
                     repaint();
@@ -271,7 +291,7 @@ public class LoadingScreen extends JComponent {
         g.drawImage(background, 0, 0, null);
         if (clip == null || clip.intersects(windowBox)) drawStars(g);
         if (clip == null || clip.intersects(screenBox)) drawTerminal(g);
-        drawSpaceman(g);
+        drawSpacemen(g);
         layoutStrip(w, h);
         if (message != null && (clip == null || clip.intersects(tickerBox))) drawTicker(g);
         if (enterGame != null && (clip == null || clip.intersects(buttonBox))) drawButton(g);
@@ -642,34 +662,70 @@ public class LoadingScreen extends JComponent {
     //          THE SPACEMAN
     // ==========================================
 
-    private void drawSpaceman(Graphics2D g) {
-        if (spacemanSheet == null) return;
+    /**
+     * The spacemen on the cockpit floor: this player at the layout's spaceman.feet, and in
+     * multiplayer the partner to their right, the same size, each with their employee number
+     * under their feet; one hint under them that they can be turned.
+     */
+    private void drawSpacemen(Graphics2D g) {
+        if (spacemanSheets[0] == null) return;
         float[] feet = point(layout.getProperty("spaceman.feet", "420,930"));
         float heightPx = Float.parseFloat(layout.getProperty("spaceman.height", "557")) * scale;
         float drawHeight = heightPx * FRAME_SPAN_UNITS / SPACEMAN_HEIGHT_UNITS;
         float drawWidth = drawHeight * LoadingArt.FRAME_WIDTH / LoadingArt.FRAME_HEIGHT;
-        int x = Math.round(feet[0] - drawWidth / 2f), y = Math.round(feet[1] - drawHeight * FEET_FRACTION);
-        spacemanBounds = new Rectangle(x + Math.round(drawWidth * 0.15f), y, Math.round(drawWidth * 0.7f), Math.round(drawHeight));
-        Rectangle clip = g.getClipBounds();
-        if (clip != null && !clip.intersects(new Rectangle(x, y, Math.round(drawWidth), Math.round(drawHeight * 1.05f)))) return;
-
-        float step = 360f / LoadingArt.FRAMES;
-        int frame = Math.floorMod(Math.round(spacemanAngle / step), LoadingArt.FRAMES);
-        int sx = (frame % LoadingArt.FRAME_COLUMNS) * LoadingArt.FRAME_WIDTH;
-        int sy = (frame / LoadingArt.FRAME_COLUMNS) * LoadingArt.FRAME_HEIGHT;
+        float unit = getHeight() / 1080f;
+        float labelY = feet[1] + drawWidth * 0.06f + 24 * unit;
         Graphics2D s = (Graphics2D) g.create();
         s.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
         s.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        float hintX = feet[0];
+        if (role != null && spacemanSheets[1] != null) {
+            // The partner first, so this player is in front should they overlap
+            float partnerX = feet[0] + PARTNER_ACROSS * drawWidth;
+            drawSpaceman(s, 1, partnerX, feet[1], drawWidth, drawHeight);
+            drawSpaceman(s, 0, feet[0], feet[1], drawWidth, drawHeight);
+            drawName(s, role.label, feet[0], labelY, unit);
+            drawName(s, role.other().label, partnerX, labelY, unit);
+            hintX = (feet[0] + partnerX) / 2f;
+            labelY += 26 * unit;
+        } else {
+            drawSpaceman(s, 0, feet[0], feet[1], drawWidth, drawHeight);
+        }
+        // As on the main menu: a hint under his feet (under both) that he can be turned
+        HudStyle.label(s, "Drag to turn", hintX - HudStyle.labelWidth(s, "Drag to turn", 15 * unit) / 2f,
+                labelY, 15 * unit, new Color(230, 236, 245, 220));
+        s.dispose();
+    }
+
+    /** Spaceman man (0 this player, 1 the partner) from his turntable, his feet at (feetX, feetY). */
+    private void drawSpaceman(Graphics2D s, int man, float feetX, float feetY, float drawWidth, float drawHeight) {
+        int x = Math.round(feetX - drawWidth / 2f), y = Math.round(feetY - drawHeight * FEET_FRACTION);
+        spacemanBounds[man] = new Rectangle(x + Math.round(drawWidth * 0.15f), y, Math.round(drawWidth * 0.7f), Math.round(drawHeight));
+        Rectangle clip = s.getClipBounds();
+        if (clip != null && !clip.intersects(new Rectangle(x, y, Math.round(drawWidth), Math.round(drawHeight * 1.05f)))) return;
+
+        float step = 360f / LoadingArt.FRAMES;
+        int frame = Math.floorMod(Math.round(spacemanAngles[man] / step), LoadingArt.FRAMES);
+        int sx = (frame % LoadingArt.FRAME_COLUMNS) * LoadingArt.FRAME_WIDTH;
+        int sy = (frame / LoadingArt.FRAME_COLUMNS) * LoadingArt.FRAME_HEIGHT;
         // A soft shadow on the floor beneath him
         s.setColor(new Color(0, 0, 0, 90));
-        s.fillOval(Math.round(feet[0] - drawWidth * 0.32f), Math.round(feet[1] - drawWidth * 0.06f), Math.round(drawWidth * 0.64f), Math.round(drawWidth * 0.14f));
-        s.drawImage(spacemanSheet, x, y, x + Math.round(drawWidth), y + Math.round(drawHeight),
+        s.fillOval(Math.round(feetX - drawWidth * 0.32f), Math.round(feetY - drawWidth * 0.06f), Math.round(drawWidth * 0.64f), Math.round(drawWidth * 0.14f));
+        s.drawImage(spacemanSheets[man], x, y, x + Math.round(drawWidth), y + Math.round(drawHeight),
                 sx, sy, sx + LoadingArt.FRAME_WIDTH, sy + LoadingArt.FRAME_HEIGHT, null);
-        // As on the main menu: a hint under his feet that he can be turned
-        float unit = getHeight() / 1080f;
-        HudStyle.label(s, "Drag to turn", feet[0] - HudStyle.labelWidth(s, "Drag to turn", 15 * unit) / 2f,
-                feet[1] + drawWidth * 0.06f + 24 * unit, 15 * unit, new Color(230, 236, 245, 220));
-        s.dispose();
+    }
+
+    /** An employee number ("119-A") centred under a spaceman's feet. */
+    private void drawName(Graphics2D s, String label, float centreX, float baseline, float unit) {
+        HudStyle.label(s, label, centreX - HudStyle.labelWidth(s, label, 15 * unit) / 2f, baseline, 15 * unit, HudStyle.ACCENT);
+    }
+
+    /** Which spaceman is at a point: 0 this player, 1 the partner, -1 neither. */
+    private int spacemanAt(int x, int y) {
+        for (int man = 0; man < 2; man++) {
+            if (spacemanSheets[man] != null && spacemanBounds[man].contains(x, y)) return man;
+        }
+        return -1;
     }
 
     // ==========================================

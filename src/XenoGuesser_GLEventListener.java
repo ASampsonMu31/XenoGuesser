@@ -3808,11 +3808,11 @@ private static class SpeciesConfig {
         if (floraNames == null) {
             List<String> names = new ArrayList<>();
             java.util.Set<String> taken = new java.util.HashSet<>();
-            taken.add(PlanetName.forSeed(worldSeed).spelling.toLowerCase());
-            for (int i = 0; i < organismManager.speciesCount(); i++) taken.add(organismManager.speciesName(i).toLowerCase());
+            taken.add(PlanetName.forSeed(worldSeed).spelling.toLowerCase(java.util.Locale.ROOT));
+            for (int i = 0; i < organismManager.speciesCount(); i++) taken.add(organismManager.speciesName(i).toLowerCase(java.util.Locale.ROOT));
             for (int k = 0; k < NUM_SPECIES; k++) {
                 String name = null;
-                for (int attempt = 0; name == null || !taken.add(name.toLowerCase()); attempt++) {
+                for (int attempt = 0; name == null || !taken.add(name.toLowerCase(java.util.Locale.ROOT)); attempt++) {
                     name = PlanetName.forSeed(worldSeed * 0x5851F42D4C957F2DL + (k + 1) * 2000003L + attempt * 6007L).spelling;
                 }
                 names.add(name);

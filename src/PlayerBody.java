@@ -611,6 +611,15 @@ public class PlayerBody {
         b.resetTransform();
     }
 
+    /**
+     * Whether trim (OrganismMesh.PART_TRIM) on this bone is in the player's own colour in
+     * multiplayer (M6, as revised): the back and front packs (on the torso) and the helmet's
+     * collar (on the head). The gloves and boots stay grey, as in singleplayer.
+     */
+    static boolean isColouredTrim(int bone) {
+        return bone == TORSO || bone == HEAD;
+    }
+
     private static void trimSegment(OrganismMesh.Builder b, float length, float width, float height) {
         OrganismParts.shell(b, OrganismMesh.PART_TRIM, length, width, height, 0.35f, 0, 0f, 1f);
     }

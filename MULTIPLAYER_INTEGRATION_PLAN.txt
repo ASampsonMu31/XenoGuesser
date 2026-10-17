@@ -163,6 +163,12 @@ M6  Roles and colours: the host is Player 119-A, BLUE; the joiner is Player 119-
       turntable / world-drawn opponent (today 0.2/0.21/0.23, darker because lit):
         blue 0.08, 0.18, 0.55    red 0.55, 0.07, 0.06
     Singleplayer keeps the grey.
+    REVISED (user, 2026-10-17): only the helmet collar ("neck thing"), the back pack and the
+    front (chest) pack take the player's colour; the boots and gloves stay grey as in
+    singleplayer. They are all PART_TRIM today, so the colour must be chosen per piece
+    (e.g. by bone: hands/feet stay grey). Applies to the turntable sheets (Phase 3b redoes
+    spaceman_turntable_blue/_red.png) and later to the first-person body and the partner
+    drawn in the world (Phase 5).
 M7  Messages: one byte of type, then big-endian fields (java.nio.ByteBuffer, as the test
     app). Control messages are Reliable on channel 0; pose updates are Unreliable on
     channel 1 (a lost one is simply extrapolated over, per the brief). Every packet is
@@ -514,13 +520,13 @@ PHASE 2  The multiplayer panel on the main menu (brief items 1, 2 and 4a)       
       both reach the loading screen with the same seed (log it on both).
       (Checked with two game windows on LocalTransport; the two-PC Steam run is still to do.)
 
-PHASE 3  Two spacemen on the loading screen (brief item 4b)                     [ ]
-  [ ] LoadingArt: parameterise spaceman(fabric) with the trim colour (M6) and render two
+PHASE 3  Two spacemen on the loading screen (brief item 4b)                     [x]
+  [x] LoadingArt: parameterise spaceman(fabric) with the trim colour (M6) and render two
       more sheets, assets/art/spaceman_turntable_blue.png and _red.png (constants
       SPACEMAN_BLUE / SPACEMAN_RED). ensure() makes them if missing; the singleplayer
       sheet is unchanged. (48 software-rendered frames each: a few seconds; ensure() runs
       on the menu-art thread already, and the multiplayer panel is a good moment too.)
-  [ ] LoadingScreen in multiplayer: draw two spacemen. The player's own colour on the
+  [x] LoadingScreen in multiplayer: draw two spacemen. The player's own colour on the
       LEFT, at the existing "spaceman.feet"; the partner's colour to its right
       (start with feet.x + 0.6 * drawWidth, same feet.y, same height so they look the
       same size). Check by screenshot that the second one doesn't cover the computer's
@@ -528,12 +534,18 @@ PHASE 3  Two spacemen on the loading screen (brief item 4b)                     
       on its own (two angles, two bounds). Optional small labels under their feet:
       "119-A" / "119-B" in HudStyle.label, replacing "Drag to turn" with one hint.
       Host: blue left, red right. Joiner: red left, blue right.
-  [ ] Terminal text in multiplayer: the real link steps ("Partner pod linked:
+      (Done with PARTNER_ACROSS = 0.85: at 0.6 their shoulders touched. Clear of the
+      computer and the button at 1920x1080.)
+  [x] Terminal text in multiplayer: the real link steps ("Partner pod linked:
       Employee 119-B", then the normal loading stages from LoadingProgress). (Phase 2
       removed LINK_STEPS' fake sequence with the preview; the multiplayer terminal already
       shows the normal stages under its "LINK 119-A <> 119-B" header, so only the
-      partner line is left to add.)
-  [ ] Message (M12): make xenocorp_multiplayer_a and _b, each a .wav and a .txt in the
+      partner line is left to add.) Done as "> PARTNER POD LINKED 119-B OK": the terminal
+      is 30 columns, so "Employee" and the colon were dropped to fit.
+  [x] (Phase 3b) Turntable colours per the revised M6: boots and gloves back to grey, only
+      collar, back pack and front pack coloured; delete and remake the blue/red sheets.
+      (PlayerBody.isColouredTrim(bone): TORSO and HEAD trim. Phase 5 uses the same rule.)
+  [x] (Phase 3b) Message (M12): make xenocorp_multiplayer_a and _b, each a .wav and a .txt in the
       existing format. Since the original tool isn't in the repo:
       - Write the two transcripts (host: "Employee 119-A ... paired with Employee
         119-B"; joiner: "Employee 119-B ... paired with Employee 119-A"; otherwise the
@@ -554,9 +566,18 @@ PHASE 3  Two spacemen on the loading screen (brief item 4b)                     
       - TransmissionMessage: MULTIPLAYER_A / MULTIPLAYER_B constants; LoadingScreen
         loads the one for this PC's role. Remove the old xenocorp_multiplayer.* once
         nothing uses it.
-  [ ] Writing systems (M18): host sends ALPHABETS after generating them; the joiner's
-      generateWorld waits for them instead of running GlyphGenerator.
-  [ ] M21: Locale.ROOT on the generation toLowerCase() calls.
+      DONE DIFFERENTLY (user's choice, 2026-10-17): eSpeak isn't installed and the voice
+      model gives no timings, so instead of regenerating, A is the original recording
+      (renamed to xenocorp_multiplayer_a.*, which already said 119-A ... paired with 119-B)
+      and B is made from it by MessageSplicer.main, which swaps the two spoken letters and
+      shifts the timings between them. See the LOG.
+  [x] Writing systems (M18): host sends ALPHABETS after generating them; the joiner's
+      generateWorld waits for them instead of running GlyphGenerator. (WritingSystems.java.
+      The joiner's "Receiving writing systems from 119-A" stage comes just before
+      WORLD_LAYOUT, where it waits, rather than first, since it starts on the sea level
+      and rivers at once.)
+  [x] M21: Locale.ROOT on the generation toLowerCase() calls. (Also the flora names in
+      XenoGuesser_GLEventListener.floraName, which use the same pattern.)
   Done when: both PCs show the two coloured spacemen the right way round, and the
       joiner's alphabet files are byte-identical to the host's.
 
@@ -761,6 +782,8 @@ TESTING NOTES
 - -Dxenoguesser.mpauto=host / =join opens the multiplayer panel at start and presses Host
   game / Join game (joining with code AAAAA, which LocalTransport doesn't check). With
   mpfake on both, two windows connect and load with no clicks.
+- Listening to a message with a planet name in it: java -cp <full classpath>
+  TransmissionMessage <seed> single|multi|multib out.wav (multi = host's, multib = joiner's).
 - Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
   sequence), -Dxenoguesser.hudtest (skips straight into the game).
 
@@ -811,3 +834,39 @@ LOG
             two windows (mpfake + mpauto) connected and both loaded seed 1792274399691, MOVE,
             BALANCED, same map join; singleplayer loads as before. Not yet: two PCs on Steam.
             Note: the CONNECTED pause is 1.5 s, or 4 s when a Java version warning shows (M20).
+2026-10-17  PHASE 3a done (everything in Phase 3 but the M12 recordings, which are Phase 3b).
+            LoadingArt: spaceman(fabric, trimColour); ensure() also makes
+            spaceman_turntable_blue/_red.png (Role.litTrimColour, M6), about 15 s the first
+            time, on the menu-art thread. LoadingScreen: two spacemen (own colour left at
+            spaceman.feet, partner at feet.x + 0.85 * drawWidth), each dragged on its own, with
+            "119-A"/"119-B" under their feet and one "Drag to turn"; the terminal opens with
+            "Partner pod linked 119-X". M18: WritingSystems makes the alphabets on one
+            background thread (singleplayer waits on the same job); Host game starts it at
+            once and a sender thread zips (name order, no timestamps) and sends ALPHABETS once
+            the joiner is in; the joiner skips the first stage, does sea level and rivers, then
+            "Receiving writing systems from 119-A" (unzips, logs the hash) before WORLD_LAYOUT.
+            LoadingProgress.begin(stage, label) shows that name, and a renamed stage's time
+            isn't saved as the PC's estimate. Multiplayer.isClosed() added. M21: Locale.ROOT
+            in PlanetName, OrganismManager and the flora names. Checked: offscreen renders of
+            the host, joiner and singleplayer loading screens; two windows (mpfake + mpauto):
+            the host generated during the panel and sent 118,191 bytes, files hash
+            a4aa939c465980f1 on both, the joiner never loaded PyTorch, both built 8,699 houses;
+            singleplayer still makes its own. Still to do: Phase 3b (M12), two PCs on Steam.
+            If the host leaves while the joiner waits for ALPHABETS, loading shows "Loading
+            failed: Employee 119-A disconnected"; returning to the menu is Phase 8.
+2026-10-17  PHASE 3b done, so all of PHASE 3. Colours (M6 revised): only the collar and the
+            back and front packs are coloured (PlayerBody.isColouredTrim: trim on TORSO or
+            HEAD); gloves and boots grey; blue/red sheets remade (singleplayer's unchanged).
+            M12 by splicing (option 1, user's choice): xenocorp_multiplayer.* renamed
+            (git mv) to xenocorp_multiplayer_a.*, unchanged; MessageSplicer.main writes _b by
+            swapping the spoken letters, measured from loudness at 5 ms steps: "A" 8625-8940
+            ms (after the dip that follows "nineteen", until the hiss), "B" 28268-28530 ms
+            (including its closure). 4 ms fades at the joins; the largest sample steps at
+            the joins equal the original's there (no clicks). B's text has the letters
+            swapped (same length, same character places); words between the letters and
+            the slot frame move by -53 ms (-1168 frames), later words are unchanged.
+            TransmissionMessage.MULTIPLAYER_A/_B; LoadingScreen loads the role's one (checked
+            on the host and joiner tickers). Both messages rendered with seed 123 for
+            listening. Still to check by ear: the swapped letters' intonation ("119-B," now
+            has the falling tone of a sentence end, "119-A." the rising one). Re-measure the
+            cut times in MessageSplicer if the A recording ever changes. Not yet: two PCs.
