@@ -1,0 +1,793 @@
+MULTIPLAYER INTEGRATION PLAN
+============================
+Branch: Multiplayer1
+Goal:   two players (Employee 119-A, the host, and 119-B, the joiner) play the same
+        world together over Steam: a host/join panel with a 5-letter room code, the
+        host's world seed shared so both PCs generate the same planet locally, a
+        two-spaceman loading screen, a synchronised start, both players on the pod's
+        stairs side by side, each seeing the other walk about live, and the guess
+        reveal and shop held until both players are done.
+Source: the networking comes from a minimal working Steam P2P test app (Swing UI,
+        not used here) at C:\Users\Alexs\coding_projects_local\steamworks_multiplayer_app
+        (SteamP2PApp.java, steamworks4j-1.10.0.jar, steam_api64.dll, steam_appid.txt
+        containing 480). The parts worth keeping are summarised in BACKEND REFERENCE
+        below so a session does not need that folder open, but read the original if
+        it is available.
+
+HOW TO USE THIS FILE
+- Read this first at the start of every multiplayer session; it already records where
+  everything lives in the game, so do not re-explore the whole codebase.
+- Work the phases in order. Tick [x] items as they land and add a line to the LOG at the
+  bottom (date, what was done, anything surprising).
+- If a decision changes, edit the DECISIONS section rather than adding a contradiction
+  lower down. OPEN QUESTIONS are for the user: ask, then move the answer into DECISIONS.
+- One phase (or part of one) per conversation, then start a fresh conversation.
+- Singleplayer must keep working exactly as before after every phase (no Steam needed to
+  play singleplayer; Steam is only started when Play Multiplayer is pressed).
+- Match the code style around you: long descriptive comments in plain English, British
+  spelling (colour, centre), small private helpers, no new frameworks.
+
+-------------------------------------------------------------------------------
+WHERE THINGS ARE IN THE GAME TODAY (as of 2026-10-17)
+-------------------------------------------------------------------------------
+XenoGuesser.java (the JFrame, the flow between screens)
+  - worldSeed: chosen in the constructor (System.currentTimeMillis(), or
+    -Dxenoguesser.seed=N via FIXED_SEED), renewed in backToMenuFromGame().
+  - new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame)
+    (made in three places: constructor, backToMenu, backToMenuFromGame).
+  - TransmissionMessage.prepare(worldSeed) is called while the menu is up so the
+    planet's name is spoken in Xenocorp's message. For the joiner this must be redone
+    with the host's seed once it arrives.
+  - startMultiplayer(): today a stub. It shows LoadingScreen in its "multiplayer
+    preview" mode (plays the multiplayer message, never connects, says Coming soon,
+    returns to the menu via backToMenu).
+  - startSingleplayer(): adds the LoadingScreen, then generateWorld() on a
+    "world-generation" thread -> buildGameWindow() -> the GL listener calls
+    onWorldReady() after the first frame -> loadingScreen.setWorldReady(this::enterGame).
+  - enterGame(): removes the loading screen, openFirstShop() (round 0 shop, "January").
+  - afterResults() (results' Proceed button) -> quarterPanel at quarter end ->
+    openShop() -> shopPanel.open(offers, minimap::requestNextRound).
+  - endGame(won) -> backToMenuFromGame().
+MainMenu.java
+  - "Play Multiplayer" button (multiButton) already calls onMultiplayer.
+  - The settings panel uses HudStyle.panel(g, x, y, w, h, HudStyle.GLASS): this is the
+    game's standard panel look. Buttons are drawn by paintButton(...). Reuse both for
+    the multiplayer panel so it looks like the rest of the game.
+  - GameMode.current() and MapKind.current() are chosen here (radio buttons).
+LoadingScreen.java
+  - Constructor (progress, seed, multiplayer, onFinished). multiplayer=true is the
+    preview stub (enterGame = showComingSoon, LINK_STEPS terminal text that "never quite
+    connects", "Continue"/"Main menu" button text).
+  - Button: buttonBox, buttonEnabled() (= enterGame != null), buttonText() ("Skip" while
+    the message plays, otherwise "Begin"), drawButton() greys it when not enabled.
+  - drawSpaceman(): one spaceman from the turntable sheet at layout "spaceman.feet" /
+    "spaceman.height" (cockpit_layout.properties), turned by dragging (spacemanAngle).
+  - Message: TransmissionMessage.load(MULTIPLAYER or SINGLEPLAYER, worldSeed).
+LoadingArt.java
+  - spaceman(fabric): renders the 48-frame turntable (assets/art/spaceman_turntable.png,
+    generated, not in git) from PlayerBody.buildMesh(true). The dark grey parts (boots,
+    gloves, back pack, helmet collar) are OrganismMesh.PART_TRIM, shaded with
+    flat(0.2f, 0.21f, 0.23f). ensure() makes missing art.
+PlayerBody.java
+  - The first-person body: buildMesh(false) (no helmet, with compass, thermometer,
+    altimeter, book, magnifier). buildMesh(true) is the helmeted suit used for the
+    turntable. Posed by pose(eye, heading) in the camera's local frame with the eyes at
+    the origin; standingPose(eye, heading) gives bones for a still figure.
+  - render(...) sets the colours as uniforms; trimColour (0.5, 0.51, 0.54) is the grey
+    of boots/gloves/pack seen in first person. EYE_HEIGHT = 20, METRE = 10 units.
+  - HEAD bone = body * translation(0, -0.6, -1.0); the visor shell is at
+    translation(0, 0.15, 0.75) from the head, so the visor sits roughly 0.45 units below
+    and 0.25 behind the eye point. Verify numerically (see Phase 6).
+LandingPod.java
+  - STAIR_WIDTH = 17, STAIR_RUN = 5, STAIR_LENGTH = 20, STEPS = 4, PLATFORM_FRONT = 27.
+    SPAWN_DISTANCE = PLATFORM_FRONT + STAIR_RUN * 2.5 (third step down).
+  - STAIR_WIDTH is used by: the platform box (buildMesh, STAIR_WIDTH + 1), the stairs'
+    treads and side rails (buildMesh), the gap in the hull's collision ring and the side
+    rail collision segments (the outline builder near line 300), and floorAt() (whether
+    a place is on the stairs). The doorway is 11 wide (dark) in a 13.5 frame.
+  - place(spawn, heading, terrain): stands the pod so the spawn point is on its stairs,
+    facing heading (away from the pod = down the stairs).
+XenoGuesser_GLEventListener.java
+  - spawnRandom (line ~1913): new Random() unless -Dxenoguesser.seed is set. It drives
+    landingSite(), the time of day, the season, chooseTimeOfDay and the weather's
+    newDay(). queueNextRound() picks the NEXT round's site from it during the current
+    round. In multiplayer this must be seeded identically on both PCs (see D5).
+  - spawnPlayerAtRandomLocation(): picks the site, places the pod, then
+    moveToLocation(spawn) puts the camera at ground + playerEyeHeight (20) facing the
+    heading. In GameMode.NO_MOVE the player is moved out past the stairs (standingClear).
+  - PLAYER_RADIUS = 3.
+  - shopOffers(round) uses an unseeded new Random() for prices.
+  - The 3D draw order: ... rocks, landingPod.render(gl, sphereViewProjection, eye, ...),
+    clouds, window glass, sea, rivers, rain, then the first-person playerBody.render last.
+    LandingPod.render is the template for drawing something in the world (SphereRender.
+    configure + SphereRender.setAnchor(frame.modelMatrix(1f, eye))).
+  - Next round: when minimap.isNextRoundRequested() (set by MapPanel.requestNextRound
+    after the shop) and nextRoundBuilt, the round starts (around line 1000).
+MapPanel.java
+  - The Guess button calls startRevealSequence() (needs hasPin); it sets isGuessed,
+    prepareRequested (next round starts building), and runs the reveal on a globe.
+  - requestNextRound(): called when the shop is left; finishRoundLoading() closes the
+    results and advances gameHUD's round.
+ShopPanel.java: open(cards, onDone). QuarterPanel.java: quarter-end verdict.
+TransmissionMessage / assets/audio/xenocorp_multiplayer.txt: the recorded multiplayer
+  message: a .wav plus a .txt of the transcript, word timings (ms, character index
+  rows), a "slot" (where the planet sentence is spliced in, said live by PlanetVoice)
+  and the voice's matching settings (say, weights, rate, level, highpass, presence,
+  hiss). Its text addresses "Employee 119-A" and says they've been paired with
+  "Employee 119-B"; M12 splits it into an A and a B version.
+  The voice is Piper "bryce" (assets/audio/voice/bryce.onnx), run by PlanetVoice.java
+  from eSpeak IPA phonemes. The tool that made the original .wav and timings is NOT in
+  the repo (git: commit 31758e3 added it).
+GameHUD.java: TARGETS (quarter productivity targets), getQuarter(), getTarget(),
+  isQuarterEnd(), isLastRound(); the score panel is HudStyle.paintScorePanel(...)
+  (quarter, round in quarter, productivity, target, cash ...). QuarterPanel shows the
+  quarter's pass/fail verdict.
+Build: pom.xml (Maven, Java 17, sourceDirectory src, JOGL as a system-scope jar in lib/,
+  manifest Class-Path lib/jogamp-fat.jar), run.bat (mvn clean compile exec:exec),
+  build-exe.bat (jpackage into dist/XenoGuesser).
+
+-------------------------------------------------------------------------------
+DECISIONS (settled; change here if they change)
+-------------------------------------------------------------------------------
+M1  Transport: Steamworks via steamworks4j 1.10.0, the old ISteamNetworking P2P API and
+    ISteamMatchmaking lobbies, exactly as the test app does it. App ID 480 (Spacewar,
+    Valve's shared test app) until XenoGuesser has its own app ID.
+M2  Steam is started lazily the first time Play Multiplayer is pressed, never at launch,
+    so singleplayer runs with Steam closed. If SteamAPI.init() fails the panel says
+    "Steam isn't running. Start Steam and try again." and stays usable.
+M3  One dedicated "steam-net" thread owns every Steam call (init, callbacks, lobby calls,
+    send/receive), like the test app's networking thread with its steamTasks queue. The
+    UI thread and the GL thread never call Steam directly: they post Runnables to the
+    queue, read immutable snapshots (volatile / AtomicReference), and receive events via
+    SwingUtilities.invokeLater. SteamAPI.runCallbacks() runs every ~10 ms on that thread.
+M4  Room codes are 5 letters from "ABCDEFGHJKLMNPQRSTUVWXYZ" (I and O left out so they
+    can't be mistaken for 1 and 0): 24^5 = 7,962,624 codes. Keep the test app's
+    collision handling (search for the code before creating, verify after publishing,
+    retry up to 20 times). Typed codes are upper-cased and filtered to that alphabet.
+M5  Same world, same rounds: the host picks the seed (System.currentTimeMillis(), or
+    -Dxenoguesser.seed if given) and sends it with its GameMode and MapKind; the joiner
+    adopts all three (overriding its own menu choices). Each PC generates the world
+    itself from the seed. Every random choice that must match between the two PCs
+    (landing site, time of day, season, weather) is drawn from a Random seeded from the
+    world seed AND the round number, made fresh for each round, e.g.
+      new Random(worldSeed * 0x9E3779B97F4A7C15L + round * 0xBF58476D1CE4E5B9L)
+    rather than from one long-lived spawnRandom, so the two PCs cannot drift apart if
+    one of them happens to draw an extra number. Things that may differ per PC (people,
+    cars, animals wandering, shop prices) stay local.
+M6  Roles and colours: the host is Player 119-A, BLUE; the joiner is Player 119-B, RED.
+    "Blue"/"red" replace the dark grey PART_TRIM parts (boots, gloves, back pack,
+    helmet collar) only; the white suit, orange band and visor stay as they are.
+    Starting colours (tune by eye):
+      first-person trimColour (PlayerBody.render, today grey 0.5/0.51/0.54):
+        blue 0.18, 0.36, 0.85    red 0.82, 0.16, 0.14
+      turntable / world-drawn opponent (today 0.2/0.21/0.23, darker because lit):
+        blue 0.08, 0.18, 0.55    red 0.55, 0.07, 0.06
+    Singleplayer keeps the grey.
+M7  Messages: one byte of type, then big-endian fields (java.nio.ByteBuffer, as the test
+    app). Control messages are Reliable on channel 0; pose updates are Unreliable on
+    channel 1 (a lost one is simply extrapolated over, per the brief). Every packet is
+    checked: right sender (remoteSteamID), right length for its type; anything else is
+    ignored with a log line.
+M8  Pose updates go 5 times a second (every 200 ms), as in the test app.
+M9  Extrapolation (dead reckoning) on the receiver, never interpolation-with-delay: the
+    opponent is drawn where they are predicted to be NOW, from their last two updates.
+    See Phase 5 for the exact rules.
+M10 Development without two Steam accounts: all networking goes through a small
+    Transport interface with two implementations, SteamTransport (real) and
+    LocalTransport (a localhost TCP/UDP socket, for two game windows on one PC),
+    chosen by -Dxenoguesser.mpfake=host or -Dxenoguesser.mpfake=join. Steam will not
+    run two accounts on one PC, so without this every test needs two machines.
+M11 In multiplayer the stairs are wider and both players start on them side by side:
+    119-A on the left, 119-B on the right, as seen facing down the stairs, both facing
+    down the stairs. Singleplayer's pod is unchanged.
+
+M12 The multiplayer message is addressed correctly to each player, text AND audio. Two
+    recordings with their own word timings: xenocorp_multiplayer_a.{wav,txt} for the host
+    ("Good morning, Employee 119-A ... you have been paired with Employee 119-B") and
+    xenocorp_multiplayer_b.{wav,txt} for the joiner (119-B, paired with 119-A). The
+    ticker's word timings must match the new audio (Phase 3).
+M13 Multiplayer scoring replaces quarter targets. There are NO productivity thresholds
+    and no losing at a quarter end in multiplayer. At the end of each quarter, the player
+    with the higher productivity that quarter wins it and gains quarter points equal to
+    the quarter's number: Q1 = 1, Q2 = 2, Q3 = 3, Q4 = 4 (10 in all). A player who wins
+    all of Q1, Q2 and Q3 (6 points against 0, more than the 4 left) wins at once: the
+    game ends after Q3 ("irrecoverable lead"). Otherwise, after Q4 the player with more
+    quarter points wins. Both PCs work this out from both players' productivity (sent
+    with each GUESS, see PROTOCOL), so they always agree. Ties: see M17.
+M14 The reveal shows both guesses, in this order: turn the globe to your own guess, then
+    to the other player's guess, then to the true location, then draw the lines from
+    each guess to it (your line and pin in your colour, theirs in theirs, M6).
+M15 The players collide with each other (Phase 5).
+M16 Lock-step stages: both players are always on the same stage of the game. Every
+    transition between stages waits for both (Begin on the loading screen waits until
+    both have pressed it; the round starts together; quarter verdicts and the game's
+    end are shown together). The only exception is between a guess's reveal and the
+    next round: one player may enter (and leave) the results and the shop before the
+    other, but the next round starts for both together (Phase 7).
+
+M17 Ties. Equal productivity in a quarter: nobody gets that quarter's points. Equal
+    quarter points after Q4 (e.g. 5-5, or 0-0... any equal total): the game goes on to
+    FINAL DECIDER rounds, one round at a time, played like any other round (same
+    lock-step, reveal, shop). After each decider the player with the higher score in
+    that round wins the game; if that round's scores are equal, another decider is
+    played, until one is higher. Deciders use the per-round Random like any round
+    (round numbers just carry on past the last normal round).
+
+M18 Writing systems are NOT reproducible across PCs (see DETERMINISM AUDIT), so the host
+    generates them and sends the files to the joiner:
+    - Size: 4-7 alphabets of 10-40 letters, each a 64x64 PNG of a few hundred bytes to
+      ~1.5 KB: roughly 50-250 KB in all. Steam's reliable P2P send takes up to 1 MB in
+      one message, so it goes as ONE ALPHABETS message (a zip of ALPHABETS_DIR); under a
+      second on any normal connection. (LocalTransport: the same bytes over the socket.)
+    - Early start: the host chooses the seed the moment Host game is pressed and starts
+      GlyphGenerator on a background thread straight away, while the room code is shown
+      and the partner is still joining (it takes a few seconds; usually done before they
+      connect). It sends ALPHABETS as soon as both the files exist and the joiner has
+      connected.
+    - The joiner doesn't wait for them to start loading: it begins generateWorld at once
+      (sea level, rivers and climate don't use the alphabets) and only waits, if it must,
+      just before the WORLD_LAYOUT stage, where InfrastructureManager reads
+      NationScripts.available() and the sign atlases are made. It writes the files into
+      its own RunFiles.ALPHABETS_DIR and skips GlyphGenerator entirely (so a PC whose
+      PyTorch won't load can still join). Its terminal line for the first stage reads
+      "Receiving writing systems from 119-A".
+    - Check: the joiner's files are byte-identical to the host's (hash both, log).
+M19 Everything that sets up a round is the same on both PCs, drawn from a Random made
+    from (worldSeed, round) in multiplayer, never an unseeded one:
+    - the landing site and pod (M5);
+    - the sun: time of day, season (sun declination) and noon longitude
+      (spawnPlayerAtRandomLocation / chooseTimeOfDay): already drawn from spawnRandom,
+      so M5's per-round Random makes them match; the sun doesn't move during a round;
+    - the weather: SphereWeather.newDay(dayRand, place) sets the day's cloud pattern
+      (wind axis, offsets, wetness, streakiness) from that same Random, so it matches too.
+      Two things still differ and must be fixed: the clouds drift with the listener's
+      elapsed time since the game window opened (different on each PC), so in multiplayer
+      pass seconds since the ROUND began (rounds start together, M16); and the cloud cover
+      eases towards the rainfall where EACH player stands, so it can differ a little when
+      they are far apart, which is fine (it's what's overhead);
+    - the animals: which species live where is part of the world and already matches;
+      where each round's individual creatures stand comes from OrganismManager.clear()'s
+      roundSalt = new Random().nextLong(), which differs per PC. In multiplayer set it from
+      (worldSeed, round) instead, so both players see the same animals in the same places at
+      the start of a round (they then wander on their own on each PC; matching their
+      movement isn't required).
+    Traffic, people's walks and shop prices may stay different per PC.
+M20 Same build, same Java: the lobby's "game" filter carries a build id (M1 note in
+    BACKEND REFERENCE) and HELLO/START carry System.getProperty("java.version"); a
+    mismatch shows "Your partner has a different version of XenoGuesser" (build) or a
+    warning (Java). The packaged exe bundles its own Java 21 runtime, so exe-to-exe
+    always matches; running from Maven uses whatever JDK is installed.
+M21 Locale-proof text: every toLowerCase()/toUpperCase() that affects generation uses
+    Locale.ROOT (PlanetName.acceptable and dictionary(), OrganismManager species names).
+    This is about the PC's Windows region/language setting, not the game's language:
+    Java's toLowerCase() with no argument follows the operating system's setting, and on
+    a Turkish or Azerbaijani Windows it turns "I" into a dotless "ı". The game is English
+    only, but a player in Turkey running it would then check names against the dictionary
+    differently and could get a different planet or species name from the same seed. A
+    one-line fix in each place.
+
+M22 The settings menu (Esc) never pauses multiplayer. While one player has it open, the
+    world carries on as normal on their PC (time, sun, weather, animals, traffic, round
+    and network all keep going; POSE keeps being sent), and only that player's own input
+    is locked (no walking, turning or map use). The other player notices no difference:
+    the paused player's spaceman just stands still. If singleplayer's settings menu
+    freezes anything in the world today, skip that freeze when Multiplayer is active.
+M23 A disconnect mid-game (LEAVE received, lobby member left/disconnected, P2P failure,
+    or 10 s of silence) ends the game, and the player who stayed WINS. The game-end
+    panel (Phase 7b's final panel) says so, with the reason, e.g. "You win: Employee
+    119-B disconnected", then "Main menu". Before the game has started (panel, loading
+    screen) a disconnect just returns to the menu with a message, with no winner.
+
+-------------------------------------------------------------------------------
+DETERMINISM AUDIT (2026-10-17): does the same seed make the same world on two PCs?
+-------------------------------------------------------------------------------
+Test: a headless tool (WorldFingerprint, kept out of the repo; easy to remake) built
+seed 123 as XenoGuesser.generateWorld does, minus GL, and hashed each part. It was run
+three times on one PC, imitating different PCs: 8 cores / 4 PyTorch threads (the game's
+default here), 6 cores / 3 threads, 2 cores / 1 thread (JVM -XX:ActiveProcessorCount).
+Result:
+  IDENTICAL in all three: sea level and the map's join, terrain heights (20,000 sample
+  points), climate, rivers (965 reaches, 359 lakes, every point), nations (14), settlements
+  (340), roads (3,113 paths, every point), houses (10,214: place, size, seed), planet name.
+  DIFFERENT: the writing systems. Same number of systems and letters each (fixed by the
+  seed before the AI model runs), but 2 of 6 alphabets' glyph images differed in every run.
+Why the world part holds: Java 17+ does all float/double arithmetic the same on every
+  CPU (strict IEEE); every generator is seeded from worldSeed; parallel loops write to
+  their own array slots or collect in order (toList); per-cell content (trees, rocks,
+  houses, people) is seeded by cell id, so the order cells are built in (which depends on
+  time budgets and thread count) doesn't change them; no settings, screen size or GPU
+  feed into generation.
+Why the glyphs don't: GlyphGenerator runs a PyTorch model (DJL, CPU). Its results vary in
+  the last bits with the thread count (XenoGuesser.main sets it to half the cores) and can
+  vary with the CPU's instruction set (AVX2 vs AVX-512 kernels). The letter-making then
+  makes yes/no decisions on those numbers (stroke presence threshold, wellFormed, overlap
+  > 0.62) and draws further random numbers depending on them, so a tiny difference
+  changes whole letters. Fixing the thread count would not be enough across different
+  CPUs, hence M18.
+Not tested, by reasoning only:
+  - Two different PCs (different CPUs): the Java-side world should match for the reason
+    above; Java's Math.sin/cos/exp/pow/log use the same built-in routines on every x86-64
+    CPU for a given JDK. Confirm with Phase 5's two-PC check.
+  - Different JDK versions (Maven runs): those Math routines have changed between JDK
+    releases, by up to one unit in the last place, which could tip a threshold. Hence M20.
+    Exe builds all carry the same runtime (dist\XenoGuesser\runtime, Java 21).
+  - If PyTorch fails to load on one PC, GlyphGenerator's failure is caught and the world
+    goes on with fewer or no alphabets, which changes InfrastructureManager's culture
+    count (NationScripts.available()). M18 removes this: the joiner never runs the model.
+  - Per-round and live things not seeded from the world: spawnRandom (M5), creatures'
+    roundSalt (M19), traffic and people's choices (Vehicles uses Math.random), weather
+    as it evolves frame by frame, border lights (wall clock). Only the first two matter.
+  - Locale: see M21.
+
+-------------------------------------------------------------------------------
+OPEN QUESTIONS (ask the user; move the answer into DECISIONS)
+-------------------------------------------------------------------------------
+(none at present)
+
+-------------------------------------------------------------------------------
+BACKEND REFERENCE (from SteamP2PApp.java; keep this logic, drop the Swing)
+-------------------------------------------------------------------------------
+Libraries (Windows, 64-bit):
+  - steam_api64.dll: Valve's library, loaded from disk by absolute path.
+  - steamworks4j64.dll: inside steamworks4j-1.10.0.jar at "/steamworks4j64.dll";
+    extracted to a temp file, then loaded.
+  - Both through SteamAPI.loadLibraries(new SteamLibraryLoader() { loadLibrary(name) })
+    where name is "steam_api" or "steamworks4j" and each is System.load(absolutePath).
+  - steam_appid.txt (containing 480) must be in the process's working directory when
+    not launched from Steam; SteamAPI.init() reads it. Then SteamAPI.init() (false =
+    "Steam isn't running").
+
+Objects made after init (all on the steam-net thread):
+  steamUser   = new SteamUser(new SteamUserCallback() {});  mySteamID = steamUser.getSteamID();
+  networking  = new SteamNetworking(new SteamNetworkingCallback() {
+      onP2PSessionRequest(remoteID): accept only if we're in a lobby and remoteID is a
+          member of it (loop matchmaking.getNumLobbyMembers / getLobbyMemberByIndex);
+          remember remoteSteamID if not set; networking.acceptP2PSessionWithUser(remoteID).
+      onP2PSessionConnectFail(remoteID, error): if it's our partner -> reset with a message.
+  });
+  matchmaking = new SteamMatchmaking(new SteamMatchmakingCallback() {
+      onLobbyMatchList(count), onLobbyCreated(result, lobbyID),
+      onLobbyEnter(lobbyID, perms, locked, response), onLobbyChatUpdate(lobby, user, by, change)
+  });
+
+Phases of the room state machine (enum Phase):
+  IDLE -> (host) CHECKING_HOST_CODE -> CREATING_LOBBY -> VERIFYING_HOST_CODE -> HOSTING
+       -> (partner enters) IN_ROOM
+  IDLE -> (join)  LOOKING_UP_ROOM -> JOINING_ROOM -> (lobby entered) IN_ROOM
+  A MatchAction enum (CHECK_HOST_CODE, VERIFY_HOST_CODE, LOOK_UP_ROOM) remembers why the
+  last lobby list was requested, since onLobbyMatchList doesn't say.
+
+Searching for a code (requestRoomSearch):
+  matchmaking.addRequestLobbyListStringFilter("room_code", code, LobbyComparison.Equal);
+  matchmaking.addRequestLobbyListFilterSlotsAvailable(1);
+  matchmaking.addRequestLobbyListResultCountFilter(10);
+  matchmaking.requestLobbyList();   // answer arrives in onLobbyMatchList(count)
+  ADD for the game (not in the test app):
+  - a second string filter "game" = "xenoguesser-<PROTOCOL_VERSION>" (and set that lobby
+    data when hosting), so lobbies of other Spacewar (480) users and of other game
+    versions are never matched;
+  - matchmaking.addRequestLobbyListDistanceFilter(SteamMatchmaking.LobbyDistanceFilter.Worldwide)
+    (present in steamworks4j 1.10.0, checked with javap); Steam's default only finds
+    lobbies in nearby regions, so friends far apart wouldn't find each other.
+
+Hosting:
+  CHECK_HOST_CODE: count > 0 -> new code, search again; else
+    matchmaking.createLobby(LobbyType.Public, 2).
+  onLobbyCreated(OK): setLobbyData(lobby, "room_code", code), setLobbyMemberLimit(2),
+    setLobbyJoinable(true); then VERIFY_HOST_CODE search: count > 1 -> change the
+    lobby's code (setLobbyData) and verify again; else HOSTING, show the code.
+  onLobbyChatUpdate(Entered, someone else): remoteSteamID = them, IN_ROOM,
+    setLobbyJoinable(lobby, false).
+Joining:
+  LOOK_UP_ROOM: count == 0 -> "No open room found for code X"; count > 1 -> "matches
+    more than one room"; else lobbyID = getLobbyByIndex(0); joinLobby(lobbyID).
+  onLobbyEnter(Success): remoteSteamID = getLobbyOwner(lobby) (must not be me), IN_ROOM.
+Leaving / failure (resetToStart): setLobbyJoinable(false), leaveLobby, closeP2PSessionWithUser,
+  clear lobbyID/remoteSteamID/roomCode, Phase IDLE.
+Partner gone: onLobbyChatUpdate with Left / Disconnected / Kicked / Banned for
+  remoteSteamID -> "The other player disconnected."
+Net loop (every 10 ms): run queued tasks; SteamAPI.runCallbacks(); send if due
+  (networking.sendP2PPacket(remoteSteamID, directBuffer, P2PSend.Reliable, channel));
+  while (networking.isP2PPacketAvailable(channel, size)) readP2PPacket(senderID, buffer,
+  channel) and check sender == remoteSteamID. Buffers must be ByteBuffer.allocateDirect.
+  NOTE: poll BOTH channels 0 and 1 in the game (the test app only used 0).
+Shutdown (cleanupSteam): leave lobby, dispose matchmaking, networking, steamUser, then
+  SteamAPI.shutdown(). Call it from XenoGuesser.shutdownGame() if Steam was started.
+
+-------------------------------------------------------------------------------
+PROTOCOL (PROTOCOL_VERSION = 1)
+-------------------------------------------------------------------------------
+type  name          dir    channel  fields after the type byte
+ 1    HELLO         B->A   0 rel    int version, string javaVersion (M20)
+ 2    START         A->B   0 rel    int version, long worldSeed, byte gameMode ordinal,
+                                    byte mapKind ordinal, string javaVersion (M20)
+ 3    START_ACK     B->A   0 rel    (none)
+ 4    WORLD_READY   both   0 rel    (none)            this PC has finished loading
+ 5    BEGIN         both   0 rel    (none)            this player pressed Begin (M16)
+ 6    POSE          both   1 unrel  int seq, long sentAtMs (sender's clock),
+                                    double x, y, z (eye, planet-centred SpherePosition),
+                                    float fx, fy, fz (camera forward, world space),
+                                    byte flags (1 = swimming, 2 = airborne)
+ 7    GUESS         both   0 rel    int round, double px, py, pz (pin direction), int score,
+                                    int quarterProductivity (this quarter's total so far,
+                                    including this guess: what M13 compares)
+ 8    SHOP_DONE     both   0 rel    int round         left the shop for this round
+ 9    ROUND_BUILT   both   0 rel    int round         next round's world is built here
+10    LEAVE         both   0 rel    (none)            leaving on purpose (menu / quit)
+11    STAGE_DONE   both   0 rel    int stageId       generic "I've finished this stage"
+                                    for any other lock-step point (M16), e.g. the quarter
+                                    panel's Continue; stage ids are listed in Multiplayer
+12    ALPHABETS     A->B   0 rel    int length, bytes: a zip of ALPHABETS_DIR in one
+                                    message (Steam reliable P2P allows up to 1 MB; M18)
+Strings are a short (unsigned) byte count then UTF-8 bytes.
+Handshake: B enters the lobby -> B sends HELLO (this also opens the P2P session; A
+accepts in onP2PSessionRequest) -> A sends START -> B adopts seed/mode/map, sends
+START_ACK and shows "Connected" -> A receives START_ACK and shows "Connected".
+A mismatched version -> both show "Your partner has a different version of XenoGuesser."
+Keep-alive: if nothing at all is received for 10 s while in a game, treat it as a
+disconnect (POSE arrives 5 times a second, so silence means trouble).
+
+-------------------------------------------------------------------------------
+PHASES
+-------------------------------------------------------------------------------
+
+PHASE 0  Libraries and build                                                   [x]
+  [x] Copy steamworks4j-1.10.0.jar into lib/ and steam_api64.dll and steam_appid.txt
+      (480) into the project root.
+  [x] pom.xml: add steamworks4j as a system-scope dependency like jogamp-fat
+      (systemPath ${project.basedir}/lib/steamworks4j-1.10.0.jar) and add it to the
+      jar manifest's Class-Path entry (lib/jogamp-fat.jar lib/steamworks4j-1.10.0.jar).
+      Note: system-scope jars are NOT copied by maven-dependency-plugin, which is why
+      build-exe.bat copies jogamp-fat.jar by hand: do the same for steamworks4j.
+  [x] build-exe.bat: copy steamworks4j jar to %STAGE%\lib, and steam_api64.dll and
+      steam_appid.txt to %STAGE%. After jpackage, check where the exe's working
+      directory is (dist\XenoGuesser\ vs dist\XenoGuesser\app\) and make sure
+      steam_appid.txt and steam_api64.dll are found there; the loader should look
+      in GamePaths.HOME first, then the working directory.
+      (Done: the exe's working directory is dist\XenoGuesser\ when double-clicked; the
+      jar, dll and assets are in dist\XenoGuesserpp\. steam_appid.txt is copied beside
+      the exe after jpackage, and SteamTransport copies app\steam_appid.txt into the
+      working directory if it's missing there; the dll is loaded from GamePaths.HOME.)
+  [x] .gitignore: nothing new needed (the dll and txt are small and should be
+      committed so the build is reproducible); turntable PNGs stay generated.
+  Done when: mvn compile works, singleplayer launches with Steam closed.
+
+PHASE 1  Networking core (no UI)                         [x] (two-PC Steam test to do)
+  New files (top-level in src/, no package, like the rest):
+  [x] MultiplayerTransport.java: interface. start(listener) / host() / join(code) /
+      send(byte[] or ByteBuffer, boolean reliable) / leave() / shutdown(); events to a
+      listener: roomCode(String), connected(), message(ByteBuffer), failed(String),
+      disconnected(String). Events are delivered on the Swing thread
+      (SwingUtilities.invokeLater) except message(), which is delivered on the net
+      thread so POSE can be stored without a hop (store it in an AtomicReference).
+  [x] SteamTransport.java: the BACKEND REFERENCE logic, Swing removed, on one
+      "steam-net" daemon thread (M3), 5-letter codes (M4), the "game" filter and
+      Worldwide distance filter, both channels polled.
+  [x] LocalTransport.java (M10): host listens on 127.0.0.1:27999 (TCP is fine for
+      both kinds of message in development), join connects; the "room code" is
+      generated and shown but not checked. Optional: a -Dxenoguesser.mpdrop=0.3 flag
+      that drops that share of POSE messages to test extrapolation.
+  [x] Multiplayer.java: the session, one static instance while multiplayer is on:
+      role (HOST = "119-A" blue, JOIN = "119-B" red), localLabel()/remoteLabel(),
+      worldSeed/gameMode/mapKind, encode/decode of every PROTOCOL message, flags
+      remoteWorldReady, remoteBegun, remoteGuesses (Map<Integer, Guess>),
+      remoteShopDone (Set<Integer>), remoteRoundBuilt (Set<Integer>), the latest
+      remote POSE samples (for Phase 5), and listeners the screens register for
+      "something changed" so they can repaint. A 200 ms pose timer on the net thread
+      sends the latest local pose (published by the GL thread into an AtomicReference).
+  Done when: two game instances with -Dxenoguesser.mpfake (and, separately, two PCs
+      on Steam) can host/join by code from a temporary main()/test hook and log each
+      other's messages.
+  Test hook: MultiplayerCheck.main (see its comment for the command lines): host / join
+      CODE, sends every message type and 5-a-second poses, prints what arrived, PASS/FAIL.
+
+PHASE 2  The multiplayer panel on the main menu (brief items 1, 2 and 4a)       [ ]
+  [ ] MultiplayerPanel.java: a JComponent drawn with HudStyle.panel(..., HudStyle.GLASS)
+      and buttons drawn exactly like MainMenu.paintButton (move paintButton to HudStyle
+      or make it package-visible static so both use it). Shown over the main menu when
+      Play Multiplayer is pressed (MainMenu stays behind it, dimmed like `chosen`).
+      States:
+        CHOOSE   - "Host game", "Join game", "Back".
+        HOSTING  - "Starting room..." then the code in large letters ("Room code: KXQPB")
+                   with "Share this code with your partner", "Waiting for Employee
+                   119-B...", and "Cancel".
+        JOIN     - a 5-box code entry (custom painted in the HUD style; the panel takes
+                   keyboard focus: letters, Backspace, Enter to join, Esc to go back,
+                   Ctrl+V pastes), "Join" (enabled at 5 letters) and "Back".
+        JOINING  - "Looking for room KXQPB..." / "Joining room...".
+        CONNECTED- "Employee 119-B connected" (host) / "Connected to Employee 119-A"
+                   (joiner) for about 1.5 s, then the loading screen (Phase 3).
+        ERROR    - the failure text (no room found, Steam not running, partner left,
+                   version mismatch) and "Back".
+      Watch the window's global key handling in XenoGuesser (keysDown, the Esc
+      listener) so typing a code doesn't also trigger game keys.
+  [ ] XenoGuesser.startMultiplayer(): replace the preview stub. Show the panel; start
+      Steam (M2) on first use. When connected: set worldSeed (joiner: from START),
+      GameMode.choose / MapKind.choose (joiner: from START), call
+      TransmissionMessage.prepare(worldSeed) again, then go on as startSingleplayer
+      does but with the multiplayer loading screen (share the code: a private
+      startGame(boolean multiplayer) used by both).
+  [ ] Delete the "coming soon" preview path from LoadingScreen and XenoGuesser once
+      the real one works (showComingSoon, drawComingSoon, onMultiplayerFinished,
+      backToMenu(LoadingScreen)).
+  Done when: host shows a 5-letter code, the joiner types it, both see "connected" and
+      both reach the loading screen with the same seed (log it on both).
+
+PHASE 3  Two spacemen on the loading screen (brief item 4b)                     [ ]
+  [ ] LoadingArt: parameterise spaceman(fabric) with the trim colour (M6) and render two
+      more sheets, assets/art/spaceman_turntable_blue.png and _red.png (constants
+      SPACEMAN_BLUE / SPACEMAN_RED). ensure() makes them if missing; the singleplayer
+      sheet is unchanged. (48 software-rendered frames each: a few seconds; ensure() runs
+      on the menu-art thread already, and the multiplayer panel is a good moment too.)
+  [ ] LoadingScreen in multiplayer: draw two spacemen. The player's own colour on the
+      LEFT, at the existing "spaceman.feet"; the partner's colour to its right
+      (start with feet.x + 0.6 * drawWidth, same feet.y, same height so they look the
+      same size). Check by screenshot that the second one doesn't cover the computer's
+      screen (screenBox) or the button; nudge if it does. Each is turned by dragging
+      on its own (two angles, two bounds). Optional small labels under their feet:
+      "119-A" / "119-B" in HudStyle.label, replacing "Drag to turn" with one hint.
+      Host: blue left, red right. Joiner: red left, blue right.
+  [ ] Terminal text in multiplayer: the real link steps ("Partner pod linked:
+      Employee 119-B", then the normal loading stages from LoadingProgress) instead of
+      LINK_STEPS' fake never-connecting sequence.
+  [ ] Message (M12): make xenocorp_multiplayer_a and _b, each a .wav and a .txt in the
+      existing format. Since the original tool isn't in the repo:
+      - Write the two transcripts (host: "Employee 119-A ... paired with Employee
+        119-B"; joiner: "Employee 119-B ... paired with Employee 119-A"; otherwise the
+        same words, {planet} slot kept).
+      - Generate the audio with the same voice: PlanetVoice (Piper bryce), phonemes
+        from eSpeak IPA as its config expects, at the same rate/pace settings
+        PlanetVoice uses for the message, then the same post-processing the .txt
+        describes (level, highpass, presence, hiss) so it sounds like the original
+        and the live planet sentence still blends in. Simplest that keeps quality:
+        regenerate the WHOLE message for each, rather than splicing "A"/"B" into the
+        old recording. Put the generator in a small dev tool class (e.g.
+        MessageRecorder.main) so it can be rerun, and record how in the LOG.
+      - New word timings: take them from Piper's phoneme durations (per-phoneme
+        alignment output) mapped back to words, or failing that from silence
+        detection between words; the "slot" frame/char must point at the planet
+        sentence in the new audio. Check by ear and eye that the ticker's words
+        light up as they're said.
+      - TransmissionMessage: MULTIPLAYER_A / MULTIPLAYER_B constants; LoadingScreen
+        loads the one for this PC's role. Remove the old xenocorp_multiplayer.* once
+        nothing uses it.
+  [ ] Writing systems (M18): host sends ALPHABETS after generating them; the joiner's
+      generateWorld waits for them instead of running GlyphGenerator.
+  [ ] M21: Locale.ROOT on the generation toLowerCase() calls.
+  Done when: both PCs show the two coloured spacemen the right way round, and the
+      joiner's alphabet files are byte-identical to the host's.
+
+PHASE 4  Waiting for each other to load (brief item 5)                          [ ]
+  [ ] When the local world is ready (onWorldReady) send WORLD_READY.
+  [ ] LoadingScreen: in multiplayer the button shows, greyed out (buttonEnabled false),
+      "Waiting for Player 119-B" on the host / "Waiting for Player 119-A" on the
+      joiner while the partner's WORLD_READY hasn't arrived (also while this PC is
+      still loading, if the button is visible then). The message's Skip still works.
+  [ ] Once both are loaded: "Begin". Pressing it sends BEGIN; if the partner hasn't
+      pressed theirs, the button goes grey again with "Waiting for Player 119-X"
+      (M16). Only when BOTH have pressed Begin do both run enterGame(), so they start
+      within one network trip of each other.
+  [ ] The first shop (openFirstShop, round 0) is synchronised like the others (Phase 7).
+  Done when: a slow PC and a fast PC enter the game together.
+
+PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [ ]
+  Same rounds:
+  [ ] Replace spawnRandom's use with a per-round Random (M5) in multiplayer:
+      spawnPlayerAtRandomLocation() and queueNextRound() both take the round number
+      they are for (round r's site is queued during round r-1) and draw from
+      roundRandom(r). Check on two PCs that the [ROUND]/[PLANET] log lines, the spawn
+      place and the time of day match every round (log them with the seed).
+      Also check the world itself matches: compare a few printed counts on both PCs
+      (house count, nations, "[PLANET] The map's join crosses x% land"). If anything
+      differs, look for unseeded Randoms or work that depends on thread timing.
+  Sending:
+  [ ] Each frame on the GL thread, publish the local pose: camera.getSpherePosition()
+      (the eye), camera.getSphereForwardDirection() (world forward), swimming and
+      airborne flags. The net thread sends the latest one every 200 ms (M8) with an
+      increasing seq and System.currentTimeMillis().
+  Receiving and extrapolating (M9), in a new RemotePlayer.java:
+  [ ] Keep the last two samples with a larger seq (drop older or duplicate seqs). For
+      each sample also record the local time it arrived.
+  [ ] Velocity = (p1 - p0) / (t1 - t0) using the SENDER's sentAtMs for t (both from one
+      clock, so jitter in delivery doesn't distort speed). Ignore it (treat as zero)
+      when the jump is too big to be walking (> 50 world units in one step = a
+      teleport/new round), mirroring PlayerBody.update's "a teleport, not a step".
+  [ ] Each frame: predicted = p1 + velocity * (now - arrivedAt1), with the look-ahead
+      capped at 1.0 s (then hold still: several updates lost in a row means we don't
+      know, and drifting off is worse). Heading the same way: yaw rate from the last
+      two forwards (angle wrapped to -pi..pi), capped likewise.
+  [ ] Smoothing corrections: when a new sample arrives, don't snap; keep an error
+      offset (old displayed position - new predicted position) and decay it to zero
+      over ~150 ms (offset *= exp(-dt / 0.05)). Snap instead when the error is over
+      50 units (a new round's spawn).
+  [ ] Keep the feet on the ground: unless the airborne flag is set, set the predicted
+      eye's altitude to max(ground, pod floorAt) + playerEyeHeight at the predicted
+      place (groundHeightAt / landingPod.floorAt), so extrapolation over a hill doesn't
+      sink into it or float.
+  Drawing (brief item 8):
+  [ ] Draw the partner as the helmeted suit (PlayerBody.buildMesh(true), no hand-held
+      tools) in the world, after the landing pod, using LandingPod.render as the
+      template: SphereRender.configure(...), anchor = SphereFrame.at(predictedEye)
+      .modelMatrix(1f, eye), bones from a pose with the eyes at the local origin and
+      the heading in that frame (convert the world forward with
+      frame.localDirection(...) then heading = atan2(f.x, f.z), as PlayerBody.render
+      does with camera.getLocalForward()). Walking/swimming animation from the
+      predicted speed (as PlayerBody.update does from distance moved). Best done by
+      giving PlayerBody a "seen from outside" mode (helmet mesh, pose state of its own,
+      renderInWorld(...)) rather than duplicating the posing code.
+  [ ] Colours (M6): the partner's trimColour is the partner's colour; the local
+      first-person body's trimColour (PlayerBody.render) is the local player's colour
+      (host blue, joiner red). Make trimColour a field set from Multiplayer's role;
+      singleplayer keeps grey.
+  [ ] Height: both players have the same eye height (playerEyeHeight = 20) and the same
+      mesh, so they are the same height. Then align the visor: build buildMesh(true),
+      pose it with standingPose at a known eye point, average the posed vertices whose
+      part is OrganismMesh.PART_EYE, and compare with the eye point. Shift the remote
+      body (whole figure, along local y and z) by the difference so the middle of the
+      visor is exactly where the partner's camera is. Write the measured offset as a
+      named constant with a comment. (From the bone offsets it should be about 0.45
+      units up; measure, don't trust this.)
+  [ ] Collision (M15): the partner is a solid upright cylinder (radius PLAYER_RADIUS,
+      from their feet to eye height + 2) at their displayed (predicted) position. Add
+      it to what the local player's movement is tested against (moveSolidly /
+      geodesicCollision obstacles, the same way LandingPod.obstaclesNear feeds segments
+      in) so you slide round each other and can't walk through. Each PC only stops
+      ITS OWN player (no pushing the other); being authoritative over yourself keeps it
+      simple. If the prediction ends up overlapping you (e.g. after lag), don't trap
+      either player: only block movement that brings you closer, never push or freeze.
+      Also keep players clear at spawn (Phase 6 offsets them already) and in
+      GameMode.NO_MOVE (they don't move anyway).
+  [ ] Always drawn while in the 3D world: no distance cut-off (it's a single small mesh),
+      not hidden by the frustum code; hidden only while the world is hidden (shop).
+  Done when: walking about on one PC is seen smoothly on the other, including with
+      -Dxenoguesser.mpdrop=0.3; looking down shows your own colour; looking at the
+      partner shows theirs; standing face to face, visors are at eye level.
+
+PHASE 6  Wider stairs and spawning side by side (brief item 6)                  [ ]
+  [ ] LandingPod: make the stair width an instance setting (constructor or a setter
+      before initialise(gl)), 17 in singleplayer, about 28 in multiplayer, and use it
+      everywhere STAIR_WIDTH is used (platform box, treads, rails, the collision ring's
+      gap and side rails, floorAt). Widen the doorway (dark shell 11 -> ~16, frame
+      13.5 -> ~19) and the platform to match in multiplayer, and check by screenshot
+      that the wider platform still meets the hull nicely (HULL_RADIUS 26).
+  [ ] Spawn: work out the shared spawn exactly as now (same on both PCs), place the pod
+      from it, then move each player sideways along the stair, SIDE_OFFSET = 6.5 units
+      (players are PLAYER_RADIUS 3, so 13 apart leaves a clear gap):
+        left  of facing heading h is h - pi/2 (D10: heading turns from east towards
+        south, i.e. clockwise seen from above, so -pi/2 is to the left)
+        119-A: SphereMath.move(spawn.place(), h - PI/2, SIDE_OFFSET)
+        119-B: SphereMath.move(spawn.place(), h + PI/2, SIDE_OFFSET)
+      carrying the heading with SphereMath.carryHeading so both still face exactly
+      down the stairs. Verify on screen: the host sees the partner on their right.
+      In GameMode.NO_MOVE apply the same sideways offset to the standingClear point.
+  [ ] floorAt must accept the offset positions (half width 14 > 6.5 + 3).
+  Done when: both appear on the third step, side by side, A left, B right, facing out.
+
+PHASE 7  Waiting for each other's guess and shopping (brief item 9)            [ ]
+  Guess:
+  [ ] MapPanel: when Guess is pressed in multiplayer, send GUESS(round, pin, score)
+      and, unless the partner's GUESS for this round has arrived, don't start the
+      reveal yet: lock the pin (isGuessed), switch to the reveal-size map without the
+      globe turning, and show "Waiting for Player 119-X to make their guess..." in the
+      game's panel style. When the partner's GUESS arrives (or has already arrived),
+      start the reveal. The local player can still look/walk about while waiting if
+      the map isn't covering everything; otherwise that's fine too.
+  [ ] Two-guess reveal (M14), in MapPanel's RevealPhase sequence: today it rests on
+      the guess (GLOBE_HOLD_MS), turns to the goal (turnMs grows with distance) and
+      then shows the results. In multiplayer: rest on YOUR pin -> turn to the
+      PARTNER's pin (their pin appears in their colour, labelled "119-X") -> rest ->
+      turn to the true location -> draw both connecting lines (each guess to the
+      goal, in each player's colour) -> results, now showing both distances/scores.
+      Add a phase (e.g. SHOW_PARTNER_PIN) rather than a separate code path, using
+      RevealGlobe.along(...) for each turn as now.
+  [ ] Keep prepareRequested (next round starts building) as soon as the LOCAL guess is
+      made, so waiting time is used for building.
+  Shop:
+  [ ] When the shop is left (openShop's onDone and the first shop's onDone) in
+      multiplayer: send SHOP_DONE(round) and, until the partner's SHOP_DONE for this
+      round has arrived, show "Waiting for Player 119-X to finish shopping..." (on the
+      shop panel's leave button, greyed, or a small panel over it) instead of
+      requesting the next round.
+  [ ] Starting together: building the next round takes different times on different PCs
+      (nextRoundBuilt in the GL listener). When a PC's next round is built, send
+      ROUND_BUILT(round). Start the round (the "nextRoundBuilt && nextRoundWanted" spot,
+      around line 1005 of XenoGuesser_GLEventListener) only when this PC's round is
+      built, both SHOP_DONEs are in, and the partner's ROUND_BUILT is in. Until then the
+      waiting text stays up ("Waiting for Player 119-X..." covers both shopping and
+      loading).
+  [ ] Results/shop are the one place the players may be out of step (M16): one can
+      press Proceed and shop while the other still reads the results. Everything
+      else waits.
+  Done when: over several rounds the two PCs reveal together and start every round
+      within a fraction of a second of each other.
+
+PHASE 7b  Quarter points instead of targets (M13)                              [ ]
+  [ ] Multiplayer only: no targets. GameHUD.getTarget() is not used, the score panel
+      (HudStyle.paintScorePanel) drops the target bar/number and shows instead both
+      players' quarter points, e.g. "119-A  3   119-B  1" in their colours, and this
+      quarter's productivity for both (yours live, theirs as of their last GUESS).
+  [ ] Track per quarter both players' productivity (yours from GameHUD, theirs from the
+      GUESS messages' quarterProductivity) and both players' quarter points.
+  [ ] Quarter end (afterResults when gameHUD.isQuarterEnd()): instead of QuarterPanel's
+      pass/fail, a multiplayer verdict panel in the same style: "Quarter N: Employee
+      119-A was more productive (+N points)", both productivities, the running points
+      totals, and "Continue". Shown on both PCs (both have the data once both last
+      guesses are in). Continue sends STAGE_DONE(quarter end N); both go on to the shop
+      only when both have pressed it (M16). Ties per M17.
+  [ ] Irrecoverable lead: if after Q3 one player has won Q1, Q2 and Q3, the verdict says
+      so ("Employee 119-A has an irrecoverable lead") and its button ends the game.
+  [ ] Game end (after Q4, or the lead above): a final panel on both PCs: the winner
+      ("Employee 119-B is retained. Employee 119-A will be released via the airlock."
+      fits the message), each quarter's winner and points, totals; "Main menu". Uses
+      endGame's teardown; never the singleplayer "You lose" path.
+  [ ] Final deciders (M17): if the points are equal after Q4, the end panel instead says
+      "Points are level: final decider" and both go on (STAGE_DONE, M16) to an extra
+      round. The score panel shows "Final decider N". After each decider's reveal, the
+      higher round score wins the game (final panel); equal scores -> another decider.
+      gameHUD's round/quarter counting must allow rounds past the last normal one
+      (isLastRound / isQuarterEnd must not end or loop the year).
+  [ ] Singleplayer keeps targets, QuarterPanel and losing exactly as now.
+  Done when: a full year plays out with the right points, the early win after a Q1-Q3
+      sweep ends the game, a level year goes to deciders until one is won, and both PCs always show the same verdicts.
+
+PHASE 8  Leaving and failures                                                   [ ]
+  [ ] Leaving to the menu or quitting sends LEAVE, then leaves the lobby and closes the
+      P2P session. Mid-game the other PC wins (M23): the final panel shows "You win:
+      Employee 119-X disconnected" and "Main menu", using endGame-like teardown.
+      Before the game starts: "Player 119-X left" and back to the menu.
+  [ ] Settings menu in multiplayer (M22): opening it locks only this player's input;
+      nothing in the world or the network pauses.
+  [ ] Lobby member Left/Disconnected, P2P connect failure, 10 s silence (protocol) are
+      handled the same way.
+  [ ] Steam is shut down only on application exit (shutdownGame), not between games.
+  [ ] The joiner's menu choices (GameMode/MapKind) are restored after a multiplayer game.
+  Done when: pulling the network cable or quitting on one PC never leaves the other
+      stuck on a waiting screen.
+
+-------------------------------------------------------------------------------
+TESTING NOTES
+-------------------------------------------------------------------------------
+- One PC: two game windows with -Dxenoguesser.mpfake=host and =join (M10). Add the
+  property to a copy of the exec arguments in pom.xml, or run java directly with the
+  classpath. Two worlds generating at once is slow (~70 s each alone) and memory heavy;
+  close other things.
+- Two PCs: both logged into different Steam accounts with Steam running, both with
+  steam_appid.txt (480). Steam shows "Playing Spacewar" while it runs; that's expected.
+- Determinism check each time the world code changes: same seed on both PCs ->
+  same printed counts and the same first landing site.
+- Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
+  sequence), -Dxenoguesser.hudtest (skips straight into the game).
+
+-------------------------------------------------------------------------------
+LOG
+-------------------------------------------------------------------------------
+2026-10-17  Plan written from the brief and a survey of the game and the Steam test app.
+            Nothing implemented yet.
+2026-10-17  User decisions folded in: per-player message text and audio (M12),
+            quarter points scoring with early win after a Q1-Q3 sweep (M13, Phase 7b),
+            two-guess reveal (M14), players collide (M15), lock-step stages with Begin
+            waiting for both (M16).
+2026-10-17  Ties settled (M17): a tied quarter gives nobody points; level points after Q4
+            go to final decider rounds until one player outscores the other in one.
+2026-10-17  Determinism audit (see that section): world identical across core counts; writing
+            systems differ (PyTorch). Added M18-M21: host sends the alphabets, creatures seeded per
+            round, build/Java version check, Locale.ROOT.
+2026-10-17  M18 revised (one message, host generates glyphs on Host game, joiner loads in
+            parallel and waits only before WORLD_LAYOUT); M19 now covers the sun, the weather
+            (round-relative cloud time) and creature placement; M21 explained.
+2026-10-17  M22 (settings menu never pauses multiplayer, only locks own input) and M23
+            (a disconnect mid-game is a win for the player who stays, with the reason shown).
+2026-10-17  PHASE 0 and PHASE 1 done. steamworks4j jar in lib/, steam_api64.dll and
+            steam_appid.txt (480) in the root; pom.xml, manifest and build-exe.bat updated (exe
+            built and checked: Steam files found from dist\XenoGuesser\). New: MultiplayerTransport,
+            SteamTransport, LocalTransport, Multiplayer, MultiplayerCheck (test hook);
+            XenoGuesser.shutdownGame calls Multiplayer.shutdown(). Checked: mvn compile; game
+            launches to the menu with no Steam/multiplayer class loaded; two LocalTransport
+            processes hand-shake and exchange every message type (joiner with mpdrop=0.3);
+            SteamTransport alone starts Steam, hosts a 5-letter room, reports "No open room
+            found" for a bad code, shuts Steam down. Not yet: a two-PC Steam join.
+            Surprises: SteamLibraryLoader isn't a lambda type (anonymous class needed). The
+            HELLO -> ready order: the host is ready on HELLO (START_ACK only confirms). For
+            Phase 8: leave()/a version mismatch close the P2P session straight after sending
+            LEAVE/START, which on Steam may drop that last message (the lobby Left event still
+            reaches the partner); consider a short delay before closing.

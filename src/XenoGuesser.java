@@ -839,6 +839,8 @@ public class XenoGuesser extends JFrame {
             if (animator != null && animator.isStarted()) {
                 animator.stop();
             }
+            // Leaves any multiplayer room and shuts Steam down, if multiplayer was ever started
+            Multiplayer.shutdown();
             SwingUtilities.invokeLater(new Runnable() {
                 @Override
                 public void run() {

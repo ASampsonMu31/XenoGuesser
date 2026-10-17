@@ -36,6 +36,15 @@
             <systemPath>${project.basedir}/lib/jogamp-fat.jar</systemPath>
         </dependency>
 
+        <!-- Steam multiplayer (lobbies and peer-to-peer messages); only started when Play Multiplayer is pressed -->
+        <dependency>
+            <groupId>com.code-disaster.steamworks4j</groupId>
+            <artifactId>steamworks4j</artifactId>
+            <version>1.10.0</version>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/lib/steamworks4j-1.10.0.jar</systemPath>
+        </dependency>
+
         <dependency>
             <groupId>ai.djl</groupId>
             <artifactId>api</artifactId>
@@ -111,9 +120,9 @@
                             <addClasspath>true</addClasspath>
                             <classpathPrefix>lib/</classpathPrefix>
                         </manifest>
-                        <!-- (JOGL is in the project's own lib/, not from Maven) -->
+                        <!-- (JOGL and steamworks4j are in the project's own lib/, not from Maven) -->
                         <manifestEntries>
-                            <Class-Path>lib/jogamp-fat.jar</Class-Path>
+                            <Class-Path>lib/jogamp-fat.jar lib/steamworks4j-1.10.0.jar</Class-Path>
                         </manifestEntries>
                     </archive>
                 </configuration>
