@@ -70,6 +70,8 @@ public class ShopPanel extends JPanel {
     private boolean leaving;
     private long dealtAt, leftAt;
     private final Timer animation = new Timer(16, e -> repaint());
+    // What the wait after leaving says (multiplayer: who it's waiting for); null for the usual
+    private java.util.function.Supplier<String> waitingText;
     // A message from Xenocorp scrolling along the bottom as it's spoken (null for none)
     private MessageTicker message;
 
@@ -118,6 +120,15 @@ public class ShopPanel extends JPanel {
 
     /** Opens the shop with these cards; onLeave is told once the player has chosen (bought or not). */
     public void open(List<Card> offers, Runnable onLeave) {
+        open(offers, onLeave, null);
+    }
+
+    /**
+     * As open, with what the wait after leaving says given by waitingText (asked each time it's
+     * drawn; multiplayer: "Waiting for Player 119-B" until the partner is ready too).
+     */
+    public void open(List<Card> offers, Runnable onLeave, java.util.function.Supplier<String> waitingText) {
+        this.waitingText = waitingText;
         this.cards = List.copyOf(offers);
         this.bought = new boolean[cards.size()];
         this.onLeave = onLeave;
@@ -265,7 +276,8 @@ public class ShopPanel extends JPanel {
             int bh = Math.max(40, Math.round(h * 0.052f)), bw = Math.max(200, Math.round(cardW * 0.9f));
             if (leaving) {
                 nextButton.setBounds(0, 0, 0, 0);
-                int lw = Math.round(bw * 1.3f);
+                // (wide enough for "Waiting for Player 119-B" too)
+                int lw = Math.round(bw * 1.5f);
                 drawLoading(g, (w - lw) / 2, buttonsY, lw, bh, now);
             } else {
                 nextButton.setBounds((w - bw) / 2, buttonsY, bw, bh);
@@ -396,7 +408,8 @@ public class ShopPanel extends JPanel {
     /** A panel saying the next round is loading, with a half-circle turning round in it. */
     private void drawLoading(Graphics2D g, int x, int y, int w, int h, long now) {
         HudStyle.panel(g, x, y, w, h, HudStyle.GLASS_SOLID);
-        String text = "Loading the next round";
+        String said = waitingText != null ? waitingText.get() : null;
+        String text = said != null ? said : "Loading the next round";
         float size = Math.max(12f, h * 0.32f);
         float textW = HudStyle.labelWidth(g, text, size);
         int spinner = Math.round(h * 0.45f), spinnerGap = 12;

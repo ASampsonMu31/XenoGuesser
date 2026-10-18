@@ -274,6 +274,13 @@ public final class RevealGlobe {
      */
     public void drawArc(Graphics2D g, GeodesicChunkGrid.Direction a, GeodesicChunkGrid.Direction b, double progress,
                         int x, int y, int w, int h) {
+        drawArc(g, a, b, progress, x, y, w, h, Color.WHITE);
+    }
+
+    /** As drawArc, the dashes in colour (multiplayer: each player's line in their own, M14). */
+    public void drawArc(Graphics2D g, GeodesicChunkGrid.Direction a, GeodesicChunkGrid.Direction b, double progress,
+                        int x, int y, int w, int h, Color colour) {
+        if (progress <= 0.0) return;
         double angle = Math.acos(Math.max(-1.0, Math.min(1.0, a.dot(b))));
         int steps = Math.max(2, (int) Math.ceil(Math.toDegrees(angle) * progress));
         Path2D path = new Path2D.Double();
@@ -287,7 +294,7 @@ public final class RevealGlobe {
         g.setColor(new Color(20, 20, 30, 150));
         g.setStroke(new BasicStroke(5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10f, new float[] { 6f, 6f }, 0f));
         g.draw(path);
-        g.setColor(Color.WHITE);
+        g.setColor(colour);
         g.setStroke(new BasicStroke(3f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10f, new float[] { 6f, 6f }, 0f));
         g.draw(path);
         g.setStroke(old);

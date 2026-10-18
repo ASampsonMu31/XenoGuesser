@@ -594,9 +594,9 @@ PHASE 4  Waiting for each other to load (brief item 5)                          
       pressed theirs, the button goes grey again with "Waiting for Player 119-X"
       (M16). Only when BOTH have pressed Begin do both run enterGame(), so they start
       within one network trip of each other.
-  [ ] The first shop (openFirstShop, round 0) is synchronised like the others (Phase 7).
-      (Left for Phase 7: both players now reach the first shop together, since they
-      enter together; leaving it in step is Phase 7's SHOP_DONE work.)
+  [x] The first shop (openFirstShop, round 0) is synchronised like the others (Phase 7).
+      (Done in Phase 7: leaving it sends SHOP_DONE(0); the round is let in, and its cloud
+      clock started, once both have left.)
   Done when: a slow PC and a fast PC enter the game together.
 
 PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [x]
@@ -715,16 +715,21 @@ PHASE 6  Wider stairs and spawning side by side (brief item 6)                  
   [x] floorAt must accept the offset positions (half width 14 > 6.5 + 3).
   Done when: both appear on the third step, side by side, A left, B right, facing out.
 
-PHASE 7  Waiting for each other's guess and shopping (brief item 9)            [ ]
+PHASE 7  Waiting for each other's guess and shopping (brief item 9)            [x]
   Guess:
-  [ ] MapPanel: when Guess is pressed in multiplayer, send GUESS(round, pin, score)
+  [x] MapPanel: when Guess is pressed in multiplayer, send GUESS(round, pin, score)
       and, unless the partner's GUESS for this round has arrived, don't start the
       reveal yet: lock the pin (isGuessed), switch to the reveal-size map without the
       globe turning, and show "Waiting for Player 119-X to make their guess..." in the
       game's panel style. When the partner's GUESS arrives (or has already arrived),
       start the reveal. The local player can still look/walk about while waiting if
       the map isn't covering everything; otherwise that's fine too.
-  [ ] Two-guess reveal (M14), in MapPanel's RevealPhase sequence: today it rests on
+      (Done: startRevealSequence works the score out at once and sends GUESS with
+      quarterProductivity = GameHUD.getProductivity() + this score; setUpReveal shows the
+      reveal-size globe on the pin, phase WAITING_FOR_PARTNER, with a HudStyle panel "Your
+      guess is in / Waiting for Player 119-X to make their guess..."; a 100 ms timer starts
+      runReveal once remoteGuess(round) is in. The map covers the view meanwhile.)
+  [x] Two-guess reveal (M14), in MapPanel's RevealPhase sequence: today it rests on
       the guess (GLOBE_HOLD_MS), turns to the goal (turnMs grows with distance) and
       then shows the results. In multiplayer: rest on YOUR pin -> turn to the
       PARTNER's pin (their pin appears in their colour, labelled "119-X") -> rest ->
@@ -732,22 +737,35 @@ PHASE 7  Waiting for each other's guess and shopping (brief item 9)            [
       goal, in each player's colour) -> results, now showing both distances/scores.
       Add a phase (e.g. SHOW_PARTNER_PIN) rather than a separate code path, using
       RevealGlobe.along(...) for each turn as now.
-  [ ] Keep prepareRequested (next round starts building) as soon as the LOCAL guess is
+      (Done: phases SHOW_PLAYER_PIN (rest, turn to theirs), SHOW_PARTNER_PIN (rest, turn to
+      the answer), DRAW_LINES (both arcs drawn out over 0.9 s), then the results as before.
+      Pins and lines in Role.trimColour (own and partner's), the partner's pin labelled. The
+      results box lists "You (119-A): distance, +points" and "Employee 119-B: ...", then the
+      cash line. resultsShown() replaced the old "not SHOW_PLAYER_PIN" tests, so singleplayer
+      behaves exactly as before.)
+  [x] Keep prepareRequested (next round starts building) as soon as the LOCAL guess is
       made, so waiting time is used for building.
   Shop:
-  [ ] When the shop is left (openShop's onDone and the first shop's onDone) in
+  [x] When the shop is left (openShop's onDone and the first shop's onDone) in
       multiplayer: send SHOP_DONE(round) and, until the partner's SHOP_DONE for this
       round has arrived, show "Waiting for Player 119-X to finish shopping..." (on the
       shop panel's leave button, greyed, or a small panel over it) instead of
       requesting the next round.
-  [ ] Starting together: building the next round takes different times on different PCs
+  [x] Starting together: building the next round takes different times on different PCs
       (nextRoundBuilt in the GL listener). When a PC's next round is built, send
       ROUND_BUILT(round). Start the round (the "nextRoundBuilt && nextRoundWanted" spot,
       around line 1005 of XenoGuesser_GLEventListener) only when this PC's round is
       built, both SHOP_DONEs are in, and the partner's ROUND_BUILT is in. Until then the
       waiting text stays up ("Waiting for Player 119-X..." covers both shopping and
       loading).
-  [ ] Results/shop are the one place the players may be out of step (M16): one can
+      (Done: XenoGuesser.leaveShopTogether sends SHOP_DONE(round) and runs on (the next round
+      asked for, or the first round let in) once the partner's is in; ShopPanel.open takes a
+      waiting-text supplier, so the leaving panel says "Waiting for Player 119-X" until the
+      partner has left their shop and (between rounds) built the next round, then "Loading
+      the next round". The GL listener sends ROUND_BUILT(spawnedRound) as a round finishes
+      building and starts it only when partnerHasBuilt(). The [ROUND] start line gives the
+      clock time, to compare the PCs.)
+  [x] Results/shop are the one place the players may be out of step (M16): one can
       press Proceed and shop while the other still reads the results. Everything
       else waits.
   Done when: over several rounds the two PCs reveal together and start every round
@@ -819,6 +837,12 @@ TESTING NOTES
   multiplayer a HUD test run waits at Begin (use mpautobegin) so both go in together.
 - -Dxenoguesser.mpautobegin=ms presses Skip and Begin that long after the world is ready
   (retrying until Begin can be pressed), so two windows go in with no clicks.
+- HUD test steps guess (with -Dxenoguesser.guessat=u,v to pin somewhere other than the middle
+  of the map) and uishot (paints the window's Swing panels, the map/results/shop, to
+  -Dxenoguesser.uishot_<ms>.png at each of -Dxenoguesser.uishotat=ms,...).
+- HUD test step autoplay: every -Dxenoguesser.autoplayms (default 4000) leave the shop, else go
+  on from the results, else guess. Two windows at different paces exercise all the waiting.
+  It doesn't press the quarter's verdict panel (after round 3), so a run stops there.
 - Listening to a message with a planet name in it: java -cp <full classpath>
   TransmissionMessage <seed> single|multi|multib out.wav (multi = host's, multib = joiner's).
 - Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
@@ -956,3 +980,18 @@ LOG
             HUD test step podview. The partner log line now gives their bearing. Checked with
             two windows (seed 123): 13.0 apart at +90/-90 degrees; the pod from outside looked
             right with the joiner on the right of the stairs. Not run: NO_MOVE, two PCs.
+2026-10-18  PHASE 7 "Guess" part done (7a). See the Phase 7 notes above. New dev aids: guessat,
+            uishot. Checked with two windows (seed 123): the host guessed at 5 s and showed the
+            waiting panel until the joiner guessed at 25 s; then both revealed: own pin, turn to
+            the partner's (labelled, in their colour), turn to the answer, both lines, results
+            with both distances and scores (e.g. host 4.1 km +107, joiner 1.2 km +1,583); the
+            joiner's view mirrored it (its own line red, the host's pin blue). GUESS carried the
+            quarter's productivity (round 1: equal to the score). Still to do: Phase 7's Shop
+            part (SHOP_DONE, ROUND_BUILT, starting together, the first shop).
+2026-10-18  PHASE 7 done (the Shop part and Phase 4's first shop, called "7b-sync" in chat to
+            keep it apart from PHASE 7b, quarter points). See the Phase 7 notes. New dev aid:
+            autoplay. Checked with two windows (seed 123; host acting every 3 s, joiner every
+            9 s, both from the first shop): the host waited at each shop with "Waiting for Player
+            119-B"; both left the first shop 34 ms apart, started round 2 32 ms apart and round 3
+            5 ms apart. The quarter's verdict panel (QuarterPanel, after round 3) is still
+            singleplayer's and not in step; that's PHASE 7b's work.

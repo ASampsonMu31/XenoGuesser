@@ -1008,10 +1008,12 @@ private static class SpeciesConfig {
             nextRoundWantedAt = System.currentTimeMillis();
             if (!roundLoading && !nextRoundBuilt) startBuildingNextRound(gl);
         }
-        if (nextRoundBuilt && nextRoundWanted) {
+        // (in multiplayer only once the partner's PC has built it too, so both start together: M16)
+        if (nextRoundBuilt && nextRoundWanted && partnerHasBuilt()) {
             nextRoundBuilt = false;
             nextRoundWanted = false;
-            System.out.printf("[ROUND] Next round started %d ms after it was asked for%n", System.currentTimeMillis() - nextRoundWantedAt);
+            System.out.printf("[ROUND] Next round (%d) started %d ms after it was asked for, at %d%n", spawnedRound,
+                    System.currentTimeMillis() - nextRoundWantedAt, System.currentTimeMillis());
             startRoundClock();
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) minimap.finishRoundLoading();
@@ -1042,6 +1044,9 @@ private static class SpeciesConfig {
             if (surroundingsBuilt()) {
                 roundLoading = false;
                 nextRoundBuilt = true;
+                // (the partner's PC waits for this before starting the round)
+                Multiplayer session = Multiplayer.active();
+                if (session != null) session.sendRoundBuilt(spawnedRound);
                 setBuilderThreads(false);
                 queueNextRound();
                 System.out.printf("[ROUND] Next round built in %d ms over %d frames%n",
@@ -3266,6 +3271,12 @@ private static class SpeciesConfig {
     // When this round began (getSeconds()): in multiplayer the clouds drift with the time since
     // then rather than since the window opened, so both PCs' skies match (M19)
     private double roundClockStart;
+
+    /** Multiplayer: whether the partner's PC has built the round this one has built (always true in singleplayer). */
+    private boolean partnerHasBuilt() {
+        Multiplayer session = Multiplayer.active();
+        return session == null || session.remoteRoundBuilt(spawnedRound);
+    }
 
     /** The round has begun for the player (rounds begin together on both PCs, M16). */
     public void startRoundClock() {

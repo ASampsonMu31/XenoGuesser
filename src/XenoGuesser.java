@@ -584,8 +584,35 @@ public class XenoGuesser extends JFrame {
   /** Opens the shop over the results; once the player has bought something or nothing, the next round is asked for. */
   private void openShop() {
     shopBetweenRounds = true;
-    shopPanel.open(glEventListener.shopOffers(gameHUD.getRound()), minimap::requestNextRound);
+    int round = gameHUD.getRound();
+    Multiplayer session = Multiplayer.active();
+    if (session == null) {
+      shopPanel.open(glEventListener.shopOffers(round), minimap::requestNextRound);
+    } else {
+      // Multiplayer (M16): the next round is asked for once both have left their shops, and it
+      // starts once both PCs have built it (see the GL listener); until then the shop says so
+      shopPanel.open(glEventListener.shopOffers(round), () -> leaveShopTogether(session, round, minimap::requestNextRound),
+          () -> session.remoteShopDone(round) && session.remoteRoundBuilt(round + 1) ? null
+              : "Waiting for Player " + session.remoteLabel());
+    }
     layoutComponents();
+  }
+
+  /**
+   * Multiplayer: this player has left the shop after round (0: the one before the first): the
+   * partner hears so (SHOP_DONE), and then, once the partner has left theirs too, then runs.
+   */
+  private void leaveShopTogether(Multiplayer session, int round, Runnable then) {
+    session.sendShopDone(round);
+    javax.swing.Timer wait = new javax.swing.Timer(100, null);
+    wait.addActionListener(e -> {
+      if (Multiplayer.active() != session || !session.remoteShopDone(round)) return;
+      wait.stop();
+      System.out.println("[MP] Both have left the shop after round " + round + " at " + System.currentTimeMillis());
+      then.run();
+    });
+    wait.setInitialDelay(0);
+    wait.start();
   }
 
   /** The shop before the first round (January): leaving it, the round (already loaded) begins. */
@@ -601,14 +628,25 @@ public class XenoGuesser extends JFrame {
       SwingUtilities.invokeLater(() -> shop.playMessage(gift));
     }, "gift-message");
     message.setDaemon(true);
-    shopPanel.open(glEventListener.shopOffers(0), () -> {
+    Runnable intoTheRound = () -> {
       shopPanel.close();
       gameHUD.setVisible(false);
       glEventListener.setWorldHidden(false);
       layoutComponents();
       canvas.requestFocus();
       updateMouseMode();
-    });
+    };
+    Multiplayer session = Multiplayer.active();
+    if (session == null) {
+      shopPanel.open(glEventListener.shopOffers(0), intoTheRound);
+    } else {
+      // Multiplayer: the first round (built on both already) begins once both have left the shop
+      shopPanel.open(glEventListener.shopOffers(0), () -> leaveShopTogether(session, 0, () -> {
+            intoTheRound.run();
+            glEventListener.startRoundClock();
+          }),
+          () -> session.remoteShopDone(0) ? null : "Waiting for Player " + session.remoteLabel());
+    }
     message.start();
     layoutComponents();
     updateMouseMode();
@@ -725,6 +763,39 @@ public class XenoGuesser extends JFrame {
         // frameshot: the drawn frame saved (from the GL, so another window over this one doesn't
         // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
         case "partner": later(1500, () -> glEventListener.lookAtPartner(0f)); break;
+        // autoplay: every -Dxenoguesser.autoplayms (default 4000) the next thing a player would do:
+        // leave the shop (buying nothing), else go on from the results, else guess (see guessat)
+        case "autoplay": {
+          javax.swing.Timer play = new javax.swing.Timer(Integer.getInteger("xenoguesser.autoplayms", 4000), e -> {
+            if (!inGame || minimap == null || (quarterPanel != null && quarterPanel.isOpen())) return;
+            if (shopPanel.isOpen()) shopPanel.nextRound();
+            else if (minimap.isFullScreenRevealMode()) minimap.devProceedToShop();
+            else minimap.devGuess();
+          });
+          play.start();
+          break;
+        }
+        // uishot: the window's panels (the map, results, shop: Swing, not the 3D view) painted to
+        // <-Dxenoguesser.uishot>_<ms>.png at each of -Dxenoguesser.uishotat=ms,ms,... in
+        case "uishot": {
+          for (String at : System.getProperty("xenoguesser.uishotat", "4000").split(",")) {
+            int ms = Integer.parseInt(at.trim());
+            later(ms, () -> {
+              BufferedImage image = new BufferedImage(Math.max(1, layeredPane.getWidth()), Math.max(1, layeredPane.getHeight()), BufferedImage.TYPE_INT_RGB);
+              Graphics2D g = image.createGraphics();
+              layeredPane.paint(g);
+              g.dispose();
+              java.io.File file = new java.io.File(System.getProperty("xenoguesser.uishot", "ui") + "_" + ms + ".png");
+              try {
+                javax.imageio.ImageIO.write(image, "png", file);
+                System.out.println("[SHOT] Panels saved to " + file);
+              } catch (java.io.IOException e) {
+                System.err.println("Couldn't save the panels: " + e.getMessage());
+              }
+            });
+          }
+          break;
+        }
         // walkpartner: face the partner and walk at them for four seconds (W held), logging how far apart they end up
         case "walkpartner": {
           later(1500, () -> {

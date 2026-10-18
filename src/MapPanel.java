@@ -167,13 +167,31 @@ public class MapPanel extends JPanel {
     private int visualMapY = 0;
 
     private enum RevealPhase {
+        // Multiplayer: guessed, waiting for the partner's guess before the reveal starts (M16)
+        WAITING_FOR_PARTNER,
         SHOW_PLAYER_PIN,
+        // Multiplayer (M14): resting on the partner's pin, then turning to the answer, and then
+        // both lines drawn, each guess's to the answer
+        SHOW_PARTNER_PIN,
+        DRAW_LINES,
         SHOW_ALL_RESULTS,
         LINGER,
         SLAM_TO_HUD
     }
     private RevealPhase currentPhase = RevealPhase.SHOW_PLAYER_PIN;
     private Timer revealTimer;
+    // Multiplayer: the partner's guess this round, once it's in (null in singleplayer), and the
+    // timer that waits for it
+    private Multiplayer.Guess partnerGuess;
+    private GeodesicChunkGrid.Direction partnerPin;
+    private Timer partnerWait;
+    // How long the lines are drawn for once the globe has reached the answer (multiplayer)
+    private static final long LINES_MS = 900;
+
+    /** Whether the results are up (the score counted, the buttons usable): after the reveal's turns. */
+    private boolean resultsShown() {
+        return currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD;
+    }
     
     private float lineProgress = 0.0f;
 
@@ -384,7 +402,7 @@ public class MapPanel extends JPanel {
                         }
 
                         if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                                                        boolean resultsReady = currentPhase != RevealPhase.SHOW_PLAYER_PIN;
+                                                        boolean resultsReady = resultsShown();
                             if (resultsReady && !roundLoading) {
                                 proceedToShop();
                             }
@@ -453,7 +471,7 @@ public class MapPanel extends JPanel {
                 dragging = true;
                 if (isFullScreenReveal) {
                     // The globe turns under the pointer (once it has finished turning to the answer)
-                    if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) return;
+                    if (!resultsShown()) return;
                     setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
                     globe.dragTo(dx, dy, currentMapSize, mapHeight());
                     repaint();
@@ -827,6 +845,40 @@ public class MapPanel extends JPanel {
 
 
     private void startRevealSequence() {
+        partnerGuess = null;
+        partnerPin = null;
+        Multiplayer session = Multiplayer.active();
+        if (session != null && gameHUD != null) {
+            // Multiplayer: the guess goes to the partner (with this quarter's productivity, this
+            // guess included: what the quarter's verdict compares), and the reveal waits for theirs
+            calculateAndApplyScore();
+            int round = gameHUD.getRound();
+            session.sendGuess(new Multiplayer.Guess(round, pin.x(), pin.y(), pin.z(), targetRoundScore,
+                    gameHUD.getProductivity() + targetRoundScore));
+            setUpReveal();
+            currentPhase = RevealPhase.WAITING_FOR_PARTNER;
+            if (partnerWait != null) partnerWait.stop();
+            partnerWait = new Timer(100, e -> {
+                Multiplayer.Guess theirs = session.remoteGuess(round);
+                if (theirs == null) {
+                    repaint();
+                    return;
+                }
+                ((Timer) e.getSource()).stop();
+                partnerGuess = theirs;
+                partnerPin = new GeodesicChunkGrid.Direction(theirs.px(), theirs.py(), theirs.pz());
+                runReveal();
+            });
+            partnerWait.setInitialDelay(0);
+            partnerWait.start();
+            return;
+        }
+        setUpReveal();
+        runReveal();
+    }
+
+    /** The guess is made: the pin locked and the map shown at the reveal's size on the globe, centred on the pin. */
+    private void setUpReveal() {
         this.isGuessed = true;
         // The next round can be got ready behind the results from now on
         this.prepareRequested = true;
@@ -864,14 +916,60 @@ public class MapPanel extends JPanel {
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
         if (onSizeChanged != null) onSizeChanged.run();
+    }
 
-        // (the further apart, the longer the turn)
-        final long turnMs = GLOBE_TURN_MIN_MS + Math.round((GLOBE_TURN_MAX_MS - GLOBE_TURN_MIN_MS) * SphereMath.angle(pin, goal) / Math.PI);
+    /** How long the globe takes to turn from a to b (the further apart, the longer). */
+    private static long turnMs(GeodesicChunkGrid.Direction a, GeodesicChunkGrid.Direction b) {
+        return GLOBE_TURN_MIN_MS + Math.round((GLOBE_TURN_MAX_MS - GLOBE_TURN_MIN_MS) * SphereMath.angle(a, b) / Math.PI);
+    }
+
+    /**
+     * The reveal: resting on the guess, turning to the answer as the line is drawn, then the
+     * score. In multiplayer (M14): resting on this player's pin, turning to the partner's,
+     * resting there, turning to the answer, then both lines drawn, then the score.
+     */
+    private void runReveal() {
+        currentPhase = RevealPhase.SHOW_PLAYER_PIN;
+        this.revealStartTime = System.currentTimeMillis();
+        final GeodesicChunkGrid.Direction theirs = partnerPin;
+        final long turnMs = turnMs(pin, theirs != null ? theirs : goal);
+        final long partnerTurnMs = theirs != null ? turnMs(theirs, goal) : 0;
         final long COUNT_UP_DURATION_MS = 500; 
         final long[] countUpStartTime = {-1};  
 
         revealTimer = new Timer(16, e -> {
-            if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
+            if (theirs != null && currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
+                // Multiplayer: from this player's pin to the partner's
+                float t = Math.max(0f, Math.min(1f, (System.currentTimeMillis() - revealStartTime - GLOBE_HOLD_MS) / (float) turnMs));
+                globe.centreOn(RevealGlobe.along(pin, theirs, t * t * (3f - 2f * t)));
+                if (t >= 1.0f) {
+                    currentPhase = RevealPhase.SHOW_PARTNER_PIN;
+                    phaseStartTime = System.currentTimeMillis();
+                }
+            }
+            else if (currentPhase == RevealPhase.SHOW_PARTNER_PIN) {
+                // ...resting there, then on to the answer
+                float t = Math.max(0f, Math.min(1f, (System.currentTimeMillis() - phaseStartTime - GLOBE_HOLD_MS) / (float) partnerTurnMs));
+                globe.centreOn(RevealGlobe.along(theirs, goal, t * t * (3f - 2f * t)));
+                if (t >= 1.0f) {
+                    currentPhase = RevealPhase.DRAW_LINES;
+                    phaseStartTime = System.currentTimeMillis();
+                }
+            }
+            else if (currentPhase == RevealPhase.DRAW_LINES) {
+                // ...and both lines drawn out from the guesses to it
+                float t = Math.min(1f, (System.currentTimeMillis() - phaseStartTime) / (float) LINES_MS);
+                lineProgress = t * t * (3f - 2f * t);
+                if (t >= 1.0f) {
+                    lineProgress = 1.0f;
+                    currentPhase = RevealPhase.SHOW_ALL_RESULTS;
+                    calculateAndApplyScore();
+                    shouldDrawScoreText = true;
+                    updateGeometryLayouts();
+                    triggerParentLayoutUpdate();
+                }
+            }
+            else if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
                 // Resting on the guess, then turning to the answer, easing in and out, the line
                 // drawn as far as the globe has turned (so its end stays in the middle)
                 float t = Math.max(0f, Math.min(1f, (System.currentTimeMillis() - revealStartTime - GLOBE_HOLD_MS) / (float) turnMs));
@@ -1280,8 +1378,14 @@ public class MapPanel extends JPanel {
                 g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
 
                 if (isFullScreenReveal) {
-                    // The great circle's arc the distance is measured along
-                    globe.drawArc(g2d, pin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight());
+                    // The great circle's arc the distance is measured along (multiplayer: both
+                    // guesses' arcs, each in its player's colour)
+                    if (partnerPin != null) {
+                        globe.drawArc(g2d, partnerPin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight(), partnerColour());
+                        globe.drawArc(g2d, pin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight(), ownColour());
+                    } else {
+                        globe.drawArc(g2d, pin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight());
+                    }
                     double[] p = globe.project(pin, mapX, mapY, currentMapSize, mapHeight());
                     double[] q = globe.project(goal, mapX, mapY, currentMapSize, mapHeight());
                     displayPinX = (int) Math.round(p[0]);
@@ -1305,13 +1409,15 @@ public class MapPanel extends JPanel {
                 int circleX = displayPinX - headRadius;
                 int circleY = (displayPinY - pinLength) - headRadius;
 
-                g2d.setColor(new Color(200, 40, 40)); 
+                // (in multiplayer, in this player's colour)
+                g2d.setColor(ownColour() != null ? ownColour() : new Color(200, 40, 40));
                 g2d.fillOval(circleX, circleY, headDiameter, headDiameter);
                 g2d.setColor(new Color(30, 30, 30));
                 g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
                 }
+                if (isFullScreenReveal && partnerPin != null) drawPartnerPin(g2d, mapX, mapY, pinLength, headDiameter);
 
-                if (isFullScreenReveal && goalShown && (currentPhase != RevealPhase.SHOW_PLAYER_PIN)) {
+                if (isFullScreenReveal && goalShown && (resultsShown() || currentPhase == RevealPhase.DRAW_LINES)) {
                     int flagPoleLength = 22;
 
                     g2d.setColor(Color.LIGHT_GRAY);
@@ -1334,7 +1440,7 @@ public class MapPanel extends JPanel {
                 g2d.setClip(markerClip);
 
                 if (isFullScreenReveal) {
-                    boolean resultsReady = (currentPhase != RevealPhase.SHOW_PLAYER_PIN);
+                    boolean resultsReady = resultsShown();
                     
                     if (!isTypingNote) {
                         g2d.setColor(resultsReady ? btnEnabledGreen : btnDisabledGrey);
@@ -1370,7 +1476,8 @@ public class MapPanel extends JPanel {
                 }
 
                 // How the guess was paid: its points as productivity, and the salary plus half of them as cash
-                if (currentPhase != RevealPhase.SHOW_PLAYER_PIN) drawReckoning(g2d, mapX, mapY);
+                if (resultsShown()) drawReckoning(g2d, mapX, mapY);
+                if (currentPhase == RevealPhase.WAITING_FOR_PARTNER) drawWaitingForPartner(g2d, mapX, mapY);
 
                 if (shouldDrawScoreText) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
@@ -1427,7 +1534,10 @@ public class MapPanel extends JPanel {
         resetZoom();
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
-        
+        if (partnerWait != null) partnerWait.stop();
+        partnerGuess = null;
+        partnerPin = null;
+
         this.targetRoundScore = 0;
         this.currentDisplayScore = 0;
         this.shouldDrawScoreText = false;
@@ -1572,15 +1682,19 @@ public class MapPanel extends JPanel {
         resetMapState();
     }
 
-    /** Developer aid: a guess at the middle of the map, as if clicked and confirmed. */
+    /**
+     * Developer aid: a guess at the middle of the map (or at -Dxenoguesser.guessat=u,v, shares of
+     * its width and height), as if clicked and confirmed.
+     */
     public void devGuess() {
-        placePin(mapImage.getWidth() / 2, mapImage.getHeight() / 2);
+        String[] at = System.getProperty("xenoguesser.guessat", "0.5,0.5").split(",");
+        placePin((int) (mapImage.getWidth() * Double.parseDouble(at[0])), (int) (mapImage.getHeight() * Double.parseDouble(at[1])));
         startRevealSequence();
     }
 
     /** Developer aid: Proceed to Shop, as if pressed. */
     public void devProceedToShop() {
-        if (isFullScreenReveal && currentPhase != RevealPhase.SHOW_PLAYER_PIN && !roundLoading) proceedToShop();
+        if (isFullScreenReveal && resultsShown() && !roundLoading) proceedToShop();
     }
 
     // Set when a guess is made, so the next round starts being built straight away
@@ -1786,6 +1900,18 @@ public class MapPanel extends JPanel {
             String.format("Productivity: +%,d", points),
             String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
         };
+        Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
+        Multiplayer session = Multiplayer.active();
+        if (partnerGuess != null && partnerPin != null && session != null) {
+            // Multiplayer: both players' guesses, each named in their colour
+            double theirDistance = SphereMath.angle(partnerPin, goal) * Planet.radius();
+            lines = new String[] {
+                String.format("You (%s): %s, +%,d productivity", session.localLabel(), distanceText(roundDistance), points),
+                String.format("Employee %s: %s, +%,d productivity", session.remoteLabel(), distanceText(theirDistance), partnerGuess.score()),
+                String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
+            };
+            colours = new Color[] { brighter(ownColour()), brighter(partnerColour()), new Color(120, 230, 140) };
+        }
         Font font = HudStyle.font(Font.BOLD, 15f);
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
@@ -1798,11 +1924,75 @@ public class MapPanel extends JPanel {
         g2d.fillRoundRect(x, y, boxW, boxH, 12, 12);
         g2d.setColor(new Color(255, 255, 255, 50));
         g2d.drawRoundRect(x, y, boxW, boxH, 12, 12);
-        Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
         for (int i = 0; i < lines.length; i++) {
             g2d.setColor(colours[i]);
             g2d.drawString(lines[i], x + padX, y + padY + fm.getAscent() + i * lineH);
         }
+    }
+
+    /** Multiplayer: this player's colour (M6), for their pin and line; null in singleplayer. */
+    private static Color ownColour() {
+        Multiplayer session = Multiplayer.active();
+        return session == null ? null : colour(session.role.trimColour());
+    }
+
+    /** Multiplayer: the partner's colour, for their pin and line. */
+    private static Color partnerColour() {
+        Multiplayer session = Multiplayer.active();
+        return session == null ? Color.WHITE : colour(session.role.other().trimColour());
+    }
+
+    private static Color colour(float[] rgb) {
+        return new Color(rgb[0], rgb[1], rgb[2]);
+    }
+
+    /** A player's colour lifted towards white, to read as text on the dark panel. */
+    private static Color brighter(Color c) {
+        return new Color((c.getRed() + 255 * 2) / 3, (c.getGreen() + 255 * 2) / 3, (c.getBlue() + 255 * 2) / 3);
+    }
+
+    /** The partner's pin (multiplayer), as this player's but in their colour, labelled with their employee number. */
+    private void drawPartnerPin(Graphics2D g2d, int mapX, int mapY, int pinLength, int headDiameter) {
+        double[] p = globe.project(partnerPin, mapX, mapY, currentMapSize, mapHeight());
+        if (p[2] < 0.0) return;
+        int x = (int) Math.round(p[0]), y = (int) Math.round(p[1]);
+        Stroke old = g2d.getStroke();
+        g2d.setColor(new Color(180, 182, 185));
+        g2d.setStroke(new BasicStroke(2.0f));
+        g2d.drawLine(x, y, x, y - pinLength);
+        g2d.setStroke(old);
+        int r = headDiameter / 2;
+        g2d.setColor(partnerColour());
+        g2d.fillOval(x - r, y - pinLength - r, headDiameter, headDiameter);
+        g2d.setColor(new Color(30, 30, 30));
+        g2d.drawOval(x - r, y - pinLength - r, headDiameter, headDiameter);
+        Multiplayer session = Multiplayer.active();
+        if (session == null) return;
+        String label = session.remoteLabel();
+        float size = 12f;
+        float w = HudStyle.labelWidth(g2d, label, size);
+        int lx = x + r + 4, ly = y - pinLength + 4;
+        g2d.setColor(new Color(10, 14, 22, 200));
+        g2d.fillRoundRect(lx - 4, ly - 13, Math.round(w) + 8, 17, 6, 6);
+        HudStyle.label(g2d, label, lx, ly, size, brighter(partnerColour()));
+    }
+
+    /** Multiplayer: the guess is in and the partner's isn't yet: says so on a panel over the map. */
+    private void drawWaitingForPartner(Graphics2D g2d, int mapX, int mapY) {
+        Multiplayer session = Multiplayer.active();
+        if (session == null) return;
+        String text = "Waiting for Player " + session.remoteLabel() + " to make their guess" + ".".repeat((int) (System.currentTimeMillis() / 400 % 4));
+        Font font = HudStyle.font(Font.BOLD, 19f);
+        g2d.setFont(font);
+        FontMetrics fm = g2d.getFontMetrics();
+        int boxW = fm.stringWidth("Waiting for Player 119-A to make their guess...") + 60, boxH = 74;
+        int x = mapX + (currentMapSize - boxW) / 2, y = mapY + mapHeight() - boxH - 24;
+        HudStyle.smooth(g2d);
+        HudStyle.panel(g2d, x, y, boxW, boxH, HudStyle.GLASS);
+        HudStyle.label(g2d, "Your guess is in", x + 28, y + 26, 12f, HudStyle.ACCENT);
+        g2d.setFont(font);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(text, x + 28, y + 54);
     }
 
     // The height of one glyph in a nation-name image, in its pixels
