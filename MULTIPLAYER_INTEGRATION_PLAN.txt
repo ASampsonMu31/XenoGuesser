@@ -688,14 +688,17 @@ PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [
       -Dxenoguesser.mpdrop=0.3; looking down shows your own colour; looking at the
       partner shows theirs; standing face to face, visors are at eye level.
 
-PHASE 6  Wider stairs and spawning side by side (brief item 6)                  [ ]
-  [ ] LandingPod: make the stair width an instance setting (constructor or a setter
+PHASE 6  Wider stairs and spawning side by side (brief item 6)                  [x]
+  [x] LandingPod: make the stair width an instance setting (constructor or a setter
       before initialise(gl)), 17 in singleplayer, about 28 in multiplayer, and use it
       everywhere STAIR_WIDTH is used (platform box, treads, rails, the collision ring's
       gap and side rails, floorAt). Widen the doorway (dark shell 11 -> ~16, frame
       13.5 -> ~19) and the platform to match in multiplayer, and check by screenshot
       that the wider platform still meets the hull nicely (HULL_RADIUS 26).
-  [ ] Spawn: work out the shared spawn exactly as now (same on both PCs), place the pod
+      (Done: new LandingPod(multiplayer): stairs 28, dark doorway 16, frame 19; the
+      platform is stairWidth + 1 = 29 wide. Checked from 140 units out, 40 degrees round:
+      it meets the hull cleanly, no gap or overhang; the doorway sits in its frame.)
+  [x] Spawn: work out the shared spawn exactly as now (same on both PCs), place the pod
       from it, then move each player sideways along the stair, SIDE_OFFSET = 6.5 units
       (players are PLAYER_RADIUS 3, so 13 apart leaves a clear gap):
         left  of facing heading h is h - pi/2 (D10: heading turns from east towards
@@ -705,7 +708,11 @@ PHASE 6  Wider stairs and spawning side by side (brief item 6)                  
       carrying the heading with SphereMath.carryHeading so both still face exactly
       down the stairs. Verify on screen: the host sees the partner on their right.
       In GameMode.NO_MOVE apply the same sideways offset to the standingClear point.
-  [ ] floorAt must accept the offset positions (half width 14 > 6.5 + 3).
+      (Done: sideBySide(spawn, role) in the GL listener, after standingClear, so NO_MOVE gets
+      the same offset; SIDE_OFFSET = 6.5. Checked: the host has the joiner 13.0 units away at
+      90 degrees to its right, the joiner the host at 90 to its left, same heading. NO_MOVE
+      itself not run.)
+  [x] floorAt must accept the offset positions (half width 14 > 6.5 + 3).
   Done when: both appear on the third step, side by side, A left, B right, facing out.
 
 PHASE 7  Waiting for each other's guess and shopping (brief item 9)            [ ]
@@ -803,9 +810,10 @@ TESTING NOTES
 - -Dxenoguesser.mpauto=host / =join opens the multiplayer panel at start and presses Host
   game / Join game (joining with code AAAAA, which LocalTransport doesn't check). With
   mpfake on both, two windows connect and load with no clicks.
-- -Dxenoguesser.mpspawnapart=units stands 119-A that far left of the stairs' middle and 119-B
-  that far right (until Phase 6 does it properly). HUD test steps for multiplayer: partner
-  (face the partner), lookdown, walkpartner (walk at them 4 s, logging the gap) and
+- HUD test steps for multiplayer: partner
+  (face the partner), lookdown, walkpartner (walk at them 4 s, logging the gap), podview
+  (stand out from the pod looking back at it: -Dxenoguesser.podview=distance,degrees,up; the
+  eye stays at standing height whatever "up" says, so keep it 0) and
   frameshot (saves the drawn frame, read from the GL so another window over it doesn't
   matter, to -Dxenoguesser.frameshot=file after -Dxenoguesser.frameshotdelay ms). In
   multiplayer a HUD test run waits at Begin (use mpautobegin) so both go in together.
@@ -938,3 +946,13 @@ LOG
             joiner stopped at 6.00. The host saw the joiner turn. While the test windows were
             left open they were played by hand through rounds 2-4, still in step.
             Not yet: Phase 6's real side-by-side spawn, the M22 settings rule (Phase 8), two PCs.
+2026-10-18  PHASE 6 done. LandingPod takes its stair width (17 or 28), doorway (11 or 16) and
+            frame (13.5 or 19) per instance, used by the mesh (platform, treads, rails, door),
+            the collision ring's gap, the side rails and floorAt; the GL listener makes a
+            multiplayer pod when Multiplayer is active (the picturesque-site dev aid and
+            SphereToolkitCheck keep singleplayer's). Spawn: both players step SIDE_OFFSET (6.5)
+            sideways from the shared spawn, 119-A left, 119-B right, heading carried, after
+            NO_MOVE's standingClear. The dev flag -Dxenoguesser.mpspawnapart is gone; new
+            HUD test step podview. The partner log line now gives their bearing. Checked with
+            two windows (seed 123): 13.0 apart at +90/-90 degrees; the pod from outside looked
+            right with the joiner on the right of the stairs. Not run: NO_MOVE, two PCs.

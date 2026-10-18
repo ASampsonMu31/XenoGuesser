@@ -739,6 +739,12 @@ public class XenoGuesser extends JFrame {
           break;
         }
         case "lookdown": later(1500, () -> glEventListener.lookPitch(-70f)); break;
+        // podview: the landing pod from out in front and to one side (-Dxenoguesser.podview=distance,degrees round,height up)
+        case "podview": {
+          String[] v = System.getProperty("xenoguesser.podview", "75,30,10").split(",");
+          later(1500, () -> glEventListener.viewPod(Double.parseDouble(v[0]), Double.parseDouble(v[1]), Double.parseDouble(v[2])));
+          break;
+        }
         case "frameshot": later(Integer.getInteger("xenoguesser.frameshotdelay", 4000),
             () -> glEventListener.saveNextFrame(new java.io.File(System.getProperty("xenoguesser.frameshot", "frame.png")))); break;
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)

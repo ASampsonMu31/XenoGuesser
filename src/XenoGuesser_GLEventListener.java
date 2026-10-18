@@ -130,7 +130,8 @@ private static class SpeciesConfig {
     // The player's own spacesuited body, and whether they are swimming
     private final PlayerBody playerBody = new PlayerBody();
     // The pod the player landed in, standing where each round starts
-    private final LandingPod landingPod = new LandingPod();
+    // (in multiplayer with wider stairs, so both players start on them side by side: M11)
+    private final LandingPod landingPod = new LandingPod(Multiplayer.isActive());
     private RockField rockField;
     private static final Object PLAYER = "player";
     private static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
@@ -2123,15 +2124,6 @@ private static class SpeciesConfig {
         // (the round's clouds drift from now until it's begun, then from when it begins: see startRoundClock)
         roundClockStart = getSeconds();
         landingPod.place(spawn.place(), spawn.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
-        // Developer aid (until Phase 6 places the players side by side): -Dxenoguesser.mpspawnapart=units
-        // stands 119-A that far left of the stairs' middle and 119-B that far right, facing down them
-        Double apart = Multiplayer.isActive() && System.getProperty("xenoguesser.mpspawnapart") != null
-                ? Double.valueOf(System.getProperty("xenoguesser.mpspawnapart")) : null;
-        if (apart != null) {
-            double side = Multiplayer.active().role == Multiplayer.Role.HOST ? -Math.PI / 2 : Math.PI / 2;
-            SpherePosition moved = SphereMath.move(spawn.place(), spawn.heading() + side, apart);
-            spawn = new Viewpoint(moved, SphereMath.carryHeading(spawn.place(), moved, spawn.heading()));
-        }
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.frame().origin(), Math.max(40f, LandingPod.REACH) + 6f);
         // (where the player stays where they land, out past the foot of the pod's stairs, where
@@ -2140,6 +2132,9 @@ private static class SpeciesConfig {
             spawn = standingClear(spawn);
             settleUntil = System.nanoTime() * 1e-9 + SETTLE_SECONDS;
         }
+        // Multiplayer (M11): side by side, 119-A on the left and 119-B on the right as seen
+        // facing down the stairs, both still facing down them (from the same shared spot)
+        if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
         moveToLocation(spawn);
         // (each round starts with the view as usual)
         zoomWanted = 1f;
@@ -2173,6 +2168,23 @@ private static class SpeciesConfig {
     private double settleUntil = -1.0;
 
     /** Where a player who can't move stands, out along the pod's stairs' way from spawn (see STAND_OUT). */
+    // How far each player stands from the shared spawn, sideways: with PLAYER_RADIUS 3 they're
+    // 13 apart, a clear gap between them, and 9.5 from the middle to their outer edge is well
+    // inside the multiplayer stairs' half width of 14
+    private static final double SIDE_OFFSET = 6.5;
+
+    /**
+     * Multiplayer's spawn for this player from the shared one: SIDE_OFFSET to the left for
+     * 119-A, to the right for 119-B. Headings turn from east towards south (clockwise seen from
+     * above, D10), so the left of heading h is h - pi/2. The heading is carried along, so both
+     * still face exactly the same way.
+     */
+    private static Viewpoint sideBySide(Viewpoint spawn, Multiplayer.Role role) {
+        double side = role == Multiplayer.Role.HOST ? -Math.PI / 2 : Math.PI / 2;
+        SpherePosition moved = SphereMath.move(spawn.place(), spawn.heading() + side, SIDE_OFFSET);
+        return new Viewpoint(moved, SphereMath.carryHeading(spawn.place(), moved, spawn.heading()));
+    }
+
     private Viewpoint standingClear(Viewpoint spawn) {
         for (float out : STAND_OUT) {
             SpherePosition p = SphereMath.move(spawn.place(), spawn.heading(), out);
@@ -3713,9 +3725,12 @@ private static class SpeciesConfig {
         if (partner.hasPose() && now - partnerLoggedAt >= 2000) {
             partnerLoggedAt = now;
             SpherePosition at = partner.eye();
-            System.out.printf(java.util.Locale.ROOT, "[MP] Partner shown at %.5f, %.5f, %.1f up, heading %.3f, %.1f units away, speed %.1f, latest pose %d ms old%n",
+            float[] f = camera.getLocalForward();
+            double facing = Math.atan2(f[2], f[0]);
+            double bearing = Math.toDegrees(Math.atan2(Math.sin(SphereMath.heading(eye, at) - facing), Math.cos(SphereMath.heading(eye, at) - facing)));
+            System.out.printf(java.util.Locale.ROOT, "[MP] Partner shown at %.5f, %.5f, %.1f up, heading %.3f, %.1f units away (%.0f degrees to the right of where this player faces), speed %.1f, latest pose %d ms old%n",
                     Math.toDegrees(Planet.latitude(at)), Math.toDegrees(Planet.longitude(at)), SphereMath.altitude(at),
-                    partner.heading(), SphereMath.distance(at, eye), partner.speed(), partner.ageMs(now));
+                    partner.heading(), SphereMath.distance(at, eye), bearing, partner.speed(), partner.ageMs(now));
         }
     }
 
@@ -3729,6 +3744,25 @@ private static class SpeciesConfig {
     /** Developer aid: how far the partner is shown from this player along the ground, or -1 with no partner. */
     public double distanceToPartner() {
         return partner.hasPose() ? SphereMath.distance(camera.getSpherePosition(), partner.eye()) : -1.0;
+    }
+
+    /**
+     * Developer aid: stands the view distance out from the pod's middle, round from straight
+     * down its stairs by aroundDegrees, raised by up, looking back at it (for checking how it's built).
+     */
+    public void viewPod(double distance, double aroundDegrees, double up) {
+        SphereFrame pod = landingPod.frame();
+        if (pod == null) return;
+        SpherePosition middle = pod.origin();
+        double[] stairs = pod.worldDirection(0, 0, 1);
+        SpherePosition ahead = SphereMath.atAltitude(new SpherePosition(middle.x() + stairs[0], middle.y() + stairs[1], middle.z() + stairs[2]), SphereMath.altitude(middle));
+        double down = SphereMath.heading(middle, ahead) + Math.toRadians(aroundDegrees);
+        SpherePosition at = SphereMath.move(middle, down, distance);
+        // (from above whichever is higher, the ground here or the pod's, aimed at its hatch)
+        double eyeAt = Math.max(groundHeightAt(at), landingPod.ground()) + playerEyeHeight + up;
+        at = SphereMath.atAltitude(at, eyeAt);
+        double back = SphereMath.heading(at, middle);
+        camera.setSphereView(at, (float) Math.toDegrees(back), (float) Math.toDegrees(Math.atan2(landingPod.ground() + 25.0 - eyeAt, distance)));
     }
 
     /** Developer aid: looks pitchDegrees up (negative down), keeping the heading. */
