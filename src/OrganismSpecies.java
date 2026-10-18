@@ -89,6 +89,8 @@ public class OrganismSpecies {
     final float flightRadius;
     /** How common the species is where it lives, relative to the others. */
     final float rarity;
+    // Living in herds (walkers) or flocks (flyers) of about this many; 0 alone
+    int herdSize;
     final float femurLength, tibiaLength, legRadius;
     final boolean upright;
     final float kneeDirection;     // upright legs: +1 knees forward, -1 knees back
@@ -415,6 +417,12 @@ public class OrganismSpecies {
         });
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
+        // About half the walkers live in herds and half the flyers in flocks (from a Random of
+        // its own, so nothing else about the species changes with it); see OrganismManager
+        Random herding = new Random(seed * 7393L + index * 104729L);
+        boolean social = herding.nextFloat() < 0.5f;
+        int size = 4 + herding.nextInt(7);
+        herdSize = social && (locomotion == Locomotion.WALKER || locomotion == Locomotion.FLYER) ? size : 0;
         sizeCline = new PerlinNoise(seed + 9001L + index * 31L);
         legCline = new PerlinNoise(seed + 9101L + index * 31L);
         hueCline = new PerlinNoise(seed + 9201L + index * 31L);

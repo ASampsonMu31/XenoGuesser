@@ -598,6 +598,9 @@ private static class SpeciesConfig {
             });
         }
 
+        // Each plant's range (see SpeciesRange): spawning and its heatmap both follow it
+        floraRanges = floraRanges(SpeciesRange.land(worldNoise, seaLevelHeight));
+
         // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
         Random rand = new Random(this.worldSeed);
         this.totalNationsCount = 6 + rand.nextInt(9); 
@@ -2036,6 +2039,8 @@ private static class SpeciesConfig {
         // One of every animal side by side; some species' range with one of them just ahead
         if ("zoo".equals(devView)) spawn = orElse(organismManager.zooViewpoint(dynamicRand), spawn);
         if ("bug".equals(devView)) spawn = orElse(organismManager.showcaseViewpoint(dynamicRand), spawn);
+        // Deep in the heartland of a species that lives in herds
+        if ("herd".equals(devView)) spawn = orElse(organismManager.herdViewpoint(dynamicRand), spawn);
         // On a river's bank (-Dxenoguesser.riverwidth=20: one at least that wide), looking across and up it
         if ("river".equals(devView)) spawn = orElse(riverViewpoint(dynamicRand), spawn);
         // Beside one of the bigger lakes, looking out over it
@@ -2577,14 +2582,40 @@ private static class SpeciesConfig {
         return surroundingsLoadedHere();
     }
 
+    // Each plant species' range: where it's common, and how many there are along it (SpeciesRange)
+    private SpeciesRange[] floraRanges;
+    // The most of one tree or shrub species in a chunk's area, even in its heartland
+    private static final float FLORA_PEAK_CAP = 1.2f;
+
+    /** A plant species' abundance before its range is applied, per chunk's area. */
+    private float floraRaw(int species, GeodesicChunkGrid.Direction d) {
+        SpeciesConfig sc = speciesConfigs[species];
+        return sc.abundanceFactor.evaluate(d) * sc.baseAbundance;
+    }
+
+    private SpeciesRange[] floraRanges(List<GeodesicChunkGrid.Direction> land) {
+        SpeciesRange[] ranges = new SpeciesRange[NUM_SPECIES];
+        java.util.stream.IntStream.range(0, NUM_SPECIES).parallel().forEach(s -> {
+            float[] raw = new float[land.size()];
+            for (int i = 0; i < raw.length; i++) raw[i] = floraRaw(s, land.get(i));
+            ranges[s] = SpeciesRange.of(raw, FLORA_PEAK_CAP);
+        });
+        for (int s = 0; s < NUM_SPECIES; s++) {
+            System.out.printf(java.util.Locale.ROOT, "[FLORA] %s: heartland from %.4f, peak %.3f a chunk%n",
+                    speciesConfigs[s].name, ranges[s].high, ranges[s].peak);
+        }
+        return ranges;
+    }
+
     /** A geodesic cell's area in chunks' areas (a chunk being PHYSICAL_CHUNK_SIZE square). */
     private float areaInChunks(GeodesicChunkGrid.Cell cell) {
         return (float) (cell.area() * Planet.radius() * Planet.radius() / (PHYSICAL_CHUNK_SIZE * PHYSICAL_CHUNK_SIZE));
     }
 
     /**
-     * One cell's trees and shrubs (safe to work out off the GL thread): as many of each species
-     * as its abundance there (as the map shows it) and the cell's own area call for.
+     * One cell's trees and shrubs (safe to work out off the GL thread): candidates for each
+     * species at its peak density for the cell's area, each kept where it falls by how common
+     * the species is just there (SpeciesRange.keep), so they follow the heatmap closely.
      */
     private List<SphereFlora> buildFloraCell(long id) {
         GeodesicChunkGrid.Cell cell = floraStream.grid().cell(id);
@@ -2595,10 +2626,8 @@ private static class SpeciesConfig {
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             java.util.Random cRand = new java.util.Random(worldSeed ^ (id * 492876847L) ^ ((long) s * 9012431L));
-            // As many a chunk's area as the species' abundance here asks for, up to its ceiling
-            int maxCeiling = Math.max(1, (int) (5 * sc.baseAbundance));
-            double attempts = Math.min(maxCeiling, sc.abundanceFactor.evaluateAt(middle) * sc.baseAbundance)
-                    * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
+            SpeciesRange range = floraRanges[s];
+            double attempts = range.peak * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
             int count = (int) attempts;
             if (cRand.nextFloat() < attempts - count) count++;
             for (int i = 0; i < count; i++) {
@@ -2607,6 +2636,8 @@ private static class SpeciesConfig {
                 int model = cRand.nextInt(FLORA_VARIATIONS);
                 float scale = 0.70f + cRand.nextFloat() * 0.60f;
                 float rotation = cRand.nextFloat() * 360.0f;
+                float kept = cRand.nextFloat();
+                if (kept >= range.keep(floraRaw(s, SphereMath.direction(at)))) continue;
                 float ground = TerrainMesh.getLayeredHeight(at, worldNoise);
                 if (ground <= seaLevelHeight + 0.1f || slopeAt(at) >= 0.9f || podCovers(at, 8f) || underFreshWater(at, ground)) continue;
                 if (infraManager.isClearedForRoad(at, 11.0f, 3.0f) || infraManager.isBuildingLocation(at, 6.0f)) continue;
@@ -3511,7 +3542,8 @@ private static class SpeciesConfig {
         renderFlora(gl, skyRotation);
 
         // --- CREATURES AND PEOPLE ---
-        organismManager.update((float) deltaTime, eye);
+        // (the herds walk paths fixed by the round's clock: see OrganismManager.Herd)
+        organismManager.update((float) deltaTime, eye, getSeconds() - roundClockStart);
         inhabitants.update((float) deltaTime, eye);
         // The player is solid to everything else too; then this frame's bodies take over
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
@@ -3746,6 +3778,25 @@ private static class SpeciesConfig {
     }
 
     /** Developer aid: turns the view to face the partner, level (or pitchDegrees up), for checking how they're drawn. */
+    /** Developer aid: faces the nearest herd (stepping in to about 90 away if it's further), a little down, and logs how far it was. */
+    public void lookAtHerd() {
+        SpherePosition here = camera.getSpherePosition();
+        SpherePosition herd = organismManager.nearestHerd(here);
+        if (herd == null) {
+            System.out.println("[HERD] No herd near");
+            return;
+        }
+        double distance = SphereMath.distance(here, herd);
+        System.out.printf(java.util.Locale.ROOT, "[HERD] Nearest herd %.0f units away%n", distance);
+        if (distance > 120.0) {
+            // (stepping in to about 90 away, on the ground there)
+            SpherePosition near = SphereMath.move(herd, SphereMath.heading(herd, here), 90.0);
+            here = SphereMath.atAltitude(near, Math.max(seaLevelHeight, groundHeightAt(near)) + playerEyeHeight);
+            distance = 90.0;
+        }
+        camera.setSphereView(here, (float) Math.toDegrees(SphereMath.heading(here, herd)), (float) -Math.toDegrees(Math.atan2(15.0, Math.max(20.0, distance))));
+    }
+
     public void lookAtPartner(float pitchDegrees) {
         if (!partner.hasPose()) return;
         SpherePosition here = camera.getSpherePosition();
@@ -4272,6 +4323,12 @@ private static class SpeciesConfig {
         // in real units where it has them
         if (factor == FactorName.GRASS_COLOUR) {
             minimap.setLegend(grassColourSpectrum(), new String[] { "Dry", "", "Lush" });
+        } else if (factorName != null && factorName.species() >= 0) {
+            // A plant's or animal's key: how many in a chunk's area at each end and the middle of its colours
+            SpeciesRange range = factorName.factor() == FactorName.FLORA ? floraRanges[factorName.species()]
+                    : organismManager.range(factorName.species());
+            minimap.setLegend(spectrumFor(factorName), new String[] { heatmapLabel(factorName, range.densityAtShare(0f)),
+                    heatmapLabel(factorName, range.densityAtShare(0.5f)), heatmapLabel(factorName, range.densityAtShare(1f)) });
         } else if (factorName != null && heatmapMeasure(factorName) != null) {
             float[] range = heatmapRange(factorName);
             String[] labels = factor == FactorName.GRASS_ABUNDANCE ? new String[] { "Sparsest", "", "Thickest" }
@@ -4411,6 +4468,13 @@ private static class SpeciesConfig {
             float[] span = grassColourSpan();
             return new RegionalFactor(1f, d -> grassShare(span, grassColourFactor.evaluate(d)));
         }
+        if (overlay.species() >= 0) {
+            // A plant or animal: coloured by where it comes on its range (red its outer third,
+            // where there are barely any; green its heartland), as it's spawned
+            int s = overlay.species();
+            if (overlay.factor() == FactorName.FLORA) return new RegionalFactor(1f, d -> floraRanges[s].share(floraRaw(s, d)));
+            return new RegionalFactor(1f, d -> organismManager.rangeShare(s, SphereMath.atAltitude(d, 0.0)));
+        }
         RegionalFactor.Sampler measure = heatmapMeasure(overlay);
         if (measure == null) return null;
         float[] range = heatmapRange(overlay);
@@ -4427,8 +4491,8 @@ private static class SpeciesConfig {
      */
     private RegionalFactor.Sampler heatmapMeasure(Overlay overlay) {
         if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
-            SpeciesConfig config = speciesConfigs[overlay.species()];
-            return d -> config.abundanceFactor.evaluate(d) * config.baseAbundance;
+            int s = overlay.species();
+            return d -> floraRanges[s].density(floraRaw(s, d));
         }
         if (overlay.species() >= 0) {
             int i = overlay.species();

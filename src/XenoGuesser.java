@@ -1114,6 +1114,17 @@ glEventListener.setGameHUD(gameHUD);
         }
         case "frameshot": later(Integer.getInteger("xenoguesser.frameshotdelay", 4000),
             () -> glEventListener.saveNextFrame(new java.io.File(System.getProperty("xenoguesser.frameshot", "frame.png")))); break;
+        // herd: faces the nearest herd (and again each time a frame is saved by frameshots)
+        case "herd": later(2000, () -> glEventListener.lookAtHerd()); break;
+        // frameshots: frames saved at each of -Dxenoguesser.frameshotsat=ms,... as <frameshot>_<ms>.png, facing the herd first
+        case "frameshots": {
+          for (String at : System.getProperty("xenoguesser.frameshotsat", "4000").split(",")) {
+            int ms = Integer.parseInt(at.trim());
+            later(ms - 300, () -> glEventListener.lookAtHerd());
+            later(ms, () -> glEventListener.saveNextFrame(new java.io.File(System.getProperty("xenoguesser.frameshot", "frame") + "_" + ms + ".png")));
+          }
+          break;
+        }
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
         case "zoom": {
           String[] at = System.getProperty("xenoguesser.mapzoomat", "0.5,0.5").split(",");

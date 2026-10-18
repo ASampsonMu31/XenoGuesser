@@ -305,6 +305,25 @@ M26 (user, 2026-10-18) Walking is slower in both singleplayer and multiplayer: 4
 M27 (user, 2026-10-18) The shops' cards are shuffled (and priced) differently for the two
     players, as they already were (shopOffers uses an unseeded Random on each PC).
 
+M28 (user, 2026-10-18; both modes) Plants and animals follow their heatmaps. Each species has a
+    SpeciesRange: a scale 0-1 set from where its population actually is (0 where its poorest
+    10% lives, 1 from where its richest 10% begins, over ~12,000 land points: the same on both
+    PCs), and a density peak * scale^3, the peak such that the heartland (scale over 2/3)
+    holds 1.5x as many as before. Spawning makes candidates at the peak density and keeps each
+    by the scale where it falls (not once per cell at its centre, as before). The heatmaps
+    colour by the scale (red its lowest third, where there are under 4% of the peak), and the
+    key gives the real counts per km2 at its ends and middle. Measured with the game's own
+    spawning on 40,000 cells over two worlds: 0-2.5% of a species' plants or animals in its
+    red (a couple of tiny samples higher), against 8-88% before.
+M29 (user, 2026-10-18; both modes) About half the walkers live in herds and half the flyers in
+    flocks (of 4-10, each world having at least one such species). A herd spawns together;
+    its centre walks a path (walk to a stop, graze, on again, staying near home) fixed by its
+    seed and the round's clock, and its members keep round it by boids rules (cohesion to a
+    slot round the centre, separation from mates, alignment with the herd's heading). A flock
+    wheels round one home a little staggered. Herds' and flocks' seeds come from the round's
+    shared creature salt (M19) and their paths from the round's clock, so in multiplayer both
+    players see each herd and flock in the same place (individual members may differ a little).
+
 -------------------------------------------------------------------------------
 DETERMINISM AUDIT (2026-10-17): does the same seed make the same world on two PCs?
 -------------------------------------------------------------------------------
@@ -1099,3 +1118,13 @@ LOG
             by 2.8 km" in red with its own pin "EMPLOYEE 119-B (YOU)"; the Q1 verdicts read "You
             won Quarter 1 (+1 point)" edged green on the host and "Employee 119-A won Quarter 1
             (+1 point)" edged red on the joiner. The slower walk isn't judged by feel yet.
+2026-10-18  M28/M29 done on branch PlantAnimalDistributionFix (SpeciesRange.java new; GL listener's
+            plant spawning and heatmaps; OrganismManager's ranges, populate, herds and flocks;
+            OrganismSpecies.herdSize). Measured before (density at each cell's centre, heatmap a
+            straight line from lowest to highest): 8-88% of a species in its red. After, running
+            the game's own spawning on 40,000 cells of seeds 123 and 456: 0.2-2.5% of plants and
+            0-1.5% of animals in red (a couple of tiny samples higher), 68-93% of plants in green.
+            Seed 456: 19 herds of 6.6 on average; seed 123: 29 flocks of about 10. In the game
+            (seed 456, -Dxenoguesser.view=herd): a herd of seven seen walking together over 40 s.
+            New dev aids: view=herd, HUD test steps herd and frameshots (-Dxenoguesser.frameshotsat).
+            Not yet checked: a heatmap's look on screen, and a herd seen from both PCs at once.
