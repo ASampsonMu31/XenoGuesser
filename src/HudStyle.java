@@ -103,6 +103,48 @@ public final class HudStyle {
         return (float) f.getStringBounds(text.toUpperCase(), g.getFontRenderContext()).getWidth();
     }
 
+    /**
+     * The menus' button (the main menu's and the multiplayer panel's): cut corners, filled cyan
+     * when it's the primary one (with an arrow at its right-hand end), dark otherwise, lighter
+     * while the pointer is over it, greyed when not enabled; an optional small note at its right.
+     * unit is the screen's scale (its height / 1080).
+     */
+    public static void button(Graphics2D g, java.awt.Rectangle r, String text, String note, boolean enabled, boolean primary,
+                              boolean hovered, float unit) {
+        boolean over = enabled && hovered;
+        Path2D shape = chamfered(r.x + 0.5f, r.y + 0.5f, r.width - 1, r.height - 1, 12 * unit);
+        Color fill = !enabled ? new Color(40, 44, 52, 170)
+                : primary ? (over ? new Color(45, 165, 205, 240) : new Color(24, 110, 145, 225))
+                : (over ? new Color(70, 80, 96, 235) : new Color(24, 30, 40, 210));
+        g.setColor(fill);
+        g.fill(shape);
+        g.setColor(!enabled ? new Color(120, 130, 140, 110) : over ? Color.WHITE : EDGE);
+        g.setStroke(new BasicStroke(1.4f * Math.max(1f, unit)));
+        g.draw(shape);
+        g.setFont(font(Font.BOLD, r.height * 0.36f));
+        FontMetrics fm = g.getFontMetrics();
+        g.setColor(enabled ? Color.WHITE : new Color(150, 156, 166));
+        float tx = r.x + 26 * unit;
+        float ty = r.y + (r.height + fm.getAscent() - fm.getDescent()) / 2f;
+        g.drawString(text, tx, ty);
+        if (note != null) {
+            float noteSize = 11 * unit;
+            label(g, note, r.x + r.width - 22 * unit - labelWidth(g, note, noteSize), ty - 2 * unit, noteSize,
+                    new Color(150, 156, 166));
+        }
+        if (enabled && primary) {
+            // An arrow at the right-hand end
+            float ax = r.x + r.width - 34 * unit, cy = r.y + r.height / 2f, s = r.height * 0.14f;
+            Path2D tri = new Path2D.Float();
+            tri.moveTo(ax, cy - s);
+            tri.lineTo(ax + s * 1.2f, cy);
+            tri.lineTo(ax, cy + s);
+            tri.closePath();
+            g.setColor(Color.WHITE);
+            g.fill(tri);
+        }
+    }
+
     /** A key cap with its letter, e.g. for "press M". Returns its width. */
     public static float keyCap(Graphics2D g, String key, float x, float y, float size) {
         Font f = font(Font.BOLD, size * 0.58f);
@@ -179,6 +221,60 @@ public final class HudStyle {
         g.setColor(GOLD);
         g.drawString(of, 186 + pw, 64);
         // Cash, in dollars (spent in the shop), smaller should it grow too wide
+        label(g, "Cash", 408, 28, 11f, LABEL);
+        money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
+    }
+
+    /**
+     * The score panel in multiplayer (M13): no target; the quarter's months (or "Final decider
+     * N" once the year's over, M17), both players' productivity this quarter and their quarter
+     * points, each named in their colour, and this player's cash.
+     */
+    public static void paintMultiplayerScorePanel(Graphics2D g, int quarter, int month, int decider, String[] names,
+                                                  Color[] colours, int[] productivity, int[] points, int cash, Color body) {
+        panel(g, 0, 0, SCORE_W, SCORE_H, body);
+        if (decider > 0) {
+            label(g, "Final decider", 20, 28, 11f, LABEL);
+            g.setFont(font(Font.BOLD, 30f));
+            g.setColor(GOLD);
+            g.drawString(Integer.toString(decider), 20, 64);
+        } else {
+            Color colour = QUARTER_COLOURS[quarter];
+            label(g, "Quarter " + (quarter + 1), 20, 28, 11f, LABEL);
+            float tabW = 40f, tabH = 26f, gap = 6f, tabY = 40f;
+            Font monthFont = font(Font.BOLD, 12f);
+            for (int m = 0; m < 3; m++) {
+                float x = 20f + m * (tabW + gap);
+                java.awt.geom.RoundRectangle2D tab = new java.awt.geom.RoundRectangle2D.Float(x, tabY, tabW, tabH, 12f, 12f);
+                g.setColor(m < month ? greyed(colour) : m == month ? colour : new Color(255, 255, 255, 18));
+                g.fill(tab);
+                g.setStroke(new BasicStroke(1.2f));
+                g.setColor(m > month ? new Color(120, 205, 235, 90) : new Color(255, 255, 255, 150));
+                g.draw(tab);
+                String name = MONTHS[quarter * 3 + m];
+                g.setFont(monthFont);
+                FontMetrics fm = g.getFontMetrics();
+                g.setColor(m > month ? DIM : new Color(20, 24, 32));
+                g.drawString(name, x + (tabW - fm.stringWidth(name)) / 2f, tabY + (tabH + fm.getAscent() - fm.getDescent()) / 2f);
+            }
+        }
+        g.setColor(new Color(120, 205, 235, 70));
+        g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
+        g.fill(new java.awt.geom.Rectangle2D.Float(392, 18, 1f, SCORE_H - 36));
+        // Each player: name, productivity this quarter, and quarter points
+        label(g, "Productivity", 184, 24, 10f, LABEL);
+        float pointsLabelW = labelWidth(g, "Points", 10f);
+        label(g, "Points", 384 - pointsLabelW, 24, 10f, LABEL);
+        for (int p = 0; p < 2; p++) {
+            float y = 46 + p * 24;
+            label(g, names[p], 184, y, 11f, colours[p]);
+            g.setFont(font(Font.BOLD, 17f));
+            g.setColor(VALUE);
+            g.drawString(String.format("%,d", productivity[p]), 236, y + 1);
+            String pts = Integer.toString(points[p]);
+            g.setColor(colours[p]);
+            g.drawString(pts, 384 - g.getFontMetrics().stringWidth(pts), y + 1);
+        }
         label(g, "Cash", 408, 28, 11f, LABEL);
         money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
     }

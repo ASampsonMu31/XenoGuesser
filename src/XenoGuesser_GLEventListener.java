@@ -130,7 +130,8 @@ private static class SpeciesConfig {
     // The player's own spacesuited body, and whether they are swimming
     private final PlayerBody playerBody = new PlayerBody();
     // The pod the player landed in, standing where each round starts
-    private final LandingPod landingPod = new LandingPod();
+    // (in multiplayer with wider stairs, so both players start on them side by side: M11)
+    private final LandingPod landingPod = new LandingPod(Multiplayer.isActive());
     private RockField rockField;
     private static final Object PLAYER = "player";
     private static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
@@ -911,6 +912,11 @@ private static class SpeciesConfig {
         }
         try {
             render();
+            if (frameShot != null) {
+                if (sceneFbo != 0) gl.glBindFramebuffer(GL3.GL_READ_FRAMEBUFFER, sceneFbo);
+                else gl.glReadBuffer(GL.GL_BACK);
+                writeFrameShot(gl, sceneFbo != 0 ? currentWidth : screenWidth, sceneFbo != 0 ? currentHeight : screenHeight);
+            }
         } finally {
             if (sceneFbo != 0) {
                 gl.glBindFramebuffer(GL3.GL_READ_FRAMEBUFFER, sceneFbo);
@@ -1002,10 +1008,13 @@ private static class SpeciesConfig {
             nextRoundWantedAt = System.currentTimeMillis();
             if (!roundLoading && !nextRoundBuilt) startBuildingNextRound(gl);
         }
-        if (nextRoundBuilt && nextRoundWanted) {
+        // (in multiplayer only once the partner's PC has built it too, so both start together: M16)
+        if (nextRoundBuilt && nextRoundWanted && partnerHasBuilt()) {
             nextRoundBuilt = false;
             nextRoundWanted = false;
-            System.out.printf("[ROUND] Next round started %d ms after it was asked for%n", System.currentTimeMillis() - nextRoundWantedAt);
+            System.out.printf("[ROUND] Next round (%d) started %d ms after it was asked for, at %d%n", spawnedRound,
+                    System.currentTimeMillis() - nextRoundWantedAt, System.currentTimeMillis());
+            startRoundClock();
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) minimap.finishRoundLoading();
             });
@@ -1035,6 +1044,9 @@ private static class SpeciesConfig {
             if (surroundingsBuilt()) {
                 roundLoading = false;
                 nextRoundBuilt = true;
+                // (the partner's PC waits for this before starting the round)
+                Multiplayer session = Multiplayer.active();
+                if (session != null) session.sendRoundBuilt(spawnedRound);
                 setBuilderThreads(false);
                 queueNextRound();
                 System.out.printf("[ROUND] Next round built in %d ms over %d frames%n",
@@ -1885,6 +1897,15 @@ private static class SpeciesConfig {
                 n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
         if (System.getProperty("xenoguesser.dumpart") != null) dumpPeoplePictures();
         playerBody.initialise(gl);
+        Multiplayer session = Multiplayer.active();
+        if (session != null) {
+            // Multiplayer (M6): the packs on this player's own body in their colour, and the
+            // partner, seen from outside, in theirs (darker, as lit in the world; grey trim as the pod's)
+            playerBody.setColours(new float[] { 0.5f, 0.51f, 0.54f }, session.role.trimColour());
+            partnerBody = PlayerBody.seenFromOutside();
+            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, session.role.other().litTrimColour());
+            partnerBody.initialise(gl);
+        }
         landingPod.initialise(gl);
         rockField = rocks();
         rockField.setKeepout((p, r) -> {
@@ -1912,6 +1933,26 @@ private static class SpeciesConfig {
         // With a fixed test seed the spawn sequence repeats too, so test runs are comparable
     private final java.util.Random spawnRandom = Long.getLong("xenoguesser.seed") != null
             ? new java.util.Random(Long.getLong("xenoguesser.seed")) : new java.util.Random();
+
+    // ------------------------------------------------------------------ multiplayer: the same rounds on both PCs
+
+    // The round the player was last spawned for (from 1): rounds are counted here as they're
+    // built, the same on both PCs, since each builds every round once
+    private int spawnedRound;
+    // What each round's Random is drawn for, kept apart so one PC drawing a number more for one
+    // of them (say a queued site it didn't need) can't change the others
+    private static final long SITE_DRAWS = 1, DAY_DRAWS = 2, CREATURE_DRAWS = 3;
+
+    /**
+     * What a round's random choices are drawn from. In multiplayer (M5, M19) a Random made
+     * afresh from the world seed, the round and what it's for, so both PCs draw the same landing
+     * site, time of day, season, weather and creatures, and can't drift apart; in singleplayer
+     * the one long-lived spawnRandom, as always.
+     */
+    private java.util.Random roundRandom(int round, long draws) {
+        if (!Multiplayer.isActive()) return spawnRandom;
+        return new java.util.Random(worldSeed * 0x9E3779B97F4A7C15L + round * 0xBF58476D1CE4E5B9L + draws * 0x94D049BB133111EBL);
+    }
 
     /** Where a normal round's pod comes down: near a road, clear of houses, somewhere on the map. */
     private Viewpoint landingSite(java.util.Random rand) {
@@ -1944,8 +1985,12 @@ private static class SpeciesConfig {
         grassStream.clearPrefetch();
         queuedPod = null;
         if (System.getProperty("xenoguesser.view") != null || System.getProperty("xenoguesser.spawnat") != null) return;
-        queuedSite = landingSite(spawnRandom);
+        queuedSite = landingSite(roundRandom(spawnedRound + 1, SITE_DRAWS));
         if (queuedSite == null) return;
+        if (Multiplayer.isActive()) {
+            System.out.printf(java.util.Locale.ROOT, "[ROUND] Round %d queued: site %.5f, %.5f heading %.4f%n", spawnedRound + 1,
+                    Math.toDegrees(Planet.latitude(queuedSite.place())), Math.toDegrees(Planet.longitude(queuedSite.place())), queuedSite.heading());
+        }
         queuedPod = SphereMath.move(queuedSite.place(), queuedSite.heading() + Math.PI, LandingPod.SPAWN_DISTANCE);
         floraStream.prefetchAround(queuedSite.place());
         grassStream.prefetchAround(queuedSite.place());
@@ -1964,7 +2009,8 @@ private static class SpeciesConfig {
     }
 
     private void spawnPlayerAtRandomLocation() {
-        java.util.Random dynamicRand = spawnRandom;
+        int round = ++spawnedRound;
+        java.util.Random dynamicRand = roundRandom(round, DAY_DRAWS);
         String devView = System.getProperty("xenoguesser.view");
         // Rounds always start on a road, looking along it
         // Developer aid: -Dxenoguesser.view=house starts each round looking at a house
@@ -1973,7 +2019,7 @@ private static class SpeciesConfig {
         if (devView == null) {
             // A normal round: the pod has come down near a road, clear of houses and fences (where
             // it was chosen during the last round, so its surroundings could be got ready then)
-            Viewpoint site = queuedSite != null ? queuedSite : landingSite(dynamicRand);
+            Viewpoint site = queuedSite != null ? queuedSite : landingSite(roundRandom(round, SITE_DRAWS));
             queuedSite = null;
             queuedPod = null;
             if (site != null) spawn = site;
@@ -2074,6 +2120,14 @@ private static class SpeciesConfig {
         chooseTimeOfDay(spawn.place(), dynamicRand);
         // A new day: new clouds and weather
         if (sphereWeather != null) sphereWeather.newDay(dynamicRand, spawn.place());
+        if (Multiplayer.isActive()) {
+            // For checking both PCs agree: the same lines on each, round by round
+            System.out.printf(java.util.Locale.ROOT, "[ROUND] Round %d (seed %d): site %.5f, %.5f heading %.4f, time of day %.4f, sun declination %.4f, noon longitude %.4f%n",
+                    round, worldSeed, Math.toDegrees(Planet.latitude(spawn.place())), Math.toDegrees(Planet.longitude(spawn.place())),
+                    spawn.heading(), timeOfDay, sunDeclination, noonLongitude);
+        }
+        // (the round's clouds drift from now until it's begun, then from when it begins: see startRoundClock)
+        roundClockStart = getSeconds();
         landingPod.place(spawn.place(), spawn.heading(), p -> TerrainMesh.getLayeredHeight(p, worldNoise));
         // Nothing else stands where it came down
         infraManager.setKeepClear(landingPod.frame().origin(), Math.max(40f, LandingPod.REACH) + 6f);
@@ -2083,6 +2137,9 @@ private static class SpeciesConfig {
             spawn = standingClear(spawn);
             settleUntil = System.nanoTime() * 1e-9 + SETTLE_SECONDS;
         }
+        // Multiplayer (M11): side by side, 119-A on the left and 119-B on the right as seen
+        // facing down the stairs, both still facing down them (from the same shared spot)
+        if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
         moveToLocation(spawn);
         // (each round starts with the view as usual)
         zoomWanted = 1f;
@@ -2116,6 +2173,23 @@ private static class SpeciesConfig {
     private double settleUntil = -1.0;
 
     /** Where a player who can't move stands, out along the pod's stairs' way from spawn (see STAND_OUT). */
+    // How far each player stands from the shared spawn, sideways: with PLAYER_RADIUS 3 they're
+    // 13 apart, a clear gap between them, and 9.5 from the middle to their outer edge is well
+    // inside the multiplayer stairs' half width of 14
+    private static final double SIDE_OFFSET = 6.5;
+
+    /**
+     * Multiplayer's spawn for this player from the shared one: SIDE_OFFSET to the left for
+     * 119-A, to the right for 119-B. Headings turn from east towards south (clockwise seen from
+     * above, D10), so the left of heading h is h - pi/2. The heading is carried along, so both
+     * still face exactly the same way.
+     */
+    private static Viewpoint sideBySide(Viewpoint spawn, Multiplayer.Role role) {
+        double side = role == Multiplayer.Role.HOST ? -Math.PI / 2 : Math.PI / 2;
+        SpherePosition moved = SphereMath.move(spawn.place(), spawn.heading() + side, SIDE_OFFSET);
+        return new Viewpoint(moved, SphereMath.carryHeading(spawn.place(), moved, spawn.heading()));
+    }
+
     private Viewpoint standingClear(Viewpoint spawn) {
         for (float out : STAND_OUT) {
             SpherePosition p = SphereMath.move(spawn.place(), spawn.heading(), out);
@@ -2243,7 +2317,7 @@ private static class SpeciesConfig {
         float feet = (airborne ? airborneEyeY : (float) SphereMath.altitude(to)) - playerEyeHeight, head = feet + playerEyeHeight + 2f;
         boolean startsInRoad = infraManager != null && infraManager.blocksWalker(from, feet, head);
         for (int i = 1; i <= steps; i++) {
-            SpherePosition candidate = SphereMath.slerp(from, to, i / (double) steps);
+            SpherePosition candidate = clearOfPartner(lastFree, SphereMath.slerp(from, to, i / (double) steps), feet);
             // (while swimming, the slope of the bed beneath doesn't matter: only ground that
             // comes up out of the water, where the swimmer would stand, can be too steep)
             boolean floating = swimming && TerrainMesh.getLayeredHeight(candidate, worldNoise) + playerEyeHeight
@@ -2257,6 +2331,28 @@ private static class SpeciesConfig {
         // (the eyes keep the height they had)
         lastFree = SphereMath.atAltitude(lastFree, SphereMath.altitude(to));
         if (SphereMath.distance(lastFree, to) > 1e-4) camera.setSpherePosition(lastFree);
+    }
+
+    /**
+     * Multiplayer (M15): the partner is a solid upright cylinder, PLAYER_RADIUS round, from
+     * their feet to 2 above their eyes, where they're shown. A step from from to to that would
+     * go into it slides round it instead (to its edge, on the side the step was heading for).
+     * Only this player is stopped, never pushed, and nobody is trapped: if they already overlap
+     * (after lag, or at a shared spawn) any step that doesn't bring them closer is allowed, and
+     * one that does is held back. Passing over their head (a jump that high) is allowed too.
+     */
+    private SpherePosition clearOfPartner(SpherePosition from, SpherePosition to, float feet) {
+        if (partnerBody == null || !partner.hasPose()) return to;
+        SpherePosition them = partner.eye();
+        double theirFeet = SphereMath.altitude(them) - playerEyeHeight;
+        if (feet > theirFeet + playerEyeHeight + 2.0) return to;
+        double apart = PLAYER_RADIUS * 2.0;
+        double now = SphereMath.distance(from, them), next = SphereMath.distance(to, them);
+        if (next >= apart || next >= now) return to;
+        if (now < apart) return from;
+        // Round the edge of their cylinder rather than into it
+        SpherePosition edge = SphereMath.move(them, SphereMath.heading(them, to), apart);
+        return SphereMath.atAltitude(edge, SphereMath.altitude(to));
     }
 
     private boolean sphereTooSteep(SpherePosition at, SpherePosition toward) {
@@ -2402,7 +2498,9 @@ private static class SpeciesConfig {
         infraWantedFrom = null;
                 drawnGrassInstances = 0;
                 grassDirty = true;
-                organismManager.clear();
+                // (in multiplayer the round's creatures stand in the same places on both PCs, M19)
+                if (Multiplayer.isActive()) organismManager.clear(roundRandom(spawnedRound + 1, CREATURE_DRAWS).nextLong());
+                else organismManager.clear();
         if (rockField != null) rockField.clear(gl);
         inhabitants.clear();
 
@@ -3170,9 +3268,25 @@ private static class SpeciesConfig {
         }
     }
 
+    // When this round began (getSeconds()): in multiplayer the clouds drift with the time since
+    // then rather than since the window opened, so both PCs' skies match (M19)
+    private double roundClockStart;
+
+    /** Multiplayer: whether the partner's PC has built the round this one has built (always true in singleplayer). */
+    private boolean partnerHasBuilt() {
+        Multiplayer session = Multiplayer.active();
+        return session == null || session.remoteRoundBuilt(spawnedRound);
+    }
+
+    /** The round has begun for the player (rounds begin together on both PCs, M16). */
+    public void startRoundClock() {
+        roundClockStart = getSeconds();
+    }
+
     private void render() {
 
         double elapsedTime = getSeconds() - startTime;
+        float cloudTime = (float) (Multiplayer.isActive() ? getSeconds() - roundClockStart : elapsedTime);
         double deltaTime = elapsedTime - lastElapsedTime;
         lastElapsedTime = elapsedTime;
         applyLook();
@@ -3339,7 +3453,8 @@ private static class SpeciesConfig {
         gl.glDisable(GL.GL_DEPTH_TEST);
         gl.glDisable(GL.GL_CULL_FACE);
 
-        sphereWeather.update((float) deltaTime, (float) elapsedTime, eye, () -> rainfallAt(eye),
+        multiplayerFrame(deltaTime);
+        sphereWeather.update((float) deltaTime, cloudTime, eye, () -> rainfallAt(eye),
                 p -> Math.max(groundHeightAt(p), seaLevelHeight), freezingPoint - temperatureAt(eye));
         rainSound.setRain(sphereWeather.snowing() ? 0f : sphereWeather.intensity());
 
@@ -3449,9 +3564,16 @@ private static class SpeciesConfig {
         landingPod.render(gl, sphereViewProjection, eye, sunDirection, sunColour,
                 ambientLight, skyRotation, textures.get(skyTextureKey));
 
+        // --- THE PARTNER (multiplayer): always drawn, however far, where they're predicted to be now ---
+        if (partnerBody != null && partner.hasPose()) {
+            partnerBody.update((float) deltaTime, partner.eye(), (partner.flags() & Multiplayer.POSE_SWIMMING) != 0);
+            partnerBody.renderInWorld(gl, sphereViewProjection, eye, partner.eye(), (float) partner.heading(),
+                    sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey));
+        }
+
         // --- CLOUDS, over the sky and the sun: only where nothing solid stands in front ---
         sphereWeather.renderClouds(gl, camera, (float) currentWidth / Math.max(1, currentHeight), skyColour, daylight,
-                (float) elapsedTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
+                cloudTime, SphereRender.sunDirection(eye, Planet.sunDirection(eye, sunDeclination, noonLongitude)),
                 sunTintNow, fog, seaLevelHeight);
 
         // --- WINDOW GLASS ---
@@ -3583,6 +3705,112 @@ private static class SpeciesConfig {
 
         hud.setDim(menuOpen ? 0.45f : 0f);
         hud.draw(gl, screenWidth, screenHeight);
+    }
+
+    // ------------------------------------------------------------------ multiplayer: poses
+
+    // Where the partner is shown, and their body, seen from outside (null in singleplayer)
+    private final RemotePlayer partner = new RemotePlayer();
+    private PlayerBody partnerBody;
+    private long partnerLoggedAt;
+
+    /** The partner, as predicted for this frame. */
+    public RemotePlayer partner() {
+        return partner;
+    }
+
+    /**
+     * Once a frame in multiplayer: this player's pose for the networking thread to send (it
+     * sends the latest 5 times a second), and the partner's predicted for this frame.
+     */
+    private void multiplayerFrame(double deltaTime) {
+        Multiplayer session = Multiplayer.active();
+        if (session == null) return;
+        SpherePosition eye = camera.getSpherePosition();
+        Vector3 forward = camera.getSphereForwardDirection();
+        byte flags = (byte) ((swimming ? Multiplayer.POSE_SWIMMING : 0) | (airborne ? Multiplayer.POSE_AIRBORNE : 0));
+        session.publishLocalPose(new Multiplayer.Pose(eye.x(), eye.y(), eye.z(), forward.x, forward.y, forward.z, flags));
+
+        long now = System.currentTimeMillis();
+        partner.update(session.remotePoses(), now, deltaTime, p -> groundHeightAt(p), playerEyeHeight);
+        if (partner.hasPose() && now - partnerLoggedAt >= 2000) {
+            partnerLoggedAt = now;
+            SpherePosition at = partner.eye();
+            float[] f = camera.getLocalForward();
+            double facing = Math.atan2(f[2], f[0]);
+            double bearing = Math.toDegrees(Math.atan2(Math.sin(SphereMath.heading(eye, at) - facing), Math.cos(SphereMath.heading(eye, at) - facing)));
+            System.out.printf(java.util.Locale.ROOT, "[MP] Partner shown at %.5f, %.5f, %.1f up, heading %.3f, %.1f units away (%.0f degrees to the right of where this player faces), speed %.1f, latest pose %d ms old%n",
+                    Math.toDegrees(Planet.latitude(at)), Math.toDegrees(Planet.longitude(at)), SphereMath.altitude(at),
+                    partner.heading(), SphereMath.distance(at, eye), bearing, partner.speed(), partner.ageMs(now));
+        }
+    }
+
+    /** Developer aid: turns the view to face the partner, level (or pitchDegrees up), for checking how they're drawn. */
+    public void lookAtPartner(float pitchDegrees) {
+        if (!partner.hasPose()) return;
+        SpherePosition here = camera.getSpherePosition();
+        camera.setSphereView(here, (float) Math.toDegrees(SphereMath.heading(here, partner.eye())), pitchDegrees);
+    }
+
+    /** Developer aid: how far the partner is shown from this player along the ground, or -1 with no partner. */
+    public double distanceToPartner() {
+        return partner.hasPose() ? SphereMath.distance(camera.getSpherePosition(), partner.eye()) : -1.0;
+    }
+
+    /**
+     * Developer aid: stands the view distance out from the pod's middle, round from straight
+     * down its stairs by aroundDegrees, raised by up, looking back at it (for checking how it's built).
+     */
+    public void viewPod(double distance, double aroundDegrees, double up) {
+        SphereFrame pod = landingPod.frame();
+        if (pod == null) return;
+        SpherePosition middle = pod.origin();
+        double[] stairs = pod.worldDirection(0, 0, 1);
+        SpherePosition ahead = SphereMath.atAltitude(new SpherePosition(middle.x() + stairs[0], middle.y() + stairs[1], middle.z() + stairs[2]), SphereMath.altitude(middle));
+        double down = SphereMath.heading(middle, ahead) + Math.toRadians(aroundDegrees);
+        SpherePosition at = SphereMath.move(middle, down, distance);
+        // (from above whichever is higher, the ground here or the pod's, aimed at its hatch)
+        double eyeAt = Math.max(groundHeightAt(at), landingPod.ground()) + playerEyeHeight + up;
+        at = SphereMath.atAltitude(at, eyeAt);
+        double back = SphereMath.heading(at, middle);
+        camera.setSphereView(at, (float) Math.toDegrees(back), (float) Math.toDegrees(Math.atan2(landingPod.ground() + 25.0 - eyeAt, distance)));
+    }
+
+    /** Developer aid: looks pitchDegrees up (negative down), keeping the heading. */
+    public void lookPitch(float pitchDegrees) {
+        float[] f = camera.getLocalForward();
+        camera.setSphereView(camera.getSpherePosition(), (float) Math.toDegrees(Math.atan2(f[2], f[0])), pitchDegrees);
+    }
+
+    // Developer aid: a picture of the next frame as drawn (read back from the GL, so another
+    // window over this one doesn't spoil it) is saved here, then this is cleared
+    private volatile java.io.File frameShot;
+
+    public void saveNextFrame(java.io.File file) {
+        frameShot = file;
+    }
+
+    private void writeFrameShot(GL3 gl, int width, int height) {
+        java.io.File file = frameShot;
+        if (file == null) return;
+        frameShot = null;
+        java.nio.ByteBuffer pixels = java.nio.ByteBuffer.allocateDirect(width * height * 4);
+        gl.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1);
+        gl.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int i = ((height - 1 - y) * width + x) * 4;
+                image.setRGB(x, y, ((pixels.get(i) & 255) << 16) | ((pixels.get(i + 1) & 255) << 8) | (pixels.get(i + 2) & 255));
+            }
+        }
+        try {
+            file.getParentFile().mkdirs();
+            javax.imageio.ImageIO.write(image, "png", file);
+            System.out.println("[SHOT] Frame saved to " + file);
+        } catch (java.io.IOException e) {
+            System.err.println("Couldn't save the frame: " + e.getMessage());
+        }
     }
 
     private double getSeconds() {
@@ -3808,11 +4036,11 @@ private static class SpeciesConfig {
         if (floraNames == null) {
             List<String> names = new ArrayList<>();
             java.util.Set<String> taken = new java.util.HashSet<>();
-            taken.add(PlanetName.forSeed(worldSeed).spelling.toLowerCase());
-            for (int i = 0; i < organismManager.speciesCount(); i++) taken.add(organismManager.speciesName(i).toLowerCase());
+            taken.add(PlanetName.forSeed(worldSeed).spelling.toLowerCase(java.util.Locale.ROOT));
+            for (int i = 0; i < organismManager.speciesCount(); i++) taken.add(organismManager.speciesName(i).toLowerCase(java.util.Locale.ROOT));
             for (int k = 0; k < NUM_SPECIES; k++) {
                 String name = null;
-                for (int attempt = 0; name == null || !taken.add(name.toLowerCase()); attempt++) {
+                for (int attempt = 0; name == null || !taken.add(name.toLowerCase(java.util.Locale.ROOT)); attempt++) {
                     name = PlanetName.forSeed(worldSeed * 0x5851F42D4C957F2DL + (k + 1) * 2000003L + attempt * 6007L).spelling;
                 }
                 names.add(name);

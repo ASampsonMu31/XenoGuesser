@@ -31,12 +31,32 @@ public class LandingPod {
     private static final float HULL_BASE = 14f, HULL_TOP = 58f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
     // The hatch platform's floor, and where the stairs leave it
     private static final float PLATFORM_HEIGHT = 17f, PLATFORM_FRONT = 27f;
-    private static final float STAIR_WIDTH = 17f, STAIR_RUN = 5f, STAIR_LENGTH = 20f;
+    private static final float STAIR_RUN = 5f, STAIR_LENGTH = 20f;
+    // How wide the stairs (and the platform at their top) are, and the hatch's dark doorway and
+    // metal frame: singleplayer's, and multiplayer's, wide enough for two side by side (M11)
+    private static final float STAIR_WIDTH = 17f, DOOR_WIDTH = 11f, DOOR_FRAME_WIDTH = 13.5f;
+    public static final float MULTIPLAYER_STAIR_WIDTH = 28f;
+    private static final float MULTIPLAYER_DOOR_WIDTH = 16f, MULTIPLAYER_DOOR_FRAME_WIDTH = 19f;
     private static final int STEPS = 4;
     // Where the player starts: on the third step down
     public static final float SPAWN_DISTANCE = PLATFORM_FRONT + STAIR_RUN * 2.5f;
     // How far the pod's solid outline reaches from its middle (its feet)
     private static final float KEEP_OUT = 40f;
+
+    // This pod's stairs' width (STAIR_WIDTH, or MULTIPLAYER_STAIR_WIDTH) and doorway
+    private final float stairWidth, doorWidth, doorFrameWidth;
+
+    /** Singleplayer's pod. */
+    public LandingPod() {
+        this(false);
+    }
+
+    /** The pod, with multiplayer's wider stairs, platform and doorway for two (M11) if multiplayer. */
+    public LandingPod(boolean multiplayer) {
+        stairWidth = multiplayer ? MULTIPLAYER_STAIR_WIDTH : STAIR_WIDTH;
+        doorWidth = multiplayer ? MULTIPLAYER_DOOR_WIDTH : DOOR_WIDTH;
+        doorFrameWidth = multiplayer ? MULTIPLAYER_DOOR_FRAME_WIDTH : DOOR_FRAME_WIDTH;
+    }
 
     private Shader shader;
     private OrganismMesh mesh;
@@ -49,7 +69,7 @@ public class LandingPod {
 
     public void initialise(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
-        mesh = buildMesh().build(gl);
+        mesh = buildMesh(stairWidth, doorWidth, doorFrameWidth).build(gl);
     }
 
     public void dispose(GL3 gl) {
@@ -57,6 +77,10 @@ public class LandingPod {
     }
 
     static OrganismMesh.Builder buildMesh() {
+        return buildMesh(STAIR_WIDTH, DOOR_WIDTH, DOOR_FRAME_WIDTH);
+    }
+
+    static OrganismMesh.Builder buildMesh(float stairWidth, float doorWidth, float doorFrameWidth) {
         OrganismMesh.Builder b = new OrganismMesh.Builder();
         float[] upright = Affine.rotationX((float) -Math.PI / 2);   // a lathe's +Z becomes +Y
 
@@ -91,12 +115,12 @@ public class LandingPod {
         float[] doorOut = slopeNormal(0f, doorY);
         float[] doorAt = { 0f, doorY, radiusAtHeight(doorY) - 0.4f };
         b.transform(Affine.frame(new float[] { doorAt[0], doorAt[1], doorAt[2] - 0.9f }, doorOut, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
-        OrganismParts.shell(b, OrganismMesh.PART_METAL, 1.0f, 13.5f, 19.5f, 0.15f, 0, 0f, 1f);
+        OrganismParts.shell(b, OrganismMesh.PART_METAL, 1.0f, doorFrameWidth, 19.5f, 0.15f, 0, 0f, 1f);
         b.transform(Affine.frame(doorAt, doorOut, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
-        OrganismParts.shell(b, OrganismMesh.PART_DARK, 2.6f, 11f, 17f, 0.15f, 0, 0f, 1f);
+        OrganismParts.shell(b, OrganismMesh.PART_DARK, 2.6f, doorWidth, 17f, 0.15f, 0, 0f, 1f);
         // The platform outside it
         b.resetTransform().part(OrganismMesh.PART_METAL);
-        b.box(0f, PLATFORM_HEIGHT - 0.5f, (PLATFORM_FRONT + 20.5f) * 0.5f, STAIR_WIDTH + 1f, 1f, PLATFORM_FRONT - 20.5f);
+        b.box(0f, PLATFORM_HEIGHT - 0.5f, (PLATFORM_FRONT + 20.5f) * 0.5f, stairWidth + 1f, 1f, PLATFORM_FRONT - 20.5f);
         // Landing legs: a strut from the shoulder out to a foot pad, braced from the base
         for (int leg = 0; leg < 4; leg++) {
             b.bone(LEG + leg);
@@ -129,10 +153,10 @@ public class LandingPod {
         float rise = PLATFORM_HEIGHT / (STEPS + 1);
         for (int i = 0; i < STEPS; i++) {
             float top = PLATFORM_HEIGHT - rise * (i + 1);
-            b.box(0f, top - 0.4f, STAIR_RUN * (i + 0.5f), STAIR_WIDTH, 0.8f, STAIR_RUN);
+            b.box(0f, top - 0.4f, STAIR_RUN * (i + 0.5f), stairWidth, 0.8f, STAIR_RUN);
         }
         for (float side : new float[] { -1f, 1f }) {
-            float sxp = side * (STAIR_WIDTH * 0.5f + 0.4f);
+            float sxp = side * (stairWidth * 0.5f + 0.4f);
             // Stringer under the treads, and a handrail on posts
             strut(b, OrganismMesh.PART_METAL, new float[] { sxp, PLATFORM_HEIGHT - 0.5f, 0f }, new float[] { sxp, 0f, STAIR_LENGTH + 1f }, 0.55f, 0.55f);
             // (tall enough to be seen from the stairs, so it's clear what's in the way)
@@ -299,14 +323,14 @@ public class LandingPod {
         feet.clear();
         int sides = 24;
         float ring = HULL_RADIUS + 1.5f;
-        float gap = (float) Math.asin((STAIR_WIDTH * 0.5f + 0.5f) / ring);
+        float gap = (float) Math.asin((stairWidth * 0.5f + 0.5f) / ring);
         for (int i = 0; i < sides; i++) {
             float a0 = (float) (i * Math.PI * 2 / sides), a1 = (float) ((i + 1) * Math.PI * 2 / sides);
             float mid = (float) Math.atan2(Math.sin((a0 + a1) * 0.5f), Math.cos((a0 + a1) * 0.5f));
             if (Math.abs(mid) < gap) continue;
             addSegment(Math.sin(a0) * ring, Math.cos(a0) * ring, Math.sin(a1) * ring, Math.cos(a1) * ring, 0.8);
         }
-        float side = STAIR_WIDTH * 0.5f + 0.6f;
+        float side = stairWidth * 0.5f + 0.6f;
         for (float sign : new float[] { -1f, 1f }) {
             addSegment(sign * side, 18.0, sign * side, PLATFORM_FRONT + STAIR_LENGTH, 0.4);
         }
@@ -336,7 +360,7 @@ public class LandingPod {
     public double floorAt(SpherePosition position) {
         if (!placed) return Double.NEGATIVE_INFINITY;
         double[] l = frame.toLocal(position);
-        if (Math.abs(l[0]) > STAIR_WIDTH * 0.5f + 0.5f) return Double.NEGATIVE_INFINITY;
+        if (Math.abs(l[0]) > stairWidth * 0.5f + 0.5f) return Double.NEGATIVE_INFINITY;
         if (l[2] >= 18f && l[2] < PLATFORM_FRONT) return ground + platformHeight;
         double along = l[2] - PLATFORM_FRONT;
         if (along < 0.0 || along >= STAIR_LENGTH) return Double.NEGATIVE_INFINITY;

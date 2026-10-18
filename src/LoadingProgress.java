@@ -51,6 +51,7 @@ public final class LoadingProgress {
     private final long launchNanos = System.nanoTime();
 
     private Stage current;
+    private String currentLabel;
     private long stageStartNanos;
     private float reportedFraction;
     private long completedExpectedMillis;
@@ -80,11 +81,17 @@ public final class LoadingProgress {
     }
 
     public synchronized void begin(Stage stage) {
+        begin(stage, stage.label);
+    }
+
+    /** A stage shown under another name (the joiner's writing systems are received, not invented). */
+    public synchronized void begin(Stage stage, String label) {
         closeCurrentStage();
         current = stage;
+        currentLabel = label;
         stageStartNanos = System.nanoTime();
         reportedFraction = 0f;
-        System.out.printf("[LOADING] %s...%n", stage.label);
+        System.out.printf("[LOADING] %s...%n", label);
     }
 
     /** Fraction of the current stage done, for stages that can count their own work. */
@@ -114,7 +121,7 @@ public final class LoadingProgress {
 
     public synchronized String currentLabel() {
         if (failure != null) return "Loading failed: " + failure;
-        return finished ? "Ready" : (current == null ? "Starting up" : current.label);
+        return finished ? "Ready" : (current == null ? "Starting up" : currentLabel);
     }
 
     /** Overall estimated progress in [0, 1]; never moves backwards. */
@@ -142,9 +149,11 @@ public final class LoadingProgress {
     private void closeCurrentStage() {
         if (current == null) return;
         long ms = (System.nanoTime() - stageStartNanos) / 1_000_000;
-        measuredMillis.put(current, ms);
+        // (a stage under another name did other work, e.g. the joiner receiving its writing
+        // systems rather than inventing them: not a measure of how long the stage takes here)
+        if (currentLabel.equals(current.label)) measuredMillis.put(current, ms);
         completedExpectedMillis += expectedMillis.get(current);
-        System.out.printf("[LOADING] %s took %d ms%n", current.label, ms);
+        System.out.printf("[LOADING] %s took %d ms%n", currentLabel, ms);
         current = null;
     }
 

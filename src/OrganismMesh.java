@@ -49,6 +49,8 @@ public class OrganismMesh {
     public static final int PART_PRINT = 19;
     public static final int PART_ENAMEL = 20;
     public static final int PART_LEATHER = 21;
+    // The spacesuit's packs and helmet collar: grey, or in multiplayer the wearer's colour (M6)
+    public static final int PART_SUIT_COLOUR = 22;
 
     private final int[] vertexArray = new int[1];
     private final int[] vertexBuffer = new int[1];

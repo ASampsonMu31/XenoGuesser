@@ -5,3 +5,4 @@ assets/textures/generated_alphabets/
 assets/textures/generated_world/
 .loading_times.properties
 dist/
+target/
