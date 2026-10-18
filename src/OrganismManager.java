@@ -216,7 +216,12 @@ public class OrganismManager {
 
     /** Forgets every creature, e.g. when the viewer jumps to a new round; the next round's are a fresh draw. */
     public void clear() {
-        roundSalt = new Random().nextLong();
+        clear(new Random().nextLong());
+    }
+
+    /** As clear(), with the next round's creatures drawn from this salt (multiplayer: the same on both PCs, M19). */
+    public void clear(long salt) {
+        roundSalt = salt;
         creaturesByCell.clear();
         showcase.clear();
         lastCentreCell = Long.MIN_VALUE;

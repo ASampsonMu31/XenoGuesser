@@ -165,8 +165,8 @@ M6  Roles and colours: the host is Player 119-A, BLUE; the joiner is Player 119-
     Singleplayer keeps the grey.
     REVISED (user, 2026-10-17): only the helmet collar ("neck thing"), the back pack and the
     front (chest) pack take the player's colour; the boots and gloves stay grey as in
-    singleplayer. They are all PART_TRIM today, so the colour must be chosen per piece
-    (e.g. by bone: hands/feet stay grey). Applies to the turntable sheets (Phase 3b redoes
+    singleplayer. Done by giving the packs and collar their own mesh part,
+    OrganismMesh.PART_SUIT_COLOUR (the shader's suitColour; grey in singleplayer). Applies to the turntable sheets (Phase 3b redoes
     spaceman_turntable_blue/_red.png) and later to the first-person body and the partner
     drawn in the world (Phase 5).
 M7  Messages: one byte of type, then big-endian fields (java.nio.ByteBuffer, as the test
@@ -544,7 +544,8 @@ PHASE 3  Two spacemen on the loading screen (brief item 4b)                     
       is 30 columns, so "Employee" and the colon were dropped to fit.
   [x] (Phase 3b) Turntable colours per the revised M6: boots and gloves back to grey, only
       collar, back pack and front pack coloured; delete and remake the blue/red sheets.
-      (PlayerBody.isColouredTrim(bone): TORSO and HEAD trim. Phase 5 uses the same rule.)
+      (Since Phase 5b: the packs and collar are their own mesh part, OrganismMesh.
+      PART_SUIT_COLOUR, coloured by the shader's suitColour; isColouredTrim is gone.)
   [x] (Phase 3b) Message (M12): make xenocorp_multiplayer_a and _b, each a .wav and a .txt in the
       existing format. Since the original tool isn't in the repo:
       - Write the two transcripts (host: "Employee 119-A ... paired with Employee
@@ -598,9 +599,9 @@ PHASE 4  Waiting for each other to load (brief item 5)                          
       enter together; leaving it in step is Phase 7's SHOP_DONE work.)
   Done when: a slow PC and a fast PC enter the game together.
 
-PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [ ]
+PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [x]
   Same rounds:
-  [ ] Replace spawnRandom's use with a per-round Random (M5) in multiplayer:
+  [x] Replace spawnRandom's use with a per-round Random (M5) in multiplayer:
       spawnPlayerAtRandomLocation() and queueNextRound() both take the round number
       they are for (round r's site is queued during round r-1) and draw from
       roundRandom(r). Check on two PCs that the [ROUND]/[PLANET] log lines, the spawn
@@ -608,32 +609,43 @@ PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [
       Also check the world itself matches: compare a few printed counts on both PCs
       (house count, nations, "[PLANET] The map's join crosses x% land"). If anything
       differs, look for unseeded Randoms or work that depends on thread timing.
+      (Done: roundRandom(round, draws) in the GL listener, with separate draws for the
+      site, the day (sun, season, weather, fallback spawn) and the creatures; rounds counted
+      by spawnedRound. Checked on one PC with two windows; the two-PC check is still to do.)
+  [x] M19 creatures: OrganismManager.clear(salt) with the salt from roundRandom(round,
+      CREATURE_DRAWS) in multiplayer (round 1 keeps salt 0 on both).
+  [x] M19 clouds: in multiplayer the weather's update and cloud drawing take seconds since
+      the round began (startRoundClock: XenoGuesser.enterGame for round 1, the "next round
+      started" spot for the rest; until then, since the spawn).
   Sending:
-  [ ] Each frame on the GL thread, publish the local pose: camera.getSpherePosition()
+  [x] Each frame on the GL thread, publish the local pose: camera.getSpherePosition()
       (the eye), camera.getSphereForwardDirection() (world forward), swimming and
       airborne flags. The net thread sends the latest one every 200 ms (M8) with an
       increasing seq and System.currentTimeMillis().
   Receiving and extrapolating (M9), in a new RemotePlayer.java:
-  [ ] Keep the last two samples with a larger seq (drop older or duplicate seqs). For
+  [x] Keep the last two samples with a larger seq (drop older or duplicate seqs). For
       each sample also record the local time it arrived.
-  [ ] Velocity = (p1 - p0) / (t1 - t0) using the SENDER's sentAtMs for t (both from one
+  [x] Velocity = (p1 - p0) / (t1 - t0) using the SENDER's sentAtMs for t (both from one
       clock, so jitter in delivery doesn't distort speed). Ignore it (treat as zero)
       when the jump is too big to be walking (> 50 world units in one step = a
       teleport/new round), mirroring PlayerBody.update's "a teleport, not a step".
-  [ ] Each frame: predicted = p1 + velocity * (now - arrivedAt1), with the look-ahead
+  [x] Each frame: predicted = p1 + velocity * (now - arrivedAt1), with the look-ahead
       capped at 1.0 s (then hold still: several updates lost in a row means we don't
       know, and drifting off is worse). Heading the same way: yaw rate from the last
       two forwards (angle wrapped to -pi..pi), capped likewise.
-  [ ] Smoothing corrections: when a new sample arrives, don't snap; keep an error
+  [x] Smoothing corrections: when a new sample arrives, don't snap; keep an error
       offset (old displayed position - new predicted position) and decay it to zero
       over ~150 ms (offset *= exp(-dt / 0.05)). Snap instead when the error is over
       50 units (a new round's spawn).
-  [ ] Keep the feet on the ground: unless the airborne flag is set, set the predicted
+  [x] Keep the feet on the ground: unless the airborne flag is set, set the predicted
       eye's altitude to max(ground, pod floorAt) + playerEyeHeight at the predicted
       place (groundHeightAt / landingPod.floorAt), so extrapolation over a hill doesn't
-      sink into it or float.
+      sink into it or float. (Also not while swimming: the swimmer's eye is at the water,
+      not standing height over the bed.)
+  (RemotePlayer.java; the GL listener's multiplayerFrame publishes the pose and updates
+  partner() each frame, logging where the partner is shown every 2 s. Nothing is drawn yet.)
   Drawing (brief item 8):
-  [ ] Draw the partner as the helmeted suit (PlayerBody.buildMesh(true), no hand-held
+  [x] Draw the partner as the helmeted suit (PlayerBody.buildMesh(true), no hand-held
       tools) in the world, after the landing pod, using LandingPod.render as the
       template: SphereRender.configure(...), anchor = SphereFrame.at(predictedEye)
       .modelMatrix(1f, eye), bones from a pose with the eyes at the local origin and
@@ -643,11 +655,11 @@ PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [
       predicted speed (as PlayerBody.update does from distance moved). Best done by
       giving PlayerBody a "seen from outside" mode (helmet mesh, pose state of its own,
       renderInWorld(...)) rather than duplicating the posing code.
-  [ ] Colours (M6): the partner's trimColour is the partner's colour; the local
+  [x] Colours (M6): the partner's trimColour is the partner's colour; the local
       first-person body's trimColour (PlayerBody.render) is the local player's colour
       (host blue, joiner red). Make trimColour a field set from Multiplayer's role;
       singleplayer keeps grey.
-  [ ] Height: both players have the same eye height (playerEyeHeight = 20) and the same
+  [x] Height: both players have the same eye height (playerEyeHeight = 20) and the same
       mesh, so they are the same height. Then align the visor: build buildMesh(true),
       pose it with standingPose at a known eye point, average the posed vertices whose
       part is OrganismMesh.PART_EYE, and compare with the eye point. Shift the remote
@@ -655,7 +667,10 @@ PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [
       visor is exactly where the partner's camera is. Write the measured offset as a
       named constant with a comment. (From the bone offsets it should be about 0.45
       units up; measure, don't trust this.)
-  [ ] Collision (M15): the partner is a solid upright cylinder (radius PLAYER_RADIUS,
+      (Measured: the visor's middle is (0.076, -0.450, -0.250) from the eye point at heading
+      0, PlayerBody.VISOR_FROM_EYE; renderInWorld moves the figure by the opposite, turned
+      with the heading. The boots then stand 0.35 units above the ground.)
+  [x] Collision (M15): the partner is a solid upright cylinder (radius PLAYER_RADIUS,
       from their feet to eye height + 2) at their displayed (predicted) position. Add
       it to what the local player's movement is tested against (moveSolidly /
       geodesicCollision obstacles, the same way LandingPod.obstaclesNear feeds segments
@@ -665,7 +680,9 @@ PHASE 5  Seeing each other (brief items 3, 7 and 8)                            [
       either player: only block movement that brings you closer, never push or freeze.
       Also keep players clear at spawn (Phase 6 offsets them already) and in
       GameMode.NO_MOVE (they don't move anyway).
-  [ ] Always drawn while in the 3D world: no distance cut-off (it's a single small mesh),
+      (Done in moveSolidly, step by step (clearOfPartner): a step into the cylinder slides
+      to its edge; when already overlapping, steps that don't bring them closer are allowed.)
+  [x] Always drawn while in the 3D world: no distance cut-off (it's a single small mesh),
       not hidden by the frustum code; hidden only while the world is hidden (shop).
   Done when: walking about on one PC is seen smoothly on the other, including with
       -Dxenoguesser.mpdrop=0.3; looking down shows your own colour; looking at the
@@ -786,6 +803,12 @@ TESTING NOTES
 - -Dxenoguesser.mpauto=host / =join opens the multiplayer panel at start and presses Host
   game / Join game (joining with code AAAAA, which LocalTransport doesn't check). With
   mpfake on both, two windows connect and load with no clicks.
+- -Dxenoguesser.mpspawnapart=units stands 119-A that far left of the stairs' middle and 119-B
+  that far right (until Phase 6 does it properly). HUD test steps for multiplayer: partner
+  (face the partner), lookdown, walkpartner (walk at them 4 s, logging the gap) and
+  frameshot (saves the drawn frame, read from the GL so another window over it doesn't
+  matter, to -Dxenoguesser.frameshot=file after -Dxenoguesser.frameshotdelay ms). In
+  multiplayer a HUD test run waits at Begin (use mpautobegin) so both go in together.
 - -Dxenoguesser.mpautobegin=ms presses Skip and Begin that long after the world is ready
   (retrying until Begin can be pressed), so two windows go in with no clicks.
 - Listening to a message with a planet name in it: java -cp <full classpath>
@@ -886,3 +909,32 @@ LOG
             Checked: two windows (joiner world ready at 131 s, host at 382 s); the joiner
             waited, both pressed Begin and entered 7 ms apart; the waiting button rendered.
             A partner quitting while the other waits still leaves it waiting (Phase 8).
+2026-10-18  PHASE 5a done (Same rounds, M19 creatures and clouds, Sending, Receiving and
+            extrapolating; no drawing). Per-round Randoms as in M5's formula plus a "draws"
+            term per purpose, so a queued site and the spawn can't disturb each other; in
+            singleplayer roundRandom still returns spawnRandom, so nothing changes there.
+            [ROUND] lines log each round's and each queued site. RemotePlayer predicts from
+            the last two poses as Phase 5 says (teleport/snap 50 units, look-ahead capped at
+            1 s, 0.05 s decay, ground clamp unless airborne or swimming). Checked offline with
+            a simulated walk (25 u/s, 30% lost, 50-150 ms delivery): mean 2.8 units off,
+            worst 5.8, mostly the delivery delay, which "time since arrival" can't see; a
+            5,000-unit teleport snapped at once. Two windows, seed 123: rounds 1, 2 and 3 had
+            the same sites, headings, time of day, sun and noon longitude on both, both built
+            10,214 houses, and each showed the partner where they stood (poses 0-200 ms old).
+            The players are in the same spot until Phase 6. Not checked: two PCs, and the
+            creatures and clouds by eye (they follow from the shared seeds).
+2026-10-18  PHASE 5b done, so all of PHASE 5. PlayerBody.seenFromOutside(): the helmeted suit
+            (no tools), posed with its own state and drawn in the world after the landing pod
+            by renderInWorld (SphereRender.configure, anchor SphereFrame.at(eye).modelMatrix),
+            walking/swimming from the predicted movement, always drawn. Colours: new mesh part
+            PART_SUIT_COLOUR (packs and collar) with a suitColour uniform in fs_organism, so
+            gloves and boots stay grey; own first-person packs in Role.trimColour, the partner's
+            in Role.litTrimColour with the pod's grey trim (looked right, left as the plan's
+            values). Visor offset measured (0.45 below, 0.25 behind, 0.08 aside) and applied.
+            Collision in moveSolidly as above. Checked with two windows (seed 123, 5 units
+            apart): the host looking down saw its blue front pack and grey gloves; the joiner
+            facing the host saw the blue collar and pack, side-on, visor towards the stairs,
+            helmet at the screen's centre (eye level); walking at the host from 10 units the
+            joiner stopped at 6.00. The host saw the joiner turn. While the test windows were
+            left open they were played by hand through rounds 2-4, still in step.
+            Not yet: Phase 6's real side-by-side spawn, the M22 settings rule (Phase 8), two PCs.

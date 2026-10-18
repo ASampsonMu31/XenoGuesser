@@ -518,8 +518,8 @@ public final class LoadingArt {
      * The player in a white spacesuit with a helmet and dark visor, standing, seen from 48
      * evenly spaced angles; frames run left to right, top to bottom in an 8-wide grid.
      * Lit like the cockpit's left side: warm from above, cool from the window ahead. The boots,
-     * gloves, back pack and helmet collar (OrganismMesh.PART_TRIM) are grey; in multiplayer's
-     * sheets the packs and collar (PlayerBody.isColouredTrim) are in trimColour instead.
+     * gloves, back pack and helmet collar are grey; in multiplayer's sheets the packs and
+     * collar (OrganismMesh.PART_SUIT_COLOUR) are in trimColour instead.
      */
     private static BufferedImage spaceman(BufferedImage fabric, float[] trimColour) {
         OrganismMesh.Builder builder = PlayerBody.buildMesh(true);
@@ -563,7 +563,8 @@ public final class LoadingArt {
                     tri[k] = SoftwareRenderer.vertex(p, n, vertices[base + 6], vertices[base + 7]);
                 }
                 SoftwareRenderer.SurfaceShader shader = switch (part) {
-                    case OrganismMesh.PART_TRIM -> PlayerBody.isColouredTrim(bone) ? colouredTrim : trim;
+                    case OrganismMesh.PART_TRIM -> trim;
+                    case OrganismMesh.PART_SUIT_COLOUR -> colouredTrim;
                     case OrganismMesh.PART_EYE -> visor;
                     case OrganismMesh.PART_SKIN -> shell;
                     default -> suit;

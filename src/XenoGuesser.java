@@ -394,13 +394,15 @@ public class XenoGuesser extends JFrame {
     // Multiplayer: the partner hears this PC is loaded (their Begin waits for it, M16)
     Multiplayer session = Multiplayer.active();
     if (session != null) session.sendWorldReady();
-    // A HUD test run goes straight in
-    if (System.getProperty("xenoguesser.hudtest") != null) enterGame();
+    // A HUD test run goes straight in (in multiplayer it waits at Begin like anyone, so both go in together)
+    if (System.getProperty("xenoguesser.hudtest") != null && session == null) enterGame();
     else loadingScreen.setWorldReady(this::enterGame);
   }
 
   private void enterGame() {
     loadingScreen.stop();
+    // (the first round begins now: in multiplayer, on both PCs together)
+    glEventListener.startRoundClock();
     // A shop before January (a HUD test run skips it), opened under the cockpit before it goes,
     // so the round isn't glimpsed in between; otherwise the world's straight in view
     String test = System.getProperty("xenoguesser.hudtest");
@@ -719,6 +721,26 @@ public class XenoGuesser extends JFrame {
         // (with -Dxenoguesser.unlockall, the third and fourth items: the altimeter and the identification kit)
         case "altimeter": later(1200, () -> glEventListener.useItem(2)); break;
         case "kit": later(1200, () -> glEventListener.useItem(3)); break;
+        // Multiplayer: face the partner (level); look down at this player's own body; and
+        // frameshot: the drawn frame saved (from the GL, so another window over this one doesn't
+        // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
+        case "partner": later(1500, () -> glEventListener.lookAtPartner(0f)); break;
+        // walkpartner: face the partner and walk at them for four seconds (W held), logging how far apart they end up
+        case "walkpartner": {
+          later(1500, () -> {
+            glEventListener.lookAtPartner(0f);
+            System.out.printf("[MP] Walking at the partner from %.2f units%n", glEventListener.distanceToPartner());
+            keyboardInput.w = true;
+          });
+          later(5500, () -> {
+            keyboardInput.w = false;
+            System.out.printf("[MP] Stopped %.2f units from the partner (their cylinders touch at 6)%n", glEventListener.distanceToPartner());
+          });
+          break;
+        }
+        case "lookdown": later(1500, () -> glEventListener.lookPitch(-70f)); break;
+        case "frameshot": later(Integer.getInteger("xenoguesser.frameshotdelay", 4000),
+            () -> glEventListener.saveNextFrame(new java.io.File(System.getProperty("xenoguesser.frameshot", "frame.png")))); break;
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
         case "zoom": {
           String[] at = System.getProperty("xenoguesser.mapzoomat", "0.5,0.5").split(",");

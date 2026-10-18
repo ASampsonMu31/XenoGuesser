@@ -136,6 +136,44 @@ public class PlayerBody {
             + 0.035f * (float) Math.sin(angle * 3f + along * 1.9f + 1.3f)
             + 0.02f * (float) Math.sin(angle * 7f - along * 4.1f);
 
+    // Seen from outside (the partner in multiplayer): with the helmet and no tools, drawn in the
+    // world (renderInWorld) rather than over the view
+    private final boolean outside;
+    // The grey of the boots and gloves, and the packs' and collar's colour (OrganismMesh.PART_SUIT_COLOUR):
+    // grey too in singleplayer, the player's own colour in multiplayer (M6)
+    private float[] trimColour = { 0.5f, 0.51f, 0.54f };
+    private float[] suitColour = { 0.5f, 0.51f, 0.54f };
+
+    /**
+     * Where the middle of the visor is from the eye point the body is posed from, facing
+     * heading 0 (x, y, z in the body's frame), measured from buildMesh(true) posed by
+     * standingPose: the mean of its PART_EYE vertices (0.45 below, 0.25 behind, as the bone
+     * offsets suggest). A partner drawn from outside is moved by the opposite, so the middle of
+     * their visor is exactly where their camera is; their boots then stand 0.35 units (3.5 cm)
+     * above the ground, as the lowest point is 20.1 below the eye point.
+     */
+    static final float[] VISOR_FROM_EYE = { 0.076f, -0.450f, -0.250f };
+
+    /** The player's own body, seen in first person. */
+    public PlayerBody() {
+        this(false);
+    }
+
+    private PlayerBody(boolean outside) {
+        this.outside = outside;
+    }
+
+    /** A spaceman seen from outside: the partner in multiplayer, in their helmet, drawn in the world. */
+    public static PlayerBody seenFromOutside() {
+        return new PlayerBody(true);
+    }
+
+    /** The boots' and gloves' grey and the packs' and collar's colour (each r, g, b). */
+    public void setColours(float[] trim, float[] suit) {
+        trimColour = trim.clone();
+        suitColour = suit.clone();
+    }
+
     private Shader shader;
     private OrganismMesh mesh;
     private Texture fabric;
@@ -173,7 +211,12 @@ public class PlayerBody {
     public void initialise(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
         // In first person the eyes are inside the helmet, so it is left off
-        mesh = buildMesh(false).build(gl);
+        mesh = buildMesh(outside).build(gl);
+        if (outside) {
+            // (no tools in hand, so no glass, scale or print)
+            if (new java.io.File(LoadingArt.FABRIC).exists()) fabric = TextureLibrary.loadTextureWrap(gl, LoadingArt.FABRIC);
+            return;
+        }
         glass = buildGlass().build(gl);
         // The suit's crumpled fabric, shared with the loading screen's spaceman
         if (new java.io.File(LoadingArt.FABRIC).exists()) {
@@ -214,10 +257,11 @@ public class PlayerBody {
         OrganismParts.bodySegment(b, TORSO_LENGTH, TORSO_WIDTH, TORSO_DEPTH, 0.45f, 0, 0f, 1f);
         b.transform(Affine.translation(0f, 0f, -TORSO_LENGTH * 0.5f));
         OrganismParts.bodySegment(b, 2.6f, 4.2f, 2.9f, 0.5f, 0, 0f, 1f);
+        // The back and front packs, in the wearer's colour (grey in singleplayer)
         b.transform(Affine.translation(0f, -(TORSO_DEPTH * 0.5f + 0.9f), 0.4f));
-        trimSegment(b, 5.2f, 3.6f, 1.8f);
+        trimSegment(b, OrganismMesh.PART_SUIT_COLOUR, 5.2f, 3.6f, 1.8f);
         b.transform(Affine.translation(0f, TORSO_DEPTH * 0.5f + 0.15f, 1.0f));
-        trimSegment(b, 1.5f, 1.9f, 0.7f);
+        trimSegment(b, OrganismMesh.PART_SUIT_COLOUR, 1.5f, 1.9f, 0.7f);
 
         for (int side = 0; side < 2; side++) {
             // Rounded joints fill the gaps where the limb sections meet
@@ -239,7 +283,7 @@ public class PlayerBody {
             b.resetTransform();
             // Boot: ankle at the origin, sole on the ground below it, toes forward
             b.bone(BOOT + side).transform(Affine.translation(0f, -0.15f, 0.55f));
-            trimSegment(b, 2.8f, 1.5f, 1.3f);
+            trimSegment(b, OrganismMesh.PART_TRIM, 2.8f, 1.5f, 1.3f);
         }
         if (!helmet) {
             // In first person: the compass, out of sight until it is used
@@ -285,7 +329,7 @@ public class PlayerBody {
             b.transform(Affine.translation(0f, 0.15f, 0.75f));
             OrganismParts.shell(b, OrganismMesh.PART_EYE, 3.4f, 3.7f, 3.3f, 0.5f, 0, 0f, 1f);
             b.transform(Affine.multiply(Affine.translation(0f, -2.0f, -0.1f), Affine.rotationX((float) -Math.PI / 2)));
-            OrganismParts.shell(b, OrganismMesh.PART_TRIM, 1.4f, 4.0f, 3.6f, 0.2f, 0, 0f, 1f);
+            OrganismParts.shell(b, OrganismMesh.PART_SUIT_COLOUR, 1.4f, 4.0f, 3.6f, 0.2f, 0, 0f, 1f);
         }
         return b;
     }
@@ -611,17 +655,8 @@ public class PlayerBody {
         b.resetTransform();
     }
 
-    /**
-     * Whether trim (OrganismMesh.PART_TRIM) on this bone is in the player's own colour in
-     * multiplayer (M6, as revised): the back and front packs (on the torso) and the helmet's
-     * collar (on the head). The gloves and boots stay grey, as in singleplayer.
-     */
-    static boolean isColouredTrim(int bone) {
-        return bone == TORSO || bone == HEAD;
-    }
-
-    private static void trimSegment(OrganismMesh.Builder b, float length, float width, float height) {
-        OrganismParts.shell(b, OrganismMesh.PART_TRIM, length, width, height, 0.35f, 0, 0f, 1f);
+    private static void trimSegment(OrganismMesh.Builder b, int part, float length, float width, float height) {
+        OrganismParts.shell(b, part, length, width, height, 0.35f, 0, 0f, 1f);
     }
 
     public void dispose(GL3 gl) {
@@ -721,7 +756,8 @@ public class PlayerBody {
         shader.setVec3(gl, "limbColour", new Vector3(0.9f, 0.9f, 0.88f));
         // (the thermometer's glass tube: pale and glossy)
         shader.setVec3(gl, "eyeColour", new Vector3(0.78f, 0.86f, 0.9f));
-        shader.setVec3(gl, "trimColour", new Vector3(0.5f, 0.51f, 0.54f));
+        shader.setVec3(gl, "trimColour", new Vector3(trimColour[0], trimColour[1], trimColour[2]));
+        shader.setVec3(gl, "suitColour", new Vector3(suitColour[0], suitColour[1], suitColour[2]));
         shader.setInt(gl, "patternType", 0);
         shader.setFloat(gl, "patternScale", 2.0f);
         shader.setFloat(gl, "gloss", 0.05f);
@@ -757,6 +793,55 @@ public class PlayerBody {
             gl.glDepthMask(true);
             gl.glDisable(GL.GL_BLEND);
         }
+        gl.glEnable(GL.GL_CULL_FACE);
+    }
+
+    /**
+     * Draws the body seen from outside (seenFromOutside) in the world, like the landing pod:
+     * its eyes (the middle of its visor) at at, facing heading (radians, in the east/up/south
+     * frame there, as the first-person body's), walking or swimming as update() last found;
+     * cameraEye is the camera's position, the scene's viewProjection and light as the pod's.
+     */
+    public void renderInWorld(GL3 gl, Matrix4 viewProjection, SpherePosition cameraEye, SpherePosition at, float heading,
+                              Vector3 sunDirection, float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky) {
+        if (mesh == null) return;
+        // Posed with its eyes moved so the middle of the visor, not the eye point, is at the origin
+        float c = (float) Math.cos(heading), s = (float) Math.sin(heading);
+        float vx = VISOR_FROM_EYE[0] * c + VISOR_FROM_EYE[2] * s, vz = -VISOR_FROM_EYE[0] * s + VISOR_FROM_EYE[2] * c;
+        pitch = 0f;
+        pose(new Vector3(-vx, -VISOR_FROM_EYE[1], -vz), heading);
+
+        SphereRender.configure(gl, shader, viewProjection, sunDirection, sunColour, ambient, skyRotation);
+        SphereRender.setAnchor(gl, shader, SphereFrame.at(at).modelMatrix(1f, cameraEye));
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), BONES, false, bones, 0);
+        if (sky != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE2);
+            sky.bind(gl);
+            shader.setInt(gl, "skyTexture", 2);
+        }
+        shader.setVec3(gl, "baseColour", new Vector3(0.92f, 0.92f, 0.9f));
+        shader.setVec3(gl, "bellyColour", new Vector3(0.88f, 0.88f, 0.86f));
+        shader.setVec3(gl, "accentColour", new Vector3(0.95f, 0.45f, 0.1f));
+        shader.setVec3(gl, "limbColour", new Vector3(0.9f, 0.9f, 0.88f));
+        // The visor: dark, gold-tinted and glossy, as on the loading screen's spaceman
+        shader.setVec3(gl, "eyeColour", new Vector3(0.12f, 0.09f, 0.03f));
+        shader.setVec3(gl, "trimColour", new Vector3(trimColour[0], trimColour[1], trimColour[2]));
+        shader.setVec3(gl, "suitColour", new Vector3(suitColour[0], suitColour[1], suitColour[2]));
+        shader.setInt(gl, "patternType", 0);
+        shader.setFloat(gl, "patternScale", 2.0f);
+        shader.setFloat(gl, "gloss", 0.05f);
+        shader.setFloat(gl, "waterLevel", -1e9f);
+        shader.setVec3(gl, "waterTint", new Vector3(0f, 0f, 0f));
+        if (fabric != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE4);
+            fabric.bind(gl);
+            shader.setInt(gl, "detailTexture", 4);
+            shader.setFloat(gl, "detailAmount", 0.7f);
+        } else {
+            shader.setFloat(gl, "detailAmount", 0f);
+        }
+        gl.glDisable(GL.GL_CULL_FACE);
+        mesh.render(gl);
         gl.glEnable(GL.GL_CULL_FACE);
     }
 

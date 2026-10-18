@@ -36,6 +36,7 @@ uniform float gloss;
 // and anything printed on it (dark on its texture) solid
 uniform float glassAlpha;
 uniform vec3 trimColour;     // boots, gloves and fittings
+uniform vec3 suitColour;     // the spacesuit's packs and collar (the player's colour in multiplayer)
 uniform float lampGlow;      // above 0: the eyes are a lamp, shining in eyeColour whatever the light
 // Anything below the water line is seen through the water
 uniform float waterLevel;
@@ -141,6 +142,9 @@ void main() {
         shine = 0.25;
     } else if (vPart == 7) {
         albedo = trimColour;
+        shine = 0.5;
+    } else if (vPart == 22) {
+        albedo = suitColour;
         shine = 0.5;
     } else if (vPart == 9) {
         // Polished brass
