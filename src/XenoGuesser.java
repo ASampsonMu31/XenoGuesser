@@ -639,16 +639,18 @@ glEventListener.setGameHUD(gameHUD);
    * if one player scored higher, another decider if not. Every verdict's button waits for both (M16).
    */
   private void multiplayerAfterResults(Multiplayer session, MultiplayerScore score) {
-    Multiplayer.Role a = Multiplayer.Role.HOST, b = Multiplayer.Role.JOIN;
+    // (this player first throughout, so it's plain which line is theirs)
+    Multiplayer.Role me = session.role, them = me.other();
     int round = gameHUD.getRound(), decider = gameHUD.deciderNumber();
     if (decider > 0) {
       Multiplayer.Role winner = score.deciderWinner(round);
-      String scores = String.format("Employee %s: %,d   Employee %s: %,d", a.label, score.roundScore(a, round), b.label, score.roundScore(b, round));
+      String scores = String.format("%s: %,d   %s: %,d", name(me, me), score.roundScore(me, round), name(them, me), score.roundScore(them, round));
       if (winner != null) {
-        showGameEnd(session, score, "Final decider " + decider + ": Employee " + winner.label + " scored higher (" + scores + ")", winner);
+        showGameEnd(session, score, "Final decider " + decider + ": " + (winner == me ? "you scored higher" : name(winner, me) + " scored higher")
+            + " (" + scores + ")", winner);
         return;
       }
-      showVerdict(session, "Final decider " + decider, HudStyle.GOLD, "Level again: another final decider",
+      showVerdict(session, "Final decider " + decider, HudStyle.GOLD, "Level again: another final decider", null,
           java.util.List.of(scores), java.util.List.of(HudStyle.VALUE), "On to the next decider",
           Multiplayer.STAGE_FINAL_DECIDER + decider, this::openShop);
       verdictShot("decider" + decider);
@@ -660,26 +662,29 @@ glEventListener.setGameHUD(gameHUD);
     }
     int quarter = gameHUD.getQuarter(), points = MultiplayerScore.pointsFor(quarter);
     Multiplayer.Role winner = score.quarterWinner(quarter);
+    String gained = " (+" + points + (points == 1 ? " point)" : " points)");
     String headline = winner == null ? "Level: nobody gets the points"
-        : "Employee " + winner.label + " was more productive (+" + points + (points == 1 ? " point)" : " points)");
+        : winner == me ? "You won Quarter " + (quarter + 1) + gained
+        : name(winner, me) + " won Quarter " + (quarter + 1) + gained;
     java.util.List<String> lines = new java.util.ArrayList<>(java.util.List.of(
-        String.format("Employee %s: %,d productivity", a.label, score.productivity(a, quarter)),
-        String.format("Employee %s: %,d productivity", b.label, score.productivity(b, quarter)),
-        String.format("Quarter points: %s %d, %s %d", a.label, score.points(a), b.label, score.points(b))));
-    java.util.List<Color> colours = new java.util.ArrayList<>(java.util.List.of(GameHUD.textColour(a), GameHUD.textColour(b), HudStyle.VALUE));
+        String.format("%s: %,d productivity", name(me, me), score.productivity(me, quarter)),
+        String.format("%s: %,d productivity", name(them, me), score.productivity(them, quarter)),
+        String.format("Quarter points: you %d, Employee %s %d", score.points(me), them.label, score.points(them))));
+    java.util.List<Color> colours = new java.util.ArrayList<>(java.util.List.of(GameHUD.textColour(me), GameHUD.textColour(them), HudStyle.VALUE));
     String button = "Continue to the shop";
     Runnable next = this::openShop;
     Multiplayer.Role sweep = quarter == GameHUD.QUARTERS - 2 ? score.sweepWinner() : null;
     if (sweep != null) {
-      lines.add("Employee " + sweep.label + " has an irrecoverable lead");
+      lines.add((sweep == me ? "You have" : name(sweep, me) + " has") + " an irrecoverable lead");
       colours.add(HudStyle.GOLD);
       button = "See the result";
-      next = () -> showGameEnd(session, score, "Employee " + sweep.label + " won Q1, Q2 and Q3: an irrecoverable lead", sweep);
+      next = () -> showGameEnd(session, score, (sweep == me ? "You" : name(sweep, me)) + " won Q1, Q2 and Q3: an irrecoverable lead", sweep);
     } else if (quarter == GameHUD.QUARTERS - 1) {
       Multiplayer.Role year = score.yearWinner();
       if (year != null) {
         button = "See the result";
-        next = () -> showGameEnd(session, score, "The year is over: Employee " + year.label + " has more quarter points", year);
+        next = () -> showGameEnd(session, score, "The year is over: " + (year == me ? "you have" : name(year, me) + " has")
+            + " more quarter points", year);
       } else {
         lines.add("Points are level: final decider");
         colours.add(HudStyle.GOLD);
@@ -690,15 +695,28 @@ glEventListener.setGameHUD(gameHUD);
         };
       }
     }
-    showVerdict(session, "Quarter " + (quarter + 1), HudStyle.QUARTER_COLOURS[quarter], headline, lines, colours, button,
-        Multiplayer.STAGE_QUARTER_END + quarter + 1, next);
+    // (the panel's edge green when this player won the quarter, red when the partner did)
+    showVerdict(session, "Quarter " + (quarter + 1), HudStyle.QUARTER_COLOURS[quarter], headline, outcomeEdge(winner, me),
+        lines, colours, button, Multiplayer.STAGE_QUARTER_END + quarter + 1, next);
     verdictShot("quarter" + (quarter + 1));
   }
 
+  /** A player as named on the verdicts: "Employee 119-A", with " (You)" after this player. */
+  private static String name(Multiplayer.Role player, Multiplayer.Role me) {
+    return "Employee " + player.label + (player == me ? " (You)" : "");
+  }
+
+  /** The verdict panel's edge: green if winner is this player, red if the partner, none (the usual) for a tie. */
+  private static Color outcomeEdge(Multiplayer.Role winner, Multiplayer.Role me) {
+    return winner == null ? null : winner == me ? GOOD : BAD;
+  }
+
+  private static final Color GOOD = new Color(110, 225, 130), BAD = new Color(245, 105, 90);
+
   /** Multiplayer: a verdict on the quarter panel; its button goes on (to then) once both players have pressed theirs. */
-  private void showVerdict(Multiplayer session, String kicker, Color kickerColour, String headline, java.util.List<String> lines,
-                           java.util.List<Color> colours, String button, int stage, Runnable then) {
-    quarterPanel.showMultiplayer(kicker, kickerColour, headline, HudStyle.VALUE, lines, colours, button,
+  private void showVerdict(Multiplayer session, String kicker, Color kickerColour, String headline, Color edge,
+                           java.util.List<String> lines, java.util.List<Color> colours, String button, int stage, Runnable then) {
+    quarterPanel.showMultiplayer(kicker, kickerColour, headline, HudStyle.VALUE, edge, lines, colours, button,
         () -> session.remoteStageDone(stage) ? null : "Waiting for Player " + session.remoteLabel(),
         () -> {
           session.sendStageDone(stage);
@@ -714,27 +732,29 @@ glEventListener.setGameHUD(gameHUD);
 
   /**
    * Multiplayer: the game's end (both PCs show it): who's retained and who's released, why,
-   * each quarter's winner and the points. Its button leaves the game for the menu.
+   * each quarter's winner and the points; its edge green for the winner, red for the loser.
+   * Its button leaves the game for the menu.
    */
   private void showGameEnd(Multiplayer session, MultiplayerScore score, String reason, Multiplayer.Role winner) {
-    boolean won = winner == session.role;
-    Multiplayer.Role a = Multiplayer.Role.HOST, b = Multiplayer.Role.JOIN;
+    Multiplayer.Role me = session.role, them = me.other();
+    boolean won = winner == me;
     java.util.List<String> lines = new java.util.ArrayList<>();
     java.util.List<Color> colours = new java.util.ArrayList<>();
     lines.add(reason);
     colours.add(HudStyle.GOLD);
     for (int q = 0; q < GameHUD.QUARTERS && score.decided(q); q++) {
       Multiplayer.Role w = score.quarterWinner(q);
-      lines.add("Q" + (q + 1) + ": " + (w == null ? "level, no points" : "Employee " + w.label + " (+" + MultiplayerScore.pointsFor(q) + ")"));
+      lines.add("Q" + (q + 1) + ": " + (w == null ? "level, no points" : (w == me ? "you" : name(w, me)) + " (+" + MultiplayerScore.pointsFor(q) + ")"));
       colours.add(w == null ? HudStyle.LABEL : GameHUD.textColour(w));
     }
-    lines.add(String.format("Quarter points: %s %d, %s %d", a.label, score.points(a), b.label, score.points(b)));
+    lines.add(String.format("Quarter points: you %d, Employee %s %d", score.points(me), them.label, score.points(them)));
     colours.add(HudStyle.VALUE);
     System.out.println("[MP] Game over: Employee " + winner.label + " wins (" + reason + ")");
     gameOver = true;
-    quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? new Color(110, 225, 130) : new Color(245, 105, 90),
-        "Employee " + winner.label + " is retained. Employee " + winner.other().label + " will be released via the airlock.",
-        HudStyle.VALUE, lines, colours, "Main menu", null, () -> {
+    quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? GOOD : BAD,
+        won ? "You are retained. Employee " + them.label + " will be released via the airlock."
+            : "Employee " + them.label + " is retained. You will be released via the airlock.",
+        HudStyle.VALUE, won ? GOOD : BAD, lines, colours, "Main menu", null, () -> {
           quarterPanel.close();
           // (the game's over: the room is left, so the next game, singleplayer or not, starts afresh)
           session.leave();
@@ -783,8 +803,8 @@ glEventListener.setGameHUD(gameHUD);
     if (inGame && quarterPanel != null) {
       gameOver = true;
       if (shopPanel != null && shopPanel.isOpen()) shopPanel.close();
-      quarterPanel.showMultiplayer("You win", new Color(110, 225, 130), "You win: " + who + " disconnected",
-          HudStyle.VALUE, java.util.List.of(reason), java.util.List.of(HudStyle.LABEL), "Main menu", null, () -> {
+      quarterPanel.showMultiplayer("You win", GOOD, "You win: " + who + " disconnected",
+          HudStyle.VALUE, GOOD, java.util.List.of(reason), java.util.List.of(HudStyle.LABEL), "Main menu", null, () -> {
             quarterPanel.close();
             endGame(true);
           });

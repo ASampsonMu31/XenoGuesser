@@ -1421,6 +1421,12 @@ public class MapPanel extends JPanel {
                 g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
                 }
                 if (isFullScreenReveal && partnerPin != null) drawPartnerPin(g2d, mapX, mapY, pinLength, headDiameter);
+                // (multiplayer: this player's own pin named too, with "(You)")
+                Multiplayer pinSession = Multiplayer.active();
+                if (isFullScreenReveal && pinShown && pinSession != null && currentPhase != RevealPhase.WAITING_FOR_PARTNER) {
+                    drawPinLabel(g2d, "Employee " + pinSession.localLabel() + " (You)", displayPinX, displayPinY, pinLength, headDiameter,
+                            brighter(ownColour()));
+                }
 
                 if (isFullScreenReveal && goalShown && (resultsShown() || currentPhase == RevealPhase.DRAW_LINES)) {
                     int flagPoleLength = 22;
@@ -1920,12 +1926,20 @@ public class MapPanel extends JPanel {
         if (partnerGuess != null && partnerPin != null && session != null) {
             // Multiplayer: both players' guesses, each named in their colour
             double theirDistance = SphereMath.angle(partnerPin, goal) * Planet.radius();
+            // ...and who was closer, plainly: green if it was this player, red if the partner
+            double apart = Math.abs(roundDistance - theirDistance);
+            String closer = roundDistance < theirDistance ? "You were closer, by " + distanceText(apart)
+                    : theirDistance < roundDistance ? "Employee " + session.remoteLabel() + " was closer, by " + distanceText(apart)
+                    : "You were both just as close";
+            Color closerColour = roundDistance < theirDistance ? new Color(110, 225, 130)
+                    : theirDistance < roundDistance ? new Color(245, 105, 90) : HudStyle.VALUE;
             lines = new String[] {
-                String.format("You (%s): %s, +%,d productivity", session.localLabel(), distanceText(roundDistance), points),
+                closer,
+                String.format("Employee %s (You): %s, +%,d productivity", session.localLabel(), distanceText(roundDistance), points),
                 String.format("Employee %s: %s, +%,d productivity", session.remoteLabel(), distanceText(theirDistance), partnerGuess.score()),
                 String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
             };
-            colours = new Color[] { brighter(ownColour()), brighter(partnerColour()), new Color(120, 230, 140) };
+            colours = new Color[] { closerColour, brighter(ownColour()), brighter(partnerColour()), new Color(120, 230, 140) };
         }
         Font font = HudStyle.font(Font.BOLD, 15f);
         g2d.setFont(font);
@@ -1983,13 +1997,17 @@ public class MapPanel extends JPanel {
         g2d.drawOval(x - r, y - pinLength - r, headDiameter, headDiameter);
         Multiplayer session = Multiplayer.active();
         if (session == null) return;
-        String label = session.remoteLabel();
+        drawPinLabel(g2d, "Employee " + session.remoteLabel(), x, y, pinLength, headDiameter, brighter(partnerColour()));
+    }
+
+    /** A pin's name ("Employee 119-A (You)") in a dark tag beside its head, in the player's colour. */
+    private static void drawPinLabel(Graphics2D g2d, String label, int x, int y, int pinLength, int headDiameter, Color colour) {
         float size = 12f;
         float w = HudStyle.labelWidth(g2d, label, size);
-        int lx = x + r + 4, ly = y - pinLength + 4;
-        g2d.setColor(new Color(10, 14, 22, 200));
-        g2d.fillRoundRect(lx - 4, ly - 13, Math.round(w) + 8, 17, 6, 6);
-        HudStyle.label(g2d, label, lx, ly, size, brighter(partnerColour()));
+        int lx = x + headDiameter / 2 + 6, ly = y - pinLength + 4;
+        g2d.setColor(new Color(10, 14, 22, 210));
+        g2d.fillRoundRect(lx - 5, ly - 13, Math.round(w) + 10, 18, 6, 6);
+        HudStyle.label(g2d, label, lx, ly, size, colour);
     }
 
     /** Multiplayer: the guess is in and the partner's isn't yet: says so on a panel over the map. */

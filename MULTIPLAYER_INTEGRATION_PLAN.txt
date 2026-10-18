@@ -291,6 +291,20 @@ M24 (user, 2026-10-18) In multiplayer there is no April message at the start of 
     The loading screen's multiplayer message (M12) and the gift message in the first shop
     play as in singleplayer, which keeps all three.
 
+M25 (user, 2026-10-18) Which player you are is plain everywhere in multiplayer:
+    - the score panel lists this player first, "119-A (You)", then the partner;
+    - on the reveal both pins are named, "Employee 119-A (You)" and "Employee 119-B";
+    - the results say who was closer ("You were closer, by 1.2 km", green, or "Employee
+      119-B was closer, by ...", red), then each player's distance and points, yours first;
+    - a quarter's verdict says "You won Quarter 2 (+2 points)" or "Employee 119-B won
+      Quarter 2 (+2 points)", and the whole verdict panel is edged green when it's your win,
+      red when it's theirs (a tie keeps the usual edge); the game's end likewise ("You are
+      retained..." green, "You will be released..." red), and the disconnect win green.
+M26 (user, 2026-10-18) Walking is slower in both singleplayer and multiplayer: 40 units a
+    second (4 m/s; it was 60), Camera.KEYBOARD_SPEED.
+M27 (user, 2026-10-18) The shops' cards are shuffled (and priced) differently for the two
+    players, as they already were (shopOffers uses an unseeded Random on each PC).
+
 -------------------------------------------------------------------------------
 DETERMINISM AUDIT (2026-10-17): does the same seed make the same world on two PCs?
 -------------------------------------------------------------------------------
@@ -1075,3 +1089,13 @@ LOG
 2026-10-18  M24 added (user): in multiplayer no April message (XenoGuesser.onMapChanged skips
             it when Multiplayer is active); the gift message in the first shop stays.
             Singleplayer unchanged.
+2026-10-18  M25-M27 (user): clearer "you" everywhere in multiplayer (score panel: you first
+            with "(You)"; both pins named on the reveal, yours with "(You)"; the results say
+            who was closer, green or red; verdicts say "You won Quarter N" or "Employee 119-X
+            won Quarter N" with the whole panel edged green or red; the end and disconnect
+            panels likewise); walking 40 units/s instead of 60 in both modes; the shops stay
+            different per player (already so). Checked with two windows (host on the answer,
+            joiner on the map's middle): the joiner's results read "Employee 119-A was closer,
+            by 2.8 km" in red with its own pin "EMPLOYEE 119-B (YOU)"; the Q1 verdicts read "You
+            won Quarter 1 (+1 point)" edged green on the host and "Employee 119-A won Quarter 1
+            (+1 point)" edged red on the joiner. The slower walk isn't judged by feel yet.

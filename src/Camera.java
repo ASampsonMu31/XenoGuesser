@@ -9,7 +9,8 @@ import com.xenoguesser.math.*;
  */
 public class Camera {
 
-  public final float KEYBOARD_SPEED = 60.0f;
+  // Walking speed, world units a second (40: 4 m/s, a brisk walk; the body's walk is in full stride at it)
+  public final float KEYBOARD_SPEED = 40.0f;
   public final float MOUSE_SPEED = 100f;
 
   private SpherePosition position;

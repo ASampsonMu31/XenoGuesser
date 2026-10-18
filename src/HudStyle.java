@@ -90,6 +90,16 @@ public final class HudStyle {
         g.fill(new java.awt.geom.Rectangle2D.Float(x + 3f, y + cut + 4f, 2.5f, Math.max(0f, h - cut - 12f)));
     }
 
+    /** A panel's edge drawn over again, thick, in colour (e.g. green for a good outcome, red for a bad one). */
+    public static void edge(Graphics2D g, float x, float y, float w, float h, Color colour) {
+        float cut = Math.min(14f, h * 0.25f);
+        Path2D shape = chamfered(x + 0.5f, y + 0.5f, w - 1f, h - 1f, cut);
+        g.setColor(colour);
+        g.setStroke(new BasicStroke(4f));
+        g.draw(shape);
+        g.fill(new java.awt.geom.Rectangle2D.Float(x + 3f, y + cut + 4f, 3.5f, Math.max(0f, h - cut - 12f)));
+    }
+
     /** Small spaced-out capitals. */
     public static void label(Graphics2D g, String text, float x, float baseline, float size, Color colour) {
         Font f = font(Font.BOLD, size);
@@ -228,7 +238,8 @@ public final class HudStyle {
     /**
      * The score panel in multiplayer (M13): no target; the quarter's months (or "Final decider
      * N" once the year's over, M17), both players' productivity this quarter and their quarter
-     * points, each named in their colour, and this player's cash.
+     * points, each named in their colour (this player first, "(You)" after their code), and
+     * this player's cash.
      */
     public static void paintMultiplayerScorePanel(Graphics2D g, int quarter, int month, int decider, String[] names,
                                                   Color[] colours, int[] productivity, int[] points, int cash, Color body) {
@@ -270,7 +281,7 @@ public final class HudStyle {
             label(g, names[p], 184, y, 11f, colours[p]);
             g.setFont(font(Font.BOLD, 17f));
             g.setColor(VALUE);
-            g.drawString(String.format("%,d", productivity[p]), 236, y + 1);
+            g.drawString(String.format("%,d", productivity[p]), 280, y + 1);
             String pts = Integer.toString(points[p]);
             g.setColor(colours[p]);
             g.drawString(pts, 384 - g.getFontMetrics().stringWidth(pts), y + 1);

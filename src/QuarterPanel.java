@@ -29,6 +29,8 @@ public class QuarterPanel extends JPanel {
     private boolean multiplayer, pressed;
     private String kicker, headline, buttonText;
     private Color kickerColour, headlineColour;
+    // The panel's edge: green when the outcome is good for this player, red when not, null for the usual
+    private Color edge;
     private java.util.List<String> lines = java.util.List.of();
     private java.util.List<Color> lineColours = java.util.List.of();
     private java.util.function.Supplier<String> waiting;
@@ -63,10 +65,11 @@ public class QuarterPanel extends JPanel {
 
     /**
      * Multiplayer: shows a verdict (or the game's end): kicker over a headline, then lines (each
-     * in lineColours), and a button saying buttonText that runs onContinue; once pressed, while
+     * in lineColours), the panel edged in edge (green good, red bad; null the usual), and a
+     * button saying buttonText that runs onContinue; once pressed, while
      * waiting gives a text (e.g. "Waiting for Player 119-B") the button shows that, greyed.
      */
-    public void showMultiplayer(String kicker, Color kickerColour, String headline, Color headlineColour,
+    public void showMultiplayer(String kicker, Color kickerColour, String headline, Color headlineColour, Color edge,
                                 java.util.List<String> lines, java.util.List<Color> lineColours, String buttonText,
                                 java.util.function.Supplier<String> waiting, Runnable onContinue) {
         this.multiplayer = true;
@@ -75,6 +78,7 @@ public class QuarterPanel extends JPanel {
         this.kickerColour = kickerColour;
         this.headline = headline;
         this.headlineColour = headlineColour;
+        this.edge = edge;
         this.lines = java.util.List.copyOf(lines);
         this.lineColours = java.util.List.copyOf(lineColours);
         this.buttonText = buttonText;
@@ -172,6 +176,7 @@ public class QuarterPanel extends JPanel {
         int ph = 70 + headlineLines.size() * 40 + 16 + detail.size() * 30 + 34 + 48 + 34;
         int px = (w - pw) / 2, py = Math.max(20, (h - ph) / 2 - 30);
         HudStyle.panel(g, px, py, pw, ph, HudStyle.GLASS_SOLID);
+        if (edge != null) HudStyle.edge(g, px, py, pw, ph, edge);
         float kickerW = HudStyle.labelWidth(g, kicker, 14f);
         HudStyle.label(g, kicker, px + (pw - kickerW) / 2f, py + 50, 14f, kickerColour);
         g.setFont(headlineFont);

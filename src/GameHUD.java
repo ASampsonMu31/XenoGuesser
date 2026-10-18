@@ -141,13 +141,13 @@ public class GameHUD extends JPanel {
         MultiplayerScore score = multiplayer;
         Multiplayer s = session;
         if (score != null && s != null) {
-            // Both players (119-A first on both PCs): this quarter's productivity (this player's
-            // live, the partner's as of their last guess) and their quarter points
-            Multiplayer.Role a = Multiplayer.Role.HOST, b = Multiplayer.Role.JOIN;
+            // Both players, this one on top marked "(You)": this quarter's productivity (this
+            // player's live, the partner's as of their last guess) and their quarter points
+            Multiplayer.Role a = s.role, b = s.role.other();
             int productivityA = a == s.role ? productivity : score.productivitySoFar(a, currentRound);
             int productivityB = b == s.role ? productivity : score.productivitySoFar(b, currentRound);
             HudStyle.paintMultiplayerScorePanel(g, getQuarter(), (currentRound - 1) % ROUNDS_PER_QUARTER, deciderNumber(),
-                    new String[] { a.label, b.label }, new java.awt.Color[] { textColour(a), textColour(b) },
+                    new String[] { a.label + " (You)", b.label }, new java.awt.Color[] { textColour(a), textColour(b) },
                     new int[] { productivityA, productivityB }, new int[] { score.points(a), score.points(b) }, cash, body);
             return;
         }
