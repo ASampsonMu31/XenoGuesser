@@ -160,6 +160,8 @@ public final class Multiplayer {
     private volatile boolean remoteBegun;
     private volatile byte[] remoteAlphabets;
     private final Map<Integer, Guess> remoteGuesses = new ConcurrentHashMap<>();
+    // This player's own guesses as sent, so both PCs work out the score from the same numbers
+    private final Map<Integer, Guess> localGuesses = new ConcurrentHashMap<>();
     private final Set<Integer> remoteShopDone = ConcurrentHashMap.newKeySet();
     private final Set<Integer> remoteRoundBuilt = ConcurrentHashMap.newKeySet();
     private final Set<Integer> remoteStagesDone = ConcurrentHashMap.newKeySet();
@@ -347,6 +349,21 @@ public final class Multiplayer {
         return remoteGuesses.get(round);
     }
 
+    /** This player's guess for a round as sent, or null. */
+    public Guess localGuess(int round) {
+        return localGuesses.get(round);
+    }
+
+    /** A player's guess for a round (either: by role), or null until it's made or has arrived. */
+    public Guess guessBy(Role player, int round) {
+        return player == role ? localGuesses.get(round) : remoteGuesses.get(round);
+    }
+
+    /** How many guesses there are, both players' (goes up as each comes in: for knowing when to repaint). */
+    public int guessCount() {
+        return localGuesses.size() + remoteGuesses.size();
+    }
+
     public boolean remoteShopDone(int round) {
         return remoteShopDone.contains(round);
     }
@@ -384,6 +401,7 @@ public final class Multiplayer {
     }
 
     public void sendGuess(Guess guess) {
+        localGuesses.put(guess.round(), guess);
         ByteBuffer m = message(GUESS, 4 + 3 * 8 + 4 + 4);
         m.putInt(guess.round()).putDouble(guess.px()).putDouble(guess.py()).putDouble(guess.pz())
                 .putInt(guess.score()).putInt(guess.quarterProductivity());

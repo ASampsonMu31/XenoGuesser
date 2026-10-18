@@ -225,6 +225,60 @@ public final class HudStyle {
         money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
     }
 
+    /**
+     * The score panel in multiplayer (M13): no target; the quarter's months (or "Final decider
+     * N" once the year's over, M17), both players' productivity this quarter and their quarter
+     * points, each named in their colour, and this player's cash.
+     */
+    public static void paintMultiplayerScorePanel(Graphics2D g, int quarter, int month, int decider, String[] names,
+                                                  Color[] colours, int[] productivity, int[] points, int cash, Color body) {
+        panel(g, 0, 0, SCORE_W, SCORE_H, body);
+        if (decider > 0) {
+            label(g, "Final decider", 20, 28, 11f, LABEL);
+            g.setFont(font(Font.BOLD, 30f));
+            g.setColor(GOLD);
+            g.drawString(Integer.toString(decider), 20, 64);
+        } else {
+            Color colour = QUARTER_COLOURS[quarter];
+            label(g, "Quarter " + (quarter + 1), 20, 28, 11f, LABEL);
+            float tabW = 40f, tabH = 26f, gap = 6f, tabY = 40f;
+            Font monthFont = font(Font.BOLD, 12f);
+            for (int m = 0; m < 3; m++) {
+                float x = 20f + m * (tabW + gap);
+                java.awt.geom.RoundRectangle2D tab = new java.awt.geom.RoundRectangle2D.Float(x, tabY, tabW, tabH, 12f, 12f);
+                g.setColor(m < month ? greyed(colour) : m == month ? colour : new Color(255, 255, 255, 18));
+                g.fill(tab);
+                g.setStroke(new BasicStroke(1.2f));
+                g.setColor(m > month ? new Color(120, 205, 235, 90) : new Color(255, 255, 255, 150));
+                g.draw(tab);
+                String name = MONTHS[quarter * 3 + m];
+                g.setFont(monthFont);
+                FontMetrics fm = g.getFontMetrics();
+                g.setColor(m > month ? DIM : new Color(20, 24, 32));
+                g.drawString(name, x + (tabW - fm.stringWidth(name)) / 2f, tabY + (tabH + fm.getAscent() - fm.getDescent()) / 2f);
+            }
+        }
+        g.setColor(new Color(120, 205, 235, 70));
+        g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
+        g.fill(new java.awt.geom.Rectangle2D.Float(392, 18, 1f, SCORE_H - 36));
+        // Each player: name, productivity this quarter, and quarter points
+        label(g, "Productivity", 184, 24, 10f, LABEL);
+        float pointsLabelW = labelWidth(g, "Points", 10f);
+        label(g, "Points", 384 - pointsLabelW, 24, 10f, LABEL);
+        for (int p = 0; p < 2; p++) {
+            float y = 46 + p * 24;
+            label(g, names[p], 184, y, 11f, colours[p]);
+            g.setFont(font(Font.BOLD, 17f));
+            g.setColor(VALUE);
+            g.drawString(String.format("%,d", productivity[p]), 236, y + 1);
+            String pts = Integer.toString(points[p]);
+            g.setColor(colours[p]);
+            g.drawString(pts, 384 - g.getFontMetrics().stringWidth(pts), y + 1);
+        }
+        label(g, "Cash", 408, 28, 11f, LABEL);
+        money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
+    }
+
     /** A colour faded halfway towards grey and a little darker, for months gone by. */
     private static Color greyed(Color c) {
         float grey = (c.getRed() + c.getGreen() + c.getBlue()) / 3f;

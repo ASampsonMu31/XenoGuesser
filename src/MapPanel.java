@@ -1684,11 +1684,21 @@ public class MapPanel extends JPanel {
 
     /**
      * Developer aid: a guess at the middle of the map (or at -Dxenoguesser.guessat=u,v, shares of
-     * its width and height), as if clicked and confirmed.
+     * its width and height, or =answer for the true location), as if clicked and confirmed.
      */
     public void devGuess() {
-        String[] at = System.getProperty("xenoguesser.guessat", "0.5,0.5").split(",");
-        placePin((int) (mapImage.getWidth() * Double.parseDouble(at[0])), (int) (mapImage.getHeight() * Double.parseDouble(at[1])));
+        String spot = System.getProperty("xenoguesser.guessat", "0.5,0.5");
+        // (-Dxenoguesser.guessatlater=round:spot guesses at spot instead from that round on)
+        String later = System.getProperty("xenoguesser.guessatlater");
+        if (later != null && gameHUD != null && gameHUD.getRound() >= Integer.parseInt(later.split(":")[0])) spot = later.split(":")[1];
+        if (spot.equals("answer") && goal != null) {
+            // (right on the true location: full marks)
+            placePin(goalX, goalY);
+            pin = goal;
+        } else {
+            String[] at = spot.split(",");
+            placePin((int) (mapImage.getWidth() * Double.parseDouble(at[0])), (int) (mapImage.getHeight() * Double.parseDouble(at[1])));
+        }
         startRevealSequence();
     }
 

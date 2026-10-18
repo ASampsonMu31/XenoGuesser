@@ -14,12 +14,25 @@ import java.awt.geom.Point2D;
  * Between a quarter's last results and the shop: whether the quarter's productivity target
  * was met (the points from every guess so far had at least reached it), drawn as the HUD's panels are. One button
  * goes on: to the shop, or back to the menu should the quarter have been failed or the year won.
+ *
+ * In multiplayer (showMultiplayer) it shows the quarter's verdict between the two players
+ * (M13), a final decider's (M17), or the game's end: a heading, a headline, lines of detail
+ * each in its own colour, and the button, which once pressed greys and says who it's waiting
+ * for until the partner has pressed theirs (M16).
  */
 public class QuarterPanel extends JPanel {
     private int quarter, money, target;
     private boolean passed, won;
     private Runnable onContinue;
     private final Rectangle button = new Rectangle();
+    // Multiplayer's verdicts: what's said, and once the button's pressed, what it's waiting for
+    private boolean multiplayer, pressed;
+    private String kicker, headline, buttonText;
+    private Color kickerColour, headlineColour;
+    private java.util.List<String> lines = java.util.List.of();
+    private java.util.List<Color> lineColours = java.util.List.of();
+    private java.util.function.Supplier<String> waiting;
+    private final javax.swing.Timer waitingRepaint = new javax.swing.Timer(250, e -> repaint());
 
     public QuarterPanel() {
         setOpaque(true);
@@ -29,17 +42,53 @@ public class QuarterPanel extends JPanel {
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
-                if (e.getButton() == MouseEvent.BUTTON1 && button.contains(e.getPoint()) && onContinue != null) {
-                    Runnable next = onContinue;
-                    onContinue = null;
-                    next.run();
-                }
+                if (e.getButton() == MouseEvent.BUTTON1 && button.contains(e.getPoint())) press();
             }
         });
     }
 
+    private void press() {
+        if (onContinue == null) return;
+        Runnable next = onContinue;
+        onContinue = null;
+        pressed = true;
+        repaint();
+        next.run();
+    }
+
+    /** Developer aid: presses the button, as if clicked. */
+    public void devPress() {
+        press();
+    }
+
+    /**
+     * Multiplayer: shows a verdict (or the game's end): kicker over a headline, then lines (each
+     * in lineColours), and a button saying buttonText that runs onContinue; once pressed, while
+     * waiting gives a text (e.g. "Waiting for Player 119-B") the button shows that, greyed.
+     */
+    public void showMultiplayer(String kicker, Color kickerColour, String headline, Color headlineColour,
+                                java.util.List<String> lines, java.util.List<Color> lineColours, String buttonText,
+                                java.util.function.Supplier<String> waiting, Runnable onContinue) {
+        this.multiplayer = true;
+        this.pressed = false;
+        this.kicker = kicker;
+        this.kickerColour = kickerColour;
+        this.headline = headline;
+        this.headlineColour = headlineColour;
+        this.lines = java.util.List.copyOf(lines);
+        this.lineColours = java.util.List.copyOf(lineColours);
+        this.buttonText = buttonText;
+        this.waiting = waiting;
+        this.onContinue = onContinue;
+        waitingRepaint.start();
+        setVisible(true);
+        repaint();
+    }
+
     /** Shows how quarter (from 0) went: the productivity against its target; won if it was the last quarter, passed. */
     public void show(int quarter, int money, int target, boolean won, Runnable onContinue) {
+        this.multiplayer = false;
+        this.pressed = false;
         this.quarter = quarter;
         this.money = money;
         this.target = target;
@@ -53,6 +102,7 @@ public class QuarterPanel extends JPanel {
     public void close() {
         setVisible(false);
         onContinue = null;
+        waitingRepaint.stop();
     }
 
     public boolean isOpen() {
@@ -68,6 +118,10 @@ public class QuarterPanel extends JPanel {
             g.setPaint(new RadialGradientPaint(new Point2D.Float(w * 0.5f, h * 0.45f), Math.max(w, h) * 0.75f,
                     new float[] { 0f, 1f }, new Color[] { new Color(26, 34, 48), new Color(6, 9, 14) }));
             g.fillRect(0, 0, w, h);
+            if (multiplayer) {
+                paintMultiplayer(g, w, h);
+                return;
+            }
 
             Color colour = HudStyle.QUARTER_COLOURS[quarter];
             int pw = Math.min(w - 80, 640), ph = 300;
@@ -99,5 +153,65 @@ public class QuarterPanel extends JPanel {
         } finally {
             g.dispose();
         }
+    }
+
+    /** Multiplayer's panel: the kicker, the headline (wrapped), the lines, and the button or what it waits for. */
+    private void paintMultiplayer(Graphics2D g, int w, int h) {
+        int pw = Math.min(w - 80, 760);
+        Font headlineFont = HudStyle.font(Font.BOLD, 30f), lineFont = HudStyle.font(Font.PLAIN, 19f);
+        java.util.List<String> headlineLines = wrap(g.getFontMetrics(headlineFont), headline, pw - 80);
+        // (each detail line wrapped too, keeping its colour)
+        java.util.List<String> detail = new java.util.ArrayList<>();
+        java.util.List<Color> detailColours = new java.util.ArrayList<>();
+        for (int i = 0; i < lines.size(); i++) {
+            for (String part : wrap(g.getFontMetrics(lineFont), lines.get(i), pw - 80)) {
+                detail.add(part);
+                detailColours.add(i < lineColours.size() ? lineColours.get(i) : HudStyle.VALUE);
+            }
+        }
+        int ph = 70 + headlineLines.size() * 40 + 16 + detail.size() * 30 + 34 + 48 + 34;
+        int px = (w - pw) / 2, py = Math.max(20, (h - ph) / 2 - 30);
+        HudStyle.panel(g, px, py, pw, ph, HudStyle.GLASS_SOLID);
+        float kickerW = HudStyle.labelWidth(g, kicker, 14f);
+        HudStyle.label(g, kicker, px + (pw - kickerW) / 2f, py + 50, 14f, kickerColour);
+        g.setFont(headlineFont);
+        FontMetrics fm = g.getFontMetrics();
+        g.setColor(headlineColour);
+        int y = py + 100;
+        for (String line : headlineLines) {
+            g.drawString(line, px + (pw - fm.stringWidth(line)) / 2f, y);
+            y += 40;
+        }
+        y += 12;
+        g.setFont(lineFont);
+        fm = g.getFontMetrics();
+        for (int i = 0; i < detail.size(); i++) {
+            g.setColor(detailColours.get(i));
+            g.drawString(detail.get(i), px + (pw - fm.stringWidth(detail.get(i))) / 2f, y);
+            y += 30;
+        }
+        String waitingFor = pressed && waiting != null ? waiting.get() : null;
+        String text = waitingFor != null ? waitingFor + ".".repeat((int) (System.currentTimeMillis() / 400 % 4)) : buttonText;
+        int bw = 360, bh = 48;
+        button.setBounds(px + (pw - bw) / 2, py + ph - bh - 34, bw, bh);
+        HudStyle.panel(g, button.x, button.y, bw, bh, waitingFor != null || pressed ? new Color(60, 66, 76) : new Color(40, 150, 90));
+        float size = 15f, textW = HudStyle.labelWidth(g, text, size);
+        HudStyle.label(g, text, button.x + (bw - textW) / 2f, button.y + bh / 2f + size * 0.38f, size, HudStyle.VALUE);
+    }
+
+    private static java.util.List<String> wrap(FontMetrics fm, String text, int width) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        String line = "";
+        for (String word : text.split(" ")) {
+            String tried = line.isEmpty() ? word : line + " " + word;
+            if (fm.stringWidth(tried) > width && !line.isEmpty()) {
+                out.add(line);
+                line = word;
+            } else {
+                line = tried;
+            }
+        }
+        if (!line.isEmpty()) out.add(line);
+        return out;
     }
 }

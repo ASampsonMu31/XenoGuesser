@@ -345,7 +345,11 @@ public class XenoGuesser extends JFrame {
     canvas.setBackground(Color.BLACK); 
 
     gameHUD = new GameHUD();
-    glEventListener.setGameHUD(gameHUD);
+    // Multiplayer: quarter points instead of targets (M13), on the score panel too
+    Multiplayer session = Multiplayer.active();
+    multiplayerScore = session != null ? MultiplayerScore.of(session) : null;
+    if (session != null) gameHUD.setMultiplayer(session, multiplayerScore);
+glEventListener.setGameHUD(gameHUD);
     this.camera = camera;
     this.keyboardInput = keyboardInput;
 
@@ -566,6 +570,11 @@ public class XenoGuesser extends JFrame {
    * (failed, the game is lost; the last quarter passed, it's won), then on to the shop.
    */
   private void afterResults() {
+    Multiplayer session = Multiplayer.active();
+    if (session != null && multiplayerScore != null) {
+      multiplayerAfterResults(session, multiplayerScore);
+      return;
+    }
     if (!gameHUD.isQuarterEnd()) {
       openShop();
       return;
@@ -579,6 +588,154 @@ public class XenoGuesser extends JFrame {
       else openShop();
     });
     layoutComponents();
+  }
+
+  // Multiplayer's scoring (M13, M17); null in singleplayer
+  private MultiplayerScore multiplayerScore;
+
+  /**
+   * Multiplayer, after a round's results (M13, M17): on to the shop, or at a quarter's end its
+   * verdict between the two players (both PCs work it out from the same guesses), then on to
+   * the shop, to the game's end (an irrecoverable lead after a Q1 to Q3 sweep, or the year won
+   * on points), or to final deciders if the points are level; after a decider, the game's end
+   * if one player scored higher, another decider if not. Every verdict's button waits for both (M16).
+   */
+  private void multiplayerAfterResults(Multiplayer session, MultiplayerScore score) {
+    Multiplayer.Role a = Multiplayer.Role.HOST, b = Multiplayer.Role.JOIN;
+    int round = gameHUD.getRound(), decider = gameHUD.deciderNumber();
+    if (decider > 0) {
+      Multiplayer.Role winner = score.deciderWinner(round);
+      String scores = String.format("Employee %s: %,d   Employee %s: %,d", a.label, score.roundScore(a, round), b.label, score.roundScore(b, round));
+      if (winner != null) {
+        showGameEnd(session, score, "Final decider " + decider + ": Employee " + winner.label + " scored higher (" + scores + ")", winner);
+        return;
+      }
+      showVerdict(session, "Final decider " + decider, HudStyle.GOLD, "Level again: another final decider",
+          java.util.List.of(scores), java.util.List.of(HudStyle.VALUE), "On to the next decider",
+          Multiplayer.STAGE_FINAL_DECIDER + decider, this::openShop);
+      verdictShot("decider" + decider);
+      return;
+    }
+    if (!gameHUD.isQuarterEnd()) {
+      openShop();
+      return;
+    }
+    int quarter = gameHUD.getQuarter(), points = MultiplayerScore.pointsFor(quarter);
+    Multiplayer.Role winner = score.quarterWinner(quarter);
+    String headline = winner == null ? "Level: nobody gets the points"
+        : "Employee " + winner.label + " was more productive (+" + points + (points == 1 ? " point)" : " points)");
+    java.util.List<String> lines = new java.util.ArrayList<>(java.util.List.of(
+        String.format("Employee %s: %,d productivity", a.label, score.productivity(a, quarter)),
+        String.format("Employee %s: %,d productivity", b.label, score.productivity(b, quarter)),
+        String.format("Quarter points: %s %d, %s %d", a.label, score.points(a), b.label, score.points(b))));
+    java.util.List<Color> colours = new java.util.ArrayList<>(java.util.List.of(GameHUD.textColour(a), GameHUD.textColour(b), HudStyle.VALUE));
+    String button = "Continue to the shop";
+    Runnable next = this::openShop;
+    Multiplayer.Role sweep = quarter == GameHUD.QUARTERS - 2 ? score.sweepWinner() : null;
+    if (sweep != null) {
+      lines.add("Employee " + sweep.label + " has an irrecoverable lead");
+      colours.add(HudStyle.GOLD);
+      button = "See the result";
+      next = () -> showGameEnd(session, score, "Employee " + sweep.label + " won Q1, Q2 and Q3: an irrecoverable lead", sweep);
+    } else if (quarter == GameHUD.QUARTERS - 1) {
+      Multiplayer.Role year = score.yearWinner();
+      if (year != null) {
+        button = "See the result";
+        next = () -> showGameEnd(session, score, "The year is over: Employee " + year.label + " has more quarter points", year);
+      } else {
+        lines.add("Points are level: final decider");
+        colours.add(HudStyle.GOLD);
+        button = "On to the final decider";
+        next = () -> {
+          gameHUD.startDeciders();
+          openShop();
+        };
+      }
+    }
+    showVerdict(session, "Quarter " + (quarter + 1), HudStyle.QUARTER_COLOURS[quarter], headline, lines, colours, button,
+        Multiplayer.STAGE_QUARTER_END + quarter + 1, next);
+    verdictShot("quarter" + (quarter + 1));
+  }
+
+  /** Multiplayer: a verdict on the quarter panel; its button goes on (to then) once both players have pressed theirs. */
+  private void showVerdict(Multiplayer session, String kicker, Color kickerColour, String headline, java.util.List<String> lines,
+                           java.util.List<Color> colours, String button, int stage, Runnable then) {
+    quarterPanel.showMultiplayer(kicker, kickerColour, headline, HudStyle.VALUE, lines, colours, button,
+        () -> session.remoteStageDone(stage) ? null : "Waiting for Player " + session.remoteLabel(),
+        () -> {
+          session.sendStageDone(stage);
+          whenTrue(() -> session.remoteStageDone(stage), () -> {
+            System.out.println("[MP] Both pressed on at stage " + stage + " at " + System.currentTimeMillis());
+            quarterPanel.close();
+            then.run();
+            layoutComponents();
+          });
+        });
+    layoutComponents();
+  }
+
+  /**
+   * Multiplayer: the game's end (both PCs show it): who's retained and who's released, why,
+   * each quarter's winner and the points. Its button leaves the game for the menu.
+   */
+  private void showGameEnd(Multiplayer session, MultiplayerScore score, String reason, Multiplayer.Role winner) {
+    boolean won = winner == session.role;
+    Multiplayer.Role a = Multiplayer.Role.HOST, b = Multiplayer.Role.JOIN;
+    java.util.List<String> lines = new java.util.ArrayList<>();
+    java.util.List<Color> colours = new java.util.ArrayList<>();
+    lines.add(reason);
+    colours.add(HudStyle.GOLD);
+    for (int q = 0; q < GameHUD.QUARTERS && score.decided(q); q++) {
+      Multiplayer.Role w = score.quarterWinner(q);
+      lines.add("Q" + (q + 1) + ": " + (w == null ? "level, no points" : "Employee " + w.label + " (+" + MultiplayerScore.pointsFor(q) + ")"));
+      colours.add(w == null ? HudStyle.LABEL : GameHUD.textColour(w));
+    }
+    lines.add(String.format("Quarter points: %s %d, %s %d", a.label, score.points(a), b.label, score.points(b)));
+    colours.add(HudStyle.VALUE);
+    System.out.println("[MP] Game over: Employee " + winner.label + " wins (" + reason + ")");
+    quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? new Color(110, 225, 130) : new Color(245, 105, 90),
+        "Employee " + winner.label + " is retained. Employee " + winner.other().label + " will be released via the airlock.",
+        HudStyle.VALUE, lines, colours, "Main menu", null, () -> {
+          quarterPanel.close();
+          // (the game's over: the room is left, so the next game, singleplayer or not, starts afresh)
+          session.leave();
+          endGame(won);
+        });
+    layoutComponents();
+    verdictShot("gameend");
+  }
+
+  /** Developer aid: the window's Swing panels (not the 3D view) painted to a file. */
+  private void saveUiShot(java.io.File file) {
+    BufferedImage image = new BufferedImage(Math.max(1, layeredPane.getWidth()), Math.max(1, layeredPane.getHeight()), BufferedImage.TYPE_INT_RGB);
+    Graphics2D g = image.createGraphics();
+    layeredPane.paint(g);
+    g.dispose();
+    try {
+      javax.imageio.ImageIO.write(image, "png", file);
+      System.out.println("[SHOT] Panels saved to " + file);
+    } catch (java.io.IOException e) {
+      System.err.println("Couldn't save the panels: " + e.getMessage());
+    }
+  }
+
+  /** Developer aid: -Dxenoguesser.verdictshot=prefix saves each multiplayer verdict as it's shown, as prefix_name.png. */
+  private void verdictShot(String name) {
+    String prefix = System.getProperty("xenoguesser.verdictshot");
+    if (prefix == null) return;
+    later(1200, () -> saveUiShot(new java.io.File(prefix + "_" + name.replaceAll("[^A-Za-z0-9]+", "_") + ".png")));
+  }
+
+  /** Runs then (on the Swing thread) as soon as condition holds, checking every 100 ms. */
+  private static void whenTrue(java.util.function.BooleanSupplier condition, Runnable then) {
+    javax.swing.Timer wait = new javax.swing.Timer(100, null);
+    wait.addActionListener(e -> {
+      if (!condition.getAsBoolean()) return;
+      wait.stop();
+      then.run();
+    });
+    wait.setInitialDelay(0);
+    wait.start();
   }
 
   /** Opens the shop over the results; once the player has bought something or nothing, the next round is asked for. */
@@ -764,10 +921,15 @@ public class XenoGuesser extends JFrame {
         // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
         case "partner": later(1500, () -> glEventListener.lookAtPartner(0f)); break;
         // autoplay: every -Dxenoguesser.autoplayms (default 4000) the next thing a player would do:
-        // leave the shop (buying nothing), else go on from the results, else guess (see guessat)
+        // press on from the quarter's verdict, else leave the shop (buying nothing), else go on
+        // from the results, else guess (see guessat)
         case "autoplay": {
           javax.swing.Timer play = new javax.swing.Timer(Integer.getInteger("xenoguesser.autoplayms", 4000), e -> {
-            if (!inGame || minimap == null || (quarterPanel != null && quarterPanel.isOpen())) return;
+            if (!inGame || minimap == null) return;
+            if (quarterPanel != null && quarterPanel.isOpen()) {
+              quarterPanel.devPress();
+              return;
+            }
             if (shopPanel.isOpen()) shopPanel.nextRound();
             else if (minimap.isFullScreenRevealMode()) minimap.devProceedToShop();
             else minimap.devGuess();
@@ -780,19 +942,7 @@ public class XenoGuesser extends JFrame {
         case "uishot": {
           for (String at : System.getProperty("xenoguesser.uishotat", "4000").split(",")) {
             int ms = Integer.parseInt(at.trim());
-            later(ms, () -> {
-              BufferedImage image = new BufferedImage(Math.max(1, layeredPane.getWidth()), Math.max(1, layeredPane.getHeight()), BufferedImage.TYPE_INT_RGB);
-              Graphics2D g = image.createGraphics();
-              layeredPane.paint(g);
-              g.dispose();
-              java.io.File file = new java.io.File(System.getProperty("xenoguesser.uishot", "ui") + "_" + ms + ".png");
-              try {
-                javax.imageio.ImageIO.write(image, "png", file);
-                System.out.println("[SHOT] Panels saved to " + file);
-              } catch (java.io.IOException e) {
-                System.err.println("Couldn't save the panels: " + e.getMessage());
-              }
-            });
+            later(ms, () -> saveUiShot(new java.io.File(System.getProperty("xenoguesser.uishot", "ui") + "_" + ms + ".png")));
           }
           break;
         }

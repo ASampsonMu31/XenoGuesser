@@ -771,34 +771,43 @@ PHASE 7  Waiting for each other's guess and shopping (brief item 9)            [
   Done when: over several rounds the two PCs reveal together and start every round
       within a fraction of a second of each other.
 
-PHASE 7b  Quarter points instead of targets (M13)                              [ ]
-  [ ] Multiplayer only: no targets. GameHUD.getTarget() is not used, the score panel
+PHASE 7b  Quarter points instead of targets (M13)                              [x]
+  [x] Multiplayer only: no targets. GameHUD.getTarget() is not used, the score panel
       (HudStyle.paintScorePanel) drops the target bar/number and shows instead both
       players' quarter points, e.g. "119-A  3   119-B  1" in their colours, and this
       quarter's productivity for both (yours live, theirs as of their last GUESS).
-  [ ] Track per quarter both players' productivity (yours from GameHUD, theirs from the
+  [x] Track per quarter both players' productivity (yours from GameHUD, theirs from the
       GUESS messages' quarterProductivity) and both players' quarter points.
-  [ ] Quarter end (afterResults when gameHUD.isQuarterEnd()): instead of QuarterPanel's
+  [x] Quarter end (afterResults when gameHUD.isQuarterEnd()): instead of QuarterPanel's
       pass/fail, a multiplayer verdict panel in the same style: "Quarter N: Employee
       119-A was more productive (+N points)", both productivities, the running points
       totals, and "Continue". Shown on both PCs (both have the data once both last
       guesses are in). Continue sends STAGE_DONE(quarter end N); both go on to the shop
       only when both have pressed it (M16). Ties per M17.
-  [ ] Irrecoverable lead: if after Q3 one player has won Q1, Q2 and Q3, the verdict says
+  [x] Irrecoverable lead: if after Q3 one player has won Q1, Q2 and Q3, the verdict says
       so ("Employee 119-A has an irrecoverable lead") and its button ends the game.
-  [ ] Game end (after Q4, or the lead above): a final panel on both PCs: the winner
+  [x] Game end (after Q4, or the lead above): a final panel on both PCs: the winner
       ("Employee 119-B is retained. Employee 119-A will be released via the airlock."
       fits the message), each quarter's winner and points, totals; "Main menu". Uses
       endGame's teardown; never the singleplayer "You lose" path.
-  [ ] Final deciders (M17): if the points are equal after Q4, the end panel instead says
+  [x] Final deciders (M17): if the points are equal after Q4, the end panel instead says
       "Points are level: final decider" and both go on (STAGE_DONE, M16) to an extra
       round. The score panel shows "Final decider N". After each decider's reveal, the
       higher round score wins the game (final panel); equal scores -> another decider.
       gameHUD's round/quarter counting must allow rounds past the last normal one
       (isLastRound / isQuarterEnd must not end or loop the year).
-  [ ] Singleplayer keeps targets, QuarterPanel and losing exactly as now.
+  [x] Singleplayer keeps targets, QuarterPanel and losing exactly as now.
   Done when: a full year plays out with the right points, the early win after a Q1-Q3
       sweep ends the game, a level year goes to deciders until one is won, and both PCs always show the same verdicts.
+  (Done: MultiplayerScore holds the rules, worked out from both players' GUESS messages
+  (Multiplayer now keeps this player's own as sent: localGuess, guessBy), so both PCs agree.
+  The score panel (HudStyle.paintMultiplayerScorePanel) shows 119-A then 119-B: this quarter's
+  productivity and quarter points, or "Final decider N". XenoGuesser.multiplayerAfterResults
+  shows each verdict on QuarterPanel.showMultiplayer; its button sends STAGE_DONE and goes on
+  when both have; showGameEnd's Main menu leaves the session and ends the game, so the next
+  game starts afresh. GameHUD.startDeciders lets rounds pass 12; isQuarterEnd is false for
+  deciders. The full-year run with points both ways wasn't played live: its rules are checked
+  offline, and the live runs covered the sweep and the level year with two deciders.)
 
 PHASE 8  Leaving and failures                                                   [ ]
   [ ] Leaving to the menu or quitting sends LEAVE, then leaves the lobby and closes the
@@ -840,9 +849,11 @@ TESTING NOTES
 - HUD test steps guess (with -Dxenoguesser.guessat=u,v to pin somewhere other than the middle
   of the map) and uishot (paints the window's Swing panels, the map/results/shop, to
   -Dxenoguesser.uishot_<ms>.png at each of -Dxenoguesser.uishotat=ms,...).
-- HUD test step autoplay: every -Dxenoguesser.autoplayms (default 4000) leave the shop, else go
-  on from the results, else guess. Two windows at different paces exercise all the waiting.
-  It doesn't press the quarter's verdict panel (after round 3), so a run stops there.
+- HUD test step autoplay: every -Dxenoguesser.autoplayms (default 4000) press on from a verdict,
+  else leave the shop, else go on from the results, else guess. Two windows at different paces
+  exercise all the waiting. guessat=answer pins the true location (full marks), and
+  -Dxenoguesser.guessatlater=round:spot changes where from that round on.
+  -Dxenoguesser.verdictshot=prefix saves every multiplayer verdict and the end panel.
 - Listening to a message with a planet name in it: java -cp <full classpath>
   TransmissionMessage <seed> single|multi|multib out.wav (multi = host's, multib = joiner's).
 - Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
@@ -995,3 +1006,13 @@ LOG
             119-B"; both left the first shop 34 ms apart, started round 2 32 ms apart and round 3
             5 ms apart. The quarter's verdict panel (QuarterPanel, after round 3) is still
             singleplayer's and not in step; that's PHASE 7b's work.
+2026-10-18  PHASE 7b (quarter points, M13/M17) done, so all of Phase 7. See the PHASE 7b notes.
+            Checked offline: 14 rule cases (sweep, no sweep, points, ties, level year,
+            deciders) all pass. Two windows with autoplay: (1) host always on the answer,
+            joiner on the map's middle: verdicts Q1-Q3 in step, then "Employee 119-A won Q1, Q2
+            and Q3: an irrecoverable lead" on both, host "You win", joiner "You lose"; (2) both on
+            the answer: four tied quarters (0-0), "Points are level: final decider", decider 1
+            tied ("Level again"), decider 2 won by the host 5,000 to 762 (the joiner switched to
+            the middle from round 14). Every verdict pressed on together (under 100 ms apart)
+            and every round started together. Fixed after looking: long detail lines on the
+            panel now wrap. Not yet: a disconnect at any of these points (Phase 8), two PCs.
