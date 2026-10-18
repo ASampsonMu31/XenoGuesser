@@ -178,6 +178,15 @@ public final class SteamTransport implements MultiplayerTransport {
             endRoom("Steam networking failed.");
         } finally {
             running = false;
+            // (anything still asked for, such as a last LEAVE, goes before Steam is shut down)
+            Runnable task;
+            while ((task = tasks.poll()) != null) {
+                try {
+                    task.run();
+                } catch (RuntimeException e) {
+                    System.out.println("[MP] On shutting down: " + e);
+                }
+            }
             cleanupSteam();
         }
     }

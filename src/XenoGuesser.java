@@ -224,6 +224,21 @@ public class XenoGuesser extends JFrame {
   private void multiplayerReady(Multiplayer session) {
     removeMultiplayerPanel();
     worldSeed = session.worldSeed();
+    // (this player's own menu choices, given back after the game: the joiner plays the host's)
+    menuGameMode = GameMode.current();
+    menuMapKind = MapKind.current();
+    gameOver = false;
+    session.addListener(new Multiplayer.Listener() {
+      @Override
+      public void disconnected(String reason) {
+        partnerGone(session, reason);
+      }
+
+      @Override
+      public void failed(String reason) {
+        partnerGone(session, reason);
+      }
+    });
     if (session.role == Multiplayer.Role.JOIN) {
       GameMode.choose(session.gameMode());
       MapKind.choose(session.mapKind());
@@ -249,14 +264,30 @@ public class XenoGuesser extends JFrame {
     layeredPane.repaint();
     requestFocus();
 
-    // Everything that doesn't need the GL context is generated off the UI thread
-    Thread worldGeneration = new Thread(() -> generateWorld(escapeQuitListener), "world-generation");
+    // Everything that doesn't need the GL context is generated off the UI thread (after any
+    // world given up halfway has finished being made, as they share the run's files)
+    int run = ++generationRun;
+    Thread previous = worldGeneration;
+    worldGeneration = new Thread(() -> {
+      try {
+        if (previous != null) previous.join();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+      generateWorld(escapeQuitListener, run);
+    }, "world-generation");
     worldGeneration.setDaemon(true);
     worldGeneration.setPriority(Thread.NORM_PRIORITY - 2);
     worldGeneration.start();
   }
 
-  private void generateWorld(KeyAdapter escapeQuitListener) {
+  // The world being made (its thread), and which run it is: a world given up on before it's
+  // ready (multiplayer: the partner left) is still made to the end, but never shown
+  private Thread worldGeneration;
+  private volatile int generationRun;
+
+  private void generateWorld(KeyAdapter escapeQuitListener, int run) {
     // JOGL's first profile probe takes seconds; doing it here, alongside the writing systems,
     // keeps it off the UI thread where it would freeze the loading screen
     Thread glWarmUp = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
@@ -324,8 +355,11 @@ public class XenoGuesser extends JFrame {
 
       loadingProgress.begin(LoadingProgress.Stage.WINDOW);
       glWarmUp.join();
-      SwingUtilities.invokeLater(() -> buildGameWindow(listener, camera, keyboardInput, worldNoise,
-          seaLevelHeight, totalRegionWidth, physicalChunkSize, escapeQuitListener));
+      if (run != generationRun) return;
+      SwingUtilities.invokeLater(() -> {
+        if (run == generationRun) buildGameWindow(listener, camera, keyboardInput, worldNoise,
+          seaLevelHeight, totalRegionWidth, physicalChunkSize, escapeQuitListener);
+      });
     } catch (Exception e) {
       System.err.println("CRITICAL ERROR: World generation failed.");
       loadingProgress.fail(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
@@ -417,6 +451,9 @@ glEventListener.setGameHUD(gameHUD);
     layeredPane.repaint();
     canvas.requestFocus();
     inGame = true;
+    // (multiplayer: from now on, silence from the partner counts as them gone)
+    Multiplayer playing = Multiplayer.active();
+    if (playing != null) playing.setPlaying(true);
     runHudTest();
     updateMouseMode();
   }
@@ -522,7 +559,8 @@ glEventListener.setGameHUD(gameHUD);
   /** Takes or gives back the mouse to suit what is on screen. */
   private void updateMouseMode() {
     if (canvas == null || !canvas.isShowing()) return;
-    boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode() || shopPanel.isOpen();
+    boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode() || shopPanel.isOpen()
+        || (quarterPanel != null && quarterPanel.isOpen());
     boolean capture = inGame && !pointerNeeded && isFocused() && robot != null;
     if (capture == mouseCaptured) return;
     mouseCaptured = capture;
@@ -693,6 +731,7 @@ glEventListener.setGameHUD(gameHUD);
     lines.add(String.format("Quarter points: %s %d, %s %d", a.label, score.points(a), b.label, score.points(b)));
     colours.add(HudStyle.VALUE);
     System.out.println("[MP] Game over: Employee " + winner.label + " wins (" + reason + ")");
+    gameOver = true;
     quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? new Color(110, 225, 130) : new Color(245, 105, 90),
         "Employee " + winner.label + " is retained. Employee " + winner.other().label + " will be released via the airlock.",
         HudStyle.VALUE, lines, colours, "Main menu", null, () -> {
@@ -726,10 +765,74 @@ glEventListener.setGameHUD(gameHUD);
     later(1200, () -> saveUiShot(new java.io.File(prefix + "_" + name.replaceAll("[^A-Za-z0-9]+", "_") + ".png")));
   }
 
+  // Multiplayer: this player's own game mode and map kind, given back after the game (the
+  // joiner plays the host's); and whether the game's end is showing (a partner leaving then changes nothing)
+  private GameMode menuGameMode;
+  private MapKind menuMapKind;
+  private boolean gameOver;
+
+  /**
+   * Multiplayer: the partner has gone (left on purpose, the connection lost, or silent for 10
+   * s). Mid-game this player wins (M23): the end panel says so and why, then Main menu. Before
+   * the game (still loading, or waiting at Begin) it's back to the menu, saying who left.
+   */
+  private void partnerGone(Multiplayer session, String reason) {
+    if (gameOver) return;
+    String who = "Employee " + session.remoteLabel();
+    System.out.println("[MP] Partner gone (" + reason + ")" + (inGame ? ": this player wins" : ": back to the menu"));
+    if (inGame && quarterPanel != null) {
+      gameOver = true;
+      if (shopPanel != null && shopPanel.isOpen()) shopPanel.close();
+      quarterPanel.showMultiplayer("You win", new Color(110, 225, 130), "You win: " + who + " disconnected",
+          HudStyle.VALUE, java.util.List.of(reason), java.util.List.of(HudStyle.LABEL), "Main menu", null, () -> {
+            quarterPanel.close();
+            endGame(true);
+          });
+      layoutComponents();
+      updateMouseMode();
+      verdictShot("partnergone");
+      return;
+    }
+    leaveBeforeTheGame(who + " left. " + reason);
+  }
+
+  /** Multiplayer, before the game has begun: gives up the world being made (or made) and goes back to the menu with a notice. */
+  private void leaveBeforeTheGame(String notice) {
+    generationRun++;
+    gameOver = true;
+    FPSAnimator running = animator;
+    animator = null;
+    if (glEventListener != null) glEventListener.stopSounds();
+    Thread stop = new Thread(() -> {
+      if (running != null && running.isStarted()) running.stop();
+      SwingUtilities.invokeLater(() -> {
+        backToMenuFromGame();
+        gameOver = false;
+        mainMenu.setNotice(notice);
+        // Developer aid: -Dxenoguesser.mpautoagain (with mpauto) hosts or joins again a moment
+        // later, to test a second game in the same run
+        String again = System.getProperty("xenoguesser.mpauto");
+        if (again != null && System.getProperty("xenoguesser.mpautoagain") != null) {
+          later(3000, () -> {
+            startMultiplayer();
+            if (multiplayerPanel != null) multiplayerPanel.autoStart(!again.equalsIgnoreCase("join"));
+          });
+        }
+      });
+    }, "leave-before-game");
+    stop.setDaemon(true);
+    stop.start();
+  }
+
   /** Runs then (on the Swing thread) as soon as condition holds, checking every 100 ms. */
   private static void whenTrue(java.util.function.BooleanSupplier condition, Runnable then) {
     javax.swing.Timer wait = new javax.swing.Timer(100, null);
     wait.addActionListener(e -> {
+      // (given up should multiplayer be over meanwhile)
+      if (Multiplayer.active() == null) {
+        wait.stop();
+        return;
+      }
       if (!condition.getAsBoolean()) return;
       wait.stop();
       then.run();
@@ -763,7 +866,11 @@ glEventListener.setGameHUD(gameHUD);
     session.sendShopDone(round);
     javax.swing.Timer wait = new javax.swing.Timer(100, null);
     wait.addActionListener(e -> {
-      if (Multiplayer.active() != session || !session.remoteShopDone(round)) return;
+      if (session.isClosed()) {
+        wait.stop();
+        return;
+      }
+      if (!session.remoteShopDone(round)) return;
       wait.stop();
       System.out.println("[MP] Both have left the shop after round " + round + " at " + System.currentTimeMillis());
       then.run();
@@ -827,8 +934,24 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   private void backToMenuFromGame() {
-    for (java.awt.Component c : new java.awt.Component[] { canvas, minimap, minimap.getLayersPanel(), minimap.getPreviewCard(),
-        gameHUD, shopPanel, quarterPanel, messageStrip }) {
+    // Multiplayer: the room is left (the partner hears so) and this player's own menu choices come back
+    Multiplayer session = Multiplayer.active();
+    if (session != null) session.leave();
+    if (menuGameMode != null) GameMode.choose(menuGameMode);
+    if (menuMapKind != null) MapKind.choose(menuMapKind);
+    if (session != null || menuGameMode != null) {
+      System.out.println("[MP] Back at the menu: multiplayer over (" + (Multiplayer.active() == null ? "no session" : "session still open!")
+          + "), " + GameMode.current() + ", " + MapKind.current());
+    }
+    menuGameMode = null;
+    menuMapKind = null;
+    inGame = false;
+    if (loadingScreen != null) {
+      loadingScreen.stop();
+      layeredPane.remove(loadingScreen);
+    }
+    for (java.awt.Component c : new java.awt.Component[] { canvas, minimap, minimap != null ? minimap.getLayersPanel() : null,
+        minimap != null ? minimap.getPreviewCard() : null, gameHUD, shopPanel, quarterPanel, messageStrip }) {
       if (c != null && c.getParent() == layeredPane) layeredPane.remove(c);
     }
     canvas = null;
@@ -862,7 +985,8 @@ glEventListener.setGameHUD(gameHUD);
     if (!minimap.isFullScreenRevealMode() && shopPanel != null && shopPanel.isOpen() && shopBetweenRounds) {
       shopPanel.close();
       // April's begun: a message from Xenocorp
-      if (gameHUD.getRound() == 1 + GameHUD.ROUNDS_PER_QUARTER) glEventListener.startAprilMessage(this::showMessage);
+      // (not in multiplayer: M24)
+      if (gameHUD.getRound() == 1 + GameHUD.ROUNDS_PER_QUARTER && !Multiplayer.isActive()) glEventListener.startAprilMessage(this::showMessage);
     }
     // (the 3D view goes aside behind the results, and comes back for the next round)
     SwingUtilities.invokeLater(this::layoutComponents);
@@ -920,6 +1044,8 @@ glEventListener.setGameHUD(gameHUD);
         // frameshot: the drawn frame saved (from the GL, so another window over this one doesn't
         // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
         case "partner": later(1500, () -> glEventListener.lookAtPartner(0f)); break;
+        // quit: quits the game -Dxenoguesser.quitdelay ms in (default 5000), as the settings' Quit game does
+        case "quit": later(Integer.getInteger("xenoguesser.quitdelay", 5000), this::shutdownGame); break;
         // autoplay: every -Dxenoguesser.autoplayms (default 4000) the next thing a player would do:
         // press on from the quarter's verdict, else leave the shop (buying nothing), else go on
         // from the results, else guess (see guessat)

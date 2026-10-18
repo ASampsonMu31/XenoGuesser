@@ -150,6 +150,17 @@ public final class Multiplayer {
     private volatile GameMode gameMode;
     private volatile MapKind mapKind;
     private volatile boolean inRoom;
+    // In the game itself, where poses come 5 times a second: SILENCE_MS without a word from the
+    // partner means they're gone (pulled cable, crash), as if they'd left
+    private volatile boolean playing;
+    // Leaving on purpose: the connection closing after the LEAVE is expected, and not reported
+    private volatile boolean leaving;
+    private static final long SILENCE_MS = 10_000;
+    private static final long LEAVE_GRACE_MS = 200;
+    // Developer aid: -Dxenoguesser.mpmuteafter=ms sends nothing more that long into the game
+    // (the connection stays open), as a pulled cable would, to test the partner's silence rule
+    private static final Long MUTE_AFTER_MS = Long.getLong("xenoguesser.mpmuteafter");
+    private volatile long playingSince;
     private volatile boolean ready;
     private volatile boolean closed;
     private volatile String remoteJavaVersion;
@@ -246,8 +257,26 @@ public final class Multiplayer {
     /** Leaves the game on purpose: tells the partner (LEAVE), then leaves the room. */
     public void leave() {
         if (closed) return;
-        if (ready) send(message(LEAVE, 0), true);
+        // (from now on the partner's side closing is this leave's doing, not news)
+        leaving = true;
+        if (ready) {
+            send(message(LEAVE, 0), true);
+            // (a moment for it to go before the room is closed, which could otherwise drop it;
+            // were it lost, the partner still sees the room left or the connection end)
+            try {
+                Thread.sleep(LEAVE_GRACE_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
         close();
+    }
+
+    /** Whether this player is in the game itself (from Begin to its end): when silence counts as the partner gone. */
+    public void setPlaying(boolean playing) {
+        this.playing = playing;
+        playingSince = System.currentTimeMillis();
+        lastHeardMs = System.currentTimeMillis();
     }
 
     private void close() {
@@ -435,6 +464,7 @@ public final class Multiplayer {
     private void send(ByteBuffer m, boolean reliable) {
         MultiplayerTransport t = transport;
         if (closed || t == null) return;
+        if (MUTE_AFTER_MS != null && playing && System.currentTimeMillis() - playingSince > MUTE_AFTER_MS) return;
         m.flip();
         if (m.get(0) != POSE) System.out.println("[MP] -> " + describe(m));
         t.send(m, reliable);
@@ -472,6 +502,13 @@ public final class Multiplayer {
 
     /** Networking thread, every few ms: sends this player's latest pose every 200 ms once the game is on. */
     private void tick(long now) {
+        if (playing && ready && !closed && now - lastHeardMs > SILENCE_MS) {
+            String reason = "No word from Employee " + remoteLabel() + " for " + SILENCE_MS / 1000 + " seconds.";
+            System.out.println("[MP] " + reason);
+            close();
+            notifyListeners(l -> l.disconnected(reason));
+            return;
+        }
         if (!ready || closed || now - lastPoseSentMs < POSE_INTERVAL_MS) return;
         Pose pose = localPose.get();
         if (pose == null) return;
@@ -713,7 +750,7 @@ public final class Multiplayer {
         @Override
         public void failed(String reason) {
             Multiplayer session = active;
-            if (session == null) return;
+            if (session == null || session.leaving) return;
             session.close();
             session.notifyListeners(l -> l.failed(reason));
         }
@@ -721,7 +758,7 @@ public final class Multiplayer {
         @Override
         public void disconnected(String reason) {
             Multiplayer session = active;
-            if (session == null) return;
+            if (session == null || session.leaving) return;
             session.close();
             if (session.ready) session.notifyListeners(l -> l.disconnected(reason));
             else session.notifyListeners(l -> l.failed(reason));

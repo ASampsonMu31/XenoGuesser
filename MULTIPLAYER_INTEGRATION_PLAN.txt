@@ -263,6 +263,9 @@ M20 Same build, same Java: the lobby's "game" filter carries a build id (M1 note
     mismatch shows "Your partner has a different version of XenoGuesser" (build) or a
     warning (Java). The packaged exe bundles its own Java 21 runtime, so exe-to-exe
     always matches; running from Maven uses whatever JDK is installed.
+    Keep in mind: the build id is "xenoguesser-" + Multiplayer.PROTOCOL_VERSION, so bump
+    PROTOCOL_VERSION whenever the protocol OR anything in world generation changes, or two
+    different builds will connect and build different worlds.
 M21 Locale-proof text: every toLowerCase()/toUpperCase() that affects generation uses
     Locale.ROOT (PlanetName.acceptable and dictionary(), OrganismManager species names).
     This is about the PC's Windows region/language setting, not the game's language:
@@ -283,6 +286,10 @@ M23 A disconnect mid-game (LEAVE received, lobby member left/disconnected, P2P f
     panel (Phase 7b's final panel) says so, with the reason, e.g. "You win: Employee
     119-B disconnected", then "Main menu". Before the game has started (panel, loading
     screen) a disconnect just returns to the menu with a message, with no winner.
+
+M24 (user, 2026-10-18) In multiplayer there is no April message at the start of round 4.
+    The loading screen's multiplayer message (M12) and the gift message in the first shop
+    play as in singleplayer, which keeps all three.
 
 -------------------------------------------------------------------------------
 DETERMINISM AUDIT (2026-10-17): does the same seed make the same world on two PCs?
@@ -431,7 +438,9 @@ accepts in onP2PSessionRequest) -> A sends START -> B adopts seed/mode/map, send
 START_ACK and shows "Connected" -> A receives START_ACK and shows "Connected".
 A mismatched version -> both show "Your partner has a different version of XenoGuesser."
 Keep-alive: if nothing at all is received for 10 s while in a game, treat it as a
-disconnect (POSE arrives 5 times a second, so silence means trouble).
+disconnect (POSE arrives 5 times a second, so silence means trouble). Only from Begin on:
+during loading nothing may be sent for minutes. (The last pose keeps being sent through
+results and shops, so the rule holds there too.)
 
 -------------------------------------------------------------------------------
 PHASES
@@ -809,19 +818,32 @@ PHASE 7b  Quarter points instead of targets (M13)                              [
   deciders. The full-year run with points both ways wasn't played live: its rules are checked
   offline, and the live runs covered the sweep and the level year with two deciders.)
 
-PHASE 8  Leaving and failures                                                   [ ]
-  [ ] Leaving to the menu or quitting sends LEAVE, then leaves the lobby and closes the
+PHASE 8  Leaving and failures                                                   [x]
+  [x] Leaving to the menu or quitting sends LEAVE, then leaves the lobby and closes the
       P2P session. Mid-game the other PC wins (M23): the final panel shows "You win:
       Employee 119-X disconnected" and "Main menu", using endGame-like teardown.
       Before the game starts: "Player 119-X left" and back to the menu.
-  [ ] Settings menu in multiplayer (M22): opening it locks only this player's input;
+  [x] Settings menu in multiplayer (M22): opening it locks only this player's input;
       nothing in the world or the network pauses.
-  [ ] Lobby member Left/Disconnected, P2P connect failure, 10 s silence (protocol) are
+  [x] Lobby member Left/Disconnected, P2P connect failure, 10 s silence (protocol) are
       handled the same way.
-  [ ] Steam is shut down only on application exit (shutdownGame), not between games.
-  [ ] The joiner's menu choices (GameMode/MapKind) are restored after a multiplayer game.
+  [x] Steam is shut down only on application exit (shutdownGame), not between games.
+  [x] The joiner's menu choices (GameMode/MapKind) are restored after a multiplayer game.
   Done when: pulling the network cable or quitting on one PC never leaves the other
       stuck on a waiting screen.
+  (Done: XenoGuesser.multiplayerReady adds a listener; partnerGone shows "You win: Employee
+  119-X disconnected" with the reason mid-game (Main menu ends the game as won), or before the
+  game (loading, or at Begin) goes back to the menu with a notice on it (MainMenu.setNotice).
+  World generation is numbered by run: a world given up on is made to the end but never
+  built, and a new game's waits for the old thread. backToMenuFromGame leaves the session
+  (every way back) and gives the joiner's own GameMode/MapKind back. Multiplayer: leave()
+  sends LEAVE, waits 200 ms for it to go, and from then ignores the connection closing;
+  10 s without a word while playing (from Begin) counts as the partner gone. SteamTransport
+  sends anything still queued before shutting Steam down. The guess, shop and verdict
+  waits stop once the session is over. M22 needed no change: the settings menu already
+  only dims the HUD, mutes this player's rain and locks their input; the world, poses and
+  network carry on. Steam: Multiplayer.shutdown() (from shutdownGame) is the only place the
+  transport is shut down.)
 
 -------------------------------------------------------------------------------
 TESTING NOTES
@@ -854,6 +876,12 @@ TESTING NOTES
   exercise all the waiting. guessat=answer pins the true location (full marks), and
   -Dxenoguesser.guessatlater=round:spot changes where from that round on.
   -Dxenoguesser.verdictshot=prefix saves every multiplayer verdict and the end panel.
+- -Dxenoguesser.mpmuteafter=ms: this window sends nothing more that long into the game (the
+  connection stays open), to test the partner's 10 s silence rule. HUD test step quit:
+  quits -Dxenoguesser.quitdelay ms in, as the settings' Quit game. -Dxenoguesser.verdictshot
+  also saves the "You win: ... disconnected" panel (_partnergone).
+- -Dxenoguesser.mpautoagain (with mpauto): after going back to the menu because the partner
+  left before the game, host or join again 3 s later (tests a second game in the same run).
 - Listening to a message with a planet name in it: java -cp <full classpath>
   TransmissionMessage <seed> single|multi|multib out.wav (multi = host's, multib = joiner's).
 - Useful existing flags: -Dxenoguesser.seed=N (fixes the world and, today, the spawn
@@ -1016,3 +1044,34 @@ LOG
             the middle from round 14). Every verdict pressed on together (under 100 ms apart)
             and every round started together. Fixed after looking: long detail lines on the
             panel now wrap. Not yet: a disconnect at any of these points (Phase 8), two PCs.
+2026-10-18  PHASE 8 done. See the Phase 8 notes. Checked with two windows: (A) the joiner
+            went silent 15 s into the game (mpmuteafter): the host declared it gone after
+            10 s, "You win: Employee 119-B disconnected / No word from Employee 119-B for 10
+            seconds."; the joiner then saw the connection close and won too, as the one left.
+            (B) the joiner killed 30 s into loading: the host went back to the menu with
+            "Employee 119-B left. ..."; its half-made world finished in the background and
+            was never built. (C) the joiner killed mid-game: the host won, its Main menu went
+            back with no session open. (D) the joiner quit (Quit game): the host got LEAVE,
+            "Employee 119-B left.", and won. D first showed the quitter reacting to its own
+            leave (the host closing the connection during its 200 ms pause); fixed with the
+            leaving flag and checked again. Singleplayer loads as before.
+            Every phase is now done. Still never tried: two PCs over Steam (since Phase 1),
+            which is also the only check that two different PCs build the same world.
+2026-10-18  AUDIT of the whole plan against the code: every box ticked, every decision M1-M23
+            implemented (checked one by one). Added and checked one thing never tried before:
+            a second game in the same run (mpautoagain): after a joiner died mid-load, the
+            host re-hosted on the same port with a fresh seed, made and sent new writing
+            systems (hashes matched), and both went in on the same round 1. The April and gift
+            messages say "Employee 119" (no letter, no targets), so they suit multiplayer too.
+            Never exercised, needing a person or a second PC:
+            - two PCs over Steam: joining by code across accounts, P2P, and the same world on
+              different CPUs (Phases 1, 2, 5, 8; the DETERMINISM AUDIT's open point);
+            - the partner's walking judged by eye for smoothness, with and without
+              -Dxenoguesser.mpdrop=0.3 (prediction checked offline only);
+            - the version-mismatch message and the Java warning (needs two builds/JDKs);
+            - GameMode.NO_MOVE in multiplayer (spawn side by side after standingClear);
+            - a full year won on points rather than by a sweep or deciders (rules checked
+              offline: 14 cases).
+2026-10-18  M24 added (user): in multiplayer no April message (XenoGuesser.onMapChanged skips
+            it when Multiplayer is active); the gift message in the first shop stays.
+            Singleplayer unchanged.

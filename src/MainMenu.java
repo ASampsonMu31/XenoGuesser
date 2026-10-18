@@ -58,6 +58,8 @@ public class MainMenu extends JComponent {
     private final Rectangle[] modeButtons = new Rectangle[GameMode.values().length], mapButtons = new Rectangle[MapKind.values().length];
     private Rectangle hovered;
     private boolean chosen;
+    // Something to tell the player as the menu comes back (multiplayer: the partner left), or null
+    private String notice;
 
     // The spaceman: which way he faces, and dragging him round
     private float spacemanAngle = 200f;
@@ -131,6 +133,12 @@ public class MainMenu extends JComponent {
         };
         addMouseListener(mouse);
         addMouseMotionListener(mouse);
+    }
+
+    /** Shows a notice over the menu (multiplayer: why the game didn't go ahead) until a choice is made. */
+    public void setNotice(String text) {
+        notice = text;
+        repaint();
     }
 
     /** Makes the menu usable again (undimmed) after the multiplayer panel over it has been closed. */
@@ -242,12 +250,26 @@ public class MainMenu extends JComponent {
                 new Color(220, 228, 240, 170));
         paintSpaceman(g, feetX, feetY, tall);
 
+        if (notice != null && !chosen) paintNotice(g, left, 470 * unit - 110 * unit, 520 * unit, unit);
         if (chosen) {
             g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.5f));
             g.setColor(Color.BLACK);
             g.fillRect(0, 0, w, h);
         }
         g.dispose();
+    }
+
+    /** The notice in the game's panel style, from x, its top at y, width wide. */
+    private void paintNotice(Graphics2D g, float x, float y, float width, float unit) {
+        float h = 72 * unit;
+        HudStyle.panel(g, x, y, width, h, HudStyle.GLASS_SOLID);
+        HudStyle.label(g, "Multiplayer", x + 24 * unit, y + 26 * unit, 12 * unit, HudStyle.ACCENT);
+        g.setFont(HudStyle.font(Font.PLAIN, 17 * unit));
+        g.setColor(HudStyle.VALUE);
+        String text = notice;
+        FontMetrics fm = g.getFontMetrics();
+        while (text.length() > 4 && fm.stringWidth(text) > width - 48 * unit) text = text.substring(0, text.length() - 4) + "...";
+        g.drawString(text, x + 24 * unit, y + 54 * unit);
     }
 
     private void paintTitle(Graphics2D g, float x, float baseline, float unit) {

@@ -859,6 +859,11 @@ public class MapPanel extends JPanel {
             currentPhase = RevealPhase.WAITING_FOR_PARTNER;
             if (partnerWait != null) partnerWait.stop();
             partnerWait = new Timer(100, e -> {
+                // (given up should the partner have gone meanwhile: the game's ended for this player)
+                if (session.isClosed()) {
+                    ((Timer) e.getSource()).stop();
+                    return;
+                }
                 Multiplayer.Guess theirs = session.remoteGuess(round);
                 if (theirs == null) {
                     repaint();
