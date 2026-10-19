@@ -2401,6 +2401,7 @@ public class InfrastructureManager {
             }
         }
         java.util.Set<Long> pairs = new java.util.HashSet<>();
+        int blockedSpans = 0;
         for (int i = 0; i < all.size(); i++) {
             PoleSite site = all.get(i);
             SpherePosition here = world(site.segment(), site.x(), site.z());
@@ -2408,10 +2409,17 @@ public class InfrastructureManager {
             List<Integer> near = new ArrayList<>(poleIndex.near(here, reach));
             near.remove((Integer) i);
             near.sort((a, b) -> Double.compare(SphereMath.distance(here, poleFoot(all.get(a))), SphereMath.distance(here, poleFoot(all.get(b)))));
-            for (int k = 0; k < Math.min(2, near.size()); k++) {
+            // (its two nearest whose span runs clear of every building, over or round it)
+            int wired = 0;
+            for (int k = 0; k < near.size() && wired < 2; k++) {
                 int j = near.get(k);
                 if (SphereMath.distance(here, poleFoot(all.get(j))) > reach) break;
+                if (spanHitsBuilding(site, all.get(j))) {
+                    blockedSpans++;
+                    continue;
+                }
                 pairs.add(((long) Math.min(i, j) << 32) | Math.max(i, j));
+                wired++;
             }
         }
         List<List<Integer>> links = new ArrayList<>();
@@ -2465,10 +2473,51 @@ public class InfrastructureManager {
         poleLinks = linked;
         poleTerminal = terminal;
         poleHouses = housesOf;
-        System.out.printf("[POLES] %d houses wired to their nearest pole%n", wiredHouses);
+        System.out.printf("[POLES] %d houses wired to their nearest pole; %d spans left out for running through a building%n", wiredHouses, blockedSpans);
         poles = all;
         System.out.printf("[POLES] %d utility poles, %d wired spans between them, %d at the ends of lines, in %d ms%n", all.size(), pairs.size(), ends,
                 System.currentTimeMillis() - started);
+    }
+
+    /**
+     * Whether the wires between two poles would run through a building: across its walls'
+     * footprint (with a little room) lower than its roof's top (its walls' top and as much again
+     * as half its width), the wires taken at their lowest (the lower pole's lowest insulator, less
+     * their sag).
+     */
+    private boolean spanHitsBuilding(PoleSite a, PoleSite b) {
+        SpherePosition pa = poleFoot(a), pb = poleFoot(b);
+        double length = SphereMath.distance(pa, pb);
+        float lowest = Float.MAX_VALUE;
+        for (PoleSite p : new PoleSite[] { a, b }) {
+            for (float[] at : p.style().lineAttachments()) lowest = Math.min(lowest, p.ground() + at[2]);
+        }
+        lowest -= (float) (Math.max(a.style().sag, b.style().sag) * length);
+        SpherePosition middle = SphereMath.slerp(pa, pb, 0.5);
+        for (House house : houseIndex.near(middle, length * 0.5 + 10.0)) {
+            float roof = house.baseY + house.mainWallHeight + Math.max(house.width, house.depth) * 0.5f;
+            if (roof < lowest) continue;
+            float[] la = local(house, pa), lb = local(house, pb);
+            float room = 2f;
+            if (segmentCrossesBox(la, lb, house.houseMinX() - room, house.houseMaxX() + room, -house.depth * 0.5f - room, house.depth * 0.5f + room)) return true;
+        }
+        return false;
+    }
+
+    /** Whether a line from a to b ({x, z}) crosses a box (min and max x and z), by clipping it to the box. */
+    private static boolean segmentCrossesBox(float[] a, float[] b, float minX, float maxX, float minZ, float maxZ) {
+        float t0 = 0f, t1 = 1f, dx = b[0] - a[0], dz = b[1] - a[1];
+        float[][] edges = { { -dx, a[0] - minX }, { dx, maxX - a[0] }, { -dz, a[1] - minZ }, { dz, maxZ - a[1] } };
+        for (float[] e : edges) {
+            if (e[0] == 0f) {
+                if (e[1] < 0f) return false;
+                continue;
+            }
+            float t = e[1] / e[0];
+            if (e[0] < 0f) t0 = Math.max(t0, t); else t1 = Math.min(t1, t);
+            if (t0 > t1) return false;
+        }
+        return true;
     }
 
     private static SpherePosition poleFoot(PoleSite site) {
@@ -2861,7 +2910,8 @@ public class InfrastructureManager {
             count += bridges.size();
         }
         bridgesReady = true;
-        System.out.printf("[ROADS] %d bridges %s in %d ms%n", count, kinds, System.currentTimeMillis() - started);
+        System.out.printf("[ROADS] %d bridges %s in %d ms (%d crossings with no land to reach, %d of them over a river or lake, left unbridged; %d too long left out; the longest %.0f, %d over 1500)%n", count, kinds,
+                System.currentTimeMillis() - started, unanchoredBridges.get(), lostBridges.get(), tooLongBridges.get(), longestBridge, longBridges.get());
     }
 
     /** The bridges along one path (its segments in order). */
@@ -2908,6 +2958,31 @@ public class InfrastructureManager {
             float waterFrom = samples.get(first)[0], waterTo = samples.get(last)[0];
             while (first > 0 && waterFrom - samples.get(first - 1)[0] <= BANK_SEARCH && !isBank(samples.get(first - 1), water)) first--;
             while (last + 1 < samples.size() && samples.get(last + 1)[0] - waterTo <= BANK_SEARCH && !isBank(samples.get(last + 1), water)) last++;
+            // (M54) No firm bank that near: the first dry ground beside the water within the same
+            // reach will do (M55: no further, or a bridge runs on along low ground by the river
+            // high in the air)
+            if (first > 0 && !isBank(samples.get(first - 1), water)) {
+                int k = (int) w[0];
+                while (k > 0 && waterFrom - samples.get(k - 1)[0] <= BANK_SEARCH && !isDryAbove(samples.get(k - 1), water)) k--;
+                if (k > 0 && isDryAbove(samples.get(k - 1), water)) first = k;
+            }
+            if (last + 1 < samples.size() && !isBank(samples.get(last + 1), water)) {
+                int k = (int) w[1];
+                while (k + 1 < samples.size() && samples.get(k + 1)[0] - waterTo <= BANK_SEARCH && !isDryAbove(samples.get(k + 1), water)) k++;
+                if (k + 1 < samples.size() && isDryAbove(samples.get(k + 1), water)) last = k;
+            }
+            // A bridge must reach dry land at both ends (or the end of its path, a junction where
+            // the next path's bridge carries on): where no land's found, none, rather than one
+            // stopping short over the water
+            boolean startsOnLand = first == 0 || isDryAbove(samples.get(first - 1), water);
+            boolean endsOnLand = last + 1 >= samples.size() || isDryAbove(samples.get(last + 1), water);
+            if (!startsOnLand || !endsOnLand) {
+                unanchoredBridges.incrementAndGet();
+                float f0 = Math.max(0f, samples.get(Math.max(0, first - 1))[0] - BRIDGE_MARGIN);
+                float t0 = Math.min(samples.get(samples.size() - 1)[0], samples.get(Math.min(samples.size() - 1, last + 1))[0] + BRIDGE_MARGIN);
+                if (w[2] > 0f || crossesRiver(segments, f0, t0, rivers)) lostBridges.incrementAndGet();
+                continue;
+            }
             float from = Math.max(0f, samples.get(Math.max(0, first - 1))[0] - BRIDGE_MARGIN);
             float to = Math.min(samples.get(samples.size() - 1)[0], samples.get(Math.min(samples.size() - 1, last + 1))[0] + BRIDGE_MARGIN);
             float[] span = { from, to, w[2], waterTo - waterFrom };
@@ -2924,6 +2999,13 @@ public class InfrastructureManager {
         for (float[] span : spans) {
             float from = span[0], to = span[1], length = to - from;
             if (length < 1f) continue;
+            // (M55) A bridge is a crossing: over the water and straight down on the far side. One
+            // that would run on far longer than the water's width (a road along the river, not
+            // across it) isn't built
+            if (length > Math.max(MOST_BRIDGE, span[3] * 2f + 2f * (BANK_SEARCH + BRIDGE_MARGIN))) {
+                tooLongBridges.incrementAndGet();
+                continue;
+            }
             // A river's bridge goes from one bank to the other: where the road only runs along
             // beside the water (not over a lake) and never crosses the river's middle, none
             if (span[2] <= 0f && !crossesRiver(segments, from, to, rivers)) continue;
@@ -2957,6 +3039,8 @@ public class InfrastructureManager {
                 hump *= scale;
             }
             bridges.add(new Bridge(from, to, deckFrom, deckTo, rise, ramp, hump, kind));
+            longestBridge = Math.max(longestBridge, length);
+            if (length > 1500f) longBridges.incrementAndGet();
         }
         return bridges;
     }
@@ -2985,6 +3069,19 @@ public class InfrastructureManager {
             return world(segment, segment.start.x + (segment.end.x - segment.start.x) * t, segment.start.z + (segment.end.z - segment.start.z) * t);
         }
         return world(segments.get(0), segments.get(0).start.x, segments.get(0).start.z);
+    }
+
+    // How many crossings had no land to reach, and how long the longest bridge is
+    private final java.util.concurrent.atomic.AtomicInteger unanchoredBridges = new java.util.concurrent.atomic.AtomicInteger(), lostBridges = new java.util.concurrent.atomic.AtomicInteger();
+    private volatile float longestBridge;
+    // The longest a bridge may be over a narrow river (a wide one's may be as long as it needs)
+    private static final float MOST_BRIDGE = 450f;
+    private final java.util.concurrent.atomic.AtomicInteger tooLongBridges = new java.util.concurrent.atomic.AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicInteger longBridges = new java.util.concurrent.atomic.AtomicInteger();
+
+    /** Whether a sample along a road is dry ground beside the water (not under it, nor below it). */
+    private static boolean isDryAbove(float[] sample, float water) {
+        return Float.isNaN(sample[1]) && sample[3] >= water;
     }
 
     /** Whether a sample along a road (see bridgesAlong) is firm land beside water: well above it, and out of the river's cut or higher still. */
@@ -3169,8 +3266,8 @@ public class InfrastructureManager {
                 float[] a = beside(segment, at[i], out, bridge.deck(at[i]) - PLANK_THICK);
                 float[] b = beside(segment, at[i + 1], out, bridge.deck(at[i + 1]) - PLANK_THICK);
                 addPrism(wood, a, b, LOG, -LOG, 0f);
-                // The rail along the top of the posts
-                if (bridge.length() > 2f * POST_SPACING) {
+                // The rail along the top of the posts (not across another road meeting it)
+                if (bridge.length() > 2f * POST_SPACING && !railOverRoad(segment, at[i], at[i + 1], (half + PLANK_OVERHANG * 0.5f) * side)) {
                     float[] ra = beside(segment, at[i], (half + PLANK_OVERHANG * 0.5f) * side, bridge.deck(at[i]) + HANDRAIL);
                     float[] rb = beside(segment, at[i + 1], (half + PLANK_OVERHANG * 0.5f) * side, bridge.deck(at[i + 1]) + HANDRAIL);
                     addPrism(wood, ra, rb, 0.8f, -0.8f, 0f);
@@ -3180,6 +3277,7 @@ public class InfrastructureManager {
             // Posts: down to the ground under the logs, and up to the rail
             for (float along = bridge.from + (float) Math.ceil((from - bridge.from) / POST_SPACING) * POST_SPACING; along <= to; along += POST_SPACING) {
                 float[] p = beside(segment, along, (half + PLANK_OVERHANG * 0.5f) * side, 0f);
+                if (railOverRoad(segment, along, along, (half + PLANK_OVERHANG * 0.5f) * side)) continue;
                 float ground = groundAt(segment, p[0], p[2]);
                 float top = bridge.deck(along) + (bridge.length() > 2f * POST_SPACING ? HANDRAIL : 0f);
                 if (top - ground > 0.5f) addBox(wood, p[0], ground - 2f, p[2], 1f, 0f, POST, POST, top - ground + 2f);
@@ -3194,6 +3292,7 @@ public class InfrastructureManager {
      */
     private void recordRailing(RoadSegment segment, Bridge bridge, float[] at, float across, float height, float halfThick) {
         for (int i = 0; i + 1 < at.length; i++) {
+            if (railOverRoad(segment, at[i], at[i + 1], across)) continue;
             float[] a = beside(segment, at[i], across, 0f), b = beside(segment, at[i + 1], across, 0f);
             float middle = (at[i] + at[i + 1]) * 0.5f;
             float[] m = beside(segment, middle, across, 0f);
@@ -3201,6 +3300,27 @@ public class InfrastructureManager {
             recordRaised(world(segment, a[0], a[2]), world(segment, b[0], b[2]), halfThick + 0.3f, deck + height - ground, deck - 2f - ground);
         }
     }
+
+    /**
+     * Whether a piece of a bridge's railing, between two distances along its path a distance
+     * across from its middle, would stand on another road (one meeting the bridge from the side):
+     * there it's left out, so the road isn't barred.
+     */
+    private boolean railOverRoad(RoadSegment segment, float fromAlong, float toAlong, float across) {
+        for (float t : new float[] { 0f, 0.5f, 1f }) {
+            float[] p = beside(segment, fromAlong + (toAlong - fromAlong) * t, across, 0f);
+            SpherePosition place = world(segment, p[0], p[2]);
+            for (RoadSegment other : segmentsNear(place, MAX_ROAD_HALF_WIDTH + RAIL_ROAD_CLEAR)) {
+                if (other.pathIndex == segment.pathIndex) continue;
+                float limit = other.width * 0.5f + RAIL_ROAD_CLEAR;
+                if (distanceSquaredToSegment(place, other) <= limit * limit) return true;
+            }
+        }
+        return false;
+    }
+
+    // A bridge's railing stops this far short of the edge of another road meeting it
+    private static final float RAIL_ROAD_CLEAR = 2f;
 
     /** The height of the deck of a bridge at a place (anywhere on it, as walked on), NaN where there's none. */
     public float bridgeDeckY(SpherePosition place) {
@@ -3220,6 +3340,7 @@ public class InfrastructureManager {
         appendSlab(batch, concrete, segment, bridge, at, half);
         for (float side : new float[] { -1f, 1f }) {
             for (int i = 0; i + 1 < at.length; i++) {
+                if (railOverRoad(segment, at[i], at[i + 1], (half + PARAPET_THICK * 0.5f) * side)) continue;
                 float[] a = beside(segment, at[i], (half + PARAPET_THICK * 0.5f) * side, bridge.deck(at[i]));
                 float[] b = beside(segment, at[i + 1], (half + PARAPET_THICK * 0.5f) * side, bridge.deck(at[i + 1]));
                 addPrism(concrete, a, b, PARAPET_THICK, -SLAB, PARAPET);
@@ -3243,6 +3364,17 @@ public class InfrastructureManager {
             builder.addVertex(rb[0], rb[1], rb[2], 0f, -1f, 0f, 1f, 1f);
             builder.addTriangle(v, v + 2, v + 1);
             builder.addTriangle(v + 1, v + 2, v + 3);
+            // Its top, just under where the road's surface goes (M54: so the deck's always seen
+            // where it's walked on, the road over it or not)
+            float ta = bridge.deck(at[i]) - ROAD_SURFACE_OFFSET * 1.5f, tb = bridge.deck(at[i + 1]) - ROAD_SURFACE_OFFSET * 1.5f;
+            float[] lta = beside(segment, at[i], -half, ta), rta = beside(segment, at[i], half, ta);
+            float[] ltb = beside(segment, at[i + 1], -half, tb), rtb = beside(segment, at[i + 1], half, tb);
+            int t = builder.addVertex(lta[0], lta[1], lta[2], 0f, 1f, 0f, 0f, 0f);
+            builder.addVertex(rta[0], rta[1], rta[2], 0f, 1f, 0f, 1f, 0f);
+            builder.addVertex(ltb[0], ltb[1], ltb[2], 0f, 1f, 0f, 0f, 1f);
+            builder.addVertex(rtb[0], rtb[1], rtb[2], 0f, 1f, 0f, 1f, 1f);
+            builder.addTriangle(t, t + 1, t + 2);
+            builder.addTriangle(t + 1, t + 3, t + 2);
             for (float side : new float[] { -1f, 1f }) {
                 float[] a = beside(segment, at[i], half * side, bridge.deck(at[i]));
                 float[] b = beside(segment, at[i + 1], half * side, bridge.deck(at[i + 1]));
@@ -3293,6 +3425,7 @@ public class InfrastructureManager {
             float out = ribOut * side;
             for (int i = 0; i + 1 < at.length; i++) {
                 // The rib, and a lighter chord along the deck's edge
+                if (railOverRoad(segment, at[i], at[i + 1], out)) continue;
                 float[] a = beside(segment, at[i], out, (float) arch.applyAsDouble(at[i]));
                 float[] b = beside(segment, at[i + 1], out, (float) arch.applyAsDouble(at[i + 1]));
                 addPrism(steel, a, b, RIB, -RIB, RIB * 0.5f);
@@ -3307,7 +3440,7 @@ public class InfrastructureManager {
             float first = bridge.from + (float) Math.ceil((from - bridge.from) / HANGER_SPACING) * HANGER_SPACING;
             for (float along = first; along <= to; along += HANGER_SPACING) {
                 float deck = bridge.deck(along), top = (float) arch.applyAsDouble(along);
-                if (top - deck < 3f) continue;
+                if (top - deck < 3f || railOverRoad(segment, along, along, out)) continue;
                 float[] base = beside(segment, along, out, deck);
                 float[] c = centreAt(segment, along);
                 addBox(steel, base[0], deck, base[2], c[2], c[3], 0.8f, 0.8f, top - deck);
@@ -3322,6 +3455,7 @@ public class InfrastructureManager {
             // Lamps along the parapet
             for (float along = bridge.from + LAMP_SPACING * 0.5f; along < bridge.to; along += LAMP_SPACING) {
                 if (along < from || along >= to) continue;
+                if (railOverRoad(segment, along, along, (half + RIB * 2.2f) * side)) continue;
                 float[] p = beside(segment, along, (half + RIB * 2.2f) * side, bridge.deck(along));
                 appendLamp(steel, lamp, p, LAMP_HEIGHT);
             }
@@ -5943,7 +6077,7 @@ public class InfrastructureManager {
         if (!borderChecks.get(i).lights) return 3;
         float cycle = 2f * (LIGHT_GO + LIGHT_CLEAR);
         // (each crossing a little out of step with the others)
-        double t = (System.currentTimeMillis() / 1000.0 + i * 7.3) % cycle;
+        double t = (GameClock.millis() / 1000.0 + i * 7.3) % cycle;
         if (t < LIGHT_GO) return 1;
         if (t < LIGHT_GO + LIGHT_CLEAR) return 0;
         if (t < 2f * LIGHT_GO + LIGHT_CLEAR) return 2;

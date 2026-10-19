@@ -33,8 +33,16 @@ public class TransmissionMessage {
     public static final String MULTIPLAYER_B = GamePaths.HOME + "assets/audio/xenocorp_multiplayer_b";
     // Played in the shop before the first round: the free gift, and that everything after is to be paid for
     public static final String GIFT = GamePaths.HOME + "assets/audio/xenocorp_gift";
+    // Played as January's first round begins (singleplayer): the detailed instructions enclosed
+    public static final String JANUARY = GamePaths.HOME + "assets/audio/xenocorp_january";
     // Played as April begins: surprise that the employee's alive, given how much of the planet is ocean
     public static final String APRIL = GamePaths.HOME + "assets/audio/xenocorp_april";
+    // Later in the year (singleplayer, M52): August's, about guessing at random; one of October's
+    // (Halloween) or December's (Secret Santa); and perhaps the oxygen's downgrade
+    public static final String AUGUST = GamePaths.HOME + "assets/audio/xenocorp_august";
+    public static final String OCTOBER = GamePaths.HOME + "assets/audio/xenocorp_october";
+    public static final String DECEMBER = GamePaths.HOME + "assets/audio/xenocorp_december";
+    public static final String OXYGEN = GamePaths.HOME + "assets/audio/xenocorp_oxygen";
     // The planet sentence said with a stock name, unprocessed, for when the world's own isn't ready
     public static final String FALLBACK_AUDIO = GamePaths.HOME + "assets/audio/planet_fallback.wav";
     public static final String FALLBACK_NAME = "Groonia";

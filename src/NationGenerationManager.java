@@ -314,6 +314,29 @@ public class NationGenerationManager {
     /**
      * Safely fetches the mapped color for rendering.
      */
+    // How far (a weighted distance, see colourDistance) a nation's colour must be from the sea's
+    private static final double SEA_COLOUR_CLEARANCE = 120.0;
+
+    /**
+     * Colours the nations again from the palette without those too like the sea's on the map
+     * (M56: the sea's colour is the planet's own, so any of the palette may be close to it).
+     */
+    public void avoidSeaColour(Color sea) {
+        java.util.List<Integer> palette = new java.util.ArrayList<>();
+        for (int rgb : MAP_COLOURS) if (colourDistance(new Color(rgb), sea) >= SEA_COLOUR_CLEARANCE) palette.add(rgb);
+        if (palette.isEmpty()) return;
+        for (Integer id : new java.util.ArrayList<>(nationColors.keySet())) {
+            nationColors.put(id, new Color(225 << 24 | palette.get((id - 1) % palette.size()), true));
+        }
+    }
+
+    /** How different two colours look: the RGB distance weighted towards how the eye sees it ("redmean"). */
+    private static double colourDistance(Color a, Color b) {
+        double r = (a.getRed() + b.getRed()) / 2.0;
+        double dr = a.getRed() - b.getRed(), dg = a.getGreen() - b.getGreen(), db = a.getBlue() - b.getBlue();
+        return Math.sqrt((2 + r / 256) * dr * dr + 4 * dg * dg + (2 + (255 - r) / 256) * db * db);
+    }
+
     public Color getNationColor(int nationId) {
         return nationColors.getOrDefault(nationId, new Color(150, 150, 150)); // Fallback grey
     }

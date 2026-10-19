@@ -74,6 +74,20 @@ public final class MessageTicker {
         g.setColor(blink ? new Color(245, 90, 70) : new Color(110, 40, 35));
         g.fillOval(Math.round(stripH * 0.4f), y + (stripH - dot) / 2, dot, dot);
         HudStyle.label(g, "Xenocorp transmission", labelX, y + stripH * 0.6f, stripH * 0.25f, HudStyle.LABEL);
+        drawSkipHint(g, w, y, stripH);
         g.dispose();
+    }
+
+    /** At the strip's right: "[Enter] Skip", over a fade so the words scroll in from under it. */
+    public static void drawSkipHint(Graphics2D g, int w, int y, int stripH) {
+        float cap = stripH * 0.5f, textSize = stripH * 0.25f;
+        float textW = HudStyle.labelWidth(g, "Skip", textSize);
+        float capW = Math.max(cap, g.getFontMetrics(HudStyle.font(Font.BOLD, cap * 0.58f)).stringWidth("Enter") + cap * 0.55f);
+        float right = w - stripH * 0.4f, textX = right - textW, capX = textX - 8f - capW;
+        int fadeX = Math.round(capX - stripH * 1.6f);
+        g.setPaint(new java.awt.GradientPaint(fadeX, 0, new Color(6, 9, 14, 0), fadeX + stripH * 1.4f, 0, new Color(6, 9, 14, 255)));
+        g.fillRect(fadeX, y + 1, w - fadeX, stripH);
+        HudStyle.keyCap(g, "Enter", capX, y + (stripH - cap) / 2f, cap);
+        HudStyle.label(g, "Skip", textX, y + stripH * 0.6f, textSize, HudStyle.LABEL);
     }
 }

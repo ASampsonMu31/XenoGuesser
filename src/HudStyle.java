@@ -100,6 +100,37 @@ public final class HudStyle {
         g.fill(new java.awt.geom.Rectangle2D.Float(x + 3f, y + cut + 4f, 3.5f, Math.max(0f, h - cut - 12f)));
     }
 
+    public static final int TIMER_W = 330, TIMER_H = 96;
+
+    /**
+     * The round's clock (M41, M44): a ring running out anticlockwise to nothing (cyan, gold under
+     * a third, red under a sixth) with the time left inside it ("0:42"), and to its right what
+     * it's for (note: "Time to guess", or that the partner has guessed).
+     */
+    public static void paintTimer(Graphics2D g, long msLeft, long msTotal, String note) {
+        panel(g, 0, 0, TIMER_W, TIMER_H, GLASS);
+        float share = msTotal <= 0L ? 0f : Math.max(0f, Math.min(1f, msLeft / (float) msTotal));
+        Color run = share > 1f / 3f ? ACCENT : share > 1f / 6f ? GOLD : new Color(245, 95, 80);
+        float cx = 54f, cy = TIMER_H * 0.5f, r = 36f;
+        g.setStroke(new BasicStroke(6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.setColor(new Color(255, 255, 255, 34));
+        g.draw(new java.awt.geom.Ellipse2D.Float(cx - r, cy - r, r * 2f, r * 2f));
+        if (share > 0f) {
+            g.setColor(run);
+            g.draw(new java.awt.geom.Arc2D.Float(cx - r, cy - r, r * 2f, r * 2f, 90f, 360f * share, java.awt.geom.Arc2D.OPEN));
+        }
+        int seconds = (int) Math.ceil(msLeft / 1000.0);
+        g.setFont(font(Font.BOLD, 24f));
+        FontMetrics fm = g.getFontMetrics();
+        String s = String.format("%d:%02d", seconds / 60, seconds % 60);
+        g.setColor(share > 1f / 6f ? VALUE : run);
+        g.drawString(s, cx - fm.stringWidth(s) / 2f, cy + (fm.getAscent() - fm.getDescent()) / 2f);
+        // (as big as fits beside the ring)
+        float tx = cx + r + 20f, room = TIMER_W - tx - 18f, size = 19f;
+        while (size > 10f && labelWidth(g, note, size) > room) size -= 0.5f;
+        label(g, note, tx, cy + size * 0.36f, size, note.equals("Time to guess") ? LABEL : run);
+    }
+
     /** Small spaced-out capitals. */
     public static void label(Graphics2D g, String text, float x, float baseline, float size, Color colour) {
         Font f = font(Font.BOLD, size);

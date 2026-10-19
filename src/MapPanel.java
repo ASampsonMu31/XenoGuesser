@@ -64,12 +64,15 @@ public class MapPanel extends JPanel {
 
     /** What can be drawn over the land and sea, in the order they're drawn. */
     public enum Layer {
-        CONTOURS("Contours"), RIVERS("Rivers"), ROADS("Roads"), BUILDINGS("Buildings"), SHOPS("Shops");
+        CONTOURS("Contours", false), RIVERS("Rivers", false), ROADS("Roads", false), BUILDINGS("Buildings", true), SHOPS("Shops", true);
 
         public final String label;
+        // Listed in the markings' Infrastructure folder (M47), with the maps of pictures
+        public final boolean infrastructure;
 
-        Layer(String label) {
+        Layer(String label, boolean infrastructure) {
             this.label = label;
+            this.infrastructure = infrastructure;
         }
     }
 
@@ -83,6 +86,8 @@ public class MapPanel extends JPanel {
     // Pictures stood on the plain map instead of an overlay's colours (the bollard map: each
     // nation's bollard on its main land, no borders), each {picture, u, v}; null when none
     private volatile List<Object[]> mapPictures;
+    // (and that map's name, shown with the heatmap's)
+    private volatile String picturesName;
     private MapLayersPanel layersPanel;
 
     // Scroll-wheel zoom of the enlarged map: magnification and the visible centre in 0..1 map space
@@ -194,6 +199,64 @@ public class MapPanel extends JPanel {
     private Multiplayer.Guess partnerGuess;
     private GeodesicChunkGrid.Direction partnerPin;
     private Timer partnerWait;
+
+    // The round's clock (M41): in singleplayer a minute to guess in from the round's start; in
+    // multiplayer none until the partner guesses, then AFTER_PARTNER_MS more. Run out, the round
+    // goes unguessed: no points, the salary alone, and only the answer (and any partner's guess)
+    // shown. Counts only while the round's in play (and, in singleplayer, the settings shut).
+    public static final long SINGLE_GUESS_MS = 120_000L, AFTER_PARTNER_MS = 20_000L;
+    private long guessMsLeft = -1L, guessMsTotal;
+    private long clockTicked;
+    private boolean partnerGuessedFirst;
+    // This round went unguessed (the clock ran out): no pin
+    private boolean missedGuess;
+
+    /** The round's clock as shown: {ms left, ms it started with, 1 if the partner's guessed already}; null when none is running. */
+    public long[] guessClock() {
+        if (guessMsLeft < 0L || isGuessed) return null;
+        return new long[] { Math.max(0L, guessMsLeft), guessMsTotal, partnerGuessedFirst ? 1L : 0L };
+    }
+
+    /** A tenth of a second of the round's clock: started, run down, and run out into an unguessed round. */
+    private void tickClock() {
+        long now = System.nanoTime();
+        long dt = clockTicked == 0L ? 0L : (now - clockTicked) / 1_000_000L;
+        clockTicked = now;
+        if (isGuessed || mainApp == null || gameHUD == null || !mainApp.roundInPlay()) return;
+        Multiplayer session = Multiplayer.active();
+        if (guessMsLeft < 0L) {
+            if (session == null) {
+                guessMsLeft = guessMsTotal = SINGLE_GUESS_MS;
+            } else if (session.remoteGuess(gameHUD.getRound()) != null) {
+                // (the partner's guessed: this player has a little longer)
+                guessMsLeft = guessMsTotal = AFTER_PARTNER_MS;
+                partnerGuessedFirst = true;
+            }
+            return;
+        }
+        // (singleplayer's held with the settings open, and for January's instructions)
+        if (session == null && mainApp.clockHeld()) return;
+        guessMsLeft -= dt;
+        if (guessMsLeft <= 0L) {
+            guessMsLeft = 0L;
+            runOutOfTime();
+        }
+    }
+
+    /**
+     * The clock's run out: a marker put down (but not sent) is guessed where it was last put, so
+     * it may still score; with none, the round's unguessed.
+     */
+    private void runOutOfTime() {
+        if (isGuessed) return;
+        if (isTypingNote) isTypingNote = false;
+        if (!(hasPin && pin != null)) {
+            missedGuess = true;
+            pin = null;
+            hasPin = true;
+        }
+        startRevealSequence();
+    }
     // How long the lines are drawn for once the globe has reached the answer (multiplayer)
     private static final long LINES_MS = 900;
 
@@ -208,6 +271,14 @@ public class MapPanel extends JPanel {
     // moment, then turning to the answer as the line between them is drawn along the great
     // circle. How long it rests on the guess, and how long the turn takes (more the further)
     private RevealGlobe globe;
+    // The map (small and enlarged) and the results each shown on a globe (as they start) or flat,
+    // toggled by a button in the map's corner (M41); the map's own globe, wrapped in what the flat
+    // map shows (the overlay and the layers ticked: see globeTexture)
+    private boolean mapGlobe = true, revealGlobe = true;
+    private RevealGlobe mapGlobeView;
+    private BufferedImage globeTexture;
+    private List<Object> globeTextureKey = List.of();
+    private static final int TOGGLE_W = 92, TOGGLE_H = 26;
     private long revealStartTime;
     private static final long GLOBE_HOLD_MS = 700, GLOBE_TURN_MIN_MS = 900, GLOBE_TURN_MAX_MS = 2200;
     // The results' view's height over its width (the globe and the rod through it want something squarer than the chart)
@@ -243,6 +314,11 @@ public class MapPanel extends JPanel {
         this.halfRegion = totalRegionWidth / 2.0f;
         this.mapImage = new BufferedImage(maxMapWidth, maxMapHeight, BufferedImage.TYPE_INT_RGB);
         this.globe = new RevealGlobe(totalRegionWidth);
+        this.mapGlobeView = new RevealGlobe(totalRegionWidth, 0.44);
+        // (looking at the middle of the chart to begin with)
+        this.mapGlobeView.centreOn(new GeodesicChunkGrid.Direction(1, 0, 0));
+        // (developer aid: -Dxenoguesser.flatmaps starts both flat)
+        if (Dev.flag("xenoguesser.flatmaps")) mapGlobe = revealGlobe = false;
         this.physicalChunkSize = physicalChunkSize;
         this.listener = listener;
 
@@ -321,6 +397,11 @@ public class MapPanel extends JPanel {
                 if (!isLarge && !isFullScreenReveal) return;
                 int clickX = e.getX();
                 int clickY = e.getY();
+                // The globe/flat toggle
+                if (e.getButton() == MouseEvent.BUTTON1 && toggleBounds().contains(clickX, clickY)) {
+                    toggleGlobe();
+                    return;
+                }
                 
                 if (isLarge || isFullScreenReveal) {
                     int mapLeft = (visualMapX != 0) ? visualMapX : (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
@@ -431,7 +512,7 @@ public class MapPanel extends JPanel {
                         dragFromU = viewCentreU;
                         dragFromV = viewCentreV;
                         dragging = false;
-                        if (isFullScreenReveal) globe.beginDrag();
+                        if (globeShown()) activeGlobe().beginDrag();
                         return;
                     }
                     if (isGuessed) return;
@@ -448,7 +529,8 @@ public class MapPanel extends JPanel {
 
                     if (localizedX >= 0 && localizedX < currentMapSize && localizedY >= 0 && localizedY < mapHeight()) {
                         if (MapPanel.this.listener != null) {
-                            MapPanel.this.listener.setTelepot(pixelDirection(screenToCoreX(clickX, visualMapX), screenToCoreY(clickY, visualMapY)));
+                            GeodesicChunkGrid.Direction under = directionUnder(clickX, clickY);
+                            if (under != null) MapPanel.this.listener.setTelepot(under);
                         }
                     }
                 }
@@ -456,6 +538,8 @@ public class MapPanel extends JPanel {
         });
 
         this.addMouseWheelListener(this::handleMouseWheel);
+        Timer clock = new Timer(100, e -> tickClock());
+        clock.start();
         this.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseReleased(MouseEvent e) {
@@ -466,7 +550,12 @@ public class MapPanel extends JPanel {
                 setCursor(java.awt.Cursor.getDefaultCursor());
                 // A click without a drag places the marker (before the guess)
                 if (click && !isGuessed && (isLarge || isFullScreenReveal)) {
-                    placePin(screenToCoreX(e.getX(), visualMapX), screenToCoreY(e.getY(), visualMapY));
+                    // (on the globe, where the click is on the ball; off it, nothing)
+                    GeodesicChunkGrid.Direction under = directionUnder(e.getX(), e.getY());
+                    if (under != null) {
+                        float[] p = directionPixel(under);
+                        placePin(p[0], p[1]);
+                    }
                     repaint();
                 }
             }
@@ -478,11 +567,11 @@ public class MapPanel extends JPanel {
                 int dx = e.getX() - dragFrom.x, dy = e.getY() - dragFrom.y;
                 if (!dragging && dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
                 dragging = true;
-                if (isFullScreenReveal) {
-                    // The globe turns under the pointer (once it has finished turning to the answer)
-                    if (!resultsShown()) return;
+                if (globeShown()) {
+                    // The globe turns under the pointer (the results' once it has finished turning to the answer)
+                    if (isFullScreenReveal && !resultsShown()) return;
                     setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
-                    globe.dragTo(dx, dy, currentMapSize, mapHeight());
+                    activeGlobe().dragTo(dx, dy, currentMapSize, mapHeight());
                     repaint();
                     return;
                 }
@@ -508,7 +597,8 @@ public class MapPanel extends JPanel {
     private void teleportToClick(int clickX, int clickY) {
         int localizedX = clickX - visualMapX, localizedY = clickY - visualMapY;
         if (localizedX < 0 || localizedX >= currentMapSize || localizedY < 0 || localizedY >= mapHeight() || listener == null) return;
-        listener.setTelepot(pixelDirection(screenToCoreX(clickX, visualMapX), screenToCoreY(clickY, visualMapY)));
+        GeodesicChunkGrid.Direction under = directionUnder(clickX, clickY);
+        if (under != null) listener.setTelepot(under);
     }
 
     /** The direction from the planet's centre under a point of the map image, in its pixels. */
@@ -526,8 +616,7 @@ public class MapPanel extends JPanel {
 
     /** Where a note's marker is on screen, {x, y}; null when it's round the back of the results' globe. */
     private int[] noteScreen(MapNote note, int mapLeft, int mapTop) {
-        if (!isFullScreenReveal) return new int[] { coreToScreenX(note.coreX, mapLeft), coreToScreenY(note.coreY, mapTop) };
-        double[] p = globe.project(pixelDirection(note.coreX, note.coreY), mapLeft, mapTop, currentMapSize, mapHeight());
+        double[] p = screenOf(pixelDirection(note.coreX, note.coreY), mapLeft, mapTop);
         return p[2] < 0.0 ? null : new int[] { (int) Math.round(p[0]), (int) Math.round(p[1]) };
     }
 
@@ -546,6 +635,205 @@ public class MapPanel extends JPanel {
         goalY = p[1];
     }
 
+    /** Whether what's shown now is on a globe (the results' or the map's own), rather than the flat chart. */
+    private boolean globeShown() {
+        return isFullScreenReveal ? revealGlobe : mapGlobe;
+    }
+
+    /** The globe shown now (see globeShown). */
+    private RevealGlobe activeGlobe() {
+        return isFullScreenReveal ? globe : mapGlobeView;
+    }
+
+    /** Where a direction from the planet's centre is on screen, {x, y, depth}: depth below 0 when hidden round the back of the globe. */
+    private double[] screenOf(GeodesicChunkGrid.Direction d, int mapX, int mapY) {
+        if (globeShown()) return activeGlobe().project(d, mapX, mapY, currentMapSize, mapHeight());
+        float[] p = directionPixel(d);
+        return new double[] { coreToScreenX(p[0], mapX), coreToScreenY(p[1], mapY), 1.0 };
+    }
+
+    /**
+     * Where a point of the map (u, v: 0 to 1 across and down the square image) is on screen; null
+     * where it's hidden (round the back of the globe); copy is the flat chart's repeat east or west
+     * (-1, 0, 1: only 0 on the globe).
+     */
+    private float[] uvScreen(float u, float v, int copy, int mapX, int mapY) {
+        if (globeShown()) {
+            if (copy != 0) return null;
+            double[] p = activeGlobe().project(pixelDirection(u * mapImage.getWidth(), v * mapImage.getHeight()), mapX, mapY, currentMapSize, mapHeight());
+            return p[2] < 0.0 ? null : new float[] { (float) p[0], (float) p[1] };
+        }
+        float span = zoom * currentMapSize;
+        return new float[] { mapX - viewLeft() * span + (u + copy) * span, mapY - viewTop() * span + v * span };
+    }
+
+    /** The direction under a point on screen: on the globe, null off it. */
+    private GeodesicChunkGrid.Direction directionUnder(int sx, int sy) {
+        if (globeShown()) return activeGlobe().unproject(sx, sy, visualMapX, visualMapY, currentMapSize, mapHeight());
+        return pixelDirection(screenToCoreX(sx, visualMapX), screenToCoreY(sy, visualMapY));
+    }
+
+    /** A great circle's arc, as far as progress of the way, on the globe or the flat chart (broken where it crosses the chart's edge). */
+    private void drawArcAnyway(Graphics2D g2d, GeodesicChunkGrid.Direction a, GeodesicChunkGrid.Direction b, double progress, int mapX, int mapY, Color colour) {
+        if (globeShown()) {
+            activeGlobe().drawArc(g2d, a, b, progress, mapX, mapY, currentMapSize, mapHeight(), colour == null ? Color.WHITE : colour);
+            return;
+        }
+        if (progress <= 0.0) return;
+        double angle = Math.acos(Math.max(-1.0, Math.min(1.0, a.dot(b))));
+        int steps = Math.max(2, (int) Math.ceil(Math.toDegrees(angle) * progress * 2));
+        java.awt.geom.Path2D path = new java.awt.geom.Path2D.Double();
+        double[] last = null;
+        for (int i = 0; i <= steps; i++) {
+            double[] p = screenOf(RevealGlobe.along(a, b, progress * i / steps), mapX, mapY);
+            if (last == null || Math.abs(p[0] - last[0]) > currentMapSize * zoom * 0.5) path.moveTo(p[0], p[1]);
+            else path.lineTo(p[0], p[1]);
+            last = p;
+        }
+        Stroke old = g2d.getStroke();
+        g2d.setColor(new Color(20, 20, 30, 150));
+        g2d.setStroke(new BasicStroke(5f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10f, new float[] { 6f, 6f }, 0f));
+        g2d.draw(path);
+        g2d.setColor(colour == null ? Color.WHITE : colour);
+        g2d.setStroke(new BasicStroke(3f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_ROUND, 10f, new float[] { 6f, 6f }, 0f));
+        g2d.draw(path);
+        g2d.setStroke(old);
+    }
+
+    /**
+     * What the map's globe is wrapped in: what the flat map shows (the overlay chosen, or the
+     * plain map at its finer detail, with the layers ticked over it), made afresh only when that
+     * changes.
+     */
+    private BufferedImage globeTexture() {
+        BufferedImage base = gradientImage != null ? gradientImage : baseMapDetail != null ? baseMapDetail : mapImage;
+        List<Object> key = new ArrayList<>();
+        key.add(base);
+        for (Layer layer : Layer.values()) {
+            BufferedImage[] images = layerImages.get(layer);
+            if (images != null && shownLayers.contains(layer)) key.add(images[1]);
+        }
+        if (globeTexture != null && key.equals(globeTextureKey)) return globeTexture;
+        int w = base.getWidth(), h = base.getHeight();
+        BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = image.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(base, 0, 0, null);
+        for (int k = 1; k < key.size(); k++) g.drawImage((BufferedImage) key.get(k), 0, 0, w, h, null);
+        g.dispose();
+        globeTexture = image;
+        globeTextureKey = key;
+        return image;
+    }
+
+    // The globe's detail tiles (see prepareGlobeDetail), each what the flat map shows there
+    // composed into one picture's pixels, by "level/tx/ty/what it shows"
+    private final java.util.Map<String, int[]> globeTiles = new java.util.LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(java.util.Map.Entry<String, int[]> eldest) {
+            return size() > 160;
+        }
+    };
+
+    /**
+     * Zoomed in on the globe (M47): the flat map's detail tiles over the part of the ball in view,
+     * asked for as the flat map asks for its own, so the globe stays as sharp as the flat map
+     * does. What they show: the plain map (the results) or the overlay or plain map with the
+     * markings ticked over it, as the flat map draws them.
+     */
+    private int globeTilesLogged = -1;
+
+    private void prepareGlobeDetail(RevealGlobe shown, boolean plain, int textureWidth) {
+        int w = currentMapSize, h = mapHeight();
+        int level = shown.detailLevel(w, h, textureWidth);
+        // What the tiles show: the base's (or overlay's) tiles, then each marking's
+        List<Object[]> sources = new ArrayList<>();
+        BufferedImage gradient = plain ? null : gradientImage;
+        if (gradient == null) sources.add(new Object[] { "base", baseTiles });
+        else sources.add(new Object[] { "overlay-" + overlayTileName, overlayTiles });
+        if (!plain) {
+            for (Layer layer : Layer.values()) {
+                if (layerImages.get(layer) != null && shownLayers.contains(layer)) sources.add(new Object[] { layer.name(), layerTiles.get(layer) });
+            }
+        }
+        StringBuilder sourceKey = new StringBuilder();
+        for (Object[] s : sources) sourceKey.append(s[0]).append('+');
+        if (level == 0 || sources.get(0)[1] == null) {
+            shown.setDetail(0, java.util.Map.of(), sourceKey.toString());
+            return;
+        }
+        java.util.Map<Long, int[]> ready = new java.util.HashMap<>();
+        tiles.beginFrame();
+        for (long t : shown.visibleTiles(w, h, level)) {
+            // (each at its own level: coarser towards the poles)
+            int at = RevealGlobe.levelOf(t), tx = RevealGlobe.txOf(t), ty = RevealGlobe.tyOf(t);
+            String key = at + "/" + tx + "/" + ty + "/" + sourceKey;
+            int[] pixels;
+            synchronized (globeTiles) {
+                pixels = globeTiles.get(key);
+            }
+            if (pixels == null) {
+                // (every piece asked for; composed once all are ready)
+                BufferedImage[] parts = new BufferedImage[sources.size()];
+                boolean all = true;
+                for (int k = 0; k < parts.length; k++) {
+                    MapTiles.Renderer renderer = (MapTiles.Renderer) sources.get(k)[1];
+                    parts[k] = renderer == null ? null : tiles.get((String) sources.get(k)[0], renderer, at, tx, ty);
+                    if (parts[k] == null && renderer != null) all = false;
+                }
+                if (!all) continue;
+                BufferedImage composed = new BufferedImage(MapTiles.SIZE, MapTiles.SIZE, BufferedImage.TYPE_INT_RGB);
+                Graphics2D g = composed.createGraphics();
+                for (BufferedImage part : parts) if (part != null) g.drawImage(part, 0, 0, MapTiles.SIZE, MapTiles.SIZE, null);
+                g.dispose();
+                pixels = ((java.awt.image.DataBufferInt) composed.getRaster().getDataBuffer()).getData();
+                synchronized (globeTiles) {
+                    globeTiles.put(key, pixels);
+                }
+            }
+            ready.put(t, pixels);
+        }
+        tiles.endFrame();
+        // Developer aid: -Dxenoguesser.globetiles=true logs how many tiles the globe wants, and how many are ready
+        if (Dev.flag("xenoguesser.globetiles") && ready.size() != globeTilesLogged) {
+            globeTilesLogged = ready.size();
+            System.out.printf("[GLOBE] level %d at the equator: %d tiles in view, %d ready%n", level, shown.visibleTiles(w, h, level).size(), ready.size());
+        }
+        shown.setDetail(level, ready, sourceKey.toString());
+    }
+
+    /** The globe/flat toggle's place: in the map's top left corner. */
+    private Rectangle toggleBounds() {
+        return new Rectangle(visualMapX + 8, visualMapY + 8, TOGGLE_W, TOGGLE_H);
+    }
+
+    /** The globe/flat toggle (on the enlarged map and the results): naming what it turns the map to. */
+    private void drawToggle(Graphics2D g2d) {
+        Rectangle r = toggleBounds();
+        g2d.setColor(new Color(25, 25, 27, 210));
+        g2d.fillRoundRect(r.x, r.y, r.width, r.height, 10, 10);
+        g2d.setColor(new Color(120, 205, 235, 170));
+        g2d.drawRoundRect(r.x, r.y, r.width, r.height, 10, 10);
+        g2d.setFont(HudStyle.font(Font.BOLD, 12f));
+        FontMetrics fm = g2d.getFontMetrics();
+        String text = globeShown() ? "Flat map" : "Globe";
+        // (a little picture of what it turns to: a flat chart or a ball)
+        int ix = r.x + 8, iy = r.y + (r.height - 12) / 2;
+        g2d.setColor(new Color(150, 220, 255));
+        if (globeShown()) g2d.drawRect(ix, iy + 1, 14, 10);
+        else g2d.drawOval(ix + 1, iy, 12, 12);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(text, ix + 22, r.y + (r.height + fm.getAscent() - fm.getDescent()) / 2);
+    }
+
+    /** Turns the map shown now between the globe and the flat chart. */
+    private void toggleGlobe() {
+        if (isFullScreenReveal) revealGlobe = !revealGlobe;
+        else mapGlobe = !mapGlobe;
+        resetZoom();
+        repaint();
+    }
+
     /** Zooms the enlarged map about the cursor, keeping the point under it fixed. */
     private void handleMouseWheel(MouseWheelEvent e) {
         if (!(isLarge || isFullScreenReveal)) {
@@ -558,13 +846,13 @@ public class MapPanel extends JPanel {
         if (fractionX < 0.0f || fractionX > 1.0f || fractionY < 0.0f || fractionY > 1.0f) {
             return;
         }
-        if (isFullScreenReveal) {
-            globe.zoomBy(-e.getPreciseWheelRotation(), ZOOM_STEP);
+        if (globeShown()) {
+            activeGlobe().zoomBy(-e.getPreciseWheelRotation(), ZOOM_STEP);
             repaint();
             return;
         }
 
-        float cursorU = viewLeft() + fractionX / zoom;
+        float cursorU= viewLeft() + fractionX / zoom;
         float cursorV = viewTop() + fractionY * MapProjection.aspect() / zoom;
         float newZoom = zoom * (float) Math.pow(ZOOM_STEP, -e.getPreciseWheelRotation());
         zoom = Math.max(1.0f, Math.min(MAX_ZOOM, newZoom));
@@ -583,6 +871,16 @@ public class MapPanel extends JPanel {
 
     /** Developer aid: zoomed in this far, centred on (u, v) of the map (0 to 1 across, 0 to 1 down the square). */
     public void devZoom(float magnification, float u, float v) {
+        // (on the globe: turned to face there and zoomed as far)
+        if (globeShown()) {
+            RevealGlobe shown = activeGlobe();
+            double lat = MapProjection.latitude(v * totalRegionWidth - halfRegion), lon = MapProjection.longitude(u * totalRegionWidth - halfRegion);
+            shown.resetZoom();
+            shown.centreOn(new GeodesicChunkGrid.Direction(Math.cos(lat) * Math.cos(lon), Math.sin(lat), -Math.cos(lat) * Math.sin(lon)));
+            shown.zoomBy(1.0, magnification);
+            repaint();
+            return;
+        }
         zoom = Math.max(1.0f, Math.min(MAX_ZOOM, magnification));
         viewCentreU = clampCentre(u);
         viewCentreV = clampCentreV(v);
@@ -705,22 +1003,22 @@ public class MapPanel extends JPanel {
         this.gradientImage = composed;
         this.gradientName = composed != null ? name : null;
         this.showNationNames = composed != null && nationNames;
-        this.mapPictures = null;
         repaint();
     }
 
     /**
-     * Pictures stood on the plain map, named (as an overlay is), in place of any overlay: each
-     * {picture, worldX, worldZ} where its foot stands.
+     * Pictures stood on the map, named (as an overlay is), over whatever heatmap there is (M47):
+     * each {picture, worldX, worldZ} where its foot stands; null for none.
      */
     public void setPictureOverlay(String name, List<Object[]> pictures) {
-        List<Object[]> placed = new ArrayList<>();
-        for (Object[] p : pictures) {
-            placed.add(new Object[] { p[0], ((Float) p[1] + halfRegion) / totalRegionWidth, ((Float) p[2] + halfRegion) / totalRegionWidth });
+        List<Object[]> placed = null;
+        if (pictures != null) {
+            placed = new ArrayList<>();
+            for (Object[] p : pictures) {
+                placed.add(new Object[] { p[0], ((Float) p[1] + halfRegion) / totalRegionWidth, ((Float) p[2] + halfRegion) / totalRegionWidth });
+            }
         }
-        this.gradientImage = null;
-        this.gradientName = name;
-        this.showNationNames = false;
+        this.picturesName = placed != null ? name : null;
         this.mapPictures = placed;
         repaint();
     }
@@ -736,7 +1034,9 @@ public class MapPanel extends JPanel {
             BufferedImage picture = (BufferedImage) p[0];
             int w = Math.round(picture.getWidth() * tall / (float) picture.getHeight());
             for (int copy = -1; copy <= 1; copy++) {
-                int footX = Math.round(originX + ((Float) p[1] + copy) * span), footY = Math.round(originY + (Float) p[2] * span);
+                float[] at = uvScreen((Float) p[1], (Float) p[2], copy, mapX, mapY);
+                if (at == null) continue;
+                int footX = Math.round(at[0]), footY = Math.round(at[1]);
                 if (footX < mapX || footX >= mapX + currentMapSize || footY < mapY || footY >= mapY + mapHeight()) continue;
                 int x = footX - w / 2, y = footY - tall;
                 // (on a soft backing, so it reads on any land)
@@ -839,14 +1139,16 @@ public class MapPanel extends JPanel {
      * and overlays; with none of either, there are none.
      */
     public void setLayerChoices(List<Layer> layers, java.util.LinkedHashMap<String, List<String>> gradients, String chosen,
-                                java.util.function.Consumer<String> onGradient, java.util.function.Function<String, java.awt.Image> icons) {
+                                java.util.function.Consumer<String> onGradient, List<String> pictureMaps, String chosenPictures,
+                                java.util.function.Consumer<String> onPictures, java.util.function.Function<String, java.awt.Image> icons) {
         if (layersPanel != null && layersPanel.getParent() != null) {
             java.awt.Container parent = layersPanel.getParent();
             parent.remove(layersPanel);
             parent.repaint();
         }
-        boolean any = !layers.isEmpty() || gradients.values().stream().anyMatch(g -> !g.isEmpty());
-        layersPanel = any ? new MapLayersPanel(this::setLayerShown, layers, shownLayers, gradients, chosen, onGradient, icons) : null;
+        boolean any = !layers.isEmpty() || !pictureMaps.isEmpty() || gradients.values().stream().anyMatch(g -> !g.isEmpty());
+        layersPanel = any ? new MapLayersPanel(this::setLayerShown, layers, shownLayers, gradients, chosen, onGradient,
+                pictureMaps, chosenPictures, onPictures, icons) : null;
         if (getParent() instanceof JLayeredPane) XenoGuesser.updateMinimapBounds((JLayeredPane) getParent(), this);
     }
 
@@ -902,8 +1204,9 @@ public class MapPanel extends JPanel {
             // guess included: what the quarter's verdict compares), and the reveal waits for theirs
             calculateAndApplyScore();
             int round = gameHUD.getRound();
-            session.sendGuess(new Multiplayer.Guess(round, pin.x(), pin.y(), pin.z(), targetRoundScore,
-                    gameHUD.getProductivity() + targetRoundScore));
+            // (an unguessed round goes as a guess with no place: NaN)
+            session.sendGuess(new Multiplayer.Guess(round, pin == null ? Double.NaN : pin.x(), pin == null ? Double.NaN : pin.y(),
+                    pin == null ? Double.NaN : pin.z(), targetRoundScore, gameHUD.getProductivity() + targetRoundScore));
             setUpReveal();
             currentPhase = RevealPhase.WAITING_FOR_PARTNER;
             if (partnerWait != null) partnerWait.stop();
@@ -920,7 +1223,8 @@ public class MapPanel extends JPanel {
                 }
                 ((Timer) e.getSource()).stop();
                 partnerGuess = theirs;
-                partnerPin = new GeodesicChunkGrid.Direction(theirs.px(), theirs.py(), theirs.pz());
+                // (none where they didn't guess in time)
+                partnerPin = Double.isNaN(theirs.px()) ? null : new GeodesicChunkGrid.Direction(theirs.px(), theirs.py(), theirs.pz());
                 runReveal();
             });
             partnerWait.setInitialDelay(0);
@@ -945,7 +1249,7 @@ public class MapPanel extends JPanel {
         this.lineProgress = 0.0f;
         globe.setTexture(mapImage);
         globe.resetZoom();
-        globe.centreOn(pin);
+        globe.centreOn(pin != null ? pin : goal);
         this.revealStartTime = System.currentTimeMillis();
 
         this.currentDisplayScore = 0;
@@ -985,8 +1289,11 @@ public class MapPanel extends JPanel {
     private void runReveal() {
         currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         this.revealStartTime = System.currentTimeMillis();
-        final GeodesicChunkGrid.Direction theirs = partnerPin;
-        final long turnMs = turnMs(pin, theirs != null ? theirs : goal);
+        // (with only one guess, the partner's where this player didn't guess in time, the globe
+        // turns from it to the answer; with none, it rests on the answer)
+        final GeodesicChunkGrid.Direction theirs = pin != null ? partnerPin : null;
+        final GeodesicChunkGrid.Direction first = pin != null ? pin : partnerPin;
+        final long turnMs = first == null ? 0L : turnMs(first, theirs != null ? theirs : goal);
         final long partnerTurnMs = theirs != null ? turnMs(theirs, goal) : 0;
         final long COUNT_UP_DURATION_MS = 500; 
         final long[] countUpStartTime = {-1};  
@@ -1026,9 +1333,10 @@ public class MapPanel extends JPanel {
             else if (currentPhase == RevealPhase.SHOW_PLAYER_PIN) {
                 // Resting on the guess, then turning to the answer, easing in and out, the line
                 // drawn as far as the globe has turned (so its end stays in the middle)
-                float t = Math.max(0f, Math.min(1f, (System.currentTimeMillis() - revealStartTime - GLOBE_HOLD_MS) / (float) turnMs));
+                float t = first == null ? (System.currentTimeMillis() - revealStartTime >= GLOBE_HOLD_MS ? 1f : 0f)
+                        : Math.max(0f, Math.min(1f, (System.currentTimeMillis() - revealStartTime - GLOBE_HOLD_MS) / (float) turnMs));
                 lineProgress = t * t * (3f - 2f * t);
-                globe.centreOn(RevealGlobe.along(pin, goal, lineProgress));
+                globe.centreOn(first == null ? goal : RevealGlobe.along(first, goal, lineProgress));
                 if (t >= 1.0f) {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
@@ -1233,9 +1541,16 @@ public class MapPanel extends JPanel {
             }
             Shape frameClip = g2d.getClip();
             g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
-            if (plain) {
-                // The results: on the globe
-                globe.paint(g2d, mapX, mapY, currentMapSize, mapHeight());
+            if (globeShown()) {
+                // On the globe: the results' the plain map, the map's what the flat one shows
+                RevealGlobe shown = activeGlobe();
+                BufferedImage wrap = plain ? mapImage : globeTexture();
+                shown.setTexture(wrap);
+                prepareGlobeDetail(shown, plain, wrap.getWidth());
+                shown.paint(g2d, mapX, mapY, currentMapSize, mapHeight());
+                if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
+                List<Object[]> pictures = mapPictures;
+                if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
                 g2d.setClip(frameClip);
             } else {
             Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
@@ -1262,7 +1577,8 @@ public class MapPanel extends JPanel {
             g2d.setClip(frameClip);
             }
 
-            float shownZoom = plain ? (float) globe.zoom() : zoom;
+            float shownZoom = globeShown() ? (float) activeGlobe().zoom() : zoom;
+            if (isLarge || isFullScreenReveal) drawToggle(g2d);
             if (shownZoom > 1.01f) {
                 String zoomLabel = String.format("%.1fx", shownZoom);
                 g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
@@ -1277,7 +1593,8 @@ public class MapPanel extends JPanel {
                 g2d.drawString(zoomLabel, zoomX + 6, zoomY + zoomFm.getAscent() + 3);
             }
 
-            String heatmapName = plain ? null : this.gradientName;
+            String heatmapName = plain ? null : this.gradientName, picturesShown = plain ? null : this.picturesName;
+            if (picturesShown != null) heatmapName = heatmapName == null ? picturesShown : heatmapName + "  ·  " + picturesShown;
             if (heatmapName != null) {
                 {
                     g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 13f));
@@ -1439,14 +1756,14 @@ public class MapPanel extends JPanel {
                 if (isFullScreenReveal) {
                     // The great circle's arc the distance is measured along (multiplayer: both
                     // guesses' arcs, each in its player's colour)
-                    if (partnerPin != null) {
-                        globe.drawArc(g2d, partnerPin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight(), partnerColour());
-                        globe.drawArc(g2d, pin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight(), ownColour());
-                    } else {
-                        globe.drawArc(g2d, pin, goal, lineProgress, mapX, mapY, currentMapSize, mapHeight());
-                    }
-                    double[] p = globe.project(pin, mapX, mapY, currentMapSize, mapHeight());
-                    double[] q = globe.project(goal, mapX, mapY, currentMapSize, mapHeight());
+                    // (each guess made; none where it went unguessed)
+                    if (partnerPin != null) drawArcAnyway(g2d, partnerPin, goal, lineProgress, mapX, mapY, partnerColour());
+                    if (pin != null && partnerPin != null) drawArcAnyway(g2d, pin, goal, lineProgress, mapX, mapY, ownColour());
+                    else if (pin != null) drawArcAnyway(g2d, pin, goal, lineProgress, mapX, mapY, null);
+                }
+                if (globeShown() || isFullScreenReveal) {
+                    double[] p = pin != null ? screenOf(pin, mapX, mapY) : new double[] { 0, 0, -1 };
+                    double[] q = screenOf(goal, mapX, mapY);
                     displayPinX = (int) Math.round(p[0]);
                     displayPinY = (int) Math.round(p[1]);
                     displayGoalX = (int) Math.round(q[0]);
@@ -1589,6 +1906,10 @@ public class MapPanel extends JPanel {
     }
 
     public void resetMapState() {
+        // (a fresh clock for the new round)
+        guessMsLeft = -1L;
+        partnerGuessedFirst = false;
+        missedGuess = false;
         // (the round just played is now the last round)
         if (isGuessed && goal != null) {
             lastRound = goal;
@@ -1778,6 +2099,13 @@ public class MapPanel extends JPanel {
         if (isFullScreenReveal && resultsShown() && !roundLoading) proceedToShop();
     }
 
+    /** Developer aid: a marker put down (not guessed) at the middle of the map, or at -Dxenoguesser.pinat=u,v. */
+    public void devPlacePin() {
+        String[] at = Dev.property("xenoguesser.pinat", "0.5,0.5").split(",");
+        placePin((int) (mapImage.getWidth() * Double.parseDouble(at[0])), (int) (mapImage.getHeight() * Double.parseDouble(at[1])));
+        repaint();
+    }
+
     // Set when a guess is made, so the next round starts being built straight away
     private volatile boolean prepareRequested;
 
@@ -1822,18 +2150,25 @@ public class MapPanel extends JPanel {
     }
 
     private void calculateAndApplyScore() {
+        if (pin == null) {
+            // Unguessed: nothing for it
+            this.roundDistance = Double.NaN;
+            this.targetRoundScore = 0;
+            return;
+        }
         // How far apart the guess and the answer really are: the shortest way round the sphere's surface
         double realWorldDistance = SphereMath.angle(pin, goal) * Planet.radius();
         this.roundDistance = realWorldDistance;
 
         // Full marks within PERFECT_DISTANCE; beyond it the score falls away smoothly from just
-        // under full (4,999 at the edge, never jumping), as it did before over the whole distance
+        // under full (4,999 at the edge, never jumping) by the share of the way from there to the
+        // far side of the planet (M48), so a guess as far off scores the same whatever its size
         int score;
         if (realWorldDistance <= PERFECT_DISTANCE) {
-            score = 5000;
+            score = FULL_MARKS;
         } else {
-            double kConstant = Planet.greatestDistance() / 7.0;
-            score = (int) Math.min(4999.0, Math.floor(5000.0 * Math.exp(-(realWorldDistance - PERFECT_DISTANCE) / kConstant)));
+            double share = (realWorldDistance - PERFECT_DISTANCE) / (Planet.greatestDistance() - PERFECT_DISTANCE);
+            score = (int) Math.min(4999.0, Math.floor(5000.0 * Math.exp(-7.0 * share)));
         }
         if (score < 0) score = 0;
 
@@ -1914,8 +2249,10 @@ public class MapPanel extends JPanel {
             float scale = glyph / NATION_NAME_GLYPH;
             int w = Math.round(name.getWidth() * scale), h = Math.round(name.getHeight() * scale);
             for (int copy = -1; copy <= 1; copy++) {
-                int x = Math.round(originX + ((Float) label[1] + copy) * span - w * 0.5f);
-                int y = Math.round(originY + (Float) label[2] * span - h * 0.5f);
+                float[] at = uvScreen((Float) label[1], (Float) label[2], copy, mapX, mapY);
+                if (at == null) continue;
+                int x = Math.round(at[0] - w * 0.5f);
+                int y = Math.round(at[1] - h * 0.5f);
                 // Only the copy whose middle is on the map; partly off the edge, it's slid back
                 // on so it can be read whole
                 int middleX = x + w / 2, middleY = y + h / 2;
@@ -1963,7 +2300,9 @@ public class MapPanel extends JPanel {
      * it earns worked out (the monthly salary plus half the points).
      */
     // A guess this close (world units: 10 m) scores full marks
-    private static final double PERFECT_DISTANCE = 10.0 * PlayerBody.METRE;
+    private static final double PERFECT_DISTANCE = 20.0 * PlayerBody.METRE;
+    // The most a round can score
+    public static final int FULL_MARKS = 5000;
     // How far the guess was from the answer this round (world units)
     private double roundDistance;
 
@@ -1983,7 +2322,33 @@ public class MapPanel extends JPanel {
         };
         Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
         Multiplayer session = Multiplayer.active();
-        if (partnerGuess != null && partnerPin != null && session != null) {
+        if (pin == null || (session != null && partnerGuess != null && partnerPin == null)) {
+            // A round gone unguessed (this player's, the partner's or both): what was guessed, if anything
+            List<String> said = new ArrayList<>();
+            List<Color> shades = new ArrayList<>();
+            if (pin == null) {
+                said.add("You didn't guess in time");
+                shades.add(new Color(245, 105, 90));
+            } else {
+                said.add(String.format("You: %s, +%,d productivity", distanceText(roundDistance), points));
+                shades.add(session != null ? brighter(ownColour()) : Color.WHITE);
+            }
+            if (session != null && partnerGuess != null) {
+                if (partnerPin == null) {
+                    said.add("Employee " + session.remoteLabel() + " didn't guess in time");
+                    shades.add(brighter(partnerColour()));
+                } else {
+                    double theirDistance = SphereMath.angle(partnerPin, goal) * Planet.radius();
+                    said.add(String.format("Employee %s: %s, +%,d productivity", session.remoteLabel(), distanceText(theirDistance), partnerGuess.score()));
+                    shades.add(brighter(partnerColour()));
+                }
+            }
+            said.add(String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash));
+            shades.add(new Color(120, 230, 140));
+            lines = said.toArray(new String[0]);
+            colours = shades.toArray(new Color[0]);
+        }
+        else if (partnerGuess != null && partnerPin != null && session != null) {
             // Multiplayer: both players' guesses, each named in their colour
             double theirDistance = SphereMath.angle(partnerPin, goal) * Planet.radius();
             // ...and who was closer, plainly: green if it was this player, red if the partner
@@ -2048,7 +2413,9 @@ public class MapPanel extends JPanel {
      * the tag goes beside it instead.
      */
     private void drawLastRound(Graphics2D g2d, int mapX, int mapY) {
-        int x = coreToScreenX(lastRoundX, mapX), y = coreToScreenY(lastRoundY, mapY);
+        double[] at = screenOf(lastRound, mapX, mapY);
+        if (at[2] < 0.0) return;
+        int x = (int) Math.round(at[0]), y = (int) Math.round(at[1]);
         if (x < mapX || x > mapX + currentMapSize || y < mapY || y > mapY + mapHeight()) return;
         Shape clip = g2d.getClip();
         g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
@@ -2087,7 +2454,7 @@ public class MapPanel extends JPanel {
     }
 
     private void drawPartnerPin(Graphics2D g2d, int mapX, int mapY, int pinLength, int headDiameter) {
-        double[] p = globe.project(partnerPin, mapX, mapY, currentMapSize, mapHeight());
+        double[] p = screenOf(partnerPin, mapX, mapY);
         if (p[2] < 0.0) return;
         int x = (int) Math.round(p[0]), y = (int) Math.round(p[1]);
         Stroke old = g2d.getStroke();

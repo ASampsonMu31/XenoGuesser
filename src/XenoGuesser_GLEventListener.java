@@ -216,6 +216,12 @@ private static class SpeciesConfig {
     // The HUD drawn over the 3D view, and what each picture last showed
     private final HudOverlay hud = new HudOverlay();
     private int hudScoreVersion = -1, hudFps = -1, hudItemsVersion = -1;
+    private long hudClockTenth = -1L;
+    private Achievements.Achievement hudToast;
+    // Under this long left on the round's clock, the screen's edges pulse red (M45)
+    private static final long LOW_CLOCK_MS = 5000L;
+    // While the game's paused (M46) the view is greyed out altogether: nothing of it to study
+    private static final float PAUSED_DIM = 1f;
     private float hudScale = -1f;
     private MapPanel.MapSize hudMapSize;
     private volatile boolean menuOpen;
@@ -744,8 +750,7 @@ private static class SpeciesConfig {
             mapPictures = pictures;
             // (a picture map already chosen gets its pictures now)
             javax.swing.SwingUtilities.invokeLater(() -> {
-                Overlay shown = currentDebugFactor;
-                if (minimap != null && shown != null && PICTURE_MAPS.contains(shown.factor())) chooseGradient(shown);
+                if (minimap != null && currentPictureMap != null) choosePictureMap(currentPictureMap);
             });
             // Drawn in tiles when zoomed in close
             java.util.Map<MapPanel.Layer, MapTiles.Renderer> layerTiles = new java.util.EnumMap<>(java.util.Map.of(
@@ -1107,6 +1112,8 @@ private static class SpeciesConfig {
             }
         }
         renderScene(gl);
+        // (light-headed, once the oxygen's downgraded: M52; the HUD over it stays clear)
+        if (!hideFirstPerson) oxygenBlur.apply(gl, screenWidth, screenHeight, oxygenStrength, oxygenTime);
         if (!hideFirstPerson) drawHud(drawable);
         advancePreviews(gl);
 
@@ -3402,6 +3409,8 @@ private static class SpeciesConfig {
     /** The round has begun for the player (rounds begin together on both PCs, M16). */
     public void startRoundClock() {
         roundClockStart = getSeconds();
+        // (and the round's creatures placed afresh, from where their ranges put them)
+        if (organismManager != null) organismManager.respawn();
     }
 
     private void render() {
@@ -3440,6 +3449,7 @@ private static class SpeciesConfig {
         // (in the game modes where the player stays where they landed, they can't walk)
         if (!GameMode.current().moving) { moveW = false; moveA = false; moveS = false; moveD = false; }
         if (moveA && moveD) { moveA = false; moveD = false; }
+        updateOxygen(deltaTime, moveW || moveA || moveS || moveD, elapsedTime);
 
         SpherePosition sphereBeforeMove = camera.getSpherePosition();
         if (minimap != null && minimap.isFullScreenRevealMode()) {
@@ -3789,6 +3799,31 @@ private static class SpeciesConfig {
             hudFps = -1;
         }
 
+        // The round's clock (M41), at the top in the middle, while it's running
+        long[] clock = minimap != null ? minimap.guessClock() : null;
+        if (clock != null) {
+            long tenth = clock[0] / 100L;
+            String note = clock[2] == 1L && Multiplayer.active() != null
+                    ? "Employee " + Multiplayer.active().remoteLabel() + " guessed!" : "Time to guess";
+            if (rescaled || tenth != hudClockTenth || !hud.has("clock")) {
+                hudClockTenth = tenth;
+                BufferedImage image = HudStyle.canvas(HudStyle.TIMER_W, HudStyle.TIMER_H, scale, g);
+                HudStyle.paintTimer(g[0], clock[0], clock[1], note);
+                g[0].dispose();
+                hud.put("clock", image, (screenWidth - Math.round(HudStyle.TIMER_W * scale)) / 2, margin);
+            }
+        }
+        hud.setVisible("clock", clock != null);
+        // Under 5 s left (M45), the screen's edges pulse red, about once a second and stronger
+        // as it runs out
+        if (clock != null && clock[0] > 0L && clock[0] < LOW_CLOCK_MS) {
+            float urgency = 1f - clock[0] / (float) LOW_CLOCK_MS;
+            float beat = 0.5f + 0.5f * (float) Math.cos(System.nanoTime() / 1e9 * Math.PI * 2.0 * 1.25);
+            hud.setEdgeGlow(Math.min(0.9f, (0.6f + 0.3f * urgency) * (0.3f + 0.7f * beat)));
+        } else {
+            hud.setEdgeGlow(0f);
+        }
+
         // The inventory: only what the player has bought, and nothing at all until they've bought something
         java.util.List<HudStyle.Item> items = inventoryItems();
         if (rescaled || itemsVersion != hudItemsVersion || !hud.has("inventory")) {
@@ -3812,7 +3847,7 @@ private static class SpeciesConfig {
                 hudMapSize = size;
                 String[] keys = switch (size) {
                     case SMALL -> new String[] { "M", "Expand map" };
-                    case LARGE -> new String[] { "M", "Contract map", "", "Click the map to place your marker" };
+                    case LARGE -> new String[] { "M", "Contract map", "", "Scroll to zoom", "", "Click the map to place your marker" };
                 };
                 BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
                 java.awt.Graphics2D pg = probe.createGraphics();
@@ -3834,7 +3869,29 @@ private static class SpeciesConfig {
 
         drawLensFinds(scale);
 
-        hud.setDim(menuOpen ? 0.45f : 0f);
+        // An achievement just unlocked (M53): at the bottom right, just above the map
+        Object[] toast = Achievements.toast();
+        if (toast != null && minimap != null) {
+            Achievements.Achievement a = (Achievements.Achievement) toast[0];
+            if (rescaled || a != hudToast || !hud.has("achievement")) {
+                hudToast = a;
+                BufferedImage image = HudStyle.canvas(Achievements.TOAST_W, Achievements.TOAST_H, scale, g);
+                Achievements.paintToast(g[0], a);
+                g[0].dispose();
+                hud.put("achievement", image, 0, 0);
+            }
+            java.awt.Rectangle map = minimap.getBounds();
+            java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
+            if (view != null) map.translate(-view.getX(), -view.getY());
+            hud.move("achievement", screenWidth - hud.width("achievement") - margin,
+                    Math.round((map.y - 16) * scale) - Math.round((Achievements.TOAST_H + HudStyle.HINT_H + 8) * scale));
+            hud.setAlpha("achievement", (Float) toast[1]);
+        }
+        if (hud.has("achievement")) hud.setVisible("achievement", toast != null);
+        // (the map's hint goes with the map while the game's paused: M46)
+        if (hud.has("mapHint")) hud.setVisible("mapHint", !GameClock.isPaused());
+
+        hud.setDim(!menuOpen ? 0f : GameClock.isPaused() ? PAUSED_DIM : 0.45f);
         hud.draw(gl, screenWidth, screenHeight);
     }
 
@@ -3968,8 +4025,9 @@ private static class SpeciesConfig {
         }
     }
 
+    // (the world's time, which stands still while the game's paused: see GameClock)
     private double getSeconds() {
-        return System.currentTimeMillis() / 1000.0;
+        return GameClock.millis() / 1000.0;
     }
 
     public static float precalculateSeaLevel(long seed, PerlinNoise noise) {
@@ -4033,9 +4091,28 @@ private static class SpeciesConfig {
     // Bumped when an item is bought, so the inventory is drawn again
     private volatile int itemsVersion;
 
+    /**
+     * The collections' achievements (M53), for what's been got this game: every gadget, every
+     * infrastructure map (the buildings, shops and the maps of pictures), every plant's and every
+     * animal's heatmap. (Not with the developer's everything unlocked.)
+     */
+    private void checkCollections() {
+        if (Dev.flag("xenoguesser.unlockall")) return;
+        if (ownedItems.containsAll(List.of(ITEMS))) Achievements.unlock(Achievements.Achievement.TECHNICIAN);
+        boolean infrastructure = ownedLayers.contains(MapPanel.Layer.BUILDINGS) && ownedLayers.contains(MapPanel.Layer.SHOPS);
+        for (FactorName f : PICTURE_MAPS) infrastructure &= ownedOverlays.contains(Overlay.of(f));
+        if (infrastructure) Achievements.unlock(Achievements.Achievement.INFRASTRUCTURE_EXPERT);
+        boolean flora = true, fauna = organismManager.speciesCount() > 0;
+        for (int s = 0; s < NUM_SPECIES; s++) flora &= ownedOverlays.contains(new Overlay(FactorName.FLORA, s));
+        for (int i = 0; i < organismManager.speciesCount(); i++) fauna &= ownedOverlays.contains(new Overlay(FactorName.ANIMAL_POPULATION, i));
+        if (flora) Achievements.unlock(Achievements.Achievement.BOTANIST);
+        if (fauna) Achievements.unlock(Achievements.Achievement.ZOOLOGIST);
+    }
+
     /** Lists, beside the enlarged map, the layers and overlays the player has. */
     private void refreshMapChoices() {
         if (minimap == null) return;
+        checkCollections();
         List<MapPanel.Layer> layers = new ArrayList<>();
         for (MapPanel.Layer layer : MapPanel.Layer.values()) if (ownedLayers.contains(layer)) layers.add(layer);
         java.util.LinkedHashMap<String, List<String>> groups = new java.util.LinkedHashMap<>();
@@ -4044,11 +4121,20 @@ private static class SpeciesConfig {
             for (Overlay o : group.getValue()) if (ownedOverlays.contains(o)) labels.add(overlayLabel(o));
             groups.put(group.getKey(), labels);
         }
+        // (the maps of pictures go in the markings' Infrastructure folder: M47)
+        List<String> pictureMaps = new ArrayList<>();
+        for (FactorName f : PICTURE_MAPS) if (ownedOverlays.contains(Overlay.of(f))) pictureMaps.add(f.label());
+        groups.get("").removeIf(label -> pictureMaps.contains(label));
         Overlay shown = currentDebugFactor;
+        FactorName pictures = currentPictureMap;
         minimap.setLayerChoices(layers, groups, shown != null && ownedOverlays.contains(shown) ? overlayLabel(shown) : null, label -> {
             Overlay chosen = null;
             for (Overlay o : allOverlays()) if (overlayLabel(o).equals(label)) chosen = o;
             chooseGradient(chosen);
+        }, pictureMaps, pictures != null ? pictures.label() : null, label -> {
+            FactorName chosen = null;
+            for (FactorName f : PICTURE_MAPS) if (f.label().equals(label)) chosen = f;
+            choosePictureMap(chosen);
         }, this::choiceIcon);
     }
 
@@ -4069,10 +4155,11 @@ private static class SpeciesConfig {
         for (String item : ITEMS) {
             if (ownedItems.contains(item)) continue;
             HudStyle.IconPainter painter = itemIcon(item);
-            ShopPanel.Card card = new ShopPanel.Card(item, "Item", null, painter, describe(descriptions, item, item),
+            ShopPanel.Card card = new ShopPanel.Card(item, "Gadget", null, painter, describe(descriptions, item, item),
                     ShopPanel.price(round, ShopPanel.ITEM_PRICE_FACTOR, rand), () -> {
                 ownedItems.add(item);
                 itemsVersion++;
+                checkCollections();
             });
             for (int copy = 0; copy < ShopPanel.ITEM_COPIES; copy++) deck.add(card);
         }
@@ -4109,10 +4196,10 @@ private static class SpeciesConfig {
         }
         // The shop before the first round always has an item among its three (a thermometer,
         // altimeter or identification kit, else any not yet had), in place of its last card
-        if (round < 1 && dealt.stream().noneMatch(c -> "Item".equals(c.kind()))) {
+        if (round < 1 && dealt.stream().noneMatch(c -> "Gadget".equals(c.kind()))) {
             ShopPanel.Card item = null;
             for (ShopPanel.Card card : deck) {
-                if (!"Item".equals(card.kind())) continue;
+                if (!"Gadget".equals(card.kind())) continue;
                 boolean named = card.name().equals(THERMOMETER) || card.name().equals(ALTIMETER) || card.name().equals(KIT);
                 if (item == null || named) item = card;
                 if (named) break;
@@ -4232,6 +4319,8 @@ private static class SpeciesConfig {
     // pictures ({picture, worldX, worldZ}), once drawn, and how tall
     private static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES);
     private volatile java.util.Map<FactorName, List<Object[]>> mapPictures = java.util.Map.of();
+    // The map of pictures shown (over any heatmap: M47), or null
+    private volatile FactorName currentPictureMap;
     private static final int MAP_PICTURE_HEIGHT = 128;
 
     /**
@@ -4319,7 +4408,7 @@ private static class SpeciesConfig {
         if (floraPortraits == null) {
             java.awt.Image[] portraits = new java.awt.Image[NUM_SPECIES];
             for (int s = 0; s < NUM_SPECIES; s++) {
-                BufferedImage view = floraView(gl, s, PREVIEW_RENDER, (float) Math.toRadians(30));
+                BufferedImage view = floraView(gl, s, PREVIEW_RENDER, (float) Math.toRadians(30), true);
                 portraits[s] = view == null ? null : Offscreen.cropTogether(new BufferedImage[] { view }, 96)[0];
             }
             floraPortraits = portraits;
@@ -4400,6 +4489,11 @@ private static class SpeciesConfig {
      * the viewer is (so the planet's curve leaves it be) by pointing the camera at it a moment.
      */
     private BufferedImage floraView(GL3 gl, int s, int render, float angle) {
+        return floraView(gl, s, render, angle, false);
+    }
+
+    /** As floraView; fitted, framed to the plant itself (its picture for the map: see Offscreen.captureFitted). */
+    private BufferedImage floraView(GL3 gl, int s, int render, float angle, boolean fitted) {
         Model branch = null, leaves = null;
         for (int lod = 0; lod < floraBranchModelsLOD[s].length && branch == null; lod++) {
             for (int v = 0; v < FLORA_VARIATIONS; v++) {
@@ -4424,19 +4518,39 @@ private static class SpeciesConfig {
                 Matrix4Transform.lookAt(eye, centre, new Vector3(0f, 1f, 0f)));
         final Model trunk = branch, foliage = leaves;
         Vector3 light = new Vector3(0.62f, 0.62f, 0.66f);
-        return Offscreen.capture(gl, render, () -> {
+        java.util.function.Consumer<Matrix4> draw = zoom -> {
+            Matrix4 shown = Matrix4.multiply(zoom, viewProjection);
             gl.glDisable(GL3.GL_CULL_FACE);
             terrainShader.use(gl);
             terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
             trunk.setModelMatrix(model);
-            trunk.renderWith(gl, light, viewProjection, eye);
+            trunk.renderWith(gl, light, shown, eye);
             leafShader.use(gl);
             leafShader.setVec3(gl, "u_LeafDarkColor", leafDarkColour(sc.healthyColor));
             leafShader.setVec3(gl, "u_LeafLightColor", leafLightColour(sc.healthyColor));
             foliage.setModelMatrix(model);
-            foliage.renderWith(gl, light, viewProjection, eye);
+            foliage.renderWith(gl, light, shown, eye);
             gl.glEnable(GL3.GL_CULL_FACE);
-        });
+        };
+        return fitted ? Offscreen.captureFitted(gl, render, draw) : Offscreen.capture(gl, render, () -> draw.accept(new Matrix4(1f)));
+    }
+
+    /** Developer aid: saves the map's pictures of the plants and animals, each as prefix_plant3.png and the like. */
+    public void devSavePortraits(String prefix) {
+        java.awt.Image[][] sets = { floraPortraits, speciesPortraits };
+        String[] names = { "plant", "animal" };
+        for (int k = 0; k < 2; k++) {
+            if (sets[k] == null) continue;
+            for (int i = 0; i < sets[k].length; i++) {
+                if (!(sets[k][i] instanceof BufferedImage image)) continue;
+                try {
+                    javax.imageio.ImageIO.write(image, "png", new java.io.File(prefix + "_" + names[k] + i + ".png"));
+                } catch (java.io.IOException e) {
+                    System.err.println("Couldn't save a portrait: " + e.getMessage());
+                }
+            }
+        }
+        System.out.println("[SHOT] Portraits saved to " + prefix + "_*.png");
     }
 
     /** Draws each species' picture for the map (with the GL context, once its meshes are made). */
@@ -4456,8 +4570,25 @@ private static class SpeciesConfig {
         });
     }
 
+    /** Shows one of the maps of pictures over the map (and whatever heatmap's on it), or none. */
+    public void choosePictureMap(FactorName factor) {
+        currentPictureMap = factor;
+        minimap.setPictureOverlay(factor == null ? null : factor.label(), factor == null ? null : picturesOf(factor));
+    }
+
     public void chooseGradient(Overlay factorName) {
+        // (a map of pictures isn't a heatmap: it's shown over one)
+        if (factorName != null && PICTURE_MAPS.contains(factorName.factor())) {
+            choosePictureMap(factorName.factor());
+            return;
+        }
         currentDebugFactor = factorName;
+        // (the nations' names go in the middle of each country, as the maps of pictures do: so
+        // choosing the nations puts any of those away)
+        if (factorName != null && factorName.factor() == FactorName.NATIONS && currentPictureMap != null) {
+            choosePictureMap(null);
+            refreshMapChoices();
+        }
         java.awt.Image[] portraits = factorName != null && factorName.factor() == FactorName.FLORA ? floraPortraits : speciesPortraits;
         minimap.setOverlayPicture(factorName != null && factorName.species() >= 0 && portraits != null ? portraits[factorName.species()] : null);
         FactorName factor = factorName == null ? null : factorName.factor();
@@ -4492,11 +4623,6 @@ private static class SpeciesConfig {
             minimap.setLegend(null, null);
         }
         minimap.setOverlayTiles(overlayTiles(factorName), factorName == null ? null : overlayLabel(factorName));
-        if (factor != null && PICTURE_MAPS.contains(factor)) {
-            // Not colours: each nation's bollard, road markings or pole stood on its land, over the plain map
-            minimap.setPictureOverlay(overlayLabel(factorName), picturesOf(factor));
-            return;
-        }
         if (factorName == null) {
             minimap.setOverlay(null, null, false);
             return;
@@ -5159,6 +5285,43 @@ private static class SpeciesConfig {
         return 100.0 * sea / n;
     }
 
+    // ------------------------------------------------------------------ the oxygen's downgrade (M52)
+
+    private final OxygenBlur oxygenBlur = new OxygenBlur();
+    // Whether the oxygen's been downgraded (it stays so for the rest of the game); how out of
+    // breath the player is, 0 to 1 (up while walking, down while standing still); and how
+    // light-headed that makes them, 0 to 1, and the time it sways by
+    private volatile boolean oxygenDowngraded;
+    private float exertion, oxygenStrength, oxygenTime;
+    // Walking this many seconds without a stop takes exertion from nothing to the most; standing
+    // this long brings it back to nothing. It shows from EXERTION_SHOWS on, at its worst at the most
+    private static final float EXERTION_BUILD_SECONDS = 45f, EXERTION_CLEAR_SECONDS = 30f, EXERTION_SHOWS = 0.3f;
+    // Where the player can't walk (GameMode.NO_MOVE...), it's always this bad
+    private static final float STILL_STRENGTH = 0.45f;
+
+    /** The oxygen's downgraded, for the rest of the game. */
+    public void downgradeOxygen() {
+        oxygenDowngraded = true;
+        System.out.println("[OXYGEN] Downgraded");
+    }
+
+    /** How light-headed the player is this frame, from how long they've been walking (or always, where they can't). */
+    private void updateOxygen(double deltaTime, boolean walking, double time) {
+        if (!oxygenDowngraded) {
+            oxygenStrength = 0f;
+            return;
+        }
+        oxygenTime = (float) time;
+        if (!GameMode.current().moving) {
+            oxygenStrength = STILL_STRENGTH;
+            return;
+        }
+        float dt = (float) deltaTime;
+        exertion = Math.max(0f, Math.min(1f, exertion + (walking ? dt / EXERTION_BUILD_SECONDS : -dt / EXERTION_CLEAR_SECONDS)));
+        float t = Math.max(0f, Math.min(1f, (exertion - EXERTION_SHOWS) / (1f - EXERTION_SHOWS)));
+        oxygenStrength = 0.9f * t * t * (3f - 2f * t);
+    }
+
     /** April's message from Xenocorp, saying how much of the planet is ocean: handed to show once it's ready to play. */
     public void startAprilMessage(java.util.function.Consumer<TransmissionMessage> show) {
         Thread start = new Thread(() -> {
@@ -5176,6 +5339,11 @@ private static class SpeciesConfig {
     private final RainSound rainSound = new RainSound();
     // (hidden to begin with: the world is made behind the cockpit, and isn't heard until it's entered)
     private volatile boolean worldHidden = true;
+
+    /** Whether a round is being played in the world just now: it's shown, built and not loading the next. */
+    public boolean roundInPlay() {
+        return worldReady && !worldHidden && !roundLoading && !teleportLoading;
+    }
 
     public void setWorldHidden(boolean hidden) {
         worldHidden = hidden;
@@ -5386,9 +5554,15 @@ private static class SpeciesConfig {
         return celsius;
     }
 
-    /** While the settings are open the view behind them is darkened. */
+    /**
+     * While the settings are open the view behind them is darkened; in singleplayer (M46) it's
+     * greyed out altogether and the game's paused: the world's time stops (see GameClock), so
+     * nothing moves, falls or grows, until they're closed. (Not in multiplayer, where the
+     * partner's game goes on.)
+     */
     public void setMenuOpen(boolean open) {
         menuOpen = open;
+        GameClock.setPaused(open && !Multiplayer.isActive());
     }
 
     /**

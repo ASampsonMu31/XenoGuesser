@@ -74,8 +74,11 @@ public class ShopPanel extends JPanel {
     private final Timer animation = new Timer(16, e -> repaint());
     // What the wait after leaving says (multiplayer: who it's waiting for); null for the usual
     private java.util.function.Supplier<String> waitingText;
-    // A message from Xenocorp scrolling along the bottom as it's spoken (null for none)
+    // A message from Xenocorp scrolling along the bottom as it's spoken (null for none), and
+    // whether the shop's held until it's been said or skipped (the first shop's: nothing taken nor
+    // the shop left while it plays, nor before it starts)
     private MessageTicker message;
+    private boolean heldForMessage;
 
     // Where things are, as last laid out
     private final List<Rectangle> cardBounds = new ArrayList<>();
@@ -113,7 +116,7 @@ public class ShopPanel extends JPanel {
                         return;
                     }
                 }
-                if (nextButton.contains(e.getPoint())) nextRound();
+                if (nextButton.contains(e.getPoint()) && !heldForMessage) nextRound();
             }
         };
         addMouseListener(mouse);
@@ -144,9 +147,31 @@ public class ShopPanel extends JPanel {
 
     /** Plays a message from Xenocorp while the shop is open, its words scrolling along the bottom as they're said. */
     public void playMessage(TransmissionMessage message) {
-        if (!isOpen() || leaving || message == null) return;
+        if (!isOpen() || leaving || message == null) {
+            heldForMessage = false;
+            repaint();
+            return;
+        }
         this.message = new MessageTicker(message);
         animation.start();
+    }
+
+    /** Holds the shop (its buttons greyed) until the message about to be played has been said or skipped. */
+    public void holdForMessage() {
+        heldForMessage = true;
+        repaint();
+    }
+
+    /** Whether a message is playing in the shop (or about to). */
+    public boolean messagePlaying() {
+        return message != null || heldForMessage;
+    }
+
+    /** Enter: the message stops, and the shop's let go. */
+    public void skipMessage() {
+        stopMessage();
+        heldForMessage = false;
+        repaint();
     }
 
     private void stopMessage() {
@@ -157,6 +182,7 @@ public class ShopPanel extends JPanel {
     /** Puts the shop away (the next round has begun). */
     public void close() {
         stopMessage();
+        heldForMessage = false;
         animation.stop();
         setVisible(false);
         cards = List.of();
@@ -174,7 +200,7 @@ public class ShopPanel extends JPanel {
 
     /** Whether card i can be bought now: not yet bought, affordable, and (where it's free) nothing else taken. */
     private boolean canBuy(int i) {
-        if (leaving || bought[i] || hud.getCash() < cards.get(i).price()) return false;
+        if (leaving || bought[i] || hud.getCash() < cards.get(i).price() || heldForMessage) return false;
         if (free()) for (boolean b : bought) if (b) return false;
         return true;
     }
@@ -283,10 +309,15 @@ public class ShopPanel extends JPanel {
                 drawLoading(g, (w - lw) / 2, buttonsY, lw, bh, now);
             } else {
                 nextButton.setBounds((w - bw) / 2, buttonsY, bw, bh);
-                drawButton(g, nextButton, "Next round", HudStyle.GLASS_SOLID, true);
+                drawButton(g, nextButton, "Next round", heldForMessage ? DISABLED : HudStyle.GLASS_SOLID, !heldForMessage);
             }
             // The message, until it's been said (or the shop's left)
-            if (message != null && message.isDone()) message = null;
+            if (message != null && message.isDone()) {
+                message = null;
+                heldForMessage = false;
+                // (the buttons above were drawn greyed: drawn again let go, not left until the mouse moves)
+                repaint();
+            }
             if (message != null) {
                 int stripH = Math.max(44, h / 20);
                 message.draw(g, w, h - stripH, stripH);

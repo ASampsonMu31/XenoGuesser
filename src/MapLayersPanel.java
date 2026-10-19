@@ -25,8 +25,10 @@ import java.util.function.Function;
 
 /**
  * Beside the enlarged map: tick boxes for the markings drawn over the land and sea (contours,
- * roads, buildings, shops), and a choice of at most one heatmap to colour the land with under them, each
- * row with its own icon. Nothing here takes the keyboard, so walking keys keep working.
+ * rivers, roads; and in an Infrastructure folder, buildings, shops and a choice of at most one
+ * of the maps of pictures: bollards, road lines, utility poles), and a choice of at most one
+ * heatmap to colour the land with under them, each row with its own icon. Nothing here takes the
+ * keyboard, so walking keys keep working.
  */
 public class MapLayersPanel extends JPanel {
     public static final int WIDTH = 260;
@@ -70,7 +72,7 @@ public class MapLayersPanel extends JPanel {
         }
     }
     private final Function<String, Image> icons;
-    private final List<Row> overlayRows = new ArrayList<>();
+    private final List<Row> overlayRows = new ArrayList<>(), pictureRows = new ArrayList<>();
     private String chosenOverlay;
 
     /**
@@ -83,12 +85,15 @@ public class MapLayersPanel extends JPanel {
      *                 own, then each other group in a dropdown headed with the group's name
      * @param chosen the overlay chosen to begin with, or null
      * @param onOverlay told the overlay chosen, or null for none
+     * @param pictureMaps the maps of pictures on offer, by name (listed in the Infrastructure folder)
+     * @param chosenPictures the one of them chosen to begin with, or null
+     * @param onPictures told the one chosen, or null when it's chosen again (none)
      * @param icons each row's icon, by its layer's, overlay's or dropdown's name (looked up as
      *              it's drawn, so a picture made later turns up; null for none)
      */
     public MapLayersPanel(BiConsumer<MapPanel.Layer, Boolean> onLayer, List<MapPanel.Layer> layers, java.util.Set<MapPanel.Layer> ticked,
                           java.util.LinkedHashMap<String, List<String>> overlays, String chosen, Consumer<String> onOverlay,
-                          Function<String, Image> icons) {
+                          List<String> pictureMaps, String chosenPictures, Consumer<String> onPictures, Function<String, Image> icons) {
         this.icons = icons;
         this.chosenOverlay = chosen;
         setOpaque(false);
@@ -97,20 +102,25 @@ public class MapLayersPanel extends JPanel {
         list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
         list.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        if (!layers.isEmpty()) heading("MARKINGS");
-        for (MapPanel.Layer layer : layers) {
-            Row row = new Row(layer.label, layer.label, false);
-            row.on = ticked.contains(layer);
-            row.whenClicked = () -> {
-                row.on = !row.on;
-                row.repaint();
-                onLayer.accept(layer, row.on);
-            };
-            list.add(row);
+        boolean anyMarking = !layers.isEmpty() || !pictureMaps.isEmpty();
+        if (anyMarking) heading("MARKINGS");
+        for (MapPanel.Layer layer : layers) if (!layer.infrastructure) list.add(layerRow(layer, ticked, onLayer));
+        // Infrastructure: what people have built, in its own folder (M47)
+        List<MapPanel.Layer> built = layers.stream().filter(l -> l.infrastructure).toList();
+        if (!built.isEmpty() || !pictureMaps.isEmpty()) {
+            Group folder = new Group("Infrastructure");
+            list.add(folder);
+            for (MapPanel.Layer layer : built) {
+                Row row = layerRow(layer, ticked, onLayer);
+                list.add(row);
+                folder.members.add(row);
+            }
+            for (String name : pictureMaps) folder.members.add(pictureRow(name, chosenPictures, onPictures));
+            folder.setOpen(chosenPictures != null);
         }
         boolean anyOverlay = overlays.values().stream().anyMatch(group -> !group.isEmpty());
         if (anyOverlay) {
-            if (!layers.isEmpty()) list.add(spacer());
+            if (anyMarking) list.add(spacer());
             heading("HEATMAPS");
             List<String> first = new ArrayList<>();
             first.add(null);
@@ -135,6 +145,38 @@ public class MapLayersPanel extends JPanel {
         scroll.getVerticalScrollBar().setUnitIncrement(16);
         add(scroll, BorderLayout.CENTER);
         setFocusable(false);
+    }
+
+    /** A marking's tick box. */
+    private Row layerRow(MapPanel.Layer layer, java.util.Set<MapPanel.Layer> ticked, BiConsumer<MapPanel.Layer, Boolean> onLayer) {
+        Row row = new Row(layer.label, layer.label, false);
+        row.on = ticked.contains(layer);
+        row.whenClicked = () -> {
+            row.on = !row.on;
+            row.repaint();
+            onLayer.accept(layer, row.on);
+        };
+        return row;
+    }
+
+    /**
+     * A map of pictures' row: a round button, the only one of them chosen once clicked (they'd
+     * crowd each other on the map), or none once clicked again.
+     */
+    private Row pictureRow(String name, String chosen, Consumer<String> onPictures) {
+        Row row = new Row(name, name, true);
+        row.on = name.equals(chosen);
+        row.whenClicked = () -> {
+            boolean choose = !row.on;
+            for (Row r : pictureRows) {
+                r.on = choose && r == row;
+                r.repaint();
+            }
+            onPictures.accept(choose ? name : null);
+        };
+        pictureRows.add(row);
+        list.add(row);
+        return row;
     }
 
     /** One overlay's row, the only one chosen of them all once clicked. */
@@ -223,7 +265,7 @@ public class MapLayersPanel extends JPanel {
             g2.fill(arrow);
             Image icon = icons == null ? null : icons.apply(text);
             int ix = 8 + BOX + 10, iy = (h - ICON) / 2;
-            if (icon != null) g2.drawImage(icon, ix, iy, ICON, ICON, null);
+            if (icon != null) g2.drawImage(sized(icon, g2), ix, iy, ICON, ICON, null);
             int baseline = (h + g2.getFontMetrics(ITEM_FONT).getAscent() - g2.getFontMetrics(ITEM_FONT).getDescent()) / 2;
             g2.setFont(ITEM_FONT.deriveFont(Font.BOLD));
             g2.setColor(TEXT);
@@ -235,6 +277,25 @@ public class MapLayersPanel extends JPanel {
             g2.drawString(count, w - 14 - g2.getFontMetrics().stringWidth(count), baseline);
             g2.dispose();
         }
+    }
+
+    // Each icon made ready at the size it's drawn on the screen (see sized)
+    private static final java.util.Map<Image, Image> SIZED = java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /**
+     * An icon (a square picture) made smaller to the pixels it covers on the screen a half at a
+     * time (see Offscreen.shrink), not in one blurring step as it's drawn (M54).
+     */
+    private static Image sized(Image icon, Graphics2D g) {
+        if (!(icon instanceof java.awt.image.BufferedImage b) || b.getWidth() != b.getHeight()) return icon;
+        int pixels = (int) Math.round(ICON * g.getTransform().getScaleX());
+        if (pixels <= 0 || pixels >= b.getWidth()) return icon;
+        Image ready = SIZED.get(icon);
+        if (ready == null || ready.getWidth(null) != pixels) {
+            ready = Offscreen.shrink(b, pixels);
+            SIZED.put(icon, ready);
+        }
+        return ready;
     }
 
     private void heading(String text) {
@@ -336,7 +397,7 @@ public class MapLayersPanel extends JPanel {
             // The icon
             int ix = bx + BOX + 10, iy = (h - ICON) / 2;
             Image icon = icons == null ? null : icons.apply(iconKey);
-            if (icon != null) g2.drawImage(icon, ix, iy, ICON, ICON, null);
+            if (icon != null) g2.drawImage(sized(icon, g2), ix, iy, ICON, ICON, null);
             // The name
             g2.setFont(ITEM_FONT);
             g2.setColor(TEXT);

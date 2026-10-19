@@ -11,8 +11,10 @@ import java.awt.Graphics2D;
  */
 public class MessageStrip extends JComponent {
     private MessageTicker ticker;
+    // Told when the message ends: true if it was skipped (Enter), false if it was said to its end
+    private java.util.function.Consumer<Boolean> onEnd;
     private final Timer frames = new Timer(16, e -> {
-        if (ticker != null && ticker.isDone()) stop();
+        if (ticker != null && ticker.isDone()) end(false);
         repaint();
     });
 
@@ -22,10 +24,33 @@ public class MessageStrip extends JComponent {
     }
 
     public void play(TransmissionMessage message) {
+        play(message, null);
+    }
+
+    /** Plays a message; onEnd is told when it ends (true if skipped). */
+    public void play(TransmissionMessage message, java.util.function.Consumer<Boolean> onEnd) {
         stop();
         ticker = new MessageTicker(message);
+        this.onEnd = onEnd;
         setVisible(true);
         frames.start();
+    }
+
+    /** Whether a message is playing. */
+    public boolean isPlaying() {
+        return ticker != null;
+    }
+
+    /** Enter: the message stops where it is. */
+    public void skip() {
+        if (ticker != null) end(true);
+    }
+
+    private void end(boolean skipped) {
+        java.util.function.Consumer<Boolean> told = onEnd;
+        onEnd = null;
+        stop();
+        if (told != null) told.accept(skipped);
     }
 
     /** Stops the message and hides the strip. */

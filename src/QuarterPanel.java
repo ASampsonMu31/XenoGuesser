@@ -89,9 +89,23 @@ public class QuarterPanel extends JPanel {
         repaint();
     }
 
+    // Why the quarter's lost before its end (M50), or null
+    private String outOfReach;
+
+    /**
+     * Shows a quarter (from 0) lost before its end: its target out of reach, even full marks in
+     * the rounds left (left of them) reaching only best.
+     */
+    public void showOutOfReach(int quarter, int money, int target, int left, int best, Runnable onContinue) {
+        show(quarter, money, target, false, onContinue);
+        outOfReach = String.format("Even full marks in the %s left would reach only %,d.", left == 1 ? "round" : left + " rounds", best);
+        repaint();
+    }
+
     /** Shows how quarter (from 0) went: the productivity against its target; won if it was the last quarter, passed. */
     public void show(int quarter, int money, int target, boolean won, Runnable onContinue) {
         this.multiplayer = false;
+        this.outOfReach = null;
         this.pressed = false;
         this.quarter = quarter;
         this.money = money;
@@ -128,7 +142,7 @@ public class QuarterPanel extends JPanel {
             }
 
             Color colour = HudStyle.QUARTER_COLOURS[quarter];
-            int pw = Math.min(w - 80, 640), ph = 300;
+            int pw = Math.min(w - 80, 640), ph = outOfReach != null ? 340 : 300;
             int px = (w - pw) / 2, py = (h - ph) / 2 - 30;
             HudStyle.panel(g, px, py, pw, ph, HudStyle.GLASS_SOLID);
 
@@ -136,8 +150,8 @@ public class QuarterPanel extends JPanel {
             float headingW = HudStyle.labelWidth(g, heading, 14f);
             HudStyle.label(g, heading, px + (pw - headingW) / 2f, py + 50, 14f, colour);
 
-            String result = won ? "YOU WIN" : passed ? "QUARTER PASSED" : "QUARTER FAILED";
-            g.setFont(HudStyle.font(Font.BOLD, 46f).deriveFont(java.util.Map.of(java.awt.font.TextAttribute.TRACKING, 0.08f)));
+            String result = won ? "YOU WIN" : passed ? "QUARTER PASSED" : outOfReach != null ? "TARGET OUT OF REACH" : "QUARTER FAILED";
+            g.setFont(HudStyle.font(Font.BOLD, outOfReach != null ? 34f : 46f).deriveFont(java.util.Map.of(java.awt.font.TextAttribute.TRACKING, 0.08f)));
             FontMetrics fm = g.getFontMetrics();
             g.setColor(passed ? new Color(110, 225, 130) : new Color(245, 105, 90));
             g.drawString(result, px + (pw - fm.stringWidth(result)) / 2f, py + 120);
@@ -147,6 +161,12 @@ public class QuarterPanel extends JPanel {
             fm = g.getFontMetrics();
             g.setColor(HudStyle.VALUE);
             g.drawString(detail, px + (pw - fm.stringWidth(detail)) / 2f, py + 172);
+            if (outOfReach != null) {
+                g.setFont(HudStyle.font(Font.PLAIN, 17f));
+                fm = g.getFontMetrics();
+                g.setColor(HudStyle.LABEL);
+                g.drawString(outOfReach, px + (pw - fm.stringWidth(outOfReach)) / 2f, py + 208);
+            }
 
             String text = passed && !won ? "Continue to the shop" : "Back to the menu";
             int bw = 300, bh = 48;

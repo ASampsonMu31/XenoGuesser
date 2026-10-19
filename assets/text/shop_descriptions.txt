@@ -3,7 +3,7 @@
 # the file is read afresh each time the shop opens, so changes show without a restart.
 # In the Flora and Fauna lines, {name} is replaced by the plant's or animal's name.
 
-# Items
+# Gadgets
 Compass = A brass pocket compass. Its needle swings to the planet's north, pulling harder near the equator.
 Thermometer = A glass thermometer. Read the air's warmth wherever you stand.
 Altimeter = A blue pocket altimeter. Its needle shows how high above the sea you stand, in metres.

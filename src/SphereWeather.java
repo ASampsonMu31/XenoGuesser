@@ -132,6 +132,9 @@ public final class SphereWeather {
         coverage = -1f;
         intensity = 0f;
         freshSnow = 0f;
+        // (the mix of snow and rain set afresh for the new place, not eased from the last round's:
+        // M54, snow was seen falling at 30 degrees for a while after a snowy round)
+        snowShare = -1f;
         java.util.Arrays.fill(dropLive, false);
     }
 

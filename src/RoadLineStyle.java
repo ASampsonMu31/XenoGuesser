@@ -73,21 +73,31 @@ public class RoadLineStyle {
         Collections.shuffle(colourOrder, rand);
         int worldColourCount = rand.nextFloat() < 0.4f ? 3 : 2;
 
-        int[] colourBloc = kinship.clusters(rand, worldColourCount, 0.1f);
-        int[] layoutBloc = kinship.clusters(rand, 3, 0.15f);
+        // (M54: fewer designs about the map, so they're less of a give-away: usually two layouts
+        // rather than three, fewer nations going their own way, and a layout's spacing and
+        // inset shared by all who use it; dashes and widths in two steps, not a smooth drift)
+        int layoutCount = rand.nextFloat() < 0.3f ? 3 : 2;
+        int[] colourBloc = kinship.clusters(rand, worldColourCount, 0.05f);
+        int[] layoutBloc = kinship.clusters(rand, layoutCount, 0.07f);
         float[] dashDrift = kinship.gradient(rand, 0.1f);
         float[] widthDrift = kinship.gradient(rand, 0.1f);
+        float[] blocSpacing = new float[layoutCount], blocInset = new float[layoutCount];
+        for (int b = 0; b < layoutCount; b++) {
+            blocSpacing[b] = 0.8f + rand.nextFloat() * 0.7f;
+            blocInset[b] = 1.5f + rand.nextFloat() * 2.0f;
+        }
 
         Map<Integer, RoadLineStyle> styles = new HashMap<>();
         for (int n = 1; n <= numNations; n++) {
             int[] layout = layouts.get(layoutBloc[n]);
             float[] rgb = LINE_COLOURS[colourOrder.get(colourBloc[n])];
 
-            float dashLength = 8.0f + dashDrift[n] * 18.0f;
-            float gapLength = 6.0f + (1.0f - dashDrift[n]) * 18.0f;
-            float lineWidth = 0.9f + widthDrift[n] * 0.7f;
-            float doubleSpacing = 0.8f + rand.nextFloat() * 0.7f;
-            float edgeInset = 1.5f + rand.nextFloat() * 2.0f;
+            float dash = dashDrift[n] < 0.5f ? 0.25f : 0.75f, width = widthDrift[n] < 0.5f ? 0.25f : 0.75f;
+            float dashLength = 8.0f + dash * 18.0f;
+            float gapLength = 6.0f + (1.0f - dash) * 18.0f;
+            float lineWidth = 0.9f + width * 0.7f;
+            float doubleSpacing = blocSpacing[layoutBloc[n]];
+            float edgeInset = blocInset[layoutBloc[n]];
 
             styles.put(n, new RoadLineStyle(
                 Placement.values()[layout[0]], layout[1] == 1, layout[2] == 1,

@@ -493,6 +493,53 @@ M40 (user, 2026-10-19; both modes) Wire and bridge bugs:
     - Bridges' railings are solid (plank handrails, beam parapets, arch ribs): recorded from just
       under the deck to the railing's top (obstacles now have a bottom as well as a top: one
       whose head is below the bottom, walking beneath, passes).
+M41 (user, 2026-10-19) Round clock, globe maps and fixes:
+    - The round's clock: in singleplayer a minute from the round's start (stopped while the
+      settings are open); in multiplayer none until the partner guesses, then 20 s, the panel
+      saying "Employee 119-X guessed!". Shown at the top in the middle as HUD panels are: the
+      seconds in a ring running out to nothing (cyan, gold, red), the time beside. Run out, the
+      round goes unguessed (a pin put down but not sent counts for nothing): 0 points, the salary
+      alone; the results show only the answer (and the partner's guess, if made: an unguessed
+      round is sent as a guess with no place, NaN); "You didn't guess in time".
+    - The map (small and enlarged) and the results each on a globe (to begin with) or the flat
+      chart, a button in the map's corner turning them. The map's globe is wrapped in what the
+      flat map shows (the overlay and the layers ticked); pins, notes, the last round's mark,
+      nation names and picture maps' pictures all placed on it; dragged to turn, scrolled to
+      zoom, clicked to put the pin down. Flat results draw the great circles on the chart.
+    - Bridges' railings (and their posts, hangers, lamps and solid parts) stop 2 short of any
+      other road meeting the bridge, so none bars it.
+    - Poles aren't wired where the span would run through a building (across its footprint
+      below its roof's top, the wires at their lowest): each takes its two nearest clear ones.
+    - Buildings white on the map; "Scroll to zoom" beside "M Contract map".
+M42 (user, 2026-10-19) The opening, for new players:
+    - January's message (singleplayer, as the first round begins): "You have one new message
+      from Xenocorp: Following the removal of IQ testing from our hiring process, a number of new
+      employees have struggled with tasks such as reading a map and opening a backpack. We have
+      therefore enclosed detailed instructions. We are hopeful these will not be necessary for you.
+      Xenocorp: Finding Our Place in the Universe." Recorded by tools/record_message.py (Piper
+      bryce as PlanetVoice runs it, eSpeak phonemes; said a phrase at a time, each word timed by
+      its share of its phrase's phonemes; filtered and levelled, and the static, with the gift
+      message's settings): assets/audio/xenocorp_january.wav and .txt, 19 s, 58 words.
+    - Said to its end (not skipped), the controls in a panel in the middle (W A S D move, Mouse
+      look, Space jump, M map, Scroll zoom, Click marker, 1 2 3 4 items, Esc settings, Enter skip),
+      closed with Continue or Enter. The round's clock waits for the message and the controls.
+    - Enter skips any message (the loading screen's, the shop's, one over the game), "[Enter] Skip"
+      at the right of every message's strip; on the loading screen it stops the message only (the
+      button's still pressed to go in).
+    - The first shop's Take and Next round are greyed until its message has been said or skipped.
+    - The loading screen (singleplayer): while "only employees that successfully meet their
+      assigned productivity targets will be retained" is said, January's score panel at the top
+      left, a gold arrow bobbing under it at the quarter's target ("Your target for January to
+      March"), fading in and out with the words.
+M43 (user, 2026-10-19) Fixes to M41-M42:
+    - January's message framed as every message is: the gift message's own opening (its chime and
+      the robotic "You have one new message from Xenocorp:", to 0.2 s before its own words) and its
+      closing chime (after its last word), the new words said between (record_message.py
+      --framed). 25.4 s in all, the words starting at 6.8 s as in the others.
+    - The controls panel shown: opaque, its own dark backdrop, and the 3D view put aside while
+      it's up (the system draws the 3D view over everything else in its way).
+    - The clock run out with a marker put down (but not guessed): it's guessed there, as if Guess
+      had been pressed, so it may still score; with none, the round's unguessed as before.
 
 -------------------------------------------------------------------------------
 DETERMINISM AUDIT (2026-10-17): does the same seed make the same world on two PCs?
@@ -1368,3 +1415,134 @@ LOG
             325 units straight on over a bridge and off it at a steady 40 a second, no stop at
             the bank. Not yet tried: walking into a bridge's railing, and turning about to see a
             wire stay.
+2026-10-19  M41 done (user). Singleplayer round left to run out: the results "You didn't guess in
+            time", only the flag, 0 points, $300. Multiplayer (two windows): the host guessed,
+            the joiner's 20 s ran out, it sent "GUESS round 1, pin (NaN, NaN, NaN), score 0"
+            and its results showed only the host's pin, line and the answer. The clock panel
+            drawn on its own (the frame grabs leave out the HUD). The enlarged map on its globe
+            with the wealth overlay, roads and buildings; the small map's globe; flat map and
+            flat results (dev switch -Dxenoguesser.flatmaps starts both flat). Seed 456: 2,353
+            spans left out for buildings, 2,748 wired. Not yet seen: the clock on screen in the
+            game, a bridge's railing stopping at a road.
+2026-10-19  M42 done (user). Seen: the loading screen with the score panel and the arrow at
+            "/ 800" as "productivity targets" scrolls by, "[Enter] Skip" at the strip's right; the
+            first shop greyed while the gift message plays, live once Enter skipped it; January's
+            message on the strip ("...reading a map and opening a backpack. We have therefore...")
+            then the controls panel. New HUD test steps enter (-Dxenoguesser.enterat) and leaveshop.
+            Not yet: the January message heard (its timing is from its phrases' phoneme shares).
+2026-10-19  M43 done (user). Seen on the screen itself (new HUD test step screen: a capture of the
+            window, the 3D view and all): January's message playing, the clock held at 1:00; the
+            controls panel over its backdrop. A marker put down at 40 s and left: at the clock's
+            end it was guessed, 2.0 km off, +815 productivity, +$707. New HUD test step pin
+            (-Dxenoguesser.pinat, pindelay). Not yet: the new opening and chimes heard.
+2026-10-19  M44 done (user). Enter skips the opening message from the loading screen's start (its
+            own key dispatcher, put in as the game starts, not when the game's keys are): tried
+            in the game's own process, a real Enter key event 9 s in, the message stopped, the
+            game not begun. The clock runs while any message plays, January's included; it waits
+            only while the controls panel covers the screen. The clock panel redrawn: one time,
+            "0:42", inside a larger ring, with "Time to guess" (or the partner's note) larger to
+            its right. No Enter cap beside Continue. Not yet: the new clock seen in the game.
+2026-10-19  M45 done (user). Under 5 s on the round's clock (singleplayer's and multiplayer's: the
+            same clock) the screen's edges pulse red, 1.25 a second, stronger as it runs out (a
+            glow worked out in the HUD shader, under the HUD). Seen on the screen at 0:03, at a
+            beat's peak and between beats. January re-recorded: "a standard-issue supply pack"
+            for "a backpack", and its sign-off ("Xenocorp: Finding Our Place in the Universe."
+            and the chime) is now the gift message's own recording, as its opening is
+            (record_message.py --framed takes both). Not yet: the new recording heard.
+2026-10-19  M46 done (user). Singleplayer rounds are 2 minutes. Pausing (the settings opened) in
+            singleplayer stops the world's time (new GameClock: getSeconds and the border lights
+            go by it), so the player, animals, people, vehicles, weather and water all stand
+            still; the view behind the menu is a flat grey and the map and its hint are hidden.
+            Not in multiplayer (the partner's game goes on): there the view's only darkened, as
+            before. Seen (new HUD test step pause, -Dxenoguesser.pauseat=open,close): frames 5 s
+            apart while paused the same but for far grass still loading in; the clock 1:52 when
+            paused, 1:51 a second after resuming 7 s later; the grey screen with no map.
+2026-10-19  M47 done (user). Nothing written to the terminal unless the developer switches are on
+            (Dev.ENABLED): standard out and error go nowhere from main's first line. Run from the
+            classes without the switch (as run.bat runs it), into a round and 200 s on: not one
+            line, the native libraries' included. The globe zoomed stays sharp: it's wrapped in
+            the flat map's own detail tiles (with the ticked markings composed over them) where
+            they're ready, the whole texture elsewhere; seen at 6x, its coast as crisp as the
+            flat map's. Markings now have an Infrastructure folder: Buildings, Shops and the
+            bollard, road-line and utility-pole maps (one of those three at a time, shown over
+            any heatmap now, not in its place). Each planet's climate drawn from its seed:
+            warmer or colder overall, a gentler or sharper fall-off to the poles, milder or
+            harsher poles, a warmer hemisphere, more or less regional variety. Each planet's
+            size too, up to 8% either way (seed 123: 142,517 round); it loaded and played.
+            Not yet seen: the globe's detail with markings ticked; how varied the climates are.
+2026-10-19  M48 done (user). The first shop's buttons let go the moment the gift message ends (it
+            was noticed mid-drawing and nothing drew them again until the mouse moved); skipping
+            did so already. The loading screen's arrow at the target from "Following a review of
+            operational costs" to "Departing employees" (about twice as long). "Enclosed:
+            Controls"; and a Controls row in the settings opens the same panel (Continue, Enter
+            or Esc back to the settings). Scoring: 5,000 within 20 m, then from 4,999 down by the
+            share of the way from there to the far side of the planet, so the far side scores 4
+            on any size of planet. The globe's tiles coarser away from the equator by as much as
+            the chart's stretched there (a level for each doubling): near the north pole at 6x,
+            64 tiles all ready by 4.5 s. Seen: the settings with Controls. Not yet seen: the
+            shop letting go at the message's end; the controls opened from the settings in game.
+2026-10-19  M49 done (user). The loading screen's arrow at the target now comes in as
+            "productivity" is said (it was from "Following a review"), still until "Departing
+            employees".
+2026-10-19  M50 done (user). Singleplayer: after a round's results (before the shop), if even full
+            marks (5,000) in every round left of the quarter couldn't reach its target, the game's
+            lost then: "TARGET OUT OF REACH", the productivity against the target, and "Even full
+            marks in the round left would reach only 6,450." (drawn on its own and seen). The
+            last quarter's target 8,000 (was 10,000). The loading screen's score panel and arrow
+            shown 17.2 s from "productivity" (three times the 5.7 s they had), on past the
+            message's end if need be, unless it's skipped. Not yet seen in a game: the early loss.
+2026-10-19  M51 done (user). January re-recorded: "opening their standard-issue supply pack to take
+            out items" (was "opening a standard-issue supply pack"), a hint at the items. Not
+            yet heard.
+2026-10-19  M52 done (user). Singleplayer's later messages, recorded with the usual opening and
+            sign-off (record_message.py --framed): August's (guessing at random) every game; one
+            of October's (Halloween costume) or December's (Secret Santa), an even chance, chosen
+            from the seed; and in each month from July with no other message, a 1 in 5 chance
+            (once only) of the oxygen's downgrade. Once said or skipped it's for the rest of the
+            game: walking builds exertion (45 s to the most, 30 s standing to clear), which from
+            a third of the way blurs, sways and doubles the view and darkens its edges (a pass
+            over the finished view before the HUD: OxygenBlur, fs_oxygen); where the player can't
+            walk, always at 0.45. New HUD test steps month (-Dxenoguesser.month) and oxygen;
+            -Dxenoguesser.season and oxygenmonth choose. Seen: August's message on the strip,
+            the view after 40 s walking (blurred and doubled), clear 26 s after stopping. Not
+            yet: the edge fix seen (a band at the right while swaying), the no-move modes, the
+            messages heard.
+2026-10-19  M53 done (user). Achievements: the six singleplayer wins (mode and map), Technician,
+            Infrastructure Expert, Botanist and Zoologist (each in one game), and multiplayer's
+            play, win and flawless win (the opponent on 0 quarter points). Kept in the user's
+            registry (Preferences, as the settings are, so the exe too), signed with an HMAC tied
+            to the game, the PC and the user: tested, an edited value reads as none. A panel at
+            the bottom middle of the menu (grey, white rows going gold once unlocked, a ring for
+            the share done, what the one pointed at is for) with Reset, which asks first ("Are
+            you sure? This is an irreversible change."). Each unlock pops up at the bottom right
+            (in the world, just above the map), 4.5 s each in turn. Items are gadgets now (the
+            shop's cards, the controls; January re-recorded: "to take out gadgets"). Seen: the
+            panel and pop-up drawn. Not yet: unlocks in a game, the pop-up in the world, Reset's
+            question clicked.
+2026-10-19  M54 done (user). Road lines: fewer designs (usually two layouts, not three; fewer
+            nations going their own way; spacing and inset per layout; dashes and widths in two
+            steps). Sleet: the snow-and-rain mix set afresh each round (it was eased from the last
+            round's for 8 s, so snow fell at 30 degrees after a snowy round). Creatures placed
+            afresh as each round begins (OrganismManager.respawn, on the next update). "Play a
+            Singleplayer game" achievement; each achievement keeps a fixed bit, so adding one
+            never moves another. The plants' and animals' pictures drawn at full detail framed to
+            the creature itself (Offscreen.captureFitted: drawn once to find it, then zoomed in
+            clip space), shrunk in halves, and the map's icons shrunk in halves to their size on
+            screen; seen, all sharp. Choosing Nations puts away the bollard, road-line or pole
+            map. The oxygen's chance 0.27 a month (was 0.2). Bridges always reach land: a firm
+            bank within 100, else the first dry ground beside the water however far (or the
+            path's end, a junction where the next path's bridge goes on); seeds 123 and 456: no
+            crossing left short (was 556 on 123), 777 and 952 bridges, 47 and 38 of them over
+            1,500 long (over low ground by the water). Beam and arch bridges' slabs have tops of
+            their own just under the road, so the deck's always seen. New HUD test step portraits.
+            Not yet seen: a bridge whose road surface was missing, the nations' choice in game.
+2026-10-19  M55 done (user). M54's bridges reaching "dry land however far" made long bridges high
+            in the air along roads following low ground by rivers (seen). Now a bridge's end is
+            only looked for near the water (a firm bank, else the first dry ground, within 100);
+            none found that near, no bridge; and none longer than 450, or twice the water's width
+            and its reach to the banks for wide water. Seeds 123 and 456: 735 and 898 bridges,
+            the longest 828 and 487, none over 1,500 (were 47 and 38); 116 and 132 crossings left
+            with no bridge where no land is near (before M54 those were bridges stopping short).
+2026-10-19  M56 done (user). The nations map never colours a nation like the planet's sea: the
+            palette's colours within 120 (a weighted, eye-like RGB distance) of the map's sea are
+            left out before the nations are coloured (overlay and its tiles alike). Not yet seen.

@@ -5,8 +5,24 @@ out vec4 fragColour;
 
 uniform sampler2D image;
 uniform vec4 tint;        // used instead of the image when useImage is 0
-uniform int useImage;
+uniform int useImage;     // 1: the image; 0: tint; 2: tint glowing in from the screen's edges
+uniform vec2 screenSize;
+uniform float edge;       // (2) how far in the glow reaches, in pixels
+uniform float alpha;      // (1) how opaque the image is drawn
 
 void main() {
-    fragColour = useImage == 1 ? texture(image, uv) : tint;
+    if (useImage == 2) {
+        vec2 px = uv * screenSize;
+        vec2 near = min(px, screenSize - px);
+        vec2 glow = clamp(1.0 - near / edge, 0.0, 1.0);
+        glow = pow(glow, vec2(1.5));
+        fragColour = vec4(tint.rgb, tint.a * (1.0 - (1.0 - glow.x) * (1.0 - glow.y)));
+        return;
+    }
+    if (useImage == 1) {
+        vec4 c = texture(image, uv);
+        fragColour = vec4(c.rgb, c.a * alpha);
+        return;
+    }
+    fragColour = tint;
 }

@@ -14,7 +14,7 @@ import javax.swing.JPanel;
 public class GameHUD extends JPanel {
     public static final int QUARTERS = 4, ROUNDS_PER_QUARTER = 3, ROUNDS = QUARTERS * ROUNDS_PER_QUARTER;
     // The productivity needed by the end of each quarter
-    public static final int[] TARGETS = { 800, 2000, 4000, 10000 };
+    public static final int[] TARGETS = { 800, 2000, 4000, 8000 };
     // The cash paid each month, before the share of the guess's points
     public static final int SALARY = 300;
 
