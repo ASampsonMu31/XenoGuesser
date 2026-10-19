@@ -153,6 +153,23 @@ public final class NationKinship {
         return culture == null || nation < 1 || nation > numNations ? 0 : culture[nation];
     }
 
+    /** Whether two nations share a land border. */
+    public boolean bordering(int a, int b) {
+        return a != b && a >= 1 && b >= 1 && a <= numNations && b <= numNations && bordering[a][b];
+    }
+
+    /** The angle (radians) from a nation's middle to a place (a direction from the planet's middle). */
+    public double angleToCentre(int nation, GeodesicChunkGrid.Direction place) {
+        double x = place.x(), y = place.y(), z = place.z(), l = Math.sqrt(x * x + y * y + z * z);
+        return angle(centres[Math.max(1, Math.min(numNations, nation))], new double[] { x / l, y / l, z / l });
+    }
+
+    /** Whether two nations are kindred neighbours: they share a land border and a culture. */
+    public boolean kin(int a, int b) {
+        if (a == b || a < 1 || b < 1 || a > numNations || b > numNations || !bordering[a][b]) return false;
+        return cultureOf(a) == cultureOf(b);
+    }
+
     /**
      * Whether two nations are at odds: they share a land border but not a culture, so the
      * border between them is fenced and the land along it poor.

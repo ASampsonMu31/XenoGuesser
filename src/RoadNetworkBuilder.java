@@ -774,7 +774,8 @@ public class RoadNetworkBuilder {
                 path.points.add(ground(at));
             }
         }
-        if (!joined || path.points.size() < 3) {
+        // (nor across a fenced border: only highways cross those, at their border checks)
+        if (!joined || path.points.size() < 3 || crossesFence(path.points)) {
             return false;
         }
 
@@ -790,6 +791,21 @@ public class RoadNetworkBuilder {
             growLane(branchStart, branchHeading, laneIndex, random, depth + 1);
         }
         return true;
+    }
+
+    /** Whether a line of points crosses a border between hostile nations (a fenced one) anywhere, looked at every few units. */
+    private boolean crossesFence(List<SpherePosition> points) {
+        int nation = nationManager.getNationAt(points.get(0));
+        for (int i = 0; i + 1 < points.size(); i++) {
+            SpherePosition a = points.get(i), b = points.get(i + 1);
+            int steps = Math.max(1, (int) Math.ceil(SphereMath.distance(a, b) / 4.0));
+            for (int k = 1; k <= steps; k++) {
+                int next = nationManager.getNationAt(SphereMath.slerp(a, b, k / (double) steps));
+                if (hostile.test(nation, next)) return true;
+                if (next >= 1) nation = next;
+            }
+        }
+        return false;
     }
 
     /** A point on some other road, a sensible distance away and roughly in the direction of travel. */

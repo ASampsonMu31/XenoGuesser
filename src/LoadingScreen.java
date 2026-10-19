@@ -193,7 +193,7 @@ public class LoadingScreen extends JComponent {
         repaintTimer.setCoalesce(true);
         repaintTimer.start();
         // Developer aid: -Dxenoguesser.loadshot=seconds saves a picture of this screen then
-        String shot = System.getProperty("xenoguesser.loadshot");
+        String shot = Dev.property("xenoguesser.loadshot");
         if (shot != null) {
             Timer capture = new Timer((int) (Float.parseFloat(shot) * 1000), e -> {
                 BufferedImage image = new BufferedImage(Math.max(1, getWidth()), Math.max(1, getHeight()), BufferedImage.TYPE_INT_RGB);
@@ -254,7 +254,7 @@ public class LoadingScreen extends JComponent {
         repaint(buttonBox);
         // Developer aid: -Dxenoguesser.mpautobegin=ms presses Skip and Begin that long after the
         // world is ready (trying again until Begin can be pressed), for testing two windows
-        Integer autoBegin = Integer.getInteger("xenoguesser.mpautobegin");
+        Integer autoBegin = Dev.integer("xenoguesser.mpautobegin");
         if (role != null && autoBegin != null) {
             Timer press = new Timer(500, null);
             press.setInitialDelay(autoBegin);
@@ -517,7 +517,7 @@ public class LoadingScreen extends JComponent {
 
     /** Stars rushing towards the ship, drawn as streaks behind the cockpit's window frame. */
     // Developer aid: -Dxenoguesser.loadstats logs this screen's frame rate and longest stall every two seconds
-    private static final boolean LOAD_STATS = System.getProperty("xenoguesser.loadstats") != null;
+    private static final boolean LOAD_STATS = Dev.property("xenoguesser.loadstats") != null;
     private long statsStart = System.nanoTime(), worstGap, paintNanos;
     private int statsFrames;
 

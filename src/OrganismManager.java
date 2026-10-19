@@ -29,7 +29,11 @@ public class OrganismManager {
     // Expected creatures per chunk's area (100 by 100) in total, however many species share
     // the ground; each species takes its share by how well suited the place is to it and how
     // common it is
-    private static final float PEAK_PER_CHUNK = 0.05f;
+    private static final float PEAK_PER_CHUNK = 0.3f;
+    // Those on the ground (walkers, slitherers, floaters) this many times as common again as
+    // flyers: they're what's seen about
+    private static final float LAND_BOOST = 2.5f;
+    private static final int MOST_FLYERS = 3;
     private static final float ROAM_RADIUS = 90f;
 
     /** One living creature. */
@@ -87,6 +91,8 @@ public class OrganismManager {
     private long lastCentreCell = Long.MIN_VALUE;
     private final List<Creature> showcase = new ArrayList<>();
     private final long seed;
+    // The world's climate, for drawing a species' range again (see measureRanges)
+    private final RegionalGenerationManager regions;
     private final float chunkSize;
     private final float seaLevel;
     private final PerlinNoise terrainNoise;
@@ -123,8 +129,17 @@ public class OrganismManager {
         this.chunkSize = chunkSize;
         this.seaLevel = seaLevel;
         this.terrainNoise = terrainNoise;
+        this.regions = regions;
+        // Most of a world's creatures live on the ground, where they're seen about: no more than
+        // MOST_FLYERS of them fly (one that would be another flyer is made afresh, as another creature)
+        int flyers = 0;
         for (int i = 0; i < SPECIES_COUNT; i++) {
-            species.add(new OrganismSpecies(seed, i, regions));
+            OrganismSpecies made = new OrganismSpecies(seed, i, regions);
+            for (int attempt = 1; made.locomotion == OrganismSpecies.Locomotion.FLYER && flyers >= MOST_FLYERS && attempt < 40; attempt++) {
+                made = new OrganismSpecies(seed, i + attempt * 1000, regions);
+            }
+            if (made.locomotion == OrganismSpecies.Locomotion.FLYER) flyers++;
+            species.add(made);
             System.out.printf("[ORGANISMS] Species %d: %s%n", i + 1, species.get(i).describe());
         }
         // Each species' name, made as the planet's is, none the same as the planet's or another's
@@ -136,6 +151,10 @@ public class OrganismManager {
                 name = PlanetName.forSeed(seed * 0x2545F4914F6CDD1DL + (i + 1) * 1000003L + attempt * 7919L).spelling;
             }
             speciesNames.add(name);
+        }
+        // The biggest keep in small herds (a crowd of giants jostling looks wrong)
+        for (OrganismSpecies s : species) {
+            if (s.herdSize > OrganismSpecies.BIG_HERD && s.halfLength() + s.tailLength() > OrganismSpecies.BIG_HERD_LENGTH) s.herdSize = OrganismSpecies.BIG_HERD;
         }
         // Every world has some that keep together: should none have come out so, the first
         // walker (or failing that, flyer) lives in herds (flocks) of six
@@ -160,20 +179,41 @@ public class OrganismManager {
             presences[k] = species.get(k).presenceAt(place);
             total += presences[k];
         }
-        for (int k = 0; k < species.size(); k++) presences[k] = presences[k] / Math.max(1f, total) * species.get(k).rarity * PEAK_PER_CHUNK;
+        // (the biggest far fewer: see OrganismSpecies.sizeShare)
+        for (int k = 0; k < species.size(); k++) {
+            OrganismSpecies s = species.get(k);
+            presences[k] = presences[k] / Math.max(1f, total) * s.rarity * s.sizeShare() * PEAK_PER_CHUNK
+                    * (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 1f : LAND_BOOST);
+        }
         return presences;
     }
 
     private void measureRanges() {
         List<GeodesicChunkGrid.Direction> land = SpeciesRange.land(terrainNoise, seaLevel);
         float[][] raw = new float[species.size()][land.size()];
-        java.util.stream.IntStream.range(0, land.size()).parallel().forEach(i -> {
-            float[] here = raw(SphereMath.atAltitude(land.get(i), 0.0));
-            for (int k = 0; k < here.length; k++) raw[k][i] = here[k];
-        });
         ranges = new SpeciesRange[species.size()];
+        // Any species with almost nowhere to live has its range drawn again until it has
+        // somewhere (see SpeciesRange.findable); the others' share the ground with it, so all
+        // are measured again each time
+        int[] attempts = new int[species.size()];
+        for (int round = 0; ; round++) {
+            java.util.stream.IntStream.range(0, land.size()).parallel().forEach(i -> {
+                float[] here = raw(SphereMath.atAltitude(land.get(i), 0.0));
+                for (int k = 0; k < here.length; k++) raw[k][i] = here[k];
+            });
+            boolean redrawn = false;
+            for (int k = 0; k < species.size(); k++) {
+                ranges[k] = SpeciesRange.of(raw[k], Float.MAX_VALUE);
+                if (round < SpeciesRange.MOST_REDRAWS && !ranges[k].findable(raw[k])) {
+                    species.get(k).redrawHabitat(seed, k, ++attempts[k], regions);
+                    redrawn = true;
+                }
+            }
+            if (!redrawn) break;
+        }
         for (int k = 0; k < species.size(); k++) {
-            ranges[k] = SpeciesRange.of(raw[k], Float.MAX_VALUE);
+            if (attempts[k] > 0) System.out.printf("[ORGANISMS] %s had almost nowhere to live: its range drawn again %d time(s)%n",
+                    speciesNames.isEmpty() ? "Species " + (k + 1) : speciesNames.get(k), attempts[k]);
             System.out.printf(java.util.Locale.ROOT, "[ORGANISMS] %s: heartland from %.5f, peak %.4f a chunk%s%n", speciesNames.isEmpty() ? "Species " + (k + 1) : speciesNames.get(k),
                     ranges[k].high, ranges[k].peak, species.get(k).herdSize <= 0 ? ""
                     : (species.get(k).locomotion == OrganismSpecies.Locomotion.FLYER ? ", in flocks of about " : ", in herds of about ") + species.get(k).herdSize);

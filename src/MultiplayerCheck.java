@@ -17,7 +17,7 @@ import java.util.Locale;
  */
 public final class MultiplayerCheck {
 
-    private static final long RUN_MS = Long.getLong("xenoguesser.mpcheck.ms", 8000);
+    private static final long RUN_MS = Dev.longValue("xenoguesser.mpcheck.ms", 8000);
 
     private static volatile Multiplayer session;
     private static volatile boolean failed;

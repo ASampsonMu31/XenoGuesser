@@ -14,8 +14,8 @@ import java.util.List;
  * hot spots, painting most of the range red while most of the species lives there.
  *
  * How many there are rises steeply along the scale, peak * scale^POWER: the heartland (green on
- * the map, above two thirds) has nearly all of them, PEAK_BOOST times as many as it had before;
- * the red third has under 4% of the peak, so barely any stragglers. The
+ * the map, above two thirds) has nearly all of them, PEAK_BOOST times as many as it had before
+ * these ranges; the red third has under 1.2% of the peak, so barely any stragglers. The
  * population's own spread decides the scale, so the area where a species is concentrated stays
  * where it was; it just thins out sharply beyond.
  *
@@ -24,7 +24,7 @@ import java.util.List;
  */
 public final class SpeciesRange {
 
-    public static final float POWER = 3f, PEAK_BOOST = 1.5f;
+    public static final float POWER = 4f, PEAK_BOOST = 3f;
     public static final float LOW_SHARE = 0.10f, HIGH_SHARE = 0.90f;
     // About how many points over the land the scale is measured from
     public static final int SAMPLES = 12_000;
@@ -78,6 +78,21 @@ public final class SpeciesRange {
         return new SpeciesRange(low, high, Math.min(cap, peak));
     }
 
+    // A species is there to be found if at least this share of the land is out of its red (a
+    // third of the way up its scale) and its peak at least MIN_PEAK a chunk; one that isn't has
+    // its range drawn again (see OrganismManager.measureRanges and the plants' ranges)
+    public static final float MIN_LAND_SHARE = 0.02f, MIN_PEAK = 0.004f;
+    // How many times a range is drawn again at most before it's taken as it is
+    public static final int MOST_REDRAWS = 24;
+
+    /** Whether a species with this range and raw abundance over the land points is there to be found (see MIN_LAND_SHARE). */
+    public boolean findable(float[] raw) {
+        if (peak < MIN_PEAK || raw.length == 0) return false;
+        int out = 0;
+        for (float v : raw) if (share(v) > 1f / 3f) out++;
+        return out >= raw.length * MIN_LAND_SHARE;
+    }
+
     /** Where a raw abundance comes on the scale, 0 to 1 (what the heatmap colours by). */
     public float share(float raw) {
         return Math.max(0f, Math.min(1f, (raw - low) / (high - low)));
@@ -86,7 +101,7 @@ public final class SpeciesRange {
     /** The density as a share of the peak for a raw abundance: the chance a candidate there is kept. */
     public float keep(float raw) {
         float t = share(raw);
-        return t * t * t;
+        return t * t * t * t;
     }
 
     /** How many are expected in a chunk's area at a raw abundance. */

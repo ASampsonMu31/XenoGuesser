@@ -15,8 +15,9 @@ import com.jogamp.opengl.util.FPSAnimator;
 public class XenoGuesser extends JFrame {
    
   // A fixed seed can be passed with -Dxenoguesser.seed=123 to test seed consistency; otherwise every game is a new world
-  private static final Long FIXED_SEED = Long.getLong("xenoguesser.seed");
-  private static final boolean IS_DEBUG_MODE_ACTIVE = true;
+  private static final Long FIXED_SEED = Dev.longValue("xenoguesser.seed");
+  // Developer mode (teleporting by the map, and the like): only with the developer switches on (see Dev)
+  private static final boolean IS_DEBUG_MODE_ACTIVE = Dev.ENABLED;
 
   private GLCanvas canvas; 
   private XenoGuesser_GLEventListener glEventListener;
@@ -170,12 +171,12 @@ public class XenoGuesser extends JFrame {
     this.escapeQuitListener = escapeQuitListener;
 
     // Developer aid: -Dxenoguesser.skipmenu (or taking the menu's picture) goes straight to loading
-    if (System.getProperty("xenoguesser.skipmenu") != null || System.getProperty("xenoguesser.menushot") != null) {
+    if (Dev.property("xenoguesser.skipmenu") != null || Dev.property("xenoguesser.menushot") != null) {
       startSingleplayer();
     }
     // Developer aid: -Dxenoguesser.mpauto=host (or =join) opens the multiplayer panel and presses
     // Host game (or Join game with any code: for -Dxenoguesser.mpfake, which doesn't check it)
-    String mpAuto = System.getProperty("xenoguesser.mpauto");
+    String mpAuto = Dev.property("xenoguesser.mpauto");
     if (mpAuto != null) {
       startMultiplayer();
       multiplayerPanel.autoStart(!mpAuto.equalsIgnoreCase("join"));
@@ -433,7 +434,7 @@ glEventListener.setGameHUD(gameHUD);
     Multiplayer session = Multiplayer.active();
     if (session != null) session.sendWorldReady();
     // A HUD test run goes straight in (in multiplayer it waits at Begin like anyone, so both go in together)
-    if (System.getProperty("xenoguesser.hudtest") != null && session == null) enterGame();
+    if (Dev.property("xenoguesser.hudtest") != null && session == null) enterGame();
     else loadingScreen.setWorldReady(this::enterGame);
   }
 
@@ -443,7 +444,7 @@ glEventListener.setGameHUD(gameHUD);
     glEventListener.startRoundClock();
     // A shop before January (a HUD test run skips it), opened under the cockpit before it goes,
     // so the round isn't glimpsed in between; otherwise the world's straight in view
-    String test = System.getProperty("xenoguesser.hudtest");
+    String test = Dev.property("xenoguesser.hudtest");
     if (test == null || test.contains("firstshop")) openFirstShop();
     else glEventListener.setWorldHidden(false);
     layeredPane.remove(loadingScreen);
@@ -780,7 +781,7 @@ glEventListener.setGameHUD(gameHUD);
 
   /** Developer aid: -Dxenoguesser.verdictshot=prefix saves each multiplayer verdict as it's shown, as prefix_name.png. */
   private void verdictShot(String name) {
-    String prefix = System.getProperty("xenoguesser.verdictshot");
+    String prefix = Dev.property("xenoguesser.verdictshot");
     if (prefix == null) return;
     later(1200, () -> saveUiShot(new java.io.File(prefix + "_" + name.replaceAll("[^A-Za-z0-9]+", "_") + ".png")));
   }
@@ -831,8 +832,8 @@ glEventListener.setGameHUD(gameHUD);
         mainMenu.setNotice(notice);
         // Developer aid: -Dxenoguesser.mpautoagain (with mpauto) hosts or joins again a moment
         // later, to test a second game in the same run
-        String again = System.getProperty("xenoguesser.mpauto");
-        if (again != null && System.getProperty("xenoguesser.mpautoagain") != null) {
+        String again = Dev.property("xenoguesser.mpauto");
+        if (again != null && Dev.property("xenoguesser.mpautoagain") != null) {
           later(3000, () -> {
             startMultiplayer();
             if (multiplayerPanel != null) multiplayerPanel.autoStart(!again.equalsIgnoreCase("join"));
@@ -1032,7 +1033,7 @@ glEventListener.setGameHUD(gameHUD);
    * once the game starts, and "shot" saves a picture of the whole window a moment later.
    */
   private void runHudTest() {
-    String test = System.getProperty("xenoguesser.hudtest");
+    String test = Dev.property("xenoguesser.hudtest");
     if (test == null) return;
     // A test run leaves the mouse alone
     robot = null;
@@ -1051,7 +1052,7 @@ glEventListener.setGameHUD(gameHUD);
         case "lose": later(1500, () -> endGame(false)); break;
         // april: April's message, as if April had just begun
         case "april": later(1500, () -> glEventListener.startAprilMessage(this::showMessage)); break;
-        case "restart": later(Integer.getInteger("xenoguesser.restartdelay", 5000), this::startSingleplayer); break;
+        case "restart": later(Dev.integer("xenoguesser.restartdelay", 5000), this::startSingleplayer); break;
         // quarter: the end of a quarter's screen, as if its target were missed
         case "quarter": later(1500, () -> {
           quarterPanel.show(gameHUD.getQuarter(), gameHUD.getProductivity(), gameHUD.getTarget(), false, () -> quarterPanel.close());
@@ -1065,12 +1066,12 @@ glEventListener.setGameHUD(gameHUD);
         // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
         case "partner": later(1500, () -> glEventListener.lookAtPartner(0f)); break;
         // quit: quits the game -Dxenoguesser.quitdelay ms in (default 5000), as the settings' Quit game does
-        case "quit": later(Integer.getInteger("xenoguesser.quitdelay", 5000), this::shutdownGame); break;
+        case "quit": later(Dev.integer("xenoguesser.quitdelay", 5000), this::shutdownGame); break;
         // autoplay: every -Dxenoguesser.autoplayms (default 4000) the next thing a player would do:
         // press on from the quarter's verdict, else leave the shop (buying nothing), else go on
         // from the results, else guess (see guessat)
         case "autoplay": {
-          javax.swing.Timer play = new javax.swing.Timer(Integer.getInteger("xenoguesser.autoplayms", 4000), e -> {
+          javax.swing.Timer play = new javax.swing.Timer(Dev.integer("xenoguesser.autoplayms", 4000), e -> {
             if (!inGame || minimap == null) return;
             if (quarterPanel != null && quarterPanel.isOpen()) {
               quarterPanel.devPress();
@@ -1086,9 +1087,9 @@ glEventListener.setGameHUD(gameHUD);
         // uishot: the window's panels (the map, results, shop: Swing, not the 3D view) painted to
         // <-Dxenoguesser.uishot>_<ms>.png at each of -Dxenoguesser.uishotat=ms,ms,... in
         case "uishot": {
-          for (String at : System.getProperty("xenoguesser.uishotat", "4000").split(",")) {
+          for (String at : Dev.property("xenoguesser.uishotat", "4000").split(",")) {
             int ms = Integer.parseInt(at.trim());
-            later(ms, () -> saveUiShot(new java.io.File(System.getProperty("xenoguesser.uishot", "ui") + "_" + ms + ".png")));
+            later(ms, () -> saveUiShot(new java.io.File(Dev.property("xenoguesser.uishot", "ui") + "_" + ms + ".png")));
           }
           break;
         }
@@ -1105,38 +1106,56 @@ glEventListener.setGameHUD(gameHUD);
           });
           break;
         }
+        // walk: W held from 9 s for -Dxenoguesser.walkms (default 8000), logging where it started and how far it got each second
+        case "walk": {
+          int ms = Dev.integer("xenoguesser.walkms", 8000);
+          SpherePosition[] start = new SpherePosition[1];
+          later(9000, () -> {
+            start[0] = glEventListener.devPosition();
+            keyboardInput.w = true;
+          });
+          for (int t = 1000; t <= ms; t += 1000) {
+            int at = t;
+            later(9000 + at, () -> System.out.printf(java.util.Locale.ROOT, "[WALK] %d ms: %.1f units on, eyes at %.1f%n", at,
+                SphereMath.distance(start[0], glEventListener.devPosition()), SphereMath.altitude(glEventListener.devPosition())));
+          }
+          later(9000 + ms, () -> keyboardInput.w = false);
+          break;
+        }
         case "lookdown": later(1500, () -> glEventListener.lookPitch(-70f)); break;
+        // lookup: tilts the view up (to see what's overhead: wires, roofs)
+        case "lookup": later(1500, () -> glEventListener.lookPitch(Float.parseFloat(Dev.property("xenoguesser.lookup", "25")))); break;
         // podview: the landing pod from out in front and to one side (-Dxenoguesser.podview=distance,degrees round,height up)
         case "podview": {
-          String[] v = System.getProperty("xenoguesser.podview", "75,30,10").split(",");
+          String[] v = Dev.property("xenoguesser.podview", "75,30,10").split(",");
           later(1500, () -> glEventListener.viewPod(Double.parseDouble(v[0]), Double.parseDouble(v[1]), Double.parseDouble(v[2])));
           break;
         }
-        case "frameshot": later(Integer.getInteger("xenoguesser.frameshotdelay", 4000),
-            () -> glEventListener.saveNextFrame(new java.io.File(System.getProperty("xenoguesser.frameshot", "frame.png")))); break;
+        case "frameshot": later(Dev.integer("xenoguesser.frameshotdelay", 4000),
+            () -> glEventListener.saveNextFrame(new java.io.File(Dev.property("xenoguesser.frameshot", "frame.png")))); break;
         // herd: faces the nearest herd (and again each time a frame is saved by frameshots)
         case "herd": later(2000, () -> glEventListener.lookAtHerd()); break;
         // frameshots: frames saved at each of -Dxenoguesser.frameshotsat=ms,... as <frameshot>_<ms>.png, facing the herd first
         case "frameshots": {
-          for (String at : System.getProperty("xenoguesser.frameshotsat", "4000").split(",")) {
+          for (String at : Dev.property("xenoguesser.frameshotsat", "4000").split(",")) {
             int ms = Integer.parseInt(at.trim());
             later(ms - 300, () -> glEventListener.lookAtHerd());
-            later(ms, () -> glEventListener.saveNextFrame(new java.io.File(System.getProperty("xenoguesser.frameshot", "frame") + "_" + ms + ".png")));
+            later(ms, () -> glEventListener.saveNextFrame(new java.io.File(Dev.property("xenoguesser.frameshot", "frame") + "_" + ms + ".png")));
           }
           break;
         }
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
         case "zoom": {
-          String[] at = System.getProperty("xenoguesser.mapzoomat", "0.5,0.5").split(",");
+          String[] at = Dev.property("xenoguesser.mapzoomat", "0.5,0.5").split(",");
           later(1500, () -> minimap.devZoom(16f, Float.parseFloat(at[0]), Float.parseFloat(at[1])));
           break;
         }
         // guess: a guess two seconds in (-Dxenoguesser.guessdelay); shop: Proceed to Shop pressed
         // six seconds in (-Dxenoguesser.shopdelay); next: on to the next round, buying nothing,
         // twelve seconds in (-Dxenoguesser.nextdelay)
-        case "guess": later(Integer.getInteger("xenoguesser.guessdelay", 2000), () -> minimap.devGuess()); break;
-        case "shop": later(Integer.getInteger("xenoguesser.shopdelay", 6000), () -> minimap.devProceedToShop()); break;
-        case "next": later(Integer.getInteger("xenoguesser.nextdelay", 12000), () -> {
+        case "guess": later(Dev.integer("xenoguesser.guessdelay", 2000), () -> minimap.devGuess()); break;
+        case "shop": later(Dev.integer("xenoguesser.shopdelay", 6000), () -> minimap.devProceedToShop()); break;
+        case "next": later(Dev.integer("xenoguesser.nextdelay", 12000), () -> {
           if (quarterPanel.isOpen() || shopPanel.isOpen()) return;
           minimap.devProceedToShop();
           if (shopPanel.isOpen()) shopPanel.nextRound();
@@ -1145,7 +1164,7 @@ glEventListener.setGameHUD(gameHUD);
       }
     }
     if (test.contains("shot")) {
-      javax.swing.Timer shot = new javax.swing.Timer(Integer.getInteger("xenoguesser.shotdelay", 2600), e -> {
+      javax.swing.Timer shot = new javax.swing.Timer(Dev.integer("xenoguesser.shotdelay", 2600), e -> {
         try {
           Rectangle area = new Rectangle(getLocationOnScreen(), getSize());
           javax.imageio.ImageIO.write(new Robot().createScreenCapture(area), "png",
@@ -1336,12 +1355,14 @@ glEventListener.setGameHUD(gameHUD);
     // The turning animal or plant whose range is shown, in the space above the map
     PreviewCard card = minimap.getPreviewCard();
     if (card.getParent() != layeredPane) layeredPane.add(card, JLayeredPane.PALETTE_LAYER);
-    // (down to just above the map, lined up with the tick-box panel's left edge, clear of the map's key hint at the right)
+    // (lined up with the tick-box panel's left edge, down to a row above the map kept for the
+    // map's key hint ("M Contract map"), which it would otherwise cover when its leaf is shown)
     // (below the title bar, when windowed)
-    int cardHeight = Math.min(PreviewCard.WIDTH + 70, minimap.getY() - contentTop - 20);
+    int hintRow = HudStyle.HINT_H + 16;
+    int cardHeight = Math.min(PreviewCard.WIDTH + 70, minimap.getY() - contentTop - 20 - hintRow);
     boolean cardShown = minimap.isLargeMap() && !minimap.isFullScreenRevealMode() && card.hasSubject() && cardHeight > 120;
     card.setVisible(cardShown);
-    if (cardShown) card.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() - cardHeight - 6, card.wantedWidth(), cardHeight);
+    if (cardShown) card.setBounds(minimap.getX() - MapLayersPanel.WIDTH - 8, minimap.getY() - hintRow - cardHeight, card.wantedWidth(), cardHeight);
     layeredPane.revalidate();
     layeredPane.repaint();
   }

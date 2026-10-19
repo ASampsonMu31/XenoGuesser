@@ -80,6 +80,9 @@ public class MapPanel extends JPanel {
     private volatile List<Object[]> nationLabels = List.of();
     // Whether the nations' names are written over the map (with the nations overlay)
     private volatile boolean showNationNames;
+    // Pictures stood on the plain map instead of an overlay's colours (the bollard map: each
+    // nation's bollard on its main land, no borders), each {picture, u, v}; null when none
+    private volatile List<Object[]> mapPictures;
     private MapLayersPanel layersPanel;
 
     // Scroll-wheel zoom of the enlarged map: magnification and the visible centre in 0..1 map space
@@ -122,6 +125,12 @@ public class MapPanel extends JPanel {
     private GeodesicChunkGrid.Direction goal;
     private float goalX;
     private float goalY;
+
+    // Where the last round was (its answer, in the map image's pixels), once a round has been
+    // played: marked on the map through the next round
+    private GeodesicChunkGrid.Direction lastRound;
+    private float lastRoundX, lastRoundY;
+    private static final Color LAST_ROUND_COLOUR = new Color(255, 170, 40);
 
     private boolean hasPin = false;
     private GeodesicChunkGrid.Direction pin;
@@ -696,7 +705,47 @@ public class MapPanel extends JPanel {
         this.gradientImage = composed;
         this.gradientName = composed != null ? name : null;
         this.showNationNames = composed != null && nationNames;
+        this.mapPictures = null;
         repaint();
+    }
+
+    /**
+     * Pictures stood on the plain map, named (as an overlay is), in place of any overlay: each
+     * {picture, worldX, worldZ} where its foot stands.
+     */
+    public void setPictureOverlay(String name, List<Object[]> pictures) {
+        List<Object[]> placed = new ArrayList<>();
+        for (Object[] p : pictures) {
+            placed.add(new Object[] { p[0], ((Float) p[1] + halfRegion) / totalRegionWidth, ((Float) p[2] + halfRegion) / totalRegionWidth });
+        }
+        this.gradientImage = null;
+        this.gradientName = name;
+        this.showNationNames = false;
+        this.mapPictures = placed;
+        repaint();
+    }
+
+    /** The map's pictures (see setPictureOverlay), each standing on its place, at a size readable on the map (they don't grow with zooming). */
+    private void drawMapPictures(Graphics2D g2d, int mapX, int mapY, List<Object[]> pictures) {
+        float span = zoom * currentMapSize;
+        float originX = mapX - viewLeft() * span, originY = mapY - viewTop() * span;
+        int tall = currentMapSize < 300 ? 30 : Math.round(Math.min(80f, 50f + zoom * 4f));
+        Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        for (Object[] p : pictures) {
+            BufferedImage picture = (BufferedImage) p[0];
+            int w = Math.round(picture.getWidth() * tall / (float) picture.getHeight());
+            for (int copy = -1; copy <= 1; copy++) {
+                int footX = Math.round(originX + ((Float) p[1] + copy) * span), footY = Math.round(originY + (Float) p[2] * span);
+                if (footX < mapX || footX >= mapX + currentMapSize || footY < mapY || footY >= mapY + mapHeight()) continue;
+                int x = footX - w / 2, y = footY - tall;
+                // (on a soft backing, so it reads on any land)
+                g2d.setColor(new Color(245, 245, 240, 120));
+                g2d.fillRoundRect(x - 4, y - 3, w + 8, tall + 6, 10, 10);
+                g2d.drawImage(picture, x, y, w, tall, null);
+            }
+        }
+        if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
     }
 
     /**
@@ -1208,6 +1257,8 @@ public class MapPanel extends JPanel {
             if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
             drawGraticule(g2d, mapX, mapY);
             if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
+            List<Object[]> pictures = mapPictures;
+            if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
             g2d.setClip(frameClip);
             }
 
@@ -1366,6 +1417,9 @@ public class MapPanel extends JPanel {
                     }
                 }
             }
+
+            // (over any note left there, which hangs above the spot)
+            if (lastRound != null && !isFullScreenReveal) drawLastRound(g2d, mapX, mapY);
 
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
@@ -1535,6 +1589,12 @@ public class MapPanel extends JPanel {
     }
 
     public void resetMapState() {
+        // (the round just played is now the last round)
+        if (isGuessed && goal != null) {
+            lastRound = goal;
+            lastRoundX = goalX;
+            lastRoundY = goalY;
+        }
         applyPendingGoal();
         this.isGuessed = false;
         this.isFullScreenReveal = false;
@@ -1698,9 +1758,9 @@ public class MapPanel extends JPanel {
      * its width and height, or =answer for the true location), as if clicked and confirmed.
      */
     public void devGuess() {
-        String spot = System.getProperty("xenoguesser.guessat", "0.5,0.5");
+        String spot = Dev.property("xenoguesser.guessat", "0.5,0.5");
         // (-Dxenoguesser.guessatlater=round:spot guesses at spot instead from that round on)
-        String later = System.getProperty("xenoguesser.guessatlater");
+        String later = Dev.property("xenoguesser.guessatlater");
         if (later != null && gameHUD != null && gameHUD.getRound() >= Integer.parseInt(later.split(":")[0])) spot = later.split(":")[1];
         if (spot.equals("answer") && goal != null) {
             // (right on the true location: full marks)
@@ -1981,6 +2041,51 @@ public class MapPanel extends JPanel {
     }
 
     /** The partner's pin (multiplayer), as this player's but in their colour, labelled with their employee number. */
+    /**
+     * The last round's marker: a ring where its answer was, tagged "Last round" below it. A
+     * note left there in that round (notes are pinned at the answer) hangs above the same
+     * spot, so the two don't meet; when its text is open below the spot (near the map's top),
+     * the tag goes beside it instead.
+     */
+    private void drawLastRound(Graphics2D g2d, int mapX, int mapY) {
+        int x = coreToScreenX(lastRoundX, mapX), y = coreToScreenY(lastRoundY, mapY);
+        if (x < mapX || x > mapX + currentMapSize || y < mapY || y > mapY + mapHeight()) return;
+        Shape clip = g2d.getClip();
+        g2d.clipRect(mapX, mapY, currentMapSize, mapHeight());
+        Stroke stroke = g2d.getStroke();
+        g2d.setColor(new Color(20, 20, 22, 200));
+        g2d.setStroke(new BasicStroke(4f));
+        g2d.drawOval(x - 8, y - 8, 16, 16);
+        g2d.setColor(LAST_ROUND_COLOUR);
+        g2d.setStroke(new BasicStroke(2.2f));
+        g2d.drawOval(x - 8, y - 8, 16, 16);
+        g2d.fillOval(x - 3, y - 3, 6, 6);
+        g2d.setStroke(stroke);
+
+        // Its tag: below, or beside when a note's open text hangs below the spot
+        boolean noteOpenBelow = false;
+        if (isLarge) {
+            for (MapNote note : savedNotes) {
+                if (note.isExpanded && note.coreX == Math.round(lastRoundX) && note.coreY == Math.round(lastRoundY) && y - 30 - 60 < mapY + 5) {
+                    noteOpenBelow = true;
+                }
+            }
+        }
+        g2d.setFont(new Font("Arial", Font.BOLD, isLarge ? 12 : 10));
+        FontMetrics fm = g2d.getFontMetrics();
+        String label = "Last round";
+        int w = fm.stringWidth(label) + 10, h = fm.getAscent() + 6;
+        int boxX = noteOpenBelow ? x + 12 : x - w / 2, boxY = noteOpenBelow ? y - h / 2 : y + 12;
+        boxX = Math.max(mapX + 3, Math.min(mapX + currentMapSize - w - 3, boxX));
+        if (boxY + h > mapY + mapHeight() - 3) boxY = y - 12 - h - (noteOpenBelow ? 0 : 26);
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillRoundRect(boxX, boxY, w, h, 8, 8);
+        g2d.setColor(LAST_ROUND_COLOUR);
+        g2d.drawRoundRect(boxX, boxY, w, h, 8, 8);
+        g2d.drawString(label, boxX + 5, boxY + fm.getAscent() + 2);
+        g2d.setClip(clip);
+    }
+
     private void drawPartnerPin(Graphics2D g2d, int mapX, int mapY, int pinLength, int headDiameter) {
         double[] p = globe.project(partnerPin, mapX, mapY, currentMapSize, mapHeight());
         if (p[2] < 0.0) return;

@@ -116,6 +116,39 @@ public class RoadLineStyle {
         return new float[] { -edge, edge };
     }
 
+    /**
+     * A picture of a stretch of road marked in this style, seen from above (the road running up
+     * the picture), height pixels tall, a road roadWidth wide (world units) shown about three
+     * times its width long; on a clear background.
+     */
+    public java.awt.image.BufferedImage picture(int heightPx, float roadWidth) {
+        float shown = roadWidth * 3f, scale = heightPx / shown;
+        int width = Math.round(roadWidth * scale + 6);
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(width, heightPx, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+        float cx = width * 0.5f, half = roadWidth * 0.5f * scale;
+        g.setColor(new java.awt.Color(48, 48, 52));
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(cx - half, 0, half * 2f, heightPx, 6, 6));
+        g.setColor(new java.awt.Color(Math.min(1f, colour.x), Math.min(1f, colour.y), Math.min(1f, colour.z)));
+        float lw = Math.max(1.2f, lineWidth * scale);
+        for (float offset : stripeOffsets(roadWidth)) {
+            float x = cx + offset * scale - lw * 0.5f;
+            if (!dashed) {
+                g.fill(new java.awt.geom.Rectangle2D.Float(x, 0, lw, heightPx));
+                continue;
+            }
+            for (float along = 0f; along < shown; along += dashPeriod()) {
+                float y0 = heightPx - along * scale, y1 = heightPx - Math.min(shown, along + dashLength) * scale;
+                g.fill(new java.awt.geom.Rectangle2D.Float(x, y1, lw, y0 - y1));
+            }
+        }
+        g.setColor(new java.awt.Color(20, 20, 22, 200));
+        g.draw(new java.awt.geom.RoundRectangle2D.Float(cx - half, 0, half * 2f, heightPx - 1, 6, 6));
+        g.dispose();
+        return image;
+    }
+
     public float dashPeriod() {
         return dashLength + gapLength;
     }

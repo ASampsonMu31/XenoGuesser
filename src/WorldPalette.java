@@ -119,6 +119,13 @@ public final class WorldPalette {
         float[] soilHsv = toHsv(soilBase);
         grassDry = hsv(0.07f + (soilHsv[0] - 0.07f) * 0.3f + (rng.nextFloat() - 0.5f) * 0.04f,
                 0.35f + rng.nextFloat() * 0.2f, 0.45f + rng.nextFloat() * 0.15f);
+        // ...leaning towards a hue of its own, any at all (not the lush grass's), so dead grass is
+        // a reddish, purplish, yellowish or bluish brown from world to world rather than always
+        // the same (from a stream of its own: every other colour stays as it was)
+        Random dead = rng(worldSeed, 0xDEAD_6A55L);
+        float[] lean = hsv(dead.nextFloat(), 0.55f + dead.nextFloat() * 0.35f, 0.5f + dead.nextFloat() * 0.25f);
+        float share = 0.3f + dead.nextFloat() * 0.2f;
+        for (int c = 0; c < 3; c++) grassDry[c] = grassDry[c] + (lean[c] - grassDry[c]) * share;
         // ...and never like the sea, so land and water can't be mistaken for each other (any hue at
         // least MIN_SEA_HUE_DISTANCE from the sea's, evenly; preferring one clear of the soil's)
         float soilHue = okHue(soilBase);

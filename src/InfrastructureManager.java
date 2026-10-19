@@ -61,6 +61,8 @@ public class InfrastructureManager {
     // A driveway beside the house: how wide, and how far it keeps from the walls
     private static final float DRIVEWAY_WIDTH = 22.0f;
     private static final float DRIVEWAY_LIFT = 0.5f;
+    // Houses' plots are looked over for rivers at points this far apart at most, each kept this clear of a channel
+    private static final float RIVER_LOOK_STEP = 6f, RIVER_CLEARANCE = 6f;
     // Neighbouring fenced plots closer than this join up, sharing one fence between them
     private static final float FENCE_JOIN_GAP = 26.0f;
     // Fence outlines: the plain plot, an irregular outline, the front boundary only
@@ -86,6 +88,9 @@ public class InfrastructureManager {
     private final Map<Integer, BuildingStyle[]> formStyles = new HashMap<>();
     private List<BuildingStyle.FormVariant> formVariants;
     private final Map<Integer, GuardRailStyle> guardRailStyles;
+    // Each nation's roadside bollards (see BollardStyle) and utility poles (see UtilityPoleStyle)
+    private final BollardStyle.World bollardWorld;
+    private final UtilityPoleStyle.World poleWorld;
     private final Map<Integer, FenceStyle> fenceStyles;
     private final Map<String, Material> materials = new HashMap<>();
     private final NationGenerationManager nationManager;
@@ -148,7 +153,10 @@ public class InfrastructureManager {
      * A solid shape, for collision: a wall, fence or rail along the ground from a to b, size
      * its half-width, or (b null) a post of radius size at a; top how high it stands.
      */
-    private record Obstacle(SpherePosition a, SpherePosition b, float size, float top) {
+    private record Obstacle(SpherePosition a, SpherePosition b, float size, float top, float bottom) {
+        Obstacle(SpherePosition a, SpherePosition b, float size, float top) {
+            this(a, b, size, top, Float.NEGATIVE_INFINITY);
+        }
     }
 
     // Solid shapes recorded as each cell is built, filed on the sphere. The world never
@@ -189,8 +197,9 @@ public class InfrastructureManager {
         private final float length;
         private final float width;
         private final boolean culDeSac;
-        // The deck's height at each subdivision, once worked out
-        volatile float[] deck;
+        // The deck's height at each subdivision, once worked out: as drawn (meeting greater roads
+        // at their height), and by its own ground alone
+        volatile float[] deck, ownDeck;
         private boolean railed;
 
         private RoadSegment(SphereFrame frame, SpherePosition from, SpherePosition to, Vector3 start, Vector3 end,
@@ -361,6 +370,10 @@ public class InfrastructureManager {
         BuildingStyle.assignWallVariants(seed, buildingStyles, wallVariants, kinship);
         this.guardRailStyles = GuardRailStyle.generateForNations(seed, numNations);
         this.fenceStyles = FenceStyle.generateForNations(seed, numNations, kinship);
+        this.bollardWorld = BollardStyle.generateForNations(seed, numNations, kinship);
+        this.poleWorld = UtilityPoleStyle.generateForNations(seed, numNations, kinship);
+        System.out.println("[BOLLARDS] " + bollardWorld.designs().summary());
+        System.out.println("[POLES] " + poleWorld.designs().summary());
         this.flags = FlagDesigner.design(seed, numNations, kinship);
         this.scripts = new NationScripts(seed, numNations, cultures);
         this.borderGap = hostileBorderDistance();
@@ -464,7 +477,7 @@ public class InfrastructureManager {
             jobs.put(nationTextureName("packaging", nation), () -> {
                 java.awt.image.BufferedImage art = PackagingArt.render(worldSeed, nation, products,
                         scripts.glyphs(nation), scripts.direction(nation), FlagDesigner.render(spec), patriotismOf(nation));
-                if (System.getProperty("xenoguesser.dumpart") != null) {
+                if (Dev.property("xenoguesser.dumpart") != null) {
                     try {
                         javax.imageio.ImageIO.write(art, "png", new java.io.File(WorldArtGenerator.OUTPUT_DIR, "packaging_" + nation + ".png"));
                     } catch (java.io.IOException ignored) {
@@ -769,6 +782,7 @@ public class InfrastructureManager {
         islandWealth = builder;
         roadNetwork.addAll(builder.build());
         straightenCrossings();
+        stopTracksAtFences();
         deadEnds.addAll(builder.getDeadEnds());
 
         for (int pathIndex = 0; pathIndex < roadNetwork.size(); pathIndex++) {
@@ -838,6 +852,11 @@ public class InfrastructureManager {
         // Bridges wherever the roads cross rivers and lakes
         findBridges();
         roadNetworkInitialized = true;
+        // The utility poles and their wiring, worked out in the background (the first road built
+        // waits for them should they not be ready)
+        Thread poleWork = new Thread(this::preparePoles, "utility-poles");
+        poleWork.setDaemon(true);
+        poleWork.start();
     }
 
     /** Visits every road polyline in the region, e.g. for drawing a road map. */
@@ -1106,7 +1125,8 @@ public class InfrastructureManager {
             bottom = top - (((Bridge) bridge[0]).kind == BridgeKind.PLANKS ? PLANK_THICK + LOG : SLAB);
         } else {
             if (roadDepth(place) < -BODY_MARGIN) return false;
-            top = roadSurfaceY(place);
+            top = drawnRoadY(place, BODY_MARGIN);
+            if (Float.isNaN(top)) top = roadSurfaceY(place);
             bottom = ground;
         }
         if (top - ground <= STEP_UP || feet >= top - LAND_ON) return false;
@@ -1133,7 +1153,9 @@ public class InfrastructureManager {
         float inside = roadDepth(place);
         final float easing = 1.5f;
         if (inside <= -easing) return ground;
-        float road = roadSurfaceY(place);
+        // (the road as it's drawn: level across, meeting others at junctions)
+        float road = drawnRoadY(place, easing);
+        if (Float.isNaN(road)) road = roadSurfaceY(place);
         float t = Math.min(1f, (inside + easing) / easing);
         return ground + (road - ground) * t;
     }
@@ -1499,14 +1521,32 @@ public class InfrastructureManager {
         if (groundAt(house, house.plotMinX, house.plotMinZ) <= seaLevel || groundAt(house, house.plotMaxX, house.plotMinZ) <= seaLevel) {
             return false;
         }
-        // Nor in or over a river or lake (at its middle and its plot's corners)
+        // Nor in or over a river or lake, nor on its channel's banks: looked at all over its plot
+        // (a lattice fine enough that no stream slips between its points), each point kept
+        // RIVER_CLEARANCE clear of any channel
         Rivers rivers = terrainNoise.rivers;
+        boolean riverAbout = false;
         if (rivers != null) {
+            // (first a quick look: whether any channel reaches the texels its middle and corners are
+            // in, which are wider than any plot; most plots are nowhere near one)
             float[][] corners = { { 0f, 0f }, { house.plotMinX, house.plotMinZ }, { house.plotMaxX, house.plotMinZ },
                     { house.plotMinX, house.plotMaxZ }, { house.plotMaxX, house.plotMaxZ } };
             for (float[] c : corners) {
-                SpherePosition at = world(house, c[0], 0f, c[1]);
-                if (!Float.isNaN(rivers.waterAt(SphereMath.direction(at), groundAt(house, c[0], c[1]) - 1f))) return false;
+                GeodesicChunkGrid.Direction d = SphereMath.direction(world(house, c[0], 0f, c[1]));
+                if (!Float.isNaN(rivers.waterAt(d, groundAt(house, c[0], c[1]) - 1f))) return false;
+                riverAbout |= rivers.channelsAbout(d);
+            }
+        }
+        if (riverAbout) {
+            int across = Math.max(2, (int) Math.ceil((house.plotMaxX - house.plotMinX) / RIVER_LOOK_STEP));
+            int deep = Math.max(2, (int) Math.ceil((house.plotMaxZ - house.plotMinZ) / RIVER_LOOK_STEP));
+            for (int i = 0; i <= across; i++) {
+                for (int j = 0; j <= deep; j++) {
+                    float x = house.plotMinX + (house.plotMaxX - house.plotMinX) * i / across;
+                    float z = house.plotMinZ + (house.plotMaxZ - house.plotMinZ) * j / deep;
+                    GeodesicChunkGrid.Direction d = SphereMath.direction(world(house, x, 0f, z));
+                    if (rivers.channelNear(d, RIVER_CLEARANCE)) return false;
+                }
             }
         }
 
@@ -1662,7 +1702,8 @@ public class InfrastructureManager {
                 String part = entry.getKey();
                 boolean doubleSided = part.equals("rail") || part.equals("band") || part.equals("fence") || part.equals("security") || part.equals("roadwall")
                         || part.equals("borderfence") || part.equals("barbed") || part.startsWith(BOOTH_PART)
-                        || part.startsWith("curtain") || part.equals("flag") || part.equals("goods");
+                        || part.startsWith("curtain") || part.equals("flag") || part.equals("goods") || part.startsWith("bollard") || part.startsWith("reflector")
+                        || part.startsWith("pole") || part.startsWith("insulator") || part.equals("wire");
                                 boolean paint = part.equals("line") || part.equals("driveway");
                 int wornAt = part.indexOf(WORN);
                 Material material = material(wornAt < 0 ? part : part.substring(0, wornAt), nationId);
@@ -1792,6 +1833,14 @@ public class InfrastructureManager {
         recordSegment(a, b, halfWidth, Float.POSITIVE_INFINITY);
     }
 
+    /**
+     * A solid line held up off the ground between two places (a bridge's railing): from bottom up
+     * to top, both over the ground there; passed under by one whose head is below its bottom.
+     */
+    private void recordRaised(SpherePosition a, SpherePosition b, float halfWidth, float top, float bottom) {
+        if (recording != null) recording.add(new Obstacle(SphereMath.atAltitude(a, 0.0), SphereMath.atAltitude(b, 0.0), halfWidth, top, bottom));
+    }
+
     /** A solid line along the ground between two places, standing top high (for jumping over). */
     private void recordSegment(SpherePosition a, SpherePosition b, float halfWidth, float top) {
         if (recording != null) recording.add(new Obstacle(SphereMath.atAltitude(a, 0.0), SphereMath.atAltitude(b, 0.0), halfWidth, top));
@@ -1813,7 +1862,7 @@ public class InfrastructureManager {
     public void obstaclesNear(SpherePosition centre, double reach, GeodesicCollision.Sink sink) {
         obstacleIndex.forEachNear(SphereMath.atAltitude(centre, 0.0), reach, obstacle -> {
             if (obstacle.b() == null) sink.circle(obstacle.a(), obstacle.size(), obstacle.top());
-            else sink.segment(obstacle.a(), obstacle.b(), obstacle.size(), obstacle.top());
+            else sink.segment(obstacle.a(), obstacle.b(), obstacle.size(), obstacle.top(), obstacle.bottom());
         });
     }
 
@@ -1849,6 +1898,25 @@ public class InfrastructureManager {
                 return texturedOr(wallVariantTextureName(v), wallVariants.get(v).colour, specular, 2.0f);
             }
             GuardRailStyle rail = guardRailStyles.get(nationId);
+            // A bollard's or a pole's parts, by which of the world's designs it is ("part#design")
+            int hash = part.indexOf('#');
+            if (hash > 0) {
+                int design = Integer.parseInt(part.substring(hash + 1));
+                boolean isBollard = part.startsWith("bollard") || part.startsWith("reflector");
+                BollardStyle bollard = isBollard ? bollardWorld.design(nationId, design) : null;
+                UtilityPoleStyle pole = isBollard ? null : poleWorld.design(nationId, design);
+                Vector3 shine = new Vector3(0.8f, 0.8f, 0.8f), dull = new Vector3(0.15f, 0.15f, 0.15f);
+                return switch (part.substring(0, hash)) {
+                    case "bollard" -> new Material(bollard.bodyColour(), bollard.bodyColour(), dull, 12.0f);
+                    case "bollardband" -> new Material(bollard.bandColour(), bollard.bandColour(), dull, 12.0f);
+                    // (reflectors: bright even in shade, and shining)
+                    case "reflectora" -> new Material(bollard.colourA, bollard.colourA, shine, 48.0f);
+                    case "reflectorb" -> new Material(bollard.colourB, bollard.colourB, shine, 48.0f);
+                    case "pole" -> new Material(pole.colour, pole.colour, new Vector3(0.08f, 0.08f, 0.08f), 6.0f);
+                    case "polearm" -> new Material(pole.armColour, pole.armColour, new Vector3(0.12f, 0.12f, 0.12f), 8.0f);
+                    default -> new Material(pole.insulatorColour, pole.insulatorColour, new Vector3(0.6f, 0.6f, 0.6f), 40.0f);
+                };
+            }
             switch (part) {
                 case "line": {
                     Vector3 colour = roadLineStyles.get(nationId).colour;
@@ -1860,6 +1928,10 @@ public class InfrastructureManager {
                     return new Material(rail.bandColour, rail.bandColour, new Vector3(0.35f, 0.35f, 0.35f), 24.0f);
                 case "post":
                     return new Material(rail.postColour, rail.postColour, specular, 4.0f);
+                case "wire": {
+                    Vector3 wire = new Vector3(0.07f, 0.07f, 0.08f);
+                    return new Material(wire, wire, new Vector3(0.2f, 0.2f, 0.2f), 16.0f);
+                }
                                                 case "wall":
                     return new Material(building.wallColour, building.wallColour, specular, 2.0f);
                 case "roof":
@@ -2015,14 +2087,89 @@ public class InfrastructureManager {
         // Worked out once per segment: the surface, its edges, rails and supports all ask
         float[] known = segment.deck;
         if (known != null) return known;
+        float[] own = ownDeckHeights(segment);
+        float[] deck = own.clone();
+        // Where it meets a greater road (a junction, or crossing it), it comes to that road's
+        // height: level with it across that road's width (a hair under, so that road's drawn on
+        // top), sloping from there back to its own height over JUNCTION_RAMP beyond its edge.
+        // The greater road (the higher rank; of two alike, the one made first) keeps its own,
+        // so the two meet with no step and neither runs over the other
+        if (segment.roadClass != RoadPath.RoadClass.DIRT) {
+            for (int i = 0; i <= ROAD_SEGMENT_SUBDIVISIONS; i++) {
+                float t = (float) i / ROAD_SEGMENT_SUBDIVISIONS;
+                SpherePosition place = world(segment, segment.start.x + (segment.end.x - segment.start.x) * t,
+                        segment.start.z + (segment.end.z - segment.start.z) * t);
+                float pull = 0f, target = own[i];
+                for (RoadSegment other : segmentsNear(place, MAX_ROAD_HALF_WIDTH + JUNCTION_RAMP)) {
+                    if (other.pathIndex == segment.pathIndex || other.roadClass == RoadPath.RoadClass.DIRT || !greater(other, segment)) continue;
+                    double[] p = other.frame.fromSphere(place);
+                    float ux = other.end.x - other.start.x, uz = other.end.z - other.start.z, l2 = ux * ux + uz * uz;
+                    float f = l2 > 0f ? Math.max(0f, Math.min(1f, (float) (((p[0] - other.start.x) * ux + (p[2] - other.start.z) * uz) / l2))) : 0f;
+                    float distance = (float) Math.hypot(p[0] - (other.start.x + ux * f), p[2] - (other.start.z + uz * f));
+                    float beyond = distance - other.width * 0.5f;
+                    if (beyond >= JUNCTION_RAMP) continue;
+                    float s = beyond <= 0f ? 1f : 1f - beyond / JUNCTION_RAMP;
+                    s = s * s * (3f - 2f * s);
+                    if (s > pull) {
+                        pull = s;
+                        float[] theirs = ownDeckHeights(other);
+                        float scaled = f * ROAD_SEGMENT_SUBDIVISIONS;
+                        int k = Math.min((int) scaled, ROAD_SEGMENT_SUBDIVISIONS - 1);
+                        target = theirs[k] + (theirs[k + 1] - theirs[k]) * (scaled - k) - (beyond <= 0f ? JUNCTION_UNDER : 0f);
+                    }
+                }
+                deck[i] = own[i] + (target - own[i]) * pull;
+            }
+        }
+        // (kept only once the bridges are known: a deck asked for before then would miss them)
+        if (bridgesReady || terrainNoise.rivers == null) segment.deck = deck;
+        return deck;
+    }
+
+    // A lesser road comes to a greater one's height over this far beyond its edge, and lies this
+    // little under it across its width (see deckHeights)
+    private static final float JUNCTION_RAMP = 30f, JUNCTION_UNDER = 0.05f;
+
+    /** Whether road a is the greater of two meeting (see deckHeights): the higher rank, or of two alike the one made first. */
+    private static boolean greater(RoadSegment a, RoadSegment b) {
+        return a.rank() != b.rank() ? a.rank() > b.rank() : a.pathIndex < b.pathIndex;
+    }
+
+    /** A segment's deck heights by its own ground alone (no junctions), at each subdivision along its centreline. */
+    private float[] ownDeckHeights(RoadSegment segment) {
+        float[] known = segment.ownDeck;
+        if (known != null) return known;
         float[] deck = new float[ROAD_SEGMENT_SUBDIVISIONS + 1];
         for (int i = 0; i <= ROAD_SEGMENT_SUBDIVISIONS; i++) {
             float t = (float) i / ROAD_SEGMENT_SUBDIVISIONS;
             deck[i] = roadSurfaceY(world(segment, segment.start.x + (segment.end.x - segment.start.x) * t,
                     segment.start.z + (segment.end.z - segment.start.z) * t));
         }
-        segment.deck = deck;
+        if (bridgesReady || terrainNoise.rivers == null) segment.ownDeck = deck;
         return deck;
+    }
+
+    /**
+     * The height of the made road a place is on as it's drawn (level across the road from its
+     * centreline, as deckHeights has it, junctions and all); of two overlapping, the higher. NaN
+     * on none (within slack of its edge).
+     */
+    private float drawnRoadY(SpherePosition place, float slack) {
+        float best = Float.NaN;
+        for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + slack)) {
+            if (segment.roadClass == RoadPath.RoadClass.DIRT) continue;
+            double[] p = segment.frame.fromSphere(place);
+            float ux = segment.end.x - segment.start.x, uz = segment.end.z - segment.start.z, l2 = ux * ux + uz * uz;
+            float f = l2 > 0f ? Math.max(0f, Math.min(1f, (float) (((p[0] - segment.start.x) * ux + (p[2] - segment.start.z) * uz) / l2))) : 0f;
+            float distance = (float) Math.hypot(p[0] - (segment.start.x + ux * f), p[2] - (segment.start.z + uz * f));
+            if (distance > segment.width * 0.5f + slack) continue;
+            float[] deck = deckHeights(segment);
+            float scaled = f * ROAD_SEGMENT_SUBDIVISIONS;
+            int k = Math.min((int) scaled, ROAD_SEGMENT_SUBDIVISIONS - 1);
+            float y = deck[k] + (deck[k + 1] - deck[k]) * (scaled - k);
+            if (Float.isNaN(best) || y > best) best = y;
+        }
+        return best;
     }
 
     private float[][] offsetEdge(RoadSegment segment, float offset, float[] deck) {
@@ -2059,6 +2206,8 @@ public class InfrastructureManager {
         float[][] leftEdge = offsetEdge(segment, -halfWidth, deck);
         float[][] rightEdge = offsetEdge(segment, halfWidth, deck);
         appendBridges(batch, segment);
+        appendBollards(batch, segment, deck);
+        if (segment.roadClass != RoadPath.RoadClass.DIRT) appendPoles(batch, segment);
         if (segment.roadClass == RoadPath.RoadClass.DIRT) {
             appendTrack(batch, segment, leftEdge, rightEdge);
             return;
@@ -2101,6 +2250,382 @@ public class InfrastructureManager {
             appendGuardRail(batch, segment, style, -1.0f, crossing);
             appendGuardRail(batch, segment, style, 1.0f, crossing);
         }
+    }
+
+    // Bollards stand clear of junctions by this much past the other road's edge, and only where
+    // the road is near the ground (not up on a bank or a deck more than this above it)
+    private static final float BOLLARD_JUNCTION_CLEARANCE = 6f, BOLLARD_MOST_RAISED = 2f;
+
+    /**
+     * The nation's bollards along both sides of a segment (see BollardStyle): at its spacing,
+     * counted from the path's start so they run on evenly from one segment to the next; not
+     * where a guard rail runs, on a bridge or a raised stretch, at a junction or a border check,
+     * on anyone's driveway or garden, nor in water.
+     */
+    private void appendBollards(NationBatch batch, RoadSegment segment, float[] deck) {
+        BollardStyle style = bollardWorld.main(batch.nationId);
+        if (style == null || segment.railed || !style.along(segment.roadClass)) return;
+        List<Crossing> crossing = new ArrayList<>();
+        for (RoadSegment other : segmentsNear(segment.frame.origin(), segment.length * 0.5f + segment.width + MAX_ROAD_HALF_WIDTH + BOLLARD_JUNCTION_CLEARANCE)) {
+            if (other.pathIndex != segment.pathIndex || other.culDeSac) crossing.add(new Crossing(other, segment));
+        }
+        float dirX = (segment.end.x - segment.start.x) / segment.length, dirZ = (segment.end.z - segment.start.z) / segment.length;
+        float drivingSide = drivingSide(segment.nationId);
+        Rivers rivers = terrainNoise.rivers;
+        for (float side = -1f; side <= 1f; side += 2f) {
+            float[][] edge = offsetEdge(segment, side * (segment.width * 0.5f + style.out + style.reach()), deck);
+            float phase = style.staggered && side > 0f ? style.spacing * 0.5f : 0f;
+            float first = (float) Math.ceil((segment.startDistance - phase) / style.spacing) * style.spacing + phase;
+            for (float along = first; along < segment.startDistance + segment.length; along += style.spacing) {
+                float t = (along - segment.startDistance) / segment.length;
+                if (bridgeAt(segment, along) != null) continue;
+                float[] p = edgePoint(edge, t);
+                float x = p[0], z = p[2];
+                float scaled = Math.max(0f, Math.min(1f, t)) * (edge.length - 1);
+                int i = Math.min((int) Math.floor(scaled), edge.length - 2);
+                float roadY = edge[i][1] + (edge[i + 1][1] - edge[i][1]) * (scaled - i);
+                float ground = groundAt(segment, x, z);
+                if (roadY - ground > BOLLARD_MOST_RAISED || ground <= seaLevel + 0.3f) continue;
+                if (coveringRank(x, z, crossing, BOLLARD_JUNCTION_CLEARANCE) >= 0) continue;
+                SpherePosition place = world(segment, x, z);
+                if (borderCheckAt(place, RAIL_CLEAR_OF_BORDER) != null || isPrivateGround(place, 1f)) continue;
+                if (rivers != null && !Float.isNaN(rivers.waterAt(SphereMath.direction(place), ground))) continue;
+                // (its front, and any reflectors on one side only, facing the traffic coming towards
+                // it on its own side of the road: that traffic runs start to end on the right of
+                // the way the segment runs (positive side) where they drive on the right)
+                float facing = -side * drivingSide;
+                // (the design built just here: a nation may build two or three, in different parts)
+                BollardStyle here = bollardWorld.at(batch.nationId, SphereMath.direction(place));
+                if (here == null) here = style;
+                String d = "#" + here.design;
+                here.build(batch.builder("bollard" + d), batch.builder("bollardband" + d), batch.builder("reflectora" + d), batch.builder("reflectorb" + d),
+                        x, ground, z, dirX * facing, dirZ * facing);
+                batch.include(x, ground + here.height, z, 2f);
+                recordCircle(place, here.reach() + 0.3f);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ utility poles
+
+    /**
+     * Where a pole stands along a path, the slot'th of its nation's spacing from the path's start:
+     * on the path's own side (the same all along it, chosen by the path), its nation's way out
+     * from the edge. Null where none stands: past the path's ends, in the country where its
+     * nation leaves most out (fewer the further from town), or where a bollard wouldn't stand
+     * either (a bridge, a raised stretch, a junction, a border check, anyone's land, water).
+     * Worked out the same whichever segment asks, so the wire between two poles can be strung
+     * from either.
+     */
+    private PoleSite poleSite(int pathIndex, long slot) {
+        List<RoadSegment> segments = segmentsByPath.get(pathIndex);
+        if (segments == null || segments.isEmpty() || slot < 0) return null;
+        RoadSegment first = segments.get(0), last = segments.get(segments.size() - 1);
+        // (spaced as the path's first nation spaces them, all along it, so the slots line up)
+        UtilityPoleStyle spacer = poleWorld.main(first.nationId);
+        if (spacer == null) return null;
+        float along = slot * spacer.spacing+ spacer.spacing * 0.5f;
+        if (along >= last.startDistance + last.length) return null;
+        // (the segment it's on: some paths' segments needn't start at nought, nor come in order)
+        RoadSegment segment = null;
+        for (RoadSegment s : segments) {
+            if (along >= s.startDistance && along <= s.startDistance + s.length) segment = s;
+        }
+        if (segment == null || segment.roadClass == RoadPath.RoadClass.DIRT || bridgeAt(segment, along) != null) return null;
+        // (as the nation it stands in places them, built in the design for just there)
+        UtilityPoleStyle placer = poleWorld.main(segment.nationId);
+        if (placer == null) return null;
+        float side = (Long.hashCode(pathIndex * 0x9E3779B97F4A7C15L) & 1) == 0 ? 1f : -1f;
+        float[] c = centreAt(segment, along);
+        // (beyond a guard rail, where there is one)
+        float out = segment.width * 0.5f + (segment.railed ? Math.max(placer.out, RAIL_OFFSET + 2.5f) : placer.out);
+        float x = c[0] - c[3] * out * side, z = c[1] + c[2] * out * side;
+        SpherePosition place = world(segment, x, z);
+        UtilityPoleStyle style = poleWorld.at(segment.nationId, SphereMath.direction(place));
+        if (style == null) style = placer;
+        // (in town every road has them, and every highway all along it, carrying the lines out of
+        // the towns and on to the next; in the country only some other roads, all along them, so
+        // the lines run on unbroken: as many roads as the nation's rural share)
+        float urban = settlementManager.getUrbanness(place);
+        double roll = new Random(worldSeed * 0x2545F4914F6CDD1DL + pathIndex * 1_000_003L).nextDouble();
+        if (urban < POLE_TOWN && segment.roadClass != RoadPath.RoadClass.HIGHWAY && roll >= style.ruralShare) return null;
+        float ground = TerrainMesh.getLayeredHeight(place, terrainNoise);
+        float roadY = deckHeights(segment)[Math.max(0, Math.min(ROAD_SEGMENT_SUBDIVISIONS, Math.round((along - segment.startDistance) / segment.length * ROAD_SEGMENT_SUBDIVISIONS)))];
+        if (roadY - ground > BOLLARD_MOST_RAISED || ground <= seaLevel + 0.3f) return null;
+        for (RoadSegment other : segmentsNear(place, MAX_ROAD_HALF_WIDTH + 3f)) {
+            if (other.pathIndex != pathIndex && distanceSquaredToSegment(place, other) <= Math.pow(other.width * 0.5f + 3f, 2)) return null;
+        }
+        if (borderCheckAt(place, RAIL_CLEAR_OF_BORDER) != null || isPrivateGround(place, 0.3f)) return null;
+        Rivers rivers = terrainNoise.rivers;
+        if (rivers != null && !Float.isNaN(rivers.waterAt(SphereMath.direction(place), ground))) return null;
+        // Its way along the road and straight out from it, at its foot
+        return new PoleSite(segment, x, z, ground, c[2], c[3], -c[3] * side, c[2] * side, urban, style);
+    }
+
+    // Every pole in the world (see poleSite), by path and slot ((path << 24) + slot), filed by
+    // where it stands, and each one's wired neighbours (see preparePoles); null until worked out
+    private volatile List<PoleSite> poles;
+    private Map<Long, Integer> poleBySlot;
+    private int[][] poleLinks;
+    // Whether each pole is at the end of a line (see preparePoles), and the houses each wires to
+    private boolean[] poleTerminal;
+    private List<List<House>> poleHouses;
+    private final CellIndex<Integer> poleIndex = new CellIndex<>(LOOKUP_LEVEL);
+    // A pole is wired to its nearest two others no further off than this many of its spacings; it's
+    // at a line's end unless two of its wires leave it further apart than this (degrees)
+    private static final float POLE_LINK_SPACINGS = 1.4f, TERMINAL_ANGLE = 100f;
+
+    /**
+     * Works out every pole in the world once, and how they're wired: each to its two nearest
+     * others within POLE_LINK_SPACINGS of its spacing, whatever road they stand on (so the lines
+     * run on round corners and over junctions), each pair once.
+     */
+    private synchronized void preparePoles() {
+        if (poles != null) return;
+        long started = System.currentTimeMillis();
+        List<PoleSite> all = new ArrayList<>();
+        Map<Long, Integer> bySlot = new HashMap<>();
+        for (Map.Entry<Integer, List<RoadSegment>> entry : segmentsByPath.entrySet()) {
+            List<RoadSegment> path = entry.getValue();
+            if (path.isEmpty()) continue;
+            UtilityPoleStyle spacer = poleWorld.main(path.get(0).nationId);
+            if (spacer == null) continue;
+            float length = 0f;
+            for (RoadSegment s : path) length = Math.max(length, s.startDistance + s.length);
+            for (long slot = 0; slot * spacer.spacing < length; slot++) {
+                PoleSite site = poleSite(entry.getKey(), slot);
+                if (site == null) continue;
+                bySlot.put(((long) entry.getKey() << 24) + slot, all.size());
+                poleIndex.add(world(site.segment(), site.x(), site.z()), all.size());
+                all.add(site);
+            }
+        }
+        java.util.Set<Long> pairs = new java.util.HashSet<>();
+        for (int i = 0; i < all.size(); i++) {
+            PoleSite site = all.get(i);
+            SpherePosition here = world(site.segment(), site.x(), site.z());
+            double reach = site.style().spacing * POLE_LINK_SPACINGS;
+            List<Integer> near = new ArrayList<>(poleIndex.near(here, reach));
+            near.remove((Integer) i);
+            near.sort((a, b) -> Double.compare(SphereMath.distance(here, poleFoot(all.get(a))), SphereMath.distance(here, poleFoot(all.get(b)))));
+            for (int k = 0; k < Math.min(2, near.size()); k++) {
+                int j = near.get(k);
+                if (SphereMath.distance(here, poleFoot(all.get(j))) > reach) break;
+                pairs.add(((long) Math.min(i, j) << 32) | Math.max(i, j));
+            }
+        }
+        List<List<Integer>> links = new ArrayList<>();
+        for (int i = 0; i < all.size(); i++) links.add(new ArrayList<>());
+        for (long pair : pairs) {
+            int a = (int) (pair >>> 32), b = (int) pair;
+            links.get(a).add(b);
+            links.get(b).add(a);
+        }
+        int[][] linked = new int[all.size()][];
+        for (int i = 0; i < all.size(); i++) linked[i] = links.get(i).stream().mapToInt(Integer::intValue).toArray();
+        // The ends of the lines: a pole not wired on two sides (to two poles at least, two of them
+        // more than TERMINAL_ANGLE apart as seen from it); these drop the wires to the houses
+        boolean[] terminal = new boolean[all.size()];
+        int ends = 0;
+        for (int i = 0; i < all.size(); i++) {
+            SpherePosition here = poleFoot(all.get(i));
+            boolean through = false;
+            for (int a = 0; a < linked[i].length && !through; a++) {
+                for (int b = a + 1; b < linked[i].length && !through; b++) {
+                    SpherePosition pa = poleFoot(all.get(linked[i][a])), pb = poleFoot(all.get(linked[i][b]));
+                    double ax = pa.x() - here.x(), ay = pa.y() - here.y(), az = pa.z() - here.z();
+                    double bx = pb.x() - here.x(), by = pb.y() - here.y(), bz = pb.z() - here.z();
+                    double cos = (ax * bx + ay * by + az * bz) / Math.max(1e-9, Math.sqrt((ax * ax + ay * ay + az * az) * (bx * bx + by * by + bz * bz)));
+                    through = cos < Math.cos(Math.toRadians(TERMINAL_ANGLE));
+                }
+            }
+            terminal[i] = !through;
+            if (terminal[i]) ends++;
+        }
+        // Every house with a pole near it (within DROP_REACH of its walls) is wired to the nearest
+        int wiredHouses = 0;
+        List<List<House>> housesOf = new ArrayList<>();
+        for (int i = 0; i < all.size(); i++) housesOf.add(new ArrayList<>());
+        for (House house : houses) {
+            SpherePosition middle = house.frame.origin();
+            int nearest = -1;
+            double best = Double.MAX_VALUE;
+            for (int p : poleIndex.near(middle, DROP_REACH + Math.max(house.width, house.depth) * 0.5)) {
+                double d = SphereMath.distance(middle, poleFoot(all.get(p)));
+                if (d < best) {
+                    best = d;
+                    nearest = p;
+                }
+            }
+            if (nearest < 0 || best > DROP_REACH + Math.max(house.width, house.depth) * 0.5) continue;
+            housesOf.get(nearest).add(house);
+            wiredHouses++;
+        }
+        poleBySlot = bySlot;
+        poleLinks = linked;
+        poleTerminal = terminal;
+        poleHouses = housesOf;
+        System.out.printf("[POLES] %d houses wired to their nearest pole%n", wiredHouses);
+        poles = all;
+        System.out.printf("[POLES] %d utility poles, %d wired spans between them, %d at the ends of lines, in %d ms%n", all.size(), pairs.size(), ends,
+                System.currentTimeMillis() - started);
+    }
+
+    private static SpherePosition poleFoot(PoleSite site) {
+        return world(site.segment(), site.x(), site.z());
+    }
+
+    /** A pole's place: its segment, its foot in that segment's frame (x, z) and its ground, its way along the road and out across it there, and how built up it is about it. */
+    private record PoleSite(RoadSegment segment, float x, float z, float ground, float fx, float fz, float sx, float sz, float urban, UtilityPoleStyle style) {
+        /** A point on the pole, {along, across, up} in its own terms, as a place and an altitude. */
+        Object[] at(float[] p) {
+            float px = x + fx * p[0] + sx * p[1], pz = z + fz * p[0] + sz * p[1];
+            return new Object[] { segment.frame.toSphere(px, 0.0, pz), ground + p[2] };
+        }
+    }
+
+    // Built up enough for every road to have poles
+    private static final float POLE_TOWN = 0.12f;
+    // How far a line's end pole drops wires to houses, and the most it drops
+    private static final float DROP_REACH = 200f;
+    private static final int MOST_DROPS = 12;
+
+    /**
+     * The poles standing on a segment (see poleSite), and their wires: along to the last pole on
+     * the path from each of its insulators, and down to the tops of the walls of houses about it
+     * (its nation's number, many more in town, the nearest first), each drop in its strands.
+     */
+    private void appendPoles(NationBatch batch, RoadSegment segment) {
+        List<RoadSegment> path = segmentsByPath.get(segment.pathIndex);
+        UtilityPoleStyle style = path == null || path.isEmpty() ? null : poleWorld.main(path.get(0).nationId);
+        if (style == null) return;
+        float pathStart = segment.startDistance - style.spacing * 0.5f;
+        long firstSlot = (long) Math.ceil(pathStart / style.spacing), lastSlot = (long) Math.floor((pathStart + segment.length) / style.spacing);
+        preparePoles();
+        for (long slot = firstSlot; slot <= lastSlot; slot++) {
+            Integer id = poleBySlot.get(((long) segment.pathIndex << 24) + slot);
+            if (id == null) continue;
+            PoleSite site = poles.get(id);
+            if (site.segment() != segment) continue;
+            // (the site's own style: the path's first segment's nation's, the same all along it)
+            UtilityPoleStyle ps = site.style();
+            String d = "#" + ps.design;
+            ps.build(batch.builder("pole" + d), batch.builder("polearm" + d), batch.builder("insulator" + d), site.x(), site.ground(), site.z(),
+                    new float[] { site.fx(), site.fz() }, new float[] { site.sx(), site.sz() });
+            batch.include(site.x(), site.ground() + ps.height, site.z(), ps.armReach + 2f);
+            recordCircle(world(segment, site.x(), site.z()), ps.radius + 0.4f);
+            MeshBuilder wires = batch.builder("wire");
+            // To the poles it's wired to (each span strung once, from the later of its two poles),
+            // insulator to insulator: as many wires as the fewer of the two has places for, each
+            // to the other's on the same side of its road where it can
+            for (int other : poleLinks[id]) {
+                if (other > id) continue;
+                PoleSite them = poles.get(other);
+                List<float[]> mine = ps.lineAttachments(), theirs = them.style().lineAttachments();
+                for (int w = 0; w < Math.min(mine.size(), theirs.size()); w++) {
+                    float[] a = inFrame(segment, them.at(theirs.get(w))), b = inFrame(segment, site.at(mine.get(w)));
+                    UtilityPoleStyle.wire(wires, a, b, ps.sag);
+                    // (the batch reaching out to the far pole too: otherwise, its own pole out of
+                    // sight, it's left undrawn and the wire vanishes though it's in view)
+                    batch.include(a[0], a[1], a[2], 2f);
+                }
+            }
+            // Down to each house wired to it (see preparePoles), a wire to each
+            SpherePosition foot = world(segment, site.x(), site.z());
+            float[] from = inFrame(segment, site.at(ps.dropAttachment()));
+            float poleTop = site.ground() + ps.height;
+            for (House house : poleHouses.get(id)) {
+                // The nearest point of its walls (its own outline, box or many-sided), a hair into
+                // them, at their top (no higher than a little over the pole's top): the wire
+                // slopes down from the pole to a house lower than it
+                float[] wall = nearestWall(house, local(house, foot));
+                // (a little under the walls' top, below the eaves, so it's seen to go into the wall)
+                float wallTop = Math.min(house.baseY + house.mainWallHeight - 2.5f, poleTop + 2f);
+                float[] to = inFrame(segment, new Object[] { world(house, wall[0], 0f, wall[1]), wallTop });
+                UtilityPoleStyle.wire(wires, from, to, ps.sag);
+                batch.include(to[0], to[1], to[2], 1f);
+            }
+        }
+    }
+
+    /** The nearest point of a house's walls (its main block's outline) to a point in its frame {x, z}, a hair inside them. */
+    private float[] nearestWall(House house, float[] point) {
+        float[][] outline = footprint(styleOf(house), house.width, house.depth, 0f, 0f);
+        float bestX = 0f, bestZ = 0f, best = Float.MAX_VALUE;
+        for (int i = 0; i < outline.length; i++) {
+            float[] a = outline[i], b = outline[(i + 1) % outline.length];
+            float ux = b[0] - a[0], uz = b[1] - a[1], l2 = ux * ux + uz * uz;
+            float t = l2 > 0f ? Math.max(0f, Math.min(1f, ((point[0] - a[0]) * ux + (point[1] - a[1]) * uz) / l2)) : 0f;
+            float x = a[0] + ux * t, z = a[1] + uz * t, d = (x - point[0]) * (x - point[0]) + (z - point[1]) * (z - point[1]);
+            if (d < best) {
+                best = d;
+                bestX = x;
+                bestZ = z;
+            }
+        }
+        float inward = 0.98f;
+        return new float[] { bestX * inward, bestZ * inward };
+    }
+
+    /** A place and an altitude ({SpherePosition, Float}) in a segment's frame, {x, y, z}. */
+    private static float[] inFrame(RoadSegment segment, Object[] placeAndHeight) {
+        double[] p = segment.frame.fromSphere(SphereMath.atAltitude((SpherePosition) placeAndHeight[0], 0.0));
+        return new float[] { (float) p[0], (Float) placeAndHeight[1], (float) p[2] };
+    }
+
+    /** A nation's utility poles (see UtilityPoleStyle), each {its design, the neighbouring nation it's from (0 for its main one)}. */
+    public List<Object[]> poleDesigns(int nationId) {
+        List<Object[]> list = new ArrayList<>();
+        int[] designs = poleWorld.designs().designsOf(nationId), from = poleWorld.designs().fromNationsOf(nationId);
+        for (int k = 0; k < designs.length; k++) list.add(new Object[] { poleWorld.design(nationId, designs[k]), from[k] });
+        return list;
+    }
+
+    /** A nation's road markings (see RoadLineStyle). */
+    public RoadLineStyle roadLineStyle(int nationId) {
+        return roadLineStyles.get(nationId);
+    }
+
+    /** Developer aid: side on to a pole in town and the wire it drops to its nearest house, 30 off; null if none is found. */
+    public Viewpoint poleDropViewpoint(Random rand) {
+        preparePoles();
+        for (int attempt = 0; attempt < 5000 && !poles.isEmpty(); attempt++) {
+            int id = rand.nextInt(poles.size());
+            PoleSite site = poles.get(id);
+            if (site.urban() < 0.15f || poleHouses.get(id).size() < 2) continue;
+            SpherePosition foot = poleFoot(site);
+            House nearest = poleHouses.get(id).get(0);
+            // (a low house, well under the pole's top)
+            if (nearest == null || nearest.baseY + nearest.mainWallHeight - site.ground() > site.style().height * 0.6f
+                    || SphereMath.distance(foot, nearest.frame.origin()) > DROP_REACH) continue;
+            System.out.printf(java.util.Locale.ROOT, "[POLES] Drop view: pole foot %.1f, its drop at %.1f; the house's base %.1f, walls' top %.1f, %.1f off%n",
+                    site.ground(), site.ground() + site.style().dropAttachment()[2], nearest.baseY, nearest.baseY + nearest.mainWallHeight,
+                    SphereMath.distance(foot, nearest.frame.origin()));
+            float[] h = inFrame(site.segment(), new Object[] { nearest.frame.origin(), 0f });
+            float dx = h[0] - site.x(), dz = h[2] - site.z(), l = (float) Math.hypot(dx, dz);
+            if (l < 5f) continue;
+            // (from the middle of its road, 30 back along it, looking at the wire's middle)
+            float back = site.segment().width * 0.5f + site.style().out;
+            float cx = site.x() - site.sx() * back - site.fx() * 30f, cz = site.z() - site.sz() * back - site.fz() * 30f;
+            float mx = (h[0] + site.x()) * 0.5f, mz = (h[2] + site.z()) * 0.5f;
+            return viewpoint(site.segment().frame, cx, cz, mx - cx, mz - cz);
+        }
+        return null;
+    }
+
+    /** Developer aid: on a road where poles stand in town, between two of them, looking along it; null if none is found. */
+    public Viewpoint poleViewpoint(Random rand) {
+        for (int attempt = 0; attempt < 20000 && !landSegments.isEmpty(); attempt++) {
+            RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
+            if (segment.roadClass == RoadPath.RoadClass.DIRT || segment.length < 40f || settlementManager.getUrbanness(segment.from) < 0.2f) continue;
+            UtilityPoleStyle style = poleWorld.main(segmentsByPath.get(segment.pathIndex).get(0).nationId);
+            if (style == null) continue;
+            long slot = (long) Math.ceil((segment.startDistance - style.spacing * 0.5f) / style.spacing);
+            if (poleSite(segment.pathIndex, slot) == null) continue;
+            float dx = (segment.end.x - segment.start.x) / segment.length, dz = (segment.end.z - segment.start.z) / segment.length;
+            return viewpoint(segment.frame, segment.start.x, segment.start.z, dx, dz);
+        }
+        return null;
     }
 
     // Below this the drop is left to the asphalt's own edge; above, a retaining wall; higher
@@ -2299,10 +2824,14 @@ public class InfrastructureManager {
 
     // Along each path, looked at this often for water under it (world units); runs of it this close
     // together are one bridge, which reaches on to the banks: to where the ground stands BANK_ABOVE
-    // over the water (or the river's channel has cut it no deeper than BANK_CUT), no more than
-    // BANK_SEARCH from the water, and BRIDGE_MARGIN beyond that
-    private static final float BRIDGE_LOOK_STEP = 4f, BRIDGE_JOIN = 30f, BRIDGE_MARGIN = 4f;
-    private static final float BANK_ABOVE = 3f, BANK_CUT = 0.5f, BANK_SEARCH = 100f;
+    // over the water, and is either out of the river's channel (cut no deeper than BANK_CUT) or
+    // BANK_HIGH over the water anyway (a valley's side), no more than BANK_SEARCH from the water,
+    // and BRIDGE_MARGIN beyond that, so each end is well up on dry land
+    private static final float BRIDGE_LOOK_STEP = 4f, BRIDGE_JOIN = 30f, BRIDGE_MARGIN = 10f;
+    private static final float BANK_ABOVE = 4f, BANK_HIGH = 7f, BANK_CUT = 1.5f, BANK_SEARCH = 100f;
+    // A plank bridge only joins dirt track to dirt track: it stops at least this far short of
+    // either end of its track (where the track meets another road), else it's built as a beam
+    private static final float PLANKS_FROM_JUNCTION = 15f;
     // How far over the water each kind's deck stands at least, and how much it humps for its length
     private static final float PLANK_CLEARANCE = 4f, BEAM_CLEARANCE = 8f, ARCH_CLEARANCE = 12f;
     private static final float PLANK_HUMP = 0.04f, BEAM_HUMP = 0.02f, ARCH_HUMP = 0.025f;
@@ -2395,9 +2924,15 @@ public class InfrastructureManager {
         for (float[] span : spans) {
             float from = span[0], to = span[1], length = to - from;
             if (length < 1f) continue;
-            BridgeKind kind = dirt ? BridgeKind.PLANKS : span[3] >= WIDE_BRIDGE || span[2] > 0f ? BridgeKind.ARCHES : BridgeKind.BEAM;
+            // A river's bridge goes from one bank to the other: where the road only runs along
+            // beside the water (not over a lake) and never crosses the river's middle, none
+            if (span[2] <= 0f && !crossesRiver(segments, from, to, rivers)) continue;
+            // (planks only between stretches of dirt track; anything touching a made road is built for it)
+            float pathLength = samples.get(samples.size() - 1)[0];
+            BridgeKind kind = dirt && dirtBetween(segments, from, to, pathLength) ? BridgeKind.PLANKS
+                    : span[3] >= WIDE_BRIDGE || span[2] > 0f ? BridgeKind.ARCHES : BridgeKind.BEAM;
             float hump = length * (kind == BridgeKind.PLANKS ? PLANK_HUMP : kind == BridgeKind.BEAM ? BEAM_HUMP : ARCH_HUMP);
-            float deckFrom = groundedDeck(segments, from, dirt), deckTo = groundedDeck(segments, to, dirt);
+            float deckFrom = groundedDeck(segments, from), deckTo = groundedDeck(segments, to);
             float rise, ramp;
             if (length <= HUMPED_BRIDGE) {
                 // One curve over the water, as high as it needs
@@ -2426,9 +2961,45 @@ public class InfrastructureManager {
         return bridges;
     }
 
-    /** Whether a sample along a road (see bridgesAlong) is on land beside water at a height: well above it, or not in a river's cut. */
+    /** Whether a path between two distances along it crosses a river's middle (from one bank to the other), looked at in short steps along the road itself. */
+    private boolean crossesRiver(List<RoadSegment> segments, float from, float to, Rivers rivers) {
+        int steps = Math.max(1, (int) Math.ceil((to - from) / RIVER_CROSS_STEP));
+        GeodesicChunkGrid.Direction previous = SphereMath.direction(pointAlong(segments, from));
+        for (int k = 1; k <= steps; k++) {
+            GeodesicChunkGrid.Direction next = SphereMath.direction(pointAlong(segments, from + (to - from) * k / steps));
+            float[] crossed = rivers.crossing(previous, next);
+            if (crossed != null && crossed[0] > 0f) return true;
+            previous = next;
+        }
+        return false;
+    }
+
+    // How finely a would-be bridge is looked along for the river's middle
+    private static final float RIVER_CROSS_STEP = 6f;
+
+    /** The place a distance along a path (its segments in order), on its centreline. */
+    private SpherePosition pointAlong(List<RoadSegment> segments, float along) {
+        for (RoadSegment segment : segments) {
+            if (along > segment.startDistance + segment.length + 1e-3f && segment != segments.get(segments.size() - 1)) continue;
+            float t = Math.max(0f, Math.min(1f, (along - segment.startDistance) / segment.length));
+            return world(segment, segment.start.x + (segment.end.x - segment.start.x) * t, segment.start.z + (segment.end.z - segment.start.z) * t);
+        }
+        return world(segments.get(0), segments.get(0).start.x, segments.get(0).start.z);
+    }
+
+    /** Whether a sample along a road (see bridgesAlong) is firm land beside water: well above it, and out of the river's cut or higher still. */
     private static boolean isBank(float[] sample, float water) {
-        return Float.isNaN(sample[1]) && (sample[3] >= water + BANK_ABOVE || sample[4] <= BANK_CUT);
+        return Float.isNaN(sample[1]) && sample[3] >= water + BANK_ABOVE && (sample[4] <= BANK_CUT || sample[3] >= water + BANK_HIGH);
+    }
+
+    /** Whether a stretch of a path (from and to along it) is dirt track all the way, ending short of either end of the path. */
+    private static boolean dirtBetween(List<RoadSegment> segments, float from, float to, float pathLength) {
+        if (from < PLANKS_FROM_JUNCTION || to > pathLength - PLANKS_FROM_JUNCTION) return false;
+        for (RoadSegment segment : segments) {
+            if (segment.startDistance + segment.length < from || segment.startDistance > to) continue;
+            if (segment.roadClass != RoadPath.RoadClass.DIRT) return false;
+        }
+        return true;
     }
 
     /**
@@ -2476,12 +3047,12 @@ public class InfrastructureManager {
     }
 
     /** The road's height a distance along a path as it'd be with no bridge: a track's on the ground, a made road's deck. */
-    private float groundedDeck(List<RoadSegment> segments, float along, boolean dirt) {
+    private float groundedDeck(List<RoadSegment> segments, float along) {
         for (RoadSegment segment : segments) {
             if (along > segment.startDistance + segment.length + 1e-3f && segment != segments.get(segments.size() - 1)) continue;
             float t = Math.max(0f, Math.min(1f, (along - segment.startDistance) / segment.length));
             float x = segment.start.x + (segment.end.x - segment.start.x) * t, z = segment.start.z + (segment.end.z - segment.start.z) * t;
-            return dirt ? groundAt(segment, x, z) + TRACK_LIFT : groundedRoadSurfaceY(world(segment, x, z), true);
+            return segment.roadClass == RoadPath.RoadClass.DIRT ? groundAt(segment, x, z) + TRACK_LIFT : groundedRoadSurfaceY(world(segment, x, z), true);
         }
         return 0f;
     }
@@ -2498,7 +3069,7 @@ public class InfrastructureManager {
     /** A bridge's deck under a place on it (within its road's width), as {bridge, deck height}; null if it's on none. */
     private Object[] bridgeDeckAt(SpherePosition place, float margin) {
         if (!bridgesReady) return null;
-        for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + margin)) {
+        for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + margin + BRIDGE_WIDER)) {
             if (!bridgesByPath.containsKey(segment.pathIndex)) continue;
             double[] p = segment.frame.fromSphere(place);
             float ux = segment.end.x - segment.start.x, uz = segment.end.z - segment.start.z;
@@ -2506,13 +3077,29 @@ public class InfrastructureManager {
             float t = length2 > 0f ? (float) (((p[0] - segment.start.x) * ux + (p[2] - segment.start.z) * uz) / length2) : 0f;
             t = Math.max(0f, Math.min(1f, t));
             float dx = (float) p[0] - (segment.start.x + ux * t), dz = (float) p[2] - (segment.start.z + uz * t);
-            float half = segment.width * 0.5f + margin;
+            // (as wide as the bridge is built: its planks' overhang, its parapets or its ribs past
+            // the road's edge, and a little more for the corners where its segments meet)
+            float half = segment.width * 0.5f + margin + BRIDGE_WIDER;
             if (dx * dx + dz * dz > half * half) continue;
             float along = segment.startDistance + t * segment.length;
             Bridge bridge = bridgeAt(segment, along);
-            if (bridge != null) return new Object[] { bridge, bridge.deck(along) };
+            if (bridge == null) continue;
+            float wide = segment.width * 0.5f + margin + bridgeOverhang(bridge.kind) + 1f;
+            if (dx * dx + dz * dz <= wide * wide) return new Object[] { bridge, bridge.deck(along) };
         }
         return null;
+    }
+
+    // The most any bridge reaches past its road's edge (see bridgeOverhang), and a little more
+    private static final float BRIDGE_WIDER = 5f;
+
+    /** How far a bridge's deck reaches past its road's edge: a plank bridge's planks, a beam bridge's parapets, an arch bridge's ribs. */
+    private static float bridgeOverhang(BridgeKind kind) {
+        return switch (kind) {
+            case PLANKS -> PLANK_OVERHANG;
+            case BEAM -> PARAPET_THICK;
+            case ARCHES -> RIB;
+        };
     }
 
     /** Where a segment's centreline is a distance along its path, in its frame: {x, z, way along x, way along z}. */
@@ -2589,6 +3176,7 @@ public class InfrastructureManager {
                     addPrism(wood, ra, rb, 0.8f, -0.8f, 0f);
                 }
             }
+            if (bridge.length() > 2f * POST_SPACING) recordRailing(segment, bridge, at, (half + PLANK_OVERHANG * 0.5f) * side, HANDRAIL, 1f);
             // Posts: down to the ground under the logs, and up to the rail
             for (float along = bridge.from + (float) Math.ceil((from - bridge.from) / POST_SPACING) * POST_SPACING; along <= to; along += POST_SPACING) {
                 float[] p = beside(segment, along, (half + PLANK_OVERHANG * 0.5f) * side, 0f);
@@ -2597,6 +3185,27 @@ public class InfrastructureManager {
                 if (top - ground > 0.5f) addBox(wood, p[0], ground - 2f, p[2], 1f, 0f, POST, POST, top - ground + 2f);
             }
         }
+    }
+
+    /**
+     * A bridge's railing (its handrail, parapet or ribs) as solid, along one side between stations
+     * along the path, a distance across from the middle: from just under the deck up to height over
+     * it, so it stops those on the deck and lets those walking beneath it pass under.
+     */
+    private void recordRailing(RoadSegment segment, Bridge bridge, float[] at, float across, float height, float halfThick) {
+        for (int i = 0; i + 1 < at.length; i++) {
+            float[] a = beside(segment, at[i], across, 0f), b = beside(segment, at[i + 1], across, 0f);
+            float middle = (at[i] + at[i + 1]) * 0.5f;
+            float[] m = beside(segment, middle, across, 0f);
+            float ground = groundAt(segment, m[0], m[2]), deck = Math.max(bridge.deck(at[i]), bridge.deck(at[i + 1]));
+            recordRaised(world(segment, a[0], a[2]), world(segment, b[0], b[2]), halfThick + 0.3f, deck + height - ground, deck - 2f - ground);
+        }
+    }
+
+    /** The height of the deck of a bridge at a place (anywhere on it, as walked on), NaN where there's none. */
+    public float bridgeDeckY(SpherePosition place) {
+        Object[] bridge = bridgeDeckAt(SphereMath.atAltitude(place, 0.0), 0f);
+        return bridge == null ? Float.NaN : (Float) bridge[1];
     }
 
     // A beam bridge: a slab this deep under the deck, with parapets this high and thick along its
@@ -2617,6 +3226,7 @@ public class InfrastructureManager {
                 // (a coping along its top)
                 addPrism(concrete, a, b, PARAPET_THICK + 1f, PARAPET, PARAPET + 1f);
             }
+            recordRailing(segment, bridge, at, (half + PARAPET_THICK * 0.5f) * side, PARAPET + 1f, PARAPET_THICK * 0.5f);
         }
         appendPiers(concrete, segment, bridge, from, to, half * 0.8f, 5f);
     }
@@ -2691,6 +3301,8 @@ public class InfrastructureManager {
                 addPrism(steel, da, db, RIB * 0.6f, -1f, 4f);
                 batch.include(a[0], a[1], a[2], RIB * 2f);
             }
+            // (the ribs and their hangers fence the deck in, as high as anyone)
+            recordRailing(segment, bridge, at, out, 25f, RIB * 0.5f);
             // Hangers from the rib down to the deck, braced corner to corner between them
             float first = bridge.from + (float) Math.ceil((from - bridge.from) / HANGER_SPACING) * HANGER_SPACING;
             for (float along = first; along <= to; along += HANGER_SPACING) {
@@ -3789,8 +4401,8 @@ public class InfrastructureManager {
         if (shops.isEmpty()) return null;
         Shop shop = shops.get(rand.nextInt(shops.size()));
         House house = shop.house;
-        float back = Float.parseFloat(System.getProperty("xenoguesser.shopdistance", "50"));
-        float side = Float.parseFloat(System.getProperty("xenoguesser.shopside", "0"));
+        float back = Float.parseFloat(Dev.property("xenoguesser.shopdistance", "50"));
+        float side = Float.parseFloat(Dev.property("xenoguesser.shopside", "0"));
         return viewpoint(house.frame, side, house.depth * 0.5f + house.setback + back, 0.0, -1.0);
     }
 
@@ -3831,6 +4443,75 @@ public class InfrastructureManager {
             return viewpoint(segment.frame, segment.start.x, segment.start.z, segment.end.x - segment.start.x, segment.end.z - segment.start.z);
         }
         return null;
+    }
+
+    /**
+     * Developer aid: on a road a little before a bridge, looking along the road over it (a plank
+     * bridge if planks is set, else any kind); null if none is found.
+     */
+    public Viewpoint bridgeViewpoint(Random rand, boolean planks) {
+        if (!bridgesReady || bridgesByPath.isEmpty()) return null;
+        List<Integer> paths = new ArrayList<>(bridgesByPath.keySet());
+        for (int attempt = 0; attempt < 2000; attempt++) {
+            int path = paths.get(rand.nextInt(paths.size()));
+            List<Bridge> bridges = bridgesByPath.get(path);
+            Bridge bridge = bridges.get(rand.nextInt(bridges.size()));
+            if (planks && bridge.kind != BridgeKind.PLANKS) continue;
+            float along = Math.max(0f, bridge.from - 20f);
+            for (RoadSegment segment : segmentsByPath.get(path)) {
+                if (along > segment.startDistance + segment.length) continue;
+                float t = Math.max(0f, Math.min(1f, (along - segment.startDistance) / segment.length));
+                return viewpoint(segment.frame, segment.start.x + (segment.end.x - segment.start.x) * t, segment.start.z + (segment.end.z - segment.start.z) * t,
+                        segment.end.x - segment.start.x, segment.end.z - segment.start.z);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Developer aid: at the edge of a road whose nation lines it with bollards (an open road,
+     * without guard rails), just inside them, looking along it; null if none is found.
+     */
+    public Viewpoint bollardViewpoint(Random rand) {
+        for (int attempt = 0; attempt < 20000 && !landSegments.isEmpty(); attempt++) {
+            RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
+            BollardStyle style = bollardWorld.main(segment.nationId);
+            if (style == null || segment.railed|| !style.along(segment.roadClass) || segment.length < 30f || style.spacing > 150f) continue;
+            float dx = (segment.end.x - segment.start.x) / segment.length, dz = (segment.end.z - segment.start.z) / segment.length;
+            float side = segment.width * 0.5f - 1f;
+            return viewpoint(segment.frame, segment.start.x - dz * side, segment.start.z + dx * side, dx, dz);
+        }
+        return null;
+    }
+
+    /**
+     * Developer aid: on a lesser road a little short of where it meets a greater one, looking at
+     * the junction, at one where the two would have met with a step (its own height there more
+     * than a unit and a half off the greater road's); null if none is found.
+     */
+    public Viewpoint junctionViewpoint(Random rand) {
+        for (int attempt = 0; attempt < 20000 && !landSegments.isEmpty(); attempt++) {
+            RoadSegment segment = landSegments.get(rand.nextInt(landSegments.size()));
+            if (segment.roadClass == RoadPath.RoadClass.DIRT || segment.length < 40f) continue;
+            float[] own = ownDeckHeights(segment), drawn = deckHeights(segment);
+            int end = ROAD_SEGMENT_SUBDIVISIONS;
+            if (Math.abs(own[end] - drawn[end]) < 1.5f) continue;
+            float dx = (segment.end.x - segment.start.x) / segment.length, dz = (segment.end.z - segment.start.z) / segment.length;
+            return viewpoint(segment.frame, segment.end.x - dx * 35f, segment.end.z - dz * 35f, dx, dz);
+        }
+        return null;
+    }
+
+    /**
+     * A nation's roadside bollards (see BollardStyle), each {its design, the neighbouring nation
+     * it's from (0 for its main one, built over most of its land; another is built on the side of
+     * it nearer that neighbour)}.
+     */
+    public List<Object[]> bollardDesigns(int nationId) {
+        List<Object[]> list = new ArrayList<>();
+        int[] designs = bollardWorld.designs().designsOf(nationId), from = bollardWorld.designs().fromNationsOf(nationId);
+        for (int k = 0; k < designs.length; k++) list.add(new Object[] { bollardWorld.design(nationId, designs[k]), from[k] });
+        return list;
     }
 
     /** The shop nearest a place within reach, preferring one in the same nation; null if none. */
@@ -4804,6 +5485,7 @@ public class InfrastructureManager {
                 SpherePosition place = world(house, lx, 0f, lz);
                 if (isRoadLocation(place, 4f)) return false;
                 if (TerrainMesh.getLayeredHeight(place, terrainNoise) <= seaLevel) return false;
+                if (terrainNoise.rivers != null && terrainNoise.rivers.channelNear(SphereMath.direction(place), RIVER_CLEARANCE)) return false;
                 // (plots may have grown since they were filed, by up to half the join gap a side)
                 for (House other : plotIndex.near(place, 2f + FENCE_JOIN_GAP)) {
                     if (other == house) continue;
@@ -5098,6 +5780,64 @@ public class InfrastructureManager {
      * dead straight for a way either side (along the way it was heading there), so the booths,
      * lights and markings all line up with it and nothing stands in the road.
      */
+    // How finely a dirt track is looked along for a fenced border, and how far short of one it stops
+    private static final float TRACK_FENCE_STEP = 2f, TRACK_FENCE_SHORT = 8f;
+
+    /**
+     * Dirt tracks never cross a fenced border (only made roads do, through a border check): the
+     * builder stops a track growing into a hostile nation, but its last hop on to a road it meets,
+     * or a step clipping a border's corner, can still get across; so each track is looked along
+     * closely and ends TRACK_FENCE_SHORT before the first fenced border on it, wherever that is.
+     * (Cut short in place, never removed, so every other road keeps its index.)
+     */
+    private void stopTracksAtFences() {
+        int cut = 0;
+        for (RoadPath path : roadNetwork) {
+            if (path.roadClass != RoadPath.RoadClass.DIRT || path.points.size() < 2) continue;
+            List<SpherePosition> pts = path.points;
+            int nation = nationAt(pts.get(0));
+            float along = 0f;
+            float crossing = Float.NaN;
+            for (int i = 0; i + 1 < pts.size() && Float.isNaN(crossing); i++) {
+                SpherePosition a = pts.get(i), b = pts.get(i + 1);
+                float length = (float) SphereMath.distance(a, b);
+                int steps = Math.max(1, (int) Math.ceil(length / TRACK_FENCE_STEP));
+                for (int k = 1; k <= steps; k++) {
+                    int next = nationAt(SphereMath.slerp(a, b, k / (double) steps));
+                    // (from one nation to the next, so a border by way of a third is caught too)
+                    if (kinship.hostile(nation, next)) {
+                        crossing = along + length * (k - 1) / steps;
+                        break;
+                    }
+                    if (next >= 1) nation = next;
+                }
+                along += length;
+            }
+            if (Float.isNaN(crossing)) continue;
+            cut++;
+            // Kept up to TRACK_FENCE_SHORT before the border
+            float end = crossing - TRACK_FENCE_SHORT;
+            List<SpherePosition> kept = new ArrayList<>();
+            kept.add(pts.get(0));
+            float walked = 0f;
+            for (int i = 0; i + 1 < pts.size() && end > 0f; i++) {
+                SpherePosition a = pts.get(i), b = pts.get(i + 1);
+                float length = (float) SphereMath.distance(a, b);
+                if (walked + length <= end) {
+                    kept.add(b);
+                    walked += length;
+                    continue;
+                }
+                float t = (end - walked) / Math.max(1e-3f, length);
+                if (t * length > 1f) kept.add(TerrainMesh.groundAt(SphereMath.slerp(a, b, t), terrainNoise));
+                break;
+            }
+            pts.clear();
+            pts.addAll(kept);
+        }
+        System.out.printf("[ROADS] %d dirt tracks cut short of fenced borders%n", cut);
+    }
+
     private void straightenCrossings() {
         for (RoadPath path : roadNetwork) {
             if (path.roadClass == RoadPath.RoadClass.DIRT) continue;

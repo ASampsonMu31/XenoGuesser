@@ -38,7 +38,7 @@ public final class NationScripts {
         for (int n = 1; n <= nations; n++) {
             int d = cultureDirection[culture[n]];
             // Developer aid: -Dxenoguesser.signdirection=0..3 gives every nation one writing direction
-            if (System.getProperty("xenoguesser.signdirection") != null) d = Integer.getInteger("xenoguesser.signdirection", d);
+            if (Dev.property("xenoguesser.signdirection") != null) d = Dev.integer("xenoguesser.signdirection", d);
             direction[n] = d;
             alphabet[n] = systems.get(culture[n] % systems.size());
         }
