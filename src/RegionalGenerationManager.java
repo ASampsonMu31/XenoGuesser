@@ -236,6 +236,15 @@ public class RegionalGenerationManager {
         return distanceToWater(SphereMath.direction(place));
     }
 
+    /**
+     * A noise map of its own, seeded by salt rather than by how many maps came before (so
+     * making one leaves every other map as it was): for re-drawing a species' range.
+     */
+    public RegionalFactor createNoiseMap(float scale, long salt) {
+        PerlinNoise noise = new PerlinNoise(worldSeed * 0x9E3779B97F4A7C15L + salt * 1_000_003L + 77_777L);
+        return new RegionalFactor(1.0f, d -> (noise.onSphere(surface(d), scale, 0f, 0f) + 1.0f) / 2.0f);
+    }
+
     public RegionalFactor createNoiseMap(float scale) {
         int uniqueOffset = 33333 + (assignedNoiseTracks * 11111);
         assignedNoiseTracks++;

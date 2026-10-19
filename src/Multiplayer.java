@@ -159,7 +159,7 @@ public final class Multiplayer {
     private static final long LEAVE_GRACE_MS = 200;
     // Developer aid: -Dxenoguesser.mpmuteafter=ms sends nothing more that long into the game
     // (the connection stays open), as a pulled cable would, to test the partner's silence rule
-    private static final Long MUTE_AFTER_MS = Long.getLong("xenoguesser.mpmuteafter");
+    private static final Long MUTE_AFTER_MS = Dev.longValue("xenoguesser.mpmuteafter");
     private volatile long playingSince;
     private volatile boolean ready;
     private volatile boolean closed;
@@ -233,7 +233,7 @@ public final class Multiplayer {
 
     /** -Dxenoguesser.mpfake (=host or =join) plays over a socket on this PC; otherwise Steam. */
     private static MultiplayerTransport newTransport() {
-        return System.getProperty("xenoguesser.mpfake") != null ? new LocalTransport() : new SteamTransport();
+        return Dev.property("xenoguesser.mpfake") != null ? new LocalTransport() : new SteamTransport();
     }
 
     /** The session being played, or null in singleplayer. */

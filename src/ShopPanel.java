@@ -42,10 +42,12 @@ public class ShopPanel extends JPanel {
     // What things cost: each card's price is drawn at random from a normal distribution round a
     // mean (to the nearest $5, never below the lowest). The mean starts at FIRST_MEAN after the
     // first round and is multiplied by PRICE_GROWTH each round after, everything's prices rising
-    // by the same share (so after round 12, 1.3 to the 11th, about 18 times). The spread is set so that
+    // by the same share (so after round 12, 1.25 to the 11th, about 12 times: dearer to begin
+    // with than the $100 and 1.4 it was, the same about round 6, half as dear by the year's
+    // end). The spread is set so that
     // WITHIN_SHARE of prices fall within WITHIN_FRACTION of the mean either side (90% within
     // 30%: a standard deviation of 0.3 / 1.645 of the mean), so it grows with the mean
-    private static final float FIRST_MEAN = 100f, PRICE_GROWTH = 1.4f;
+    private static final float FIRST_MEAN = 180f, PRICE_GROWTH = 1.25f;
     private static final float WITHIN_FRACTION = 0.3f;
     // (1.645 standard deviations either side of the mean hold 90% of a normal distribution)
     private static final float WITHIN_SHARE_DEVIATIONS = 1.645f;

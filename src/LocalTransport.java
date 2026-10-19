@@ -28,7 +28,7 @@ import javax.swing.SwingUtilities;
 public final class LocalTransport implements MultiplayerTransport {
 
     private static final int PORT = 27999;
-    private static final double DROP_SHARE = parseDropShare(System.getProperty("xenoguesser.mpdrop"));
+    private static final double DROP_SHARE = parseDropShare(Dev.property("xenoguesser.mpdrop"));
     // Larger than any message the game sends (the writing systems, under 1 MB)
     private static final int MAX_MESSAGE = 4 * 1024 * 1024;
 

@@ -43,7 +43,8 @@ void main() {
     vec3 finalLeafColor = mix(u_LeafDarkColor, u_LeafLightColor, texColor.r);
 
     // 4. Apply Lighting to your newly calculated color
-    vec3 norm = normalize(aNormal);
+    // (one face per leaf, drawn from both sides: lit as the side that is seen)
+    vec3 norm = normalize(gl_FrontFacing ? aNormal : -aNormal);
     vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3)); 
     float diff = max(dot(norm, lightDir), 0.2);
     

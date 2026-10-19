@@ -1231,7 +1231,7 @@ public class Inhabitants {
             // Already out: somewhere along the way to wherever they're going
             setOff(p);
             // Developer aid: -Dxenoguesser.bags gives everyone out a bag, empty or full
-            if (System.getProperty("xenoguesser.bags") != null) {
+            if (Dev.property("xenoguesser.bags") != null) {
                 p.carrying = rand.nextBoolean() ? EMPTY : FULL;
                 p.boughtFrom = home.nationId;
             }
@@ -1531,7 +1531,7 @@ public class Inhabitants {
         p.heading = Math.PI * 0.5 - turnY;
         p.lookYaw = 0f;
         // Developer aid: with -Dxenoguesser.bags, full-length pictures carry a shopping bag
-        if (System.getProperty("xenoguesser.bags") != null && fullLength && hold < 0) {
+        if (Dev.property("xenoguesser.bags") != null && fullLength && hold < 0) {
             p.carrying = rand.nextBoolean() ? EMPTY : FULL;
             p.boughtFrom = nationId;
         }

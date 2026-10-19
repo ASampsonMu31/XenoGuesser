@@ -26,6 +26,14 @@ public final class GeodesicCollision {
 
         void circle(SpherePosition centre, double radius, double top);
 
+        /**
+         * A solid line standing from bottom up to top (heights over the ground): one walking
+         * under it (their head below its bottom), as under a bridge's railing, passes beneath.
+         */
+        default void segment(SpherePosition a, SpherePosition b, double halfWidth, double top, double bottom) {
+            segment(a, b, halfWidth, top);
+        }
+
         default void segment(SpherePosition a, SpherePosition b, double halfWidth) {
             segment(a, b, halfWidth, Double.POSITIVE_INFINITY);
         }
@@ -35,7 +43,9 @@ public final class GeodesicCollision {
         }
     }
 
-    private static final int FIELDS = 7;
+    private static final int FIELDS = 8;
+    // How tall a body is over its feet, for passing beneath something (see Sink.segment's bottom)
+    private static final double BODY_TALL = 20.0;
     // Moving bodies are never bigger than this round (the largest creature)
     private static final double LARGEST_BODY = 12.0;
 
@@ -52,7 +62,7 @@ public final class GeodesicCollision {
     private CellIndex<Body> listing = new CellIndex<>();
 
     // Shapes gathered for the current query, in the frame at its place:
-    // {kind, ax, az, bx, bz, size, top}, kind 0 segment, 1 circle
+    // {kind, ax, az, bx, bz, size, top, bottom}, kind 0 segment, 1 circle
     private double[] shapes = new double[FIELDS * 256];
     private int shapeCount;
     private SphereFrame frame;
@@ -61,12 +71,17 @@ public final class GeodesicCollision {
     private final Sink gather = new Sink() {
         @Override
         public void segment(SpherePosition a, SpherePosition b, double halfWidth, double top) {
+            segment(a, b, halfWidth, top, Double.NEGATIVE_INFINITY);
+        }
+
+        @Override
+        public void segment(SpherePosition a, SpherePosition b, double halfWidth, double top, double bottom) {
             double[] la = frame.fromSphere(a), lb = frame.fromSphere(b);
             // Only what could touch the query circle
             double minX = Math.min(la[0], lb[0]) - halfWidth, maxX = Math.max(la[0], lb[0]) + halfWidth;
             double minZ = Math.min(la[2], lb[2]) - halfWidth, maxZ = Math.max(la[2], lb[2]) + halfWidth;
             if (maxX < -queryReach || minX > queryReach || maxZ < -queryReach || minZ > queryReach) return;
-            add(0, la[0], la[2], lb[0], lb[2], halfWidth, top);
+            add(0, la[0], la[2], lb[0], lb[2], halfWidth, top, bottom);
         }
 
         @Override
@@ -74,7 +89,7 @@ public final class GeodesicCollision {
             double[] l = frame.fromSphere(centre);
             double reach = queryReach + radius;
             if (Math.abs(l[0]) > reach || Math.abs(l[2]) > reach) return;
-            add(1, l[0], l[2], 0, 0, radius, top);
+            add(1, l[0], l[2], 0, 0, radius, top, Double.NEGATIVE_INFINITY);
         }
     };
 
@@ -125,7 +140,12 @@ public final class GeodesicCollision {
         for (Source source : sources) source.obstaclesNear(centre, reach, gather);
     }
 
-    private void add(double kind, double a, double b, double c, double d, double size, double top) {
+    /** Whether one whose feet are clearance over the ground passes shape s: over its top, or under its bottom. */
+    private boolean passes(int s, double clearance) {
+        return shapes[s * FIELDS + 6] < clearance || shapes[s * FIELDS + 7] > clearance + BODY_TALL;
+    }
+
+    private void add(double kind, double a, double b, double c, double d, double size, double top, double bottom) {
         if ((shapeCount + 1) * FIELDS > shapes.length) shapes = java.util.Arrays.copyOf(shapes, shapes.length * 2);
         int i = shapeCount * FIELDS;
         shapes[i] = kind;
@@ -135,6 +155,7 @@ public final class GeodesicCollision {
         shapes[i + 4] = d;
         shapes[i + 5] = size;
         shapes[i + 6] = top;
+        shapes[i + 7] = bottom;
         shapeCount++;
     }
 
@@ -167,7 +188,7 @@ public final class GeodesicCollision {
         for (int pass = 0; pass < 3; pass++) {
             boolean moved = false;
             for (int s = 0; s < shapeCount; s++) {
-                if (shapes[s * FIELDS + 6] < clearance) continue;
+                if (passes(s, clearance)) continue;
                 double[] push = penetration(s, px, pz, r);
                 if (push != null) {
                     px += push[0];
@@ -208,7 +229,7 @@ public final class GeodesicCollision {
         for (int pass = 0; pass < 3; pass++) {
             boolean moved = false;
             for (int s = 0; s < shapeCount; s++) {
-                if (shapes[s * FIELDS + 6] < clearance) continue;
+                if (passes(s, clearance)) continue;
                 double[] push = penetration(s, px, pz, r);
                 if (push != null) {
                     px += push[0];
@@ -270,7 +291,7 @@ public final class GeodesicCollision {
     private boolean overlapsGathered(double x, double z, double r, Object self, double clearance,
             List<Body> near, List<double[]> places) {
         for (int s = 0; s < shapeCount; s++) {
-            if (shapes[s * FIELDS + 6] < clearance) continue;
+            if (passes(s, clearance)) continue;
             if (penetration(s, x, z, r) != null) return true;
         }
         for (int b = 0; b < near.size(); b++) {

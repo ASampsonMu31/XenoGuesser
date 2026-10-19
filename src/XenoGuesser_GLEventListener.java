@@ -136,7 +136,7 @@ private static class SpeciesConfig {
     private static final Object PLAYER = "player";
     private static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
     // Developer aid: -Dxenoguesser.menushot photographs the pod for the main menu's background
-    private static final boolean MENU_SHOT = System.getProperty("xenoguesser.menushot") != null;
+    private static final boolean MENU_SHOT = Dev.property("xenoguesser.menushot") != null;
     private boolean hideFirstPerson;
     private boolean swimming;
     private float waterSurfaceHere;
@@ -324,7 +324,10 @@ private static class SpeciesConfig {
       GRASS_HEIGHT("Grass height"),
       GRASS_COLOUR("Grass colour"),
       WEALTH("Wealth"),
-      NATIONS("Nations");
+      NATIONS("Nations"),
+      BOLLARDS("Bollards"),
+      ROAD_LINES("Road lines"),
+      UTILITY_POLES("Utility poles");
 
       private final String label;
 
@@ -363,7 +366,7 @@ private static class SpeciesConfig {
         // Developer aid: -Dxenoguesser.minimap=NATIONS,ROADS,CONTOURS starts with that gradient
         // map chosen and those layers ticked
         this.currentDebugFactor = null;
-        String startingMap = System.getProperty("xenoguesser.minimap");
+        String startingMap = Dev.property("xenoguesser.minimap");
         if (startingMap != null) {
             for (String part : startingMap.split(",")) {
                 try {
@@ -481,7 +484,7 @@ private static class SpeciesConfig {
             if (isTree) {
                 // Trees: Massive leaves, low branching density, thick trunks, tall structural heights
                 leafScale   = 2.2f + speciesSeeder.nextFloat() * 1.5f; // Scale ranges from 2.2 to 3.7
-                baseBRate   = 0.03f + speciesSeeder.nextFloat() * 0.06f;
+                baseBRate   = 0.05f + speciesSeeder.nextFloat() * 0.08f; // Plenty of middling branches
                 varBRate    = 0.01f + speciesSeeder.nextFloat() * 0.02f;
                 baseSWidth  = 2.0f + speciesSeeder.nextFloat() * 2.5f;
                 varSWidth   = 0.3f + speciesSeeder.nextFloat() * 0.4f;
@@ -489,7 +492,7 @@ private static class SpeciesConfig {
                 varWDecl    = 0.005f + speciesSeeder.nextFloat() * 0.01f;
                 baseSDist   = 80.0f + speciesSeeder.nextFloat() * 90.0f; // Tall
                 varSDist    = 10.0f + speciesSeeder.nextFloat() * 15.0f;
-                baseBAngle  = 15.0f + speciesSeeder.nextFloat() * 25.0f; // Narrow upward growth
+                baseBAngle  = 30.0f + speciesSeeder.nextFloat() * 40.0f; // Splay: from fairly upright (30) to nearly level (70), by species
                 varBAngle   = 5.0f + speciesSeeder.nextFloat() * 10.0f;
                 
                 // Ecological layout: Random temperature preferences across the map
@@ -509,13 +512,13 @@ private static class SpeciesConfig {
                 varWDecl    = 0.05f + speciesSeeder.nextFloat() * 0.1f;
                 baseSDist   = 5.0f + speciesSeeder.nextFloat() * 12.0f; // Short
                 varSDist    = 2.0f + speciesSeeder.nextFloat() * 6.0f;
-                baseBAngle  = 25.0f + speciesSeeder.nextFloat() * 25.0f; // Wide bushy dispersion
+                baseBAngle  = 30.0f + speciesSeeder.nextFloat() * 30.0f; // Wide bushy dispersion
                 varBAngle   = 10.0f + speciesSeeder.nextFloat() * 20.0f;
                 
                 // Ecological layout: Prefer warmer/different niches than trees
                 tempMean    = 0.4f + speciesSeeder.nextFloat() * 0.5f;
                 tempStdDev  = 0.15f + speciesSeeder.nextFloat() * 0.2f;
-                baseAbundance = 0.04f + speciesSeeder.nextFloat() * 0.16f;
+                baseAbundance = (0.04f + speciesSeeder.nextFloat() * 0.16f) * 2.5f; // (common: 2.5 times what they were)
             }
 
             // --- GENERATE PURE GREYSCALE WOOD LUMINANCE (0.15 = Charcoal, 0.95 = Ghost White) ---
@@ -577,26 +580,15 @@ private static class SpeciesConfig {
             SpeciesConfig sc = speciesConfigs[s];
             sc.tempFactor = this.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev);
             sc.patchNoiseFactor = this.regionalManager.createNoiseMap(sc.patchNoiseScale);
-            
-            // Blended factor with prominent 50% unique noise allocation for explicit segregation
-            RegionalFactor suited = new RegionalFactor.Builder()
-                .setWeight(6.0f)        // Drop this to 1.0f so it NEVER artificially blows up low scores
-                .setPowerCurve(6.0f)    // Crank the power curve up to 5.0 or 6.0 to make it brutal
-                .addFactor(sc.tempFactor, 0.30f)
-                .addFactor(this.grassMoistureFactor, 0.20f)
-                .addFactor(sc.patchNoiseFactor, 0.50f)
-                .build();
             // ...and only in its home region, as the animals (see OrganismSpecies): a plant suited
             // to the cold north needn't grow in the cold south too
             RegionalFactor home = this.regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW
                     + new Random(worldSeed * 613L + s).nextFloat() * OrganismSpecies.HOME_SCALE_RANGE);
-            float homeStrength = OrganismSpecies.homeStrength(new Random(worldSeed * 1993L + s));
-            sc.abundanceFactor = new RegionalFactor(1.0f, d -> {
-                float t = Math.max(0f, Math.min(1f, (home.evaluate(d) - OrganismSpecies.HOME_FROM)
-                        / (OrganismSpecies.HOME_TO - OrganismSpecies.HOME_FROM)));
-                return suited.evaluate(d) * (1f - homeStrength + homeStrength * t * t * (3f - 2f * t));
-            });
+            sc.abundanceFactor = plantAbundance(sc, home, OrganismSpecies.homeStrength(new Random(worldSeed * 1993L + s)));
         }
+
+        // Each plant's range (see SpeciesRange): spawning and its heatmap both follow it
+        floraRanges = floraRanges(SpeciesRange.land(worldNoise, seaLevelHeight));
 
         // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
         Random rand = new Random(this.worldSeed);
@@ -727,6 +719,33 @@ private static class SpeciesConfig {
             }
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (minimap != null) minimap.setNationLabels(labels);
+            });
+            // The picture maps' pictures: each nation's bollard, road markings or utility pole where
+            // its main land's name goes
+            java.util.Map<FactorName, List<Object[]>> pictures = new java.util.EnumMap<>(FactorName.class);
+            for (FactorName f : PICTURE_MAPS) pictures.put(f, new ArrayList<>());
+            // (a nation building more than one bollard or pole: its main one where its name goes,
+            // each other one part way towards the neighbour whose it is, on the side it's built)
+            java.util.Map<Integer, float[]> middles = new HashMap<>();
+            for (float[] place : maps.nationLabelPlaces(nationManager)) if (place[4] > 0.5f) middles.put((int) place[0], place);
+            for (float[] place : middles.values()) {
+                int nation = (int) place[0];
+                for (Object[] design : infraManager.bollardDesigns(nation)) {
+                    float[] at = towardsNeighbour(place, middles.get((Integer) design[1]));
+                    pictures.get(FactorName.BOLLARDS).add(new Object[] { ((BollardStyle) design[0]).picture(MAP_PICTURE_HEIGHT), at[0], at[1] });
+                }
+                RoadLineStyle lines = infraManager.roadLineStyle(nation);
+                if (lines != null) pictures.get(FactorName.ROAD_LINES).add(new Object[] { lines.picture(MAP_PICTURE_HEIGHT, RoadPath.RoadClass.STREET.width), place[1], place[2] });
+                for (Object[] design : infraManager.poleDesigns(nation)) {
+                    float[] at = towardsNeighbour(place, middles.get((Integer) design[1]));
+                    pictures.get(FactorName.UTILITY_POLES).add(new Object[] { ((UtilityPoleStyle) design[0]).picture(MAP_PICTURE_HEIGHT), at[0], at[1] });
+                }
+            }
+            mapPictures = pictures;
+            // (a picture map already chosen gets its pictures now)
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                Overlay shown = currentDebugFactor;
+                if (minimap != null && shown != null && PICTURE_MAPS.contains(shown.factor())) chooseGradient(shown);
             });
             // Drawn in tiles when zoomed in close
             java.util.Map<MapPanel.Layer, MapTiles.Renderer> layerTiles = new java.util.EnumMap<>(java.util.Map.of(
@@ -1107,10 +1126,10 @@ private static class SpeciesConfig {
      * view moves out to look back at the landing pod, and a frame without the HUD or the
      * player's body is saved as the menu art.
      */
-    private static final boolean SIGN_SHOT = System.getProperty("xenoguesser.signshot") != null;
-    private static final String VEHICLE_SHOT = System.getProperty("xenoguesser.vehicleshot");
+    private static final boolean SIGN_SHOT = Dev.property("xenoguesser.signshot") != null;
+    private static final String VEHICLE_SHOT = Dev.property("xenoguesser.vehicleshot");
     // (after this many frames: -Dxenoguesser.vehicleshotframe)
-    private static final int VEHICLE_SHOT_FRAME = Integer.getInteger("xenoguesser.vehicleshotframe", 120);
+    private static final int VEHICLE_SHOT_FRAME = Dev.integer("xenoguesser.vehicleshotframe", 120);
     private int vehicleShotFrames;
     private final java.util.Set<InfrastructureObject> signsShot = new java.util.HashSet<>();
     private SpherePosition signShotEye, signShotTarget;
@@ -1132,7 +1151,7 @@ private static class SpeciesConfig {
                 for (InfrastructureObject obj : objects) {
                     if (obj.type != InfrastructureObject.Type.SIGN || signsShot.contains(obj)) continue;
                     // -Dxenoguesser.signshot=shaped: only posters on leaning or round walls
-                    if ("shaped".equals(System.getProperty("xenoguesser.signshot")) && !obj.shaped) continue;
+                    if ("shaped".equals(Dev.property("xenoguesser.signshot")) && !obj.shaped) continue;
                     double score = SphereMath.distance(obj.frame.origin(), at);
                     if (obj.pictureCount == 0 && !obj.wallMounted) score += 1e9;
                     if (score < bestScore) { bestScore = score; best = obj; }
@@ -1141,11 +1160,11 @@ private static class SpeciesConfig {
             if (best == null) return;
             signsShot.add(best);
             // (in the sign's own frame, whose local +z its face looks along)
-            float side = Float.parseFloat(System.getProperty("xenoguesser.signside", "1"));
+            float side = Float.parseFloat(Dev.property("xenoguesser.signside", "1"));
             float back = best.wallMounted ? Math.min(30f, Math.max(best.boardWidth * 0.75f, best.boardHeight * 1.6f) + 6f) : 40f;
             float lift = best.wallMounted ? 0f : 32f;
             // -Dxenoguesser.signslant=0.8 views it from off to one side, by that much of the distance
-            float slant = Float.parseFloat(System.getProperty("xenoguesser.signslant", "0"));
+            float slant = Float.parseFloat(Dev.property("xenoguesser.signslant", "0"));
             signShotEye = best.frame.toWorld(-back * slant * side, lift, back * side);
             signShotTarget = best.frame.toWorld(0.0, lift, 0.0);
             lookFrom(signShotEye, signShotTarget);
@@ -1241,13 +1260,13 @@ private static class SpeciesConfig {
     /** Where the main menu's picture is taken from and what it looks at, round a pod (see menuShot): {eye, target}. */
     private SpherePosition[] menuView(LandingPod landed) {
         SphereFrame pod = landed.frame();
-        double side = Math.toRadians(Double.parseDouble(System.getProperty("xenoguesser.menuangle", "38")));
-        double distance = Double.parseDouble(System.getProperty("xenoguesser.menudistance", "165"));
+        double side = Math.toRadians(Double.parseDouble(Dev.property("xenoguesser.menuangle", "38")));
+        double distance = Double.parseDouble(Dev.property("xenoguesser.menudistance", "165"));
         double ex = Math.sin(side) * distance, ez = Math.cos(side) * distance;
         SpherePosition standing = pod.toSphere(ex, 0.0, ez);
         double eye = Math.max(TerrainMesh.getLayeredHeight(standing, worldNoise), seaLevelHeight) + 26.0;
         // The pod sits just right of the middle: the menu takes the left, the spaceman the far right
-        double lookSide = side + Math.PI + Math.toRadians(Double.parseDouble(System.getProperty("xenoguesser.menuoffset", "1.5")));
+        double lookSide = side + Math.PI + Math.toRadians(Double.parseDouble(Dev.property("xenoguesser.menuoffset", "1.5")));
         return new SpherePosition[] { SphereMath.atAltitude(standing, eye),
             pod.toSphere(ex + Math.sin(lookSide) * 100.0, landed.ground() + 24.0, ez + Math.cos(lookSide) * 100.0) };
     }
@@ -1726,7 +1745,7 @@ private static class SpeciesConfig {
                     
                     Flora.FloraBundle fBundle = Flora.generateFloraBundle(
                         gl, worldSeed + (i * 7382L) + s * 8831L, 
-                        bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale
+                        bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale, lod
                     );
                     
                     floraOutlines[s][i] = fBundle.outline;
@@ -1895,7 +1914,7 @@ private static class SpeciesConfig {
         inhabitants.setPackaging(n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
         peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, infraManager.products(),
                 n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
-        if (System.getProperty("xenoguesser.dumpart") != null) dumpPeoplePictures();
+        if (Dev.property("xenoguesser.dumpart") != null) dumpPeoplePictures();
         playerBody.initialise(gl);
         Multiplayer session = Multiplayer.active();
         if (session != null) {
@@ -1931,8 +1950,8 @@ private static class SpeciesConfig {
     }
 
         // With a fixed test seed the spawn sequence repeats too, so test runs are comparable
-    private final java.util.Random spawnRandom = Long.getLong("xenoguesser.seed") != null
-            ? new java.util.Random(Long.getLong("xenoguesser.seed")) : new java.util.Random();
+    private final java.util.Random spawnRandom = Dev.longValue("xenoguesser.seed") != null
+            ? new java.util.Random(Dev.longValue("xenoguesser.seed")) : new java.util.Random();
 
     // ------------------------------------------------------------------ multiplayer: the same rounds on both PCs
 
@@ -1984,7 +2003,7 @@ private static class SpeciesConfig {
         floraStream.clearPrefetch();
         grassStream.clearPrefetch();
         queuedPod = null;
-        if (System.getProperty("xenoguesser.view") != null || System.getProperty("xenoguesser.spawnat") != null) return;
+        if (Dev.property("xenoguesser.view") != null || Dev.property("xenoguesser.spawnat") != null) return;
         queuedSite = landingSite(roundRandom(spawnedRound + 1, SITE_DRAWS));
         if (queuedSite == null) return;
         if (Multiplayer.isActive()) {
@@ -2011,7 +2030,7 @@ private static class SpeciesConfig {
     private void spawnPlayerAtRandomLocation() {
         int round = ++spawnedRound;
         java.util.Random dynamicRand = roundRandom(round, DAY_DRAWS);
-        String devView = System.getProperty("xenoguesser.view");
+        String devView = Dev.property("xenoguesser.view");
         // Rounds always start on a road, looking along it
         // Developer aid: -Dxenoguesser.view=house starts each round looking at a house
         Viewpoint spawn = "house".equals(devView)
@@ -2036,14 +2055,26 @@ private static class SpeciesConfig {
         // One of every animal side by side; some species' range with one of them just ahead
         if ("zoo".equals(devView)) spawn = orElse(organismManager.zooViewpoint(dynamicRand), spawn);
         if ("bug".equals(devView)) spawn = orElse(organismManager.showcaseViewpoint(dynamicRand), spawn);
+        // Deep in the heartland of a species that lives in herds
+        if ("herd".equals(devView)) spawn = orElse(organismManager.herdViewpoint(dynamicRand), spawn);
         // On a river's bank (-Dxenoguesser.riverwidth=20: one at least that wide), looking across and up it
         if ("river".equals(devView)) spawn = orElse(riverViewpoint(dynamicRand), spawn);
+        // On a side road looking at where it meets (at a step it would have had) a greater one
+        if ("junction".equals(devView)) spawn = orElse(infraManager.junctionViewpoint(dynamicRand), spawn);
+        // At a road's edge looking along its bollards
+        if ("bollard".equals(devView)) spawn = orElse(infraManager.bollardViewpoint(dynamicRand), spawn);
+        // In town between two utility poles, looking along the road
+        if ("pole".equals(devView)) spawn = orElse(infraManager.poleViewpoint(dynamicRand), spawn);
+        // Side on to a pole's wire down to a house
+        if ("drop".equals(devView)) spawn = orElse(infraManager.poleDropViewpoint(dynamicRand), spawn);
+        // A little before a bridge, looking over it (a plank one with plankbridge)
+        if ("bridge".equals(devView) || "plankbridge".equals(devView)) spawn = orElse(infraManager.bridgeViewpoint(dynamicRand, "plankbridge".equals(devView)), spawn);
         // Beside one of the bigger lakes, looking out over it
         if ("lake".equals(devView)) spawn = orElse(lakeViewpoint(dynamicRand), spawn);
 
         // Developer aid: -Dxenoguesser.spawnat=latitude,longitude (degrees, north and east
         // positive) starts the round there
-        String spawnAt = System.getProperty("xenoguesser.spawnat");
+        String spawnAt = Dev.property("xenoguesser.spawnat");
         if (spawnAt != null) {
             String[] parts = spawnAt.split(",");
             double latitude = Double.parseDouble(parts[0].trim()), longitude = Double.parseDouble(parts[1].trim());
@@ -2146,7 +2177,7 @@ private static class SpeciesConfig {
         zoom = 1f;
         applyProjection();
         // Developer aid: -Dxenoguesser.lookatsun starts the round looking straight at the sun
-        if (System.getProperty("xenoguesser.lookatsun") != null) {
+        if (Dev.property("xenoguesser.lookatsun") != null) {
             SpherePosition eye = camera.getSpherePosition();
             float[] d = Planet.sunDirection(eye, sunDeclination, noonLongitude);
             camera.lookAt(SphereFrame.at(eye).toWorld(d[0] * 10.0, d[1] * 10.0, d[2] * 10.0));
@@ -2154,9 +2185,9 @@ private static class SpeciesConfig {
                     Math.toDegrees(Math.asin(d[1])), Math.toDegrees(Planet.latitude(eye)), Math.toDegrees(sunDeclination));
         }
         // Developer aid: -Dxenoguesser.pitch=-60 starts the round looking down by that many degrees
-        String pitch = System.getProperty("xenoguesser.pitch");
+        String pitch = Dev.property("xenoguesser.pitch");
         // and -Dxenoguesser.yaw=180 turned round by that many degrees
-        String yaw = System.getProperty("xenoguesser.yaw");
+        String yaw = Dev.property("xenoguesser.yaw");
         if (pitch != null || yaw != null) {
             camera.updateYawPitch(yaw == null ? 0f : Float.parseFloat(yaw) / camera.MOUSE_SPEED,
                     pitch == null ? 0f : Float.parseFloat(pitch) / camera.MOUSE_SPEED);
@@ -2221,7 +2252,7 @@ private static class SpeciesConfig {
     private Viewpoint riverViewpoint(java.util.Random rand) {
         Rivers rivers = worldNoise.rivers;
         if (rivers == null || rivers.reaches().isEmpty()) return null;
-        float wide = Float.parseFloat(System.getProperty("xenoguesser.riverwidth", "12"));
+        float wide = Float.parseFloat(Dev.property("xenoguesser.riverwidth", "12"));
         for (int attempt = 0; attempt < 2000; attempt++) {
             Rivers.Reach r = rivers.reaches().get(rand.nextInt(rivers.reaches().size()));
             int k = 2 + rand.nextInt(Math.max(1, r.size() - 4));
@@ -2230,7 +2261,7 @@ private static class SpeciesConfig {
             SpherePosition here = SphereMath.atAltitude(new GeodesicChunkGrid.Direction(p[0], p[1], p[2]), 0.0);
             SpherePosition down = SphereMath.atAltitude(new GeodesicChunkGrid.Direction(q[0], q[1], q[2]), 0.0);
             double downstream = SphereMath.heading(here, down);
-            SpherePosition bank = SphereMath.move(here, downstream + Math.PI / 2, r.halfWidth[k] + Double.parseDouble(System.getProperty("xenoguesser.riverback", "14")));
+            SpherePosition bank = SphereMath.move(here, downstream + Math.PI / 2, r.halfWidth[k] + Double.parseDouble(Dev.property("xenoguesser.riverback", "14")));
             if (TerrainMesh.getLayeredHeight(bank, worldNoise) <= seaLevelHeight + 1f) continue;
             // (back down the bank a little, looking up the river and across it)
             return new Viewpoint(bank, downstream - Math.PI * 0.62);
@@ -2296,6 +2327,7 @@ private static class SpeciesConfig {
         camera.setSphereView(SphereMath.atAltitude(place, ground + playerEyeHeight), (float) Math.toDegrees(view.heading()), 0f);
         airborne = false;
         jumpHeight = 0f;
+        lastStood = Float.NaN;
 
         // (what's round the new place is worked out on the builder threads while the loading
         // screen, or the teleport's wait, keeps going)
@@ -2314,7 +2346,9 @@ private static class SpeciesConfig {
         int steps = Math.max(1, (int) Math.ceil(distance / 1.5));
         SpherePosition lastFree = from;
         // (where the feet and head are: raised roads and bridges stop the body beside them)
-        float feet = (airborne ? airborneEyeY : (float) SphereMath.altitude(to)) - playerEyeHeight, head = feet + playerEyeHeight + 2f;
+        float feet = airborne ? airborneEyeY - playerEyeHeight
+                : Float.isNaN(lastStood) ? (float) SphereMath.altitude(to) - playerEyeHeight : lastStood;
+        float head = feet + playerEyeHeight + 2f;
         boolean startsInRoad = infraManager != null && infraManager.blocksWalker(from, feet, head);
         for (int i = 1; i <= steps; i++) {
             SpherePosition candidate = clearOfPartner(lastFree, SphereMath.slerp(from, to, i / (double) steps), feet);
@@ -2322,9 +2356,16 @@ private static class SpeciesConfig {
             // comes up out of the water, where the swimmer would stand, can be too steep)
             boolean floating = swimming && TerrainMesh.getLayeredHeight(candidate, worldNoise) + playerEyeHeight
                     < waterSurfaceHere + SWIM_EYE_HEIGHT;
-            if (!floating && jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
-            SpherePosition resolved = geodesicCollision.resolveFirm(lastFree, candidate, PLAYER_RADIUS, PLAYER, jumpHeight);
-            if (geodesicCollision.blockedStatic(resolved, PLAYER_RADIUS * 0.98, jumpHeight)) break;
+            // On a bridge the ground's slope beneath (a river's bank) doesn't matter, and what's
+            // under it doesn't stand in the way: only what's as high as the feet up on it (its
+            // railings)
+            float deck = infraManager == null ? Float.NaN : infraManager.bridgeDeckY(candidate);
+            float under = TerrainMesh.getLayeredHeight(candidate, worldNoise);
+            boolean onBridge = !Float.isNaN(deck) && feet >= deck - 3f && deck > under + 1f;
+            double clearance = onBridge ? Math.max(jumpHeight, feet - under) : jumpHeight;
+            if (!floating && !onBridge && jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
+            SpherePosition resolved = geodesicCollision.resolveFirm(lastFree, candidate, PLAYER_RADIUS, PLAYER, clearance);
+            if (geodesicCollision.blockedStatic(resolved, PLAYER_RADIUS * 0.98, clearance)) break;
             if (!startsInRoad && infraManager != null && infraManager.blocksWalker(resolved, feet, head)) break;
             lastFree = resolved;
         }
@@ -2374,6 +2415,8 @@ private static class SpeciesConfig {
     private volatile boolean jumpWanted;
     private boolean airborne;
     private float jumpHeight, jumpVelocity, airborneEyeY;
+    // What the player stood on last frame (NaN before any, and after a spawn or teleport)
+    private float lastStood = Float.NaN;
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
     public void jump() {
@@ -2577,14 +2620,87 @@ private static class SpeciesConfig {
         return surroundingsLoadedHere();
     }
 
+    // Each plant species' range: where it's common, and how many there are along it (SpeciesRange)
+    private SpeciesRange[] floraRanges;
+    // The most of one tree or shrub species in a chunk's area, even in its heartland
+    private static final float FLORA_PEAK_CAP = 2.0f;
+
+    /** A plant species' abundance before its range is applied, per chunk's area. */
+    private float floraRaw(int species, GeodesicChunkGrid.Direction d) {
+        SpeciesConfig sc = speciesConfigs[species];
+        return sc.abundanceFactor.evaluate(d) * sc.baseAbundance;
+    }
+
+    /**
+     * A plant species' abundance over the world: suited to its climate, the ground's moisture and
+     * its own patches (a steep blend, so species keep apart), in its home region.
+     */
+    private RegionalFactor plantAbundance(SpeciesConfig sc, RegionalFactor home, float homeStrength) {
+        // Blended factor with prominent 50% unique noise allocation for explicit segregation
+        RegionalFactor suited = new RegionalFactor.Builder()
+            .setWeight(6.0f)        // Drop this to 1.0f so it NEVER artificially blows up low scores
+            .setPowerCurve(6.0f)    // Crank the power curve up to 5.0 or 6.0 to make it brutal
+            .addFactor(sc.tempFactor, 0.30f)
+            .addFactor(this.grassMoistureFactor, 0.20f)
+            .addFactor(sc.patchNoiseFactor, 0.50f)
+            .build();
+        return new RegionalFactor(1.0f, d -> {
+            float t = Math.max(0f, Math.min(1f, (home.evaluate(d) - OrganismSpecies.HOME_FROM)
+                    / (OrganismSpecies.HOME_TO - OrganismSpecies.HOME_FROM)));
+            return suited.evaluate(d) * (1f - homeStrength + homeStrength * t * t * (3f - 2f * t));
+        });
+    }
+
+    /**
+     * Draws a plant species' range again (the temperature it likes, its patches and its home
+     * region), the attempt'th time, for one that came out with almost nowhere to grow (see
+     * SpeciesRange.findable); its look stays. From the world's seed alone, the same on every PC,
+     * and leaving every other map as it was.
+     */
+    private void redrawPlantRange(int s, int attempt) {
+        SpeciesConfig sc = speciesConfigs[s];
+        Random r = new Random(worldSeed * 4241L + s * 7717L + attempt * 1_000_003L);
+        boolean tree = s < 4;
+        sc.tempMean = tree ? 0.1f + r.nextFloat() * 0.6f : 0.4f + r.nextFloat() * 0.5f;
+        // (a little more tolerant each time, so a fussy species finds somewhere)
+        sc.tempStdDev = (tree ? 0.2f + r.nextFloat() * 0.2f : 0.15f + r.nextFloat() * 0.2f) + attempt * 0.01f;
+        long salt = (worldSeed * 17L + s) * 64L + attempt;
+        sc.tempFactor = regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev);
+        sc.patchNoiseFactor = regionalManager.createNoiseMap(sc.patchNoiseScale, salt * 2L);
+        RegionalFactor home = regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW + r.nextFloat() * OrganismSpecies.HOME_SCALE_RANGE, salt * 2L + 1L);
+        sc.abundanceFactor = plantAbundance(sc, home, OrganismSpecies.homeStrength(r));
+    }
+
+    private SpeciesRange[] floraRanges(List<GeodesicChunkGrid.Direction> land) {
+        SpeciesRange[] ranges = new SpeciesRange[NUM_SPECIES];
+        int[] attempts = new int[NUM_SPECIES];
+        // (any with almost nowhere to grow has its range drawn again until it has somewhere)
+        java.util.stream.IntStream.range(0, NUM_SPECIES).parallel().forEach(s -> {
+            while (true) {
+                float[] raw = new float[land.size()];
+                for (int i = 0; i < raw.length; i++) raw[i] = floraRaw(s, land.get(i));
+                ranges[s] = SpeciesRange.of(raw, FLORA_PEAK_CAP);
+                if (attempts[s] >= SpeciesRange.MOST_REDRAWS || ranges[s].findable(raw)) break;
+                redrawPlantRange(s, ++attempts[s]);
+            }
+        });
+        for (int s = 0; s < NUM_SPECIES; s++) {
+            if (attempts[s] > 0) System.out.printf("[FLORA] %s had almost nowhere to grow: its range drawn again %d time(s)%n", speciesConfigs[s].name, attempts[s]);
+            System.out.printf(java.util.Locale.ROOT, "[FLORA] %s: heartland from %.4f, peak %.3f a chunk%n",
+                    speciesConfigs[s].name, ranges[s].high, ranges[s].peak);
+        }
+        return ranges;
+    }
+
     /** A geodesic cell's area in chunks' areas (a chunk being PHYSICAL_CHUNK_SIZE square). */
     private float areaInChunks(GeodesicChunkGrid.Cell cell) {
         return (float) (cell.area() * Planet.radius() * Planet.radius() / (PHYSICAL_CHUNK_SIZE * PHYSICAL_CHUNK_SIZE));
     }
 
     /**
-     * One cell's trees and shrubs (safe to work out off the GL thread): as many of each species
-     * as its abundance there (as the map shows it) and the cell's own area call for.
+     * One cell's trees and shrubs (safe to work out off the GL thread): candidates for each
+     * species at its peak density for the cell's area, each kept where it falls by how common
+     * the species is just there (SpeciesRange.keep), so they follow the heatmap closely.
      */
     private List<SphereFlora> buildFloraCell(long id) {
         GeodesicChunkGrid.Cell cell = floraStream.grid().cell(id);
@@ -2595,10 +2711,8 @@ private static class SpeciesConfig {
         for (int s = 0; s < NUM_SPECIES; s++) {
             SpeciesConfig sc = speciesConfigs[s];
             java.util.Random cRand = new java.util.Random(worldSeed ^ (id * 492876847L) ^ ((long) s * 9012431L));
-            // As many a chunk's area as the species' abundance here asks for, up to its ceiling
-            int maxCeiling = Math.max(1, (int) (5 * sc.baseAbundance));
-            double attempts = Math.min(maxCeiling, sc.abundanceFactor.evaluateAt(middle) * sc.baseAbundance)
-                    * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
+            SpeciesRange range = floraRanges[s];
+            double attempts = range.peak * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
             int count = (int) attempts;
             if (cRand.nextFloat() < attempts - count) count++;
             for (int i = 0; i < count; i++) {
@@ -2607,6 +2721,8 @@ private static class SpeciesConfig {
                 int model = cRand.nextInt(FLORA_VARIATIONS);
                 float scale = 0.70f + cRand.nextFloat() * 0.60f;
                 float rotation = cRand.nextFloat() * 360.0f;
+                float kept = cRand.nextFloat();
+                if (kept >= range.keep(floraRaw(s, SphereMath.direction(at)))) continue;
                 float ground = TerrainMesh.getLayeredHeight(at, worldNoise);
                 if (ground <= seaLevelHeight + 0.1f || slopeAt(at) >= 0.9f || podCovers(at, 8f) || underFreshWater(at, ground)) continue;
                 if (infraManager.isClearedForRoad(at, 11.0f, 3.0f) || infraManager.isBuildingLocation(at, 6.0f)) continue;
@@ -3084,6 +3200,7 @@ private static class SpeciesConfig {
                 visibleLods.add(seen > 135.0 * 135.0 ? 2 : (seen > 65.0 * 65.0 ? 1 : 0));
             }
         }
+        floraTriangles = 0;
         if (visibleFlora.isEmpty()) return;
         gl.glDisable(GL.GL_CULL_FACE);
         for (int i = 0; i < visibleFlora.size(); i++) {
@@ -3091,6 +3208,7 @@ private static class SpeciesConfig {
             Model branch = floraBranchModelsLOD[plant.speciesIndex()][visibleLods.get(i)][plant.modelIndex()];
             branch.setModelMatrix(plant.model());
             branch.render(gl, ambientLight, nightProportion);
+            floraTriangles += branch.mesh.getIndexCount() / 3;
         }
         leafShader.use(gl);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(leafShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
@@ -3106,11 +3224,14 @@ private static class SpeciesConfig {
             Model leaves = floraLeafModelsLOD[plant.speciesIndex()][visibleLods.get(i)][plant.modelIndex()];
             leaves.setModelMatrix(plant.model());
             leaves.render(gl, ambientLight, nightProportion);
+            floraTriangles += leaves.mesh.getIndexCount() / 3;
         }
         gl.glEnable(GL.GL_CULL_FACE);
     }
 
     private final List<Integer> visibleLods = new ArrayList<>();
+    // The plants' triangles drawn last frame (for -Dxenoguesser.fpslog)
+    private long floraTriangles;
 
     private void updateVisibleChunks(boolean forceImmediate) {
         boolean loadingNow = roundLoading || teleportLoading || !worldReady;
@@ -3301,6 +3422,10 @@ private static class SpeciesConfig {
             if (this.gameHUD != null) {
                 this.gameHUD.setGameFps((int) Math.round(measuredFps));
             }
+            // Developer aid: -Dxenoguesser.fpslog logs the rate, and the plants and their triangles drawn
+            if (Dev.flag("xenoguesser.fpslog")) {
+                System.out.printf(java.util.Locale.ROOT, "[FPS] %.0f, %d plants drawn, %d thousand triangles in them%n", measuredFps, visibleFlora.size(), floraTriangles / 1000);
+            }
         }
 
         // Movement uses a capped step so a long hitch doesn't fling the camera
@@ -3330,8 +3455,12 @@ private static class SpeciesConfig {
         easeZoom(deltaTime);
         float currentAltitude = camera.getAltitude();
         // What's underfoot: the ground, a road's deck (if they're up on it) or the pod's stairs
-        float feet = (airborne ? airborneEyeY : currentAltitude) - playerEyeHeight;
+        // Where the feet are: in the air, under the jump; on foot, on what they stood on last frame
+        // (not under the eyes' eased height, which lags on a steep bridge or ramp far enough for
+        // the deck to seem out of reach, dropping the player through it to the ground beneath)
+        float feet = airborne ? airborneEyeY - playerEyeHeight : (Float.isNaN(lastStood) ? currentAltitude - playerEyeHeight : lastStood);
         float rawGroundHeight = (float) groundHeightAt(camera.getSpherePosition(), feet);
+        lastStood = rawGroundHeight;
         float targetCameraHeight = rawGroundHeight + playerEyeHeight;
 
         // Too deep to stand: swim, eyes just above the water
@@ -3456,7 +3585,8 @@ private static class SpeciesConfig {
         multiplayerFrame(deltaTime);
         sphereWeather.update((float) deltaTime, cloudTime, eye, () -> rainfallAt(eye),
                 p -> Math.max(groundHeightAt(p), seaLevelHeight), freezingPoint - temperatureAt(eye));
-        rainSound.setRain(sphereWeather.snowing() ? 0f : sphereWeather.intensity());
+        // (as loud as the share of what falls that's rain: none in snow, some in sleet)
+        rainSound.setRain(sphereWeather.intensity() * (1f - sphereWeather.snowShare()));
 
         // The sky's turn: in the local frame here (for the player's body, posed in it), and
         // in the world (for everything drawn in planet-centred coordinates)
@@ -3511,7 +3641,8 @@ private static class SpeciesConfig {
         renderFlora(gl, skyRotation);
 
         // --- CREATURES AND PEOPLE ---
-        organismManager.update((float) deltaTime, eye);
+        // (the herds walk paths fixed by the round's clock: see OrganismManager.Herd)
+        organismManager.update((float) deltaTime, eye, getSeconds() - roundClockStart);
         inhabitants.update((float) deltaTime, eye);
         // The player is solid to everything else too; then this frame's bodies take over
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
@@ -3746,6 +3877,30 @@ private static class SpeciesConfig {
     }
 
     /** Developer aid: turns the view to face the partner, level (or pitchDegrees up), for checking how they're drawn. */
+    /** Developer aid: faces the nearest herd (stepping in to about 90 away if it's further), a little down, and logs how far it was. */
+    public void lookAtHerd() {
+        SpherePosition here = camera.getSpherePosition();
+        SpherePosition herd = organismManager.nearestHerd(here);
+        if (herd == null) {
+            System.out.println("[HERD] No herd near");
+            return;
+        }
+        double distance = SphereMath.distance(here, herd);
+        System.out.printf(java.util.Locale.ROOT, "[HERD] Nearest herd %.0f units away%n", distance);
+        if (distance > 120.0) {
+            // (stepping in to about 90 away, on the ground there)
+            SpherePosition near = SphereMath.move(herd, SphereMath.heading(herd, here), 90.0);
+            here = SphereMath.atAltitude(near, Math.max(seaLevelHeight, groundHeightAt(near)) + playerEyeHeight);
+            distance = 90.0;
+        }
+        camera.setSphereView(here, (float) Math.toDegrees(SphereMath.heading(here, herd)), (float) -Math.toDegrees(Math.atan2(15.0, Math.max(20.0, distance))));
+    }
+
+    /** Developer aid: where the player's eyes are. */
+    public SpherePosition devPosition() {
+        return camera.getSpherePosition();
+    }
+
     public void lookAtPartner(float pitchDegrees) {
         if (!partner.hasPose()) return;
         SpherePosition here = camera.getSpherePosition();
@@ -3846,7 +4001,7 @@ private static class SpeciesConfig {
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
         // Developer aid: -Dxenoguesser.unlockall starts with every map and item
-        if (Boolean.getBoolean("xenoguesser.unlockall")) {
+        if (Dev.flag("xenoguesser.unlockall")) {
             ownedItems.addAll(List.of(ITEMS));
             ownedLayers.addAll(List.of(MapPanel.Layer.values()));
             ownedOverlays.addAll(allOverlays());
@@ -3938,10 +4093,10 @@ private static class SpeciesConfig {
                 String name = overlayLabel(o);
                 boolean plant = o.factor() == FactorName.FLORA, animal = o.factor() == FactorName.ANIMAL_POPULATION;
                 String key = plant ? "Flora" : animal ? "Fauna" : name;
-                String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : "Heatmap";
+                String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : PICTURE_MAPS.contains(o.factor()) ? "Map" : "Heatmap";
                 deck.add(new ShopPanel.Card(name, kind, choiceIcon(name), null, describe(descriptions, key, name),
                         ShopPanel.price(round, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR
-                                : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.NATIONS), rand), () -> {
+                                : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.NATIONS || PICTURE_MAPS.contains(o.factor())), rand), () -> {
                     ownedOverlays.add(o);
                     refreshMapChoices();
                 }));
@@ -3951,6 +4106,21 @@ private static class SpeciesConfig {
         List<ShopPanel.Card> dealt = new ArrayList<>();
         for (ShopPanel.Card card : deck) {
             if (dealt.size() < 3 && !dealt.contains(card)) dealt.add(card);
+        }
+        // The shop before the first round always has an item among its three (a thermometer,
+        // altimeter or identification kit, else any not yet had), in place of its last card
+        if (round < 1 && dealt.stream().noneMatch(c -> "Item".equals(c.kind()))) {
+            ShopPanel.Card item = null;
+            for (ShopPanel.Card card : deck) {
+                if (!"Item".equals(card.kind())) continue;
+                boolean named = card.name().equals(THERMOMETER) || card.name().equals(ALTIMETER) || card.name().equals(KIT);
+                if (item == null || named) item = card;
+                if (named) break;
+            }
+            if (item != null) {
+                if (dealt.size() >= 3) dealt.remove(dealt.size() - 1);
+                dealt.add(rand.nextInt(dealt.size() + 1), item);
+            }
         }
         return dealt;
     }
@@ -3997,7 +4167,8 @@ private static class SpeciesConfig {
     private java.util.LinkedHashMap<String, List<Overlay>> overlayGroups() {
         java.util.LinkedHashMap<String, List<Overlay>> groups = new java.util.LinkedHashMap<>();
         List<Overlay> top = new ArrayList<>();
-        for (FactorName f : new FactorName[] { FactorName.TEMPERATURE, FactorName.RAINFALL, FactorName.SOIL_COLOUR, FactorName.WEALTH, FactorName.NATIONS }) {
+        for (FactorName f : new FactorName[] { FactorName.TEMPERATURE, FactorName.RAINFALL, FactorName.SOIL_COLOUR, FactorName.WEALTH, FactorName.NATIONS,
+                FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES }) {
             top.add(Overlay.of(f));
         }
         groups.put("", top);
@@ -4056,6 +4227,37 @@ private static class SpeciesConfig {
     private volatile java.awt.Image[] speciesPortraits;
 
     /** The icon for one of the map's choices, by its name (a layer's or an overlay's); null if none. */
+    // The maps of pictures rather than colours: each nation's bollard, road markings or utility
+    // pole stood on its main land, over the plain map, no borders (see chooseGradient); their
+    // pictures ({picture, worldX, worldZ}), once drawn, and how tall
+    private static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES);
+    private volatile java.util.Map<FactorName, List<Object[]>> mapPictures = java.util.Map.of();
+    private static final int MAP_PICTURE_HEIGHT = 128;
+
+    /**
+     * Where on the map a nation's design is pictured, {worldX, worldZ}: its middle (where its
+     * name goes) for its main one; for a neighbour's, 45% of the way towards that neighbour's
+     * middle (not across the map's join, where the way round is the short one), on the side of the
+     * nation it's built.
+     */
+    private float[] towardsNeighbour(float[] own, float[] neighbour) {
+        if (neighbour == null) return new float[] { own[1], own[2] };
+        float dx = neighbour[1] - own[1], dz = neighbour[2] - own[2];
+        if (Math.abs(dx) > TOTAL_REGION_WIDTH * 0.5f) return new float[] { own[1] + Math.signum(-dx) * 1500f, own[2] + dz * 0.45f };
+        return new float[] { own[1] + dx * 0.45f, own[2] + dz * 0.45f };
+    }
+
+    /** A picture map's pictures (none yet until they're drawn). */
+    private List<Object[]> picturesOf(FactorName f) {
+        return mapPictures.getOrDefault(f, List.of());
+    }
+
+    /** A picture map's icon: its first nation's picture; null before they're drawn. */
+    private java.awt.Image pictureIcon(FactorName f) {
+        List<Object[]> pictures = picturesOf(f);
+        return pictures.isEmpty() ? null : (java.awt.Image) pictures.get(0)[0];
+    }
+
     private java.awt.Image choiceIcon(String label) {
         for (Overlay o : allOverlays()) {
             if (o.species() >= 0 && overlayLabel(o).equals(label)) {
@@ -4064,6 +4266,7 @@ private static class SpeciesConfig {
                 return loadIcon(o.factor() == FactorName.FLORA ? "flora" : "animal");
             }
         }
+        for (FactorName f : PICTURE_MAPS) if (label.equals(f.label) && pictureIcon(f) != null) return pictureIcon(f);
         String file = switch (label) {
             case "Contours" -> "contours";
             case "Rivers" -> "rivers";
@@ -4272,6 +4475,12 @@ private static class SpeciesConfig {
         // in real units where it has them
         if (factor == FactorName.GRASS_COLOUR) {
             minimap.setLegend(grassColourSpectrum(), new String[] { "Dry", "", "Lush" });
+        } else if (factorName != null && factorName.species() >= 0) {
+            // A plant's or animal's key: how many in a chunk's area at each end and the middle of its colours
+            SpeciesRange range = factorName.factor() == FactorName.FLORA ? floraRanges[factorName.species()]
+                    : organismManager.range(factorName.species());
+            minimap.setLegend(spectrumFor(factorName), new String[] { heatmapLabel(factorName, range.densityAtShare(0f)),
+                    heatmapLabel(factorName, range.densityAtShare(0.5f)), heatmapLabel(factorName, range.densityAtShare(1f)) });
         } else if (factorName != null && heatmapMeasure(factorName) != null) {
             float[] range = heatmapRange(factorName);
             String[] labels = factor == FactorName.GRASS_ABUNDANCE ? new String[] { "Sparsest", "", "Thickest" }
@@ -4283,6 +4492,11 @@ private static class SpeciesConfig {
             minimap.setLegend(null, null);
         }
         minimap.setOverlayTiles(overlayTiles(factorName), factorName == null ? null : overlayLabel(factorName));
+        if (factor != null && PICTURE_MAPS.contains(factor)) {
+            // Not colours: each nation's bollard, road markings or pole stood on its land, over the plain map
+            minimap.setPictureOverlay(overlayLabel(factorName), picturesOf(factor));
+            return;
+        }
         if (factorName == null) {
             minimap.setOverlay(null, null, false);
             return;
@@ -4355,7 +4569,8 @@ private static class SpeciesConfig {
      * (a second asker waits for the first to finish rather than doing it again).
      */
     private BufferedImage overlayImage(Overlay overlay) {
-        if (minimap == null) return null;
+        // (the bollard map has no colours of its own: see chooseGradient)
+        if (minimap == null || PICTURE_MAPS.contains(overlay.factor())) return null;
         return gradientCache.computeIfAbsent(overlay, o -> {
             FactorName f = o.factor();
             if (f == FactorName.NATIONS) {
@@ -4411,6 +4626,13 @@ private static class SpeciesConfig {
             float[] span = grassColourSpan();
             return new RegionalFactor(1f, d -> grassShare(span, grassColourFactor.evaluate(d)));
         }
+        if (overlay.species() >= 0) {
+            // A plant or animal: coloured by where it comes on its range (red its outer third,
+            // where there are barely any; green its heartland), as it's spawned
+            int s = overlay.species();
+            if (overlay.factor() == FactorName.FLORA) return new RegionalFactor(1f, d -> floraRanges[s].share(floraRaw(s, d)));
+            return new RegionalFactor(1f, d -> organismManager.rangeShare(s, SphereMath.atAltitude(d, 0.0)));
+        }
         RegionalFactor.Sampler measure = heatmapMeasure(overlay);
         if (measure == null) return null;
         float[] range = heatmapRange(overlay);
@@ -4427,8 +4649,8 @@ private static class SpeciesConfig {
      */
     private RegionalFactor.Sampler heatmapMeasure(Overlay overlay) {
         if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
-            SpeciesConfig config = speciesConfigs[overlay.species()];
-            return d -> config.abundanceFactor.evaluate(d) * config.baseAbundance;
+            int s = overlay.species();
+            return d -> floraRanges[s].density(floraRaw(s, d));
         }
         if (overlay.species() >= 0) {
             int i = overlay.species();

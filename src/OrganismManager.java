@@ -29,7 +29,11 @@ public class OrganismManager {
     // Expected creatures per chunk's area (100 by 100) in total, however many species share
     // the ground; each species takes its share by how well suited the place is to it and how
     // common it is
-    private static final float PEAK_PER_CHUNK = 0.05f;
+    private static final float PEAK_PER_CHUNK = 0.3f;
+    // Those on the ground (walkers, slitherers, floaters) this many times as common again as
+    // flyers: they're what's seen about
+    private static final float LAND_BOOST = 2.5f;
+    private static final int MOST_FLYERS = 3;
     private static final float ROAM_RADIUS = 90f;
 
     /** One living creature. */
@@ -59,6 +63,13 @@ public class OrganismManager {
         int outlineDrawing;
         float progressTimer, progressExpected;
         SpherePosition progressFrom;
+        // In a herd (null for one living alone), and its place in it {along, across the herd's heading}
+        Herd herd;
+        float[] slot;
+        // A flyer's place round its circle at the round's start, and how wide its circle is (a
+        // flock's members share a home, a little apart round it); NaN for one wheeling on its own clock
+        double flightPhase = Double.NaN;
+        float flightRadius;
     }
 
     private GeodesicCollision collision;
@@ -80,6 +91,8 @@ public class OrganismManager {
     private long lastCentreCell = Long.MIN_VALUE;
     private final List<Creature> showcase = new ArrayList<>();
     private final long seed;
+    // The world's climate, for drawing a species' range again (see measureRanges)
+    private final RegionalGenerationManager regions;
     private final float chunkSize;
     private final float seaLevel;
     private final PerlinNoise terrainNoise;
@@ -116,8 +129,17 @@ public class OrganismManager {
         this.chunkSize = chunkSize;
         this.seaLevel = seaLevel;
         this.terrainNoise = terrainNoise;
+        this.regions = regions;
+        // Most of a world's creatures live on the ground, where they're seen about: no more than
+        // MOST_FLYERS of them fly (one that would be another flyer is made afresh, as another creature)
+        int flyers = 0;
         for (int i = 0; i < SPECIES_COUNT; i++) {
-            species.add(new OrganismSpecies(seed, i, regions));
+            OrganismSpecies made = new OrganismSpecies(seed, i, regions);
+            for (int attempt = 1; made.locomotion == OrganismSpecies.Locomotion.FLYER && flyers >= MOST_FLYERS && attempt < 40; attempt++) {
+                made = new OrganismSpecies(seed, i + attempt * 1000, regions);
+            }
+            if (made.locomotion == OrganismSpecies.Locomotion.FLYER) flyers++;
+            species.add(made);
             System.out.printf("[ORGANISMS] Species %d: %s%n", i + 1, species.get(i).describe());
         }
         // Each species' name, made as the planet's is, none the same as the planet's or another's
@@ -130,6 +152,244 @@ public class OrganismManager {
             }
             speciesNames.add(name);
         }
+        // The biggest keep in small herds (a crowd of giants jostling looks wrong)
+        for (OrganismSpecies s : species) {
+            if (s.herdSize > OrganismSpecies.BIG_HERD && s.halfLength() + s.tailLength() > OrganismSpecies.BIG_HERD_LENGTH) s.herdSize = OrganismSpecies.BIG_HERD;
+        }
+        // Every world has some that keep together: should none have come out so, the first
+        // walker (or failing that, flyer) lives in herds (flocks) of six
+        if (species.stream().noneMatch(s -> s.herdSize > 0)) {
+            species.stream().filter(s -> s.locomotion == OrganismSpecies.Locomotion.WALKER).findFirst()
+                    .or(() -> species.stream().filter(s -> s.locomotion == OrganismSpecies.Locomotion.FLYER).findFirst())
+                    .ifPresent(s -> s.herdSize = 6);
+        }
+        measureRanges();
+    }
+
+    // ------------------------------------------------------------------ ranges (see SpeciesRange)
+
+    // Each species' range: spawning and its heatmap both follow it
+    private SpeciesRange[] ranges;
+
+    /** Each species' abundance before its range is applied, per chunk's area, at a place (sharing the ground with the others there). */
+    private float[] raw(SpherePosition place) {
+        float[] presences = new float[species.size()];
+        float total = 0f;
+        for (int k = 0; k < species.size(); k++) {
+            presences[k] = species.get(k).presenceAt(place);
+            total += presences[k];
+        }
+        // (the biggest far fewer: see OrganismSpecies.sizeShare)
+        for (int k = 0; k < species.size(); k++) {
+            OrganismSpecies s = species.get(k);
+            presences[k] = presences[k] / Math.max(1f, total) * s.rarity * s.sizeShare() * PEAK_PER_CHUNK
+                    * (s.locomotion == OrganismSpecies.Locomotion.FLYER ? 1f : LAND_BOOST);
+        }
+        return presences;
+    }
+
+    private void measureRanges() {
+        List<GeodesicChunkGrid.Direction> land = SpeciesRange.land(terrainNoise, seaLevel);
+        float[][] raw = new float[species.size()][land.size()];
+        ranges = new SpeciesRange[species.size()];
+        // Any species with almost nowhere to live has its range drawn again until it has
+        // somewhere (see SpeciesRange.findable); the others' share the ground with it, so all
+        // are measured again each time
+        int[] attempts = new int[species.size()];
+        for (int round = 0; ; round++) {
+            java.util.stream.IntStream.range(0, land.size()).parallel().forEach(i -> {
+                float[] here = raw(SphereMath.atAltitude(land.get(i), 0.0));
+                for (int k = 0; k < here.length; k++) raw[k][i] = here[k];
+            });
+            boolean redrawn = false;
+            for (int k = 0; k < species.size(); k++) {
+                ranges[k] = SpeciesRange.of(raw[k], Float.MAX_VALUE);
+                if (round < SpeciesRange.MOST_REDRAWS && !ranges[k].findable(raw[k])) {
+                    species.get(k).redrawHabitat(seed, k, ++attempts[k], regions);
+                    redrawn = true;
+                }
+            }
+            if (!redrawn) break;
+        }
+        for (int k = 0; k < species.size(); k++) {
+            if (attempts[k] > 0) System.out.printf("[ORGANISMS] %s had almost nowhere to live: its range drawn again %d time(s)%n",
+                    speciesNames.isEmpty() ? "Species " + (k + 1) : speciesNames.get(k), attempts[k]);
+            System.out.printf(java.util.Locale.ROOT, "[ORGANISMS] %s: heartland from %.5f, peak %.4f a chunk%s%n", speciesNames.isEmpty() ? "Species " + (k + 1) : speciesNames.get(k),
+                    ranges[k].high, ranges[k].peak, species.get(k).herdSize <= 0 ? ""
+                    : (species.get(k).locomotion == OrganismSpecies.Locomotion.FLYER ? ", in flocks of about " : ", in herds of about ") + species.get(k).herdSize);
+        }
+    }
+
+    /** Species i's range (for its heatmap's key). */
+    public SpeciesRange range(int i) {
+        return ranges[i];
+    }
+
+    /** Where a place comes on species i's range, 0 to 1 (what its heatmap colours by). */
+    public float rangeShare(int i, SpherePosition place) {
+        return ranges[i].share(raw(place)[i]);
+    }
+
+    // ------------------------------------------------------------------ herds
+
+    // The time the herds' paths are measured from: seconds since the round began (the same on
+    // both PCs in multiplayer, where rounds begin together)
+    private double roundTime;
+    // Counts the updates, so each herd's place is worked out once an update
+    private long updates;
+    // How far a herd wanders from where it was found, how long it grazes at each stop, and how
+    // fast it goes (a share of its members' own pace, so they keep up)
+    private static final float HERD_ROAM = 140f, HERD_PACE = 0.7f;
+
+    /**
+     * A herd: its members keep round a centre that walks a path fixed by its seed and the
+     * round's clock (not by when or where anyone saw it), so it's the same on both PCs and the
+     * same when a viewer comes back to it. The path is a string of legs: walk from one stop to
+     * the next, graze there a while, on and on, never straying far from home.
+     */
+    private final class Herd {
+        final long seed;
+        final SpherePosition home;
+        final float speed;
+        final List<Creature> members = new ArrayList<>();
+        final List<double[]> legs = new ArrayList<>();          // {start, arrive, leave} per leg
+        final List<SpherePosition[]> stops = new ArrayList<>(); // {from, to} per leg
+        // Where it is this update, which way it's going, and whether it's on the move
+        SpherePosition centre;
+        double heading;
+        boolean moving;
+        long updated = -1;
+
+        Herd(long seed, SpherePosition home, float speed) {
+            this.seed = seed;
+            this.home = home;
+            this.speed = speed;
+            Random r = new Random(seed);
+            legs.add(new double[] { 0.0, 0.0, 4.0 + r.nextDouble() * 12.0 });
+            stops.add(new SpherePosition[] { home, home });
+            heading = r.nextDouble() * Math.PI * 2.0;
+        }
+
+        /** Where the herd is at time t (round seconds), filling in its path as far as that. */
+        void at(double t) {
+            while (legs.get(legs.size() - 1)[2] < t && legs.size() < 2000) addLeg();
+            int k = legs.size() - 1;
+            while (k > 0 && legs.get(k)[0] > t) k--;
+            double[] leg = legs.get(k);
+            SpherePosition from = stops.get(k)[0], to = stops.get(k)[1];
+            if (t < leg[1] && leg[1] > leg[0]) {
+                double f = Math.max(0.0, (t - leg[0]) / (leg[1] - leg[0]));
+                centre = SphereMath.slerp(from, to, f);
+                heading = SphereMath.carryHeading(from, centre, SphereMath.heading(from, to));
+                moving = true;
+            } else {
+                centre = to;
+                if (SphereMath.distance(from, to) > 1.0) heading = SphereMath.carryHeading(from, to, SphereMath.heading(from, to));
+                moving = false;
+            }
+        }
+
+        private void addLeg() {
+            int k = legs.size();
+            double[] last = legs.get(k - 1);
+            SpherePosition from = stops.get(k - 1)[1];
+            Random r = new Random(seed * 0x9E3779B97F4A7C15L + k * 0x632BE59BD9B4E019L);
+            SpherePosition to = from;
+            double fromHome = SphereMath.distance(from, home);
+            for (int attempt = 0; attempt < 10; attempt++) {
+                // Off somewhere, turning back towards home once it has strayed
+                double angle = fromHome > HERD_ROAM * 1.5 ? SphereMath.heading(from, home) + (r.nextDouble() - 0.5) * 1.2
+                        : r.nextDouble() * Math.PI * 2.0;
+                SpherePosition candidate = SphereMath.move(from, angle, HERD_ROAM * (0.4 + 0.6 * r.nextDouble()));
+                if (walkable(candidate)) {
+                    to = candidate;
+                    break;
+                }
+            }
+            double start = last[2], arrive = start + SphereMath.distance(from, to) / Math.max(0.1f, speed);
+            legs.add(new double[] { start, arrive, arrive + 6.0 + r.nextDouble() * 16.0 });
+            stops.add(new SpherePosition[] { from, to });
+        }
+    }
+
+    /** A herd's members' places round its centre: a slot each, in the herd's own frame (along, across). */
+    private static float[] slot(Random rand, int members, float spacing) {
+        double r = spacing * Math.sqrt(members) * Math.sqrt(rand.nextDouble()), a = rand.nextDouble() * Math.PI * 2.0;
+        return new float[] { (float) (r * Math.cos(a)), (float) (r * Math.sin(a)) };
+    }
+
+    /** Developer aid: a spot deep in the heartland of a species living in herds (null if none does). */
+    public Viewpoint herdViewpoint(Random rand) {
+        for (int attempt = 0; attempt < 60000; attempt++) {
+            int k = attempt % species.size();
+            OrganismSpecies s = species.get(k);
+            if (s.herdSize <= 0 || s.locomotion != OrganismSpecies.Locomotion.WALKER) continue;
+            SpherePosition p = SphereMath.atAltitude(SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE), 0.0);
+            if (walkable(p) && rangeShare(k, p) > 0.9f) return new Viewpoint(p, rand.nextDouble() * Math.PI * 2.0);
+        }
+        return null;
+    }
+
+    /** Developer aid: the centre of the nearest herd to a place just now, or null. */
+    public SpherePosition nearestHerd(SpherePosition place) {
+        SpherePosition best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (List<Creature> list : creaturesByCell.values()) {
+            for (Creature c : list) {
+                if (c.herd == null || c.herd.centre == null) continue;
+                double d = SphereMath.distance(place, c.herd.centre);
+                if (d < bestDistance) {
+                    bestDistance = d;
+                    best = c.herd.centre;
+                }
+            }
+        }
+        return best;
+    }
+
+    /** A herd member's slot in the world just now (as the herd stands and faces). */
+    private SpherePosition slotPlace(Creature c) {
+        return SphereFrame.at(c.herd.centre, c.herd.heading).toSphere(c.slot[0], 0.0, c.slot[1]);
+    }
+
+    /**
+     * Boids for a herd member: it heads for its slot round the herd's centre (cohesion), bears
+     * away from any herd-mate too close (separation), and on the move faces the way the herd
+     * goes (alignment). Sets where it's walking to; once there with the herd grazing, it grazes.
+     */
+    private void herdSteer(Creature c) {
+        Herd h = c.herd;
+        if (h.updated != updates) {
+            h.at(roundTime);
+            h.updated = updates;
+        }
+        SphereFrame frame = SphereFrame.at(c.position);
+        double[] goal = frame.fromSphere(slotPlace(c));
+        double gx = goal[0], gz = goal[2];
+        double toSlot = Math.hypot(gx, gz);
+        // Separation: away from mates within a couple of body widths, more the closer
+        float room = bodyRadius(c) * 2.5f + 2f;
+        for (Creature mate : h.members) {
+            if (mate == c) continue;
+            double[] m = frame.fromSphere(mate.position);
+            double d = Math.hypot(m[0], m[2]);
+            if (d < room && d > 1e-3) {
+                double push = (room - d) / room * room;
+                gx -= m[0] / d * push;
+                gz -= m[2] / d * push;
+            }
+        }
+        // Alignment: on the move, a pull along the herd's heading (carried to where this one is)
+        if (h.moving) {
+            double along = SphereMath.carryHeading(h.centre, c.position, h.heading);
+            gx += Math.cos(along) * 6.0;
+            gz += Math.sin(along) * 6.0;
+        }
+        c.target = frame.toSphere(gx, 0.0, gz);
+        // Far behind, it hurries; with the herd standing grazing and itself in place, it grazes too
+        c.travelling = toSlot > 12.0 || h.moving;
+        if (!h.moving && toSlot < 4.0 && c.pause <= 0f && c.rand.nextFloat() < 0.02f) c.pause = 1f + c.rand.nextFloat() * 4f;
+        if (h.moving) c.pause = 0f;
     }
 
     // Each species' name (see the constructor)
@@ -284,8 +544,13 @@ public class OrganismManager {
         return null;
     }
 
-    /** Brings creatures into being near the viewer, retires distant ones, and moves them all on. */
-    public void update(float dt, SpherePosition viewer) {
+    /**
+     * Brings creatures into being near the viewer, retires distant ones, and moves them all on;
+     * roundTime is seconds since the round began, which the herds' paths follow.
+     */
+    public void update(float dt, SpherePosition viewer, double roundTime) {
+        this.roundTime = roundTime;
+        updates++;
         updatePopulation(viewer);
         float step = Math.min(dt, 0.1f);
         for (List<Creature> list : creaturesByCell.values()) {
@@ -310,46 +575,75 @@ public class OrganismManager {
 
     /**
      * How many of species i would be expected in a chunk's area (100 by 100) round a place were
-     * it wild (as populate works it out, sharing the ground with the other
-     * species there); towns, which none of them live in, are left out (populate keeps them out
-     * of towns itself).
+     * it wild (as populate spawns them: its range's density there, see SpeciesRange); towns,
+     * which none of them live in, are left out (populate keeps them out of towns itself).
      */
     public float expectedPerChunk(int i, SpherePosition place) {
-        float total = 0f, mine = 0f;
-        for (int k = 0; k < species.size(); k++) {
-            float p = species.get(k).presenceAt(place);
-            total += p;
-            if (k == i) mine = p;
-        }
-        return mine / Math.max(1f, total) * species.get(i).rarity * PEAK_PER_CHUNK;
+        return ranges[i].density(raw(place)[i]);
     }
 
+    /**
+     * A cell's creatures: for each species, candidates at its peak density for the cell's area
+     * (a herd's worth at a time for those in herds), each kept where it falls by how common the
+     * species is just there (SpeciesRange.keep) and only in the wild, so they follow its heatmap
+     * closely. A herd's members gather round where its centre is now on its path.
+     */
     private List<Creature> populate(GeodesicChunkGrid.Cell cell) {
         List<Creature> list = new ArrayList<>();
         Random rand = new Random(seed ^ roundSalt ^ (cell.id() * 0x9E3779B97F4A7C15L) ^ 0x0B6L);
-        SpherePosition middle = SphereMath.atAltitude(cell.centre(), 0.0);
         float areaInChunks = (float) (cell.area() * Planet.radius() * Planet.radius() / (chunkSize * chunkSize));
-        boolean wildHere = wild.test(middle);
-        float[] presences = new float[species.size()];
-        float total = 0f;
-        for (int i = 0; i < species.size(); i++) {
-            presences[i] = wildHere ? species.get(i).presenceAt(middle) : 0f;
-            total += presences[i];
-        }
         for (int k = 0; k < species.size(); k++) {
             OrganismSpecies s = species.get(k);
-            float expected = presences[k] / Math.max(1f, total) * s.rarity * PEAK_PER_CHUNK * areaInChunks;
+            int group = Math.max(1, s.herdSize);
+            float expected = ranges[k].peak * areaInChunks / group;
             int count = 0;
             float roll = rand.nextFloat();
             while (expected > 0f && roll < expected) {
                 count++;
                 expected -= 1f;
             }
+            boolean flies = s.locomotion == OrganismSpecies.Locomotion.FLYER;
             for (int i = 0; i < count; i++) {
                 SpherePosition p = SphereMath.atAltitude(cell.point(rand.nextDouble(), rand.nextDouble()), 0.0);
-                boolean flies = s.locomotion == OrganismSpecies.Locomotion.FLYER;
-                if (!flies && !walkable(p)) continue;
-                list.add(create(s, p, new Random(rand.nextLong())));
+                float kept = rand.nextFloat();
+                long creatureSeed = rand.nextLong();
+                if (kept >= ranges[k].keep(raw(p)[k]) || !wild.test(p) || (!flies && !walkable(p))) continue;
+                if (flies) {
+                    // A flyer, or a flock: round one home, at one phase (each a little behind the
+                    // last, on a slightly wider or narrower circle)
+                    Random flockRand = new Random(creatureSeed);
+                    double phase = flockRand.nextDouble() * Math.PI * 2.0;
+                    int members = s.herdSize <= 0 ? 1 : Math.max(2, Math.round(s.herdSize * (0.6f + 0.8f * flockRand.nextFloat())));
+                    for (int m = 0; m < members; m++) {
+                        Creature c = create(s, p, new Random(flockRand.nextLong()));
+                        c.flightPhase = phase - m * 0.08 + (flockRand.nextDouble() - 0.5) * 0.05;
+                        c.flightRadius = s.flightRadius * (0.9f + 0.2f * flockRand.nextFloat());
+                        list.add(c);
+                    }
+                    continue;
+                }
+                if (s.herdSize <= 0) {
+                    list.add(create(s, p, new Random(creatureSeed)));
+                    continue;
+                }
+                Random herdRand = new Random(creatureSeed);
+                Herd herd = new Herd(herdRand.nextLong(), p, s.walkSpeed * HERD_PACE);
+                herd.at(roundTime);
+                int members = Math.max(2, Math.round(s.herdSize * (0.6f + 0.8f * herdRand.nextFloat())));
+                float spacing = Math.max(4f, s.halfLength() * 2.2f);
+                List<Creature> herdMembers = new ArrayList<>();
+                for (int m = 0; m < members; m++) {
+                    float[] slot = slot(herdRand, members, spacing);
+                    SpherePosition at = SphereFrame.at(herd.centre, herd.heading).toSphere(slot[0], 0.0, slot[1]);
+                    if (!walkable(at)) at = herd.centre;
+                    Creature c = create(s, at, new Random(herdRand.nextLong()));
+                    c.herd = herd;
+                    c.slot = slot;
+                    c.heading = herd.heading;
+                    herdMembers.add(c);
+                }
+                herd.members.addAll(herdMembers);
+                list.addAll(herdMembers);
             }
         }
         return list;
@@ -433,16 +727,24 @@ public class OrganismManager {
     /** Walks towards its current goal, turning as it goes, and stops for a while on arrival. */
     private void move(Creature c, float dt) {
         if (c.species.locomotion == OrganismSpecies.Locomotion.FLYER) {
-            // Flyers wheel round their home in wide circles, over land or water
-            float radius = c.species.flightRadius;
-            float angular = c.species.walkSpeed * c.sizeScale / radius;
-            c.pause += dt * angular;                      // the angle round the circle
-            c.position = SphereMath.move(c.home, c.pause, radius);
-            c.heading = SphereMath.carryHeading(c.home, c.position, c.pause + Math.PI * 0.5);
+            // Flyers wheel round their home in wide circles, over land or water: by the round's
+            // clock (so the same on both PCs, and a flock together), or for a picture's on its own
+            float radius = Double.isNaN(c.flightPhase) ? c.species.flightRadius : c.flightRadius;
+            float angular = c.species.walkSpeed * (Double.isNaN(c.flightPhase) ? c.sizeScale : 1f) / radius;
+            double angle;
+            if (Double.isNaN(c.flightPhase)) {
+                c.pause += dt * angular;                  // the angle round the circle
+                angle = c.pause;
+            } else {
+                angle = c.flightPhase + angular * roundTime;
+            }
+            c.position = SphereMath.move(c.home, angle, radius);
+            c.heading = SphereMath.carryHeading(c.home, c.position, angle + Math.PI * 0.5);
             c.walking = 1f;
             c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond) % 1f;
             return;
         }
+        if (c.herd != null) herdSteer(c);
         float speed = c.species.walkSpeed * c.sizeScale * c.legScale * (c.travelling ? 1.35f : 1f);
         boolean resting = c.pause > 0f;
         if (resting) {
@@ -450,9 +752,14 @@ public class OrganismManager {
         } else {
             double distance = SphereMath.distance(c.position, c.target);
             if (distance < 4.0) {
-                // A short stop after a trip; a longer one grazing
-                c.pause = c.travelling ? 0.3f + c.rand.nextFloat() * 1.7f : 2f + c.rand.nextFloat() * 6f;
-                pickTarget(c);
+                if (c.herd != null) {
+                    // In its place in the herd: it stands a moment (its goal moves with the herd)
+                    if (!c.herd.moving) c.pause = 0.5f + c.rand.nextFloat() * 1.5f;
+                } else {
+                    // A short stop after a trip; a longer one grazing
+                    c.pause = c.travelling ? 0.3f + c.rand.nextFloat() * 1.7f : 2f + c.rand.nextFloat() * 6f;
+                    pickTarget(c);
+                }
             } else {
                 double desired = SphereMath.heading(c.position, c.target);
                 if (collision != null) {

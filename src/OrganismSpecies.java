@@ -89,6 +89,8 @@ public class OrganismSpecies {
     final float flightRadius;
     /** How common the species is where it lives, relative to the others. */
     final float rarity;
+    // Living in herds (walkers) or flocks (flyers) of about this many; 0 alone
+    int herdSize;
     final float femurLength, tibiaLength, legRadius;
     final boolean upright;
     final float kneeDirection;     // upright legs: +1 knees forward, -1 knees back
@@ -115,10 +117,10 @@ public class OrganismSpecies {
     final float gloss;
 
     // Where it lives and how it varies across its range
-    final RegionalFactor habitat;
+    RegionalFactor habitat;
     final float habitatThreshold;
     private final PerlinNoise sizeCline, legCline, hueCline, morphCline;
-    private final float nativeOptimalTemperature, nativeTemperatureDeviation, nativeWaterPreference,
+    private float nativeOptimalTemperature, nativeTemperatureDeviation, nativeWaterPreference,
             nativeWaterDeviation, nativePatchScale, nativeHomeScale;
 
     public OrganismSpecies(long seed, int index, RegionalGenerationManager regions) {
@@ -406,15 +408,15 @@ public class OrganismSpecies {
         nativeHomeScale = HOME_SCALE_LOW
                 + new Random(seed * 977L + index).nextFloat() * HOME_SCALE_RANGE;
         RegionalFactor home = regions.createNoiseMap(nativeHomeScale);
-        habitat = new RegionalFactor(1.0f, d -> {
-            float suitability = climate.evaluate(d) * (0.35f + 0.65f * water.evaluate(d));
-            float h = home.evaluate(d);
-            float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
-            float local = 1f - homeStrength + homeStrength * t * t * (3f - 2f * t);
-            return suitability * (0.25f + 1.5f * patches.evaluate(d)) * 0.8f * local;
-        });
+        habitat = habitat(climate, water, patches, home, homeStrength);
         habitatThreshold = 0.3f;
         rarity = (0.3f + rand.nextFloat() * 0.7f) * (locomotion == Locomotion.FLYER ? 0.5f : 1f);
+        // About half the walkers live in herds and half the flyers in flocks (from a Random of
+        // its own, so nothing else about the species changes with it); see OrganismManager
+        Random herding = new Random(seed * 7393L + index * 104729L);
+        boolean social = herding.nextFloat() < 0.5f;
+        int size = 4 + herding.nextInt(7);
+        herdSize = social && (locomotion == Locomotion.WALKER || locomotion == Locomotion.FLYER) ? size : 0;
         sizeCline = new PerlinNoise(seed + 9001L + index * 31L);
         legCline = new PerlinNoise(seed + 9101L + index * 31L);
         hueCline = new PerlinNoise(seed + 9201L + index * 31L);
@@ -446,6 +448,38 @@ public class OrganismSpecies {
     }
 
     /** How strongly the species lives at a place: 0 outside its range, rising to 1 at its heart. */
+    /** Where a species lives: suited to the climate and water, in patches, in its home region. */
+    private static RegionalFactor habitat(RegionalFactor climate, RegionalFactor water, RegionalFactor patches, RegionalFactor home, float homeStrength) {
+        return new RegionalFactor(1.0f, d -> {
+            float suitability = climate.evaluate(d) * (0.35f + 0.65f * water.evaluate(d));
+            float h = home.evaluate(d);
+            float t = Math.max(0f, Math.min(1f, (h - HOME_FROM) / (HOME_TO - HOME_FROM)));
+            float local = 1f - homeStrength + homeStrength * t * t * (3f - 2f * t);
+            return suitability * (0.25f + 1.5f * patches.evaluate(d)) * 0.8f * local;
+        });
+    }
+
+    /**
+     * Draws the species' range again (the climate and water it likes, its patches and its home
+     * region), the attempt'th time, for one that came out with almost nowhere to live (see
+     * SpeciesRange.findable). Only its range changes: its body, colours and ways stay. From the
+     * world's seed alone, so the same on every PC.
+     */
+    void redrawHabitat(long seed, int index, int attempt, RegionalGenerationManager regions) {
+        Random r = new Random(seed * 7919L + index * 31337L + attempt * 1_000_003L);
+        nativeOptimalTemperature = r.nextFloat();
+        // (a little more tolerant each time, so a fussy species finds somewhere)
+        nativeTemperatureDeviation = 0.15f + r.nextFloat() * 0.25f + attempt * 0.01f;
+        nativeWaterPreference = r.nextInt(40) * 100f;
+        nativeWaterDeviation = (25.0f + r.nextFloat() * 70.0f + attempt * 3f) * 100f;
+        nativePatchScale = 2.0e-5f + r.nextFloat() * 3.0e-5f;
+        nativeHomeScale = HOME_SCALE_LOW + r.nextFloat() * HOME_SCALE_RANGE;
+        long salt = (seed * 31L + index) * 64L + attempt;
+        habitat = habitat(regions.createTemperaturePreference(nativeOptimalTemperature, nativeTemperatureDeviation),
+                regions.createWaterPreference(nativeWaterPreference, nativeWaterDeviation),
+                regions.createNoiseMap(nativePatchScale, salt * 2L), regions.createNoiseMap(nativeHomeScale, salt * 2L + 1L), homeStrength);
+    }
+
     public float presenceAt(SpherePosition position) {
         float h = habitat.evaluateAt(position);
         return Math.max(0f, Math.min(1f, (h - habitatThreshold) / (1f - habitatThreshold) * 2.0f));
@@ -606,6 +640,17 @@ public class OrganismSpecies {
             OrganismParts.trunk(b, trunkLength, headWidth * 0.14f, trunkCurl);
         }
         return b;
+    }
+
+    // Species longer than this (front to tail) are rarer by the square of how much longer, and
+    // those longer than BIG_HERD_LENGTH keep in herds of no more than BIG_HERD
+    static final float COMMON_LENGTH = 14f, BIG_HERD_LENGTH = 24f;
+    static final int BIG_HERD = 4;
+
+    /** How common this species is for its size: 1 up to COMMON_LENGTH long, falling as the square beyond (half as long, a quarter as many). */
+    public float sizeShare() {
+        float length = halfLength() + tailLength();
+        return length <= COMMON_LENGTH ? 1f : (COMMON_LENGTH / length) * (COMMON_LENGTH / length);
     }
 
     /** Distance from the middle of the body to its front and back, for footing on slopes. */

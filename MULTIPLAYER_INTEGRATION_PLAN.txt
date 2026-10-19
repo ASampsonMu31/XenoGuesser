@@ -305,6 +305,195 @@ M26 (user, 2026-10-18) Walking is slower in both singleplayer and multiplayer: 4
 M27 (user, 2026-10-18) The shops' cards are shuffled (and priced) differently for the two
     players, as they already were (shopOffers uses an unseeded Random on each PC).
 
+M28 (user, 2026-10-18; both modes) Plants and animals follow their heatmaps. Each species has a
+    SpeciesRange: a scale 0-1 set from where its population actually is (0 where its poorest
+    10% lives, 1 from where its richest 10% begins, over ~12,000 land points: the same on both
+    PCs), and a density peak * scale^3, the peak such that the heartland (scale over 2/3)
+    holds 1.5x as many as before. Spawning makes candidates at the peak density and keeps each
+    by the scale where it falls (not once per cell at its centre, as before). The heatmaps
+    colour by the scale (red its lowest third, where there are under 4% of the peak), and the
+    key gives the real counts per km2 at its ends and middle. Measured with the game's own
+    spawning on 40,000 cells over two worlds: 0-2.5% of a species' plants or animals in its
+    red (a couple of tiny samples higher), against 8-88% before.
+M29 (user, 2026-10-18; both modes) About half the walkers live in herds and half the flyers in
+    flocks (of 4-10, each world having at least one such species). A herd spawns together;
+    its centre walks a path (walk to a stop, graze, on again, staying near home) fixed by its
+    seed and the round's clock, and its members keep round it by boids rules (cohesion to a
+    slot round the centre, separation from mates, alignment with the herd's heading). A flock
+    wheels round one home a little staggered. Herds' and flocks' seeds come from the round's
+    shared creature salt (M19) and their paths from the round's clock, so in multiplayer both
+    players see each herd and flock in the same place (individual members may differ a little).
+M30 (user, 2026-10-19; both modes) World polish:
+    - More plants and animals, still barely any in red: the range's density is now
+      peak * scale^4 (was ^3) with the heartland holding 3x what it did before the ranges (was
+      1.5x), so red has under 1.2% of the peak.
+    - Leafier trees: from halfway up, branches put out short side twigs, each tipped with
+      leaves; each tip carries 3-6 leaves (was 2-4).
+    - Rivers sit higher in snugger channels (the trough is 1.5x the water's half width, at
+      least 7; it was 2.4x and 12) and their surface is drawn moving twice as fast.
+    - Bridges reach well on to dry land: each end goes on until the ground is 4 over the water
+      and either out of the river's cut or 7 over the water (before, either 3 over it OR out
+      of the cut, so a low floodplain counted), searching up to 100 from the water, then 10
+      more (was 4). Plank bridges only between stretches of dirt track (all dirt, and 15 short of
+      either end of the track); a bridge touching a made road is a beam or arches. Its deck
+      meets each end's own road (a track's ground or a made road's surface).
+    - No more falling through a bridge: the feet are taken from the surface stood on last
+      frame, not the eased camera height (which lags a steep deck by more than the 2.5 a
+      walker lands on, so the ground under the bridge was taken instead).
+    - Only highways cross fenced borders, at their border checks: lanes that would cross one
+      are not built, and dirt tracks are cut short 8 before any (the builder already stopped
+      most; the last hop on to another road could still cross).
+M31 (user, 2026-10-19; both modes) Wildlife and trees:
+    - Animals about 6x as common (OrganismManager.PEAK_PER_CHUNK 0.3, was 0.05), shrubs 2.5x
+      (their base abundance; the plants' peak cap 2 a chunk, was 1.2); both still follow
+      their ranges (M28), so barely any in red.
+    - Trees: 2-4 leaves a cluster (was 3-6), fewer twigs (1 in 5 branch segments, 1 in 8 up
+      the trunk; were about half and a third), branching more often (0.05-0.13 a segment, was
+      0.03-0.09) into middling branches (45-75% of what's left of their parent, was 75%),
+      splaying wider: each species' mean from 30 to 70 degrees (was 15-40), each branch up to
+      15 either side of it. Shrubs splay 30-60 (was 25-50). The rest still varies by species.
+    - Quicker to draw: branches are open tubes (their hidden end caps, half their triangles,
+      left out) with sides by thickness (3 to the level's most); each leaf one quad (the
+      shader lights whichever side is seen) instead of two; the middle and far levels of
+      detail keep 75% and 50% of the leaves (a little bigger) and the far one no twig wood.
+M32 (user, 2026-10-19; both modes) Rivers, giants and bollards:
+    - No house stands in or over a river: its whole plot (and any paddock) is looked over at
+      points no more than 6 apart and kept 6 clear of any channel (Rivers.channelNear; a
+      quick look at whether any channel reaches the plot's texels first, so placing houses
+      takes no longer). Before, only its middle and corners were looked at, so a stream
+      narrower than the plot could run between them.
+    - The biggest animals are far fewer: a species longer than 14 (front to tail) has
+      (14 / length) squared as many (one 51 long, a thirteenth), and those longer than 24 keep
+      in herds of about 4.
+    - Roadside bollards (BollardStyle): each nation its own design, the same all over it: body
+      round, square, three-, six- or eight-sided or a flat plank; 0.6-1.25 m tall, 10-34 cm
+      across, straight or narrowing; top flat, pointed or rounded; black, white or grey, maybe
+      with a band of the opposite shade; one to three reflectors in any bright colour (now and
+      then white), as bands round it or as patches facing each way along the road
+      (rectangles, discs, diamonds, triangles, tall strips), the two ways sometimes different
+      colours. A nation with a kindred neighbour (bordering, the same culture:
+      NationKinship.kin) already designed copies its bollard a quarter of the time and builds
+      one much like it a third of the time. Each nation also sets how often (every 4 m to
+      every 40 m), how far off the edge, staggered sides or not, and whether on town streets
+      (45% of nations) and dirt tracks (30%); always on highways and lanes, except where a
+      guard rail runs. Never on a bridge or a raised stretch, at a junction or border check,
+      on a driveway or garden, or in water. Solid to walkers.
+M33 (user, 2026-10-19; both modes) Every plant and animal species can be found somewhere: one
+    whose range leaves it almost nowhere (under 2% of the land out of its red, or a peak under
+    0.004 a chunk; SpeciesRange.findable) has its range drawn again (the climate and water it
+    likes, its patches, its home region; a little more tolerant each time; its look kept) until
+    it has somewhere, at most 24 times. Drawn from the world's seed alone, with noise maps of
+    its own (RegionalGenerationManager.createNoiseMap(scale, salt)) so every other map stays
+    as it was: the same on both PCs.
+M34 (user, 2026-10-19; both modes) Map, wildlife, grass and prices:
+    - From the second round on, the map (small and enlarged, not the results' globe) marks
+      where the last round was: an orange ring tagged "Last round" below it. A note left in
+      that round is pinned at the same spot but hangs above it, the ring drawn over its tip;
+      should the note's text open below the spot (near the map's top), the tag goes beside.
+    - The plant/animal preview card stands a row higher, so the "M Contract map" hint above the
+      map's right-hand edge always has its own row (the card with a leaf could cover it).
+    - More land animals: those on the ground 2.5x as common again as flyers, and no more than
+      3 of a world's 8 species fly (one that would be a fourth flyer is made afresh).
+    - Dead grass is brown leaning 30-50% towards a hue of its own each world (any hue; from a
+      stream of its own, so no other colour changes).
+    - A bollard map ("Bollards", with the maps of what people have built in the shop, priced as
+      they are): each nation's bollard pictured standing on its main land (where its name goes
+      on the nations map), over the plain map, no colours or borders; front and back views
+      side by side where its two ways' reflectors differ (BollardStyle.picture).
+    - Shop prices start dearer and rise more gently: $180 after the first round (was $100),
+      1.25x each round (was 1.4x): the same about round 6, half as dear by round 12.
+M35 (user, 2026-10-19; both modes) Roads, bridges and bollards:
+    - A bollard's front (and reflectors on one side only, as a three-sided one's) faces the
+      traffic coming towards it on its own side of the road: where they drive on the left, on
+      the north side of a road running west to east, it faces west.
+    - A river's bridge always crosses the river: one whose road only runs along beside the water
+      and never crosses the river's middle (looked at every 6 along the road) isn't built (a
+      lake's still is). Seed 123: 710 bridges, 263 such gone.
+    - No more falling through a bridge's edge: its deck is walked on as wide as it's built (a
+      plank bridge's overhanging planks, a beam bridge's parapets, an arch bridge's ribs, and a
+      unit more for the corners where its segments meet); before, only the road's own width,
+      so a step onto the overhang or round the outside of a bend dropped through.
+    - Roads meet at the same height: where a lesser road meets or crosses a greater one (higher
+      rank; of two alike, the one made first), it's level with the greater across its width (a
+      hair under it, so the greater is drawn on top) and slopes back to its own height over 30
+      beyond its edge; so no step at a junction, and no road over another. People and cars
+      stand on the road as it's drawn (level across, junctions and all).
+M36 (user, 2026-10-19; both modes) Shop, maps and utility poles:
+    - The shop before the first round always deals an item (a thermometer, altimeter or
+      identification kit if one's not had, else any), in place of its last card.
+    - Two more picture maps, as the bollard map (M34): "Road lines" (each nation's markings on a
+      stretch of street seen from above: RoadLineStyle.picture) and "Utility poles" (each
+      nation's pole, drawn 2.4x its true width so its features show: UtilityPoleStyle.picture).
+    - Utility poles (UtilityPoleStyle): each nation its own design, kindred neighbours copying
+      (a quarter of the time) or adapting (a third) one's: colour by material (wood, concrete,
+      painted, galvanised), section (round, square, eight-sided, slab), 7-13 m tall, narrowing;
+      maybe rings cut round it, steps up it like a ladder's rungs, holes right through (two
+      slabs held apart by blocks); 0-3 crossarms with 1-3 insulators a side (none: brackets
+      under its top). Every 25-60 m along made roads, on the verge; in town on every road, in
+      the country on only the nation's share of roads (all along each). Never on a bridge, a
+      raised stretch, a junction, a border check, anyone's land or water. Solid to walkers.
+    - Wires: every pole is wired to its two nearest others within 1.4 of its spacings, whatever
+      road they stand on (the lines run on round corners and over junctions), insulator to
+      insulator, each span once; and drops wires to the tops of the walls of the houses about it
+      (within 75; its nation's number, up to six times as many in town, at most 10), each drop
+      in 1-3 strands. Every wire sags (1.5-5% of its length, by nation). The world's poles and
+      their wiring are worked out once, in the background after the roads (2-6 s).
+M37 (user, 2026-10-19; both modes) Bollards and poles give less away:
+    - Few designs go round the world (RegionalDesigns): about one for every 3.5 nations, for
+      bollards and for poles alike. Each nation in turn takes a neighbour's main design (kindred
+      neighbours 3x as likely as others, hostile ones seldom) or else one from the pool (unused
+      first). A nation may build a neighbour's design too (kindred 40%, others 20%, hostile 5%;
+      two at most), on its side nearer that neighbour (where a place is nearer the neighbour's
+      middle than 70-100% of the way to its own), so a design runs on over a border.
+    - Each nation still sets how often and where (spacing, distance out, roads, country share,
+      wiring) whichever design it builds.
+    - The maps picture every design a nation builds: its main one where its name goes, another
+      45% of the way towards the neighbour it's from. Bollards are pictured from the front only.
+    - Pole tops vary more: about half have crossarms lopsided (one side 20-80% as long), sloping
+      (up to a quarter of a unit a unit) and/or curving up or down at their ends (1-4 units).
+    - Wires to houses now meet their walls: at the nearest point of the building's own outline
+      (box or many-sided, a hair inside), at the walls' top, so a wire slopes down from a pole
+      taller than the house; strands hang one under another from there. Before, they made for
+      the nearest corner of a box round it (in the air beside a round or many-sided one). And
+      poles now stand (beyond the rail) on roads with guard rails too: before, poles there were
+      wired to but never built, so wires met at a point in the air.
+M38 (user, 2026-10-19; both modes) Developer switches and teleporting are developer-only. Every
+    -Dxenoguesser.* switch is read through Dev (src/Dev.java), which gives them only when the
+    game runs from its compiled classes (Maven, an IDE) with -Dxenoguesser.dev=true as well;
+    run from the packaged jar (as the exe always is) they all read as unset, whatever the
+    command line, the exe's .cfg or JAVA_TOOL_OPTIONS say. Developer mode (teleporting by the
+    map: P and click, or right-click; the first-frame grabs) is Dev.ENABLED (it was always on).
+    run.bat runs as the game does; run-dev.bat (mvn ... -Dxenoguesser.dev=true) turns them on.
+    (A player who takes the game's jar apart and rebuilds it could still turn them on: nothing on
+    their own PC can rule that out.)
+M39 (user, 2026-10-19; both modes) Poles, wires and sleet:
+    - No more steps on the outside of poles: instead some squared concrete poles (as Brazil's)
+      have a ladder set into them: their faces along the road recessed between solid edges, a
+      thin wall well back, ribs across the recess every 3.5-6.5 (not right through; holes right
+      through stay a feature of others).
+    - Every highway has poles all along it, in the country too, so the lines leave the towns
+      along the highways and join up with the next.
+    - Only the poles at the ends of lines (not wired on two sides: no two of their wires more
+      than 100 degrees apart) drop wires to houses: one to each house within 70 (12 at most),
+      to its walls' top. Wires are 4 cm across (were 2), to be seen.
+    - Snow turns to rain gradually: what falls is a mix, its share of snow eased over 3 degrees
+      either side of freezing and following the place's coldness over about 8 s; each drop a
+      flake or rain by its share; flakes in sleet small, quick and hardly swaying; the rain's
+      sound and the fresh snow by their shares.
+M40 (user, 2026-10-19; both modes) Wire and bridge bugs:
+    - Wires no longer vanish at some angles: a span is built with one of its poles, and its
+      batch's bounds now reach the other pole too (before, with its own pole out of view, the
+      batch was left undrawn and the wire with it).
+    - Every house with a pole within 20 m of its walls (DROP_REACH 200) is wired to its nearest
+      pole (not only at the ends of lines): a wire from under the pole's crossarms to a little
+      under its walls' top, below the eaves. Seeds 123 and 789: 5,900 and 4,400 houses wired.
+    - No more sticking where a bridge passes over a river's bank: on a bridge's deck the ground's
+      slope beneath doesn't count, nor anything under the deck (the walker's clearance is their
+      feet's height over the ground there).
+    - Bridges' railings are solid (plank handrails, beam parapets, arch ribs): recorded from just
+      under the deck to the railing's top (obstacles now have a bottom as well as a top: one
+      whose head is below the bottom, walking beneath, passes).
+
 -------------------------------------------------------------------------------
 DETERMINISM AUDIT (2026-10-17): does the same seed make the same world on two PCs?
 -------------------------------------------------------------------------------
@@ -1099,3 +1288,83 @@ LOG
             by 2.8 km" in red with its own pin "EMPLOYEE 119-B (YOU)"; the Q1 verdicts read "You
             won Quarter 1 (+1 point)" edged green on the host and "Employee 119-A won Quarter 1
             (+1 point)" edged red on the joiner. The slower walk isn't judged by feel yet.
+2026-10-18  M28/M29 done on branch PlantAnimalDistributionFix (SpeciesRange.java new; GL listener's
+            plant spawning and heatmaps; OrganismManager's ranges, populate, herds and flocks;
+            OrganismSpecies.herdSize). Measured before (density at each cell's centre, heatmap a
+            straight line from lowest to highest): 8-88% of a species in its red. After, running
+            the game's own spawning on 40,000 cells of seeds 123 and 456: 0.2-2.5% of plants and
+            0-1.5% of animals in red (a couple of tiny samples higher), 68-93% of plants in green.
+            Seed 456: 19 herds of 6.6 on average; seed 123: 29 flocks of about 10. In the game
+            (seed 456, -Dxenoguesser.view=herd): a herd of seven seen walking together over 40 s.
+            New dev aids: view=herd, HUD test steps herd and frameshots (-Dxenoguesser.frameshotsat).
+            Not yet checked: a heatmap's look on screen, and a herd seen from both PCs at once.
+2026-10-19  M30 done (user) on branch PlantAnimalDistributionFix (SpeciesRange, Flora, Rivers,
+            RiverRenderer, InfrastructureManager, RoadNetworkBuilder, GL listener). Measured on
+            seed 123 with the game's own spawning (3,000 land cells): 0.0% of every plant and
+            animal species in its red, 82-100% in its green. Fenced-border crossings counted
+            along every road every 2 units: before, seed 123 HIGHWAY 20, LANE 47; seed 456
+            HIGHWAY 14, LANE 13; after, highways only (22 and 16; no lanes, tracks or streets).
+            Bridges on seed 123: median length 158 (90% under 278), against 69 (163) with the
+            old bank rule; 973 bridges, 348 of planks. Screenshots (new dev views view=bridge
+            and view=plankbridge: just before a bridge looking over it) show plank and beam
+            bridges with both ends up on dry ground, and fuller trees. Not yet checked: the
+            faster river surface and the bridge-fall fix by walking (needs a person at the keys).
+2026-10-19  M31 done (user). Triangles a plant (10 of each species, nearest level), last turn's
+            code against now, same species: seed 123 trees 23-42k -> 5-8k, shrubs 0.8-2.6k ->
+            0.1-0.4k; seed 456's bushiest tree 145k -> 37k. Spawning on seed 123 (3,000 land
+            cells): animals 145 -> 972, shrubs 367 -> 918, at most 0.8% of any species in its
+            red. In the game (-Dxenoguesser.fpslog, new: logs the rate and the plants'
+            triangles drawn): seed 456's herd view drew 67 plants in 1.4 million triangles
+            (about 5.7 million before), 31-36 fps there with the frame grabs going on; a herd
+            seen walking among houses with other animals about. Not yet: the frame rate felt
+            on the user's PC.
+2026-10-19  M32 done (user). Seed 123: 9,382 houses placed (9,557 before; those by rivers gone),
+            in 3.3 s as before. Seed 456: the 51-long walker's peak 0.055 a chunk against
+            0.2-0.76 for the others, its herds about 4. Bollards seen in three worlds (new dev
+            view -Dxenoguesser.view=bollard: a road's edge looking along its bollards): white
+            posts with an orange reflector strip (seed 123); grey (456); dark grey with a black
+            band and two purple strips (789). Not yet: a close look at every kind of body, cap
+            and reflector, and kindred nations' bollards side by side.
+2026-10-19  M33 done (user). Over seeds 123, 456, 789, 2024 and 31337, eight animal species had
+            almost nowhere to live and were drawn again once or twice (seed 456's floater, peak
+            0 before, among them); no plant needed it. Each world's log names any so redrawn.
+2026-10-19  M34 done (user). Seed 123: species now 5 on the ground and 3 flyers (were 2 and 6);
+            land animals spawned on 3,000 land cells about 2,000 (about 800 before), 0% in red.
+            Screenshots: the "Last round" ring on the small map in round 2 (autoplay); the
+            bollard map enlarged, one bollard per nation. Not yet seen: a note and the marker at
+            one spot, the hint clear of the card on screen (the card is moved a row up; the hint
+            is drawn in the 3D view, which the panels' screenshots don't show), and dead grass
+            by eye.
+2026-10-19  M35 done (user). New dev view -Dxenoguesser.view=junction (a side road short of a
+            junction that would have had a step of over 1.5): seed 456's side road meets the
+            coast road smoothly. A plank bridge seen crossing its stream bank to bank. Not yet:
+            walking over bridges by hand, and the bollards' facing seen in a left-driving
+            nation. A road that ran along a river bank on a "bridge" now runs on the bank,
+            walled down to the water where it's partly over it.
+2026-10-19  M36 done (user). Seed 789: 3,443 poles, 3,655 wired spans (before linking poles
+            across roads, only 38% of poles had a neighbour to wire to). Seen in the game (new
+            dev view -Dxenoguesser.view=pole, HUD test step lookup): a wooden pole's line running
+            on round a corner and drops to the houses; a galvanised pole with indent rings and
+            two crossarms, its lines strung away along the road. The road lines and utility pole
+            maps seen, one picture per nation. Not yet seen: the first shop's item (the test
+            runs skip that shop), and a pole with holes or steps up close.
+2026-10-19  M37 done (user). Seed 789: 3 bollard designs over 11 nations (3 nations building two),
+            3 pole designs (1 nation two); 2,660 poles, 2,669 wired spans. Both maps seen with
+            the extra designs towards their neighbours. A sheet of twelve fresh pole designs
+            shows level, sloping, lopsided and up- and down-curved arms. New dev view
+            -Dxenoguesser.view=drop (from a pole's road, looking at its wire down to a house).
+            Not yet seen up close: a drop wire meeting a wall (the views found were crowded).
+2026-10-19  M38 done (user). Checked: from the classes without the dev switch, Dev.ENABLED false
+            and -Dxenoguesser.seed ignored; with it, true and the seed read; from the packaged
+            jar with the dev switch, the seed and JAVA_TOOL_OPTIONS all set, false and nothing
+            read. Not yet: the exe itself rebuilt and tried (build-exe.bat).
+2026-10-19  M39 done (user). Seeds 456 and 123: about 3,000 poles, 3,250-3,330 spans, about 1,250
+            line ends. A drop wire seen coming down from a pole to the top of a house's wall,
+            under its eaves. A sheet of pole designs shows the recessed, ribbed ladder ones. Not
+            yet seen: sleet in the game (walking from snow into rain), and a highway's line
+            leaving a town.
+2026-10-19  M40 done (user). Drop wires seen from poles into houses' walls, many to a street, and
+            line wires; new HUD test step walk (-Dxenoguesser.walkms): from view=bridge, walked
+            325 units straight on over a bridge and off it at a steady 40 a second, no stop at
+            the bank. Not yet tried: walking into a bridge's railing, and turning about to see a
+            wire stay.

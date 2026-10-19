@@ -81,7 +81,9 @@ public final class SphereWeather {
     private final float[] dropU = new float[MAX_DROPS], dropV = new float[MAX_DROPS], dropY = new float[MAX_DROPS];
     private final float[] dropGround = new float[MAX_DROPS], splash = new float[MAX_DROPS];
     private final boolean[] dropLive = new boolean[MAX_DROPS];
-    private boolean snowing;
+    // How much of what falls is snow, 0 all rain to 1 all snow (between, sleet: some of each, the
+    // flakes small and quick); -1 before it's first known
+    private float snowShare = -1f;
     private float freshSnow, coldness, swayTime;
     private final java.util.Random rand;
 
@@ -123,7 +125,7 @@ public final class SphereWeather {
         dayOffsetZ = dayRand.nextFloat() * 5000f;
         dayWetness = (float) dayRand.nextGaussian() * DAY_TO_DAY;
         // (the main menu's picture, -Dxenoguesser.menushot, is taken on a fine day)
-        if (System.getProperty("xenoguesser.menushot") != null) dayWetness = -3f * DAY_TO_DAY;
+        if (Dev.property("xenoguesser.menushot") != null) dayWetness = -3f * DAY_TO_DAY;
         // How streaked along the wind today's clouds are: some days long fibrous streaks, some
         // days rounder heaps with hardly any direction to them
         streak = (float) Math.pow(dayRand.nextFloat(), 0.7);
@@ -251,9 +253,24 @@ public final class SphereWeather {
         return intensity;
     }
 
-    /** Whether it's snowing rather than raining (when anything falls at all). */
+    /** Whether it's more snowing than raining (when anything falls at all). */
     public boolean snowing() {
-        return snowing;
+        return snowShare > 0.5f;
+    }
+
+    /** How much of what falls is snow, 0 all rain to 1 all snow (between, sleet). */
+    public float snowShare() {
+        return Math.max(0f, snowShare);
+    }
+
+    // Snow and rain mix over this many degrees either side of freezing, and the mix follows the
+    // place's coldness over about this many seconds (so walking from snow into rain there's a
+    // while of sleet, snow and rain together, and back)
+    private static final float SLEET_DEGREES = 3f, SLEET_SECONDS = 8f;
+
+    /** Whether drop i falls as a flake (rather than rain) now: the first snowShare of them, in an order of their own. */
+    private boolean flake(int i) {
+        return ((i * 2654435761L >>> 8) & 0xFFFF) / 65536f < snowShare;
     }
 
     // ------------------------------------------------------------------ each frame
@@ -268,12 +285,11 @@ public final class SphereWeather {
     public void update(float dt, float time, SpherePosition eye, java.util.function.DoubleSupplier rainfallHere, Ground ground,
                        float degreesBelowFreezing) {
         dt = Math.max(0f, Math.min(dt, 0.1f));
-        // Snow where it's below freezing, rain where it's above; the falling drops start afresh when it turns
-        boolean snowNow = degreesBelowFreezing > 0f;
-        if (snowNow != snowing) {
-            snowing = snowNow;
-            java.util.Arrays.fill(dropLive, false);
-        }
+        // Snow where it's below freezing, rain where it's above, and a mix of the two near
+        // freezing, the mix catching up with the place gradually
+        float wantSnow = smoothstep(-SLEET_DEGREES, SLEET_DEGREES, degreesBelowFreezing);
+        if (snowShare < 0f) snowShare = wantSnow;
+        else snowShare += (wantSnow - snowShare) * Math.min(1f, dt / SLEET_SECONDS);
         coldness = Math.max(0f, degreesBelowFreezing);
         swayTime += dt;
         rainfallTimer -= dt;
@@ -299,9 +315,9 @@ public final class SphereWeather {
         if (intensity < 0.01f && wanted == 0f) intensity = 0f;
         // Fresh snow piles up while it snows (some straight away), and melts off when it stops,
         // the slower the colder
-        if (snowing && intensity > 0f) {
-            freshSnow = Math.max(freshSnow, FRESH_AT_ONCE);
-            freshSnow = Math.min(1f, freshSnow + dt * intensity / FRESH_COVERING_TIME);
+        if (snowShare > 0.5f && intensity > 0f) {
+            freshSnow = Math.max(freshSnow, FRESH_AT_ONCE * snowShare);
+            freshSnow = Math.min(1f, freshSnow + dt * intensity * snowShare / FRESH_COVERING_TIME);
         } else {
             freshSnow = Math.max(0f, freshSnow - dt / (FRESH_MELT_TIME * (1f + coldness)));
         }
@@ -324,7 +340,8 @@ public final class SphereWeather {
                 }
                 continue;
             }
-            dropY[i] -= (snowing ? SNOW_SPEED : FALL_SPEED) * dt;
+            // (a flake falls slowly; in sleet, when little of it's snow, quicker, nearly as rain)
+            dropY[i] -= (flake(i) ? FALL_SPEED + (SNOW_SPEED - FALL_SPEED) * smoothstep(0f, 1f, snowShare) : FALL_SPEED) * dt;
             // Left behind as the player walks on: brought round to the far side, ahead of them, at
             // the height it had, so the rain or snow there is already falling all the way down
             float du = dropU[i] - eye[0], dv = dropV[i] - eye[1];
@@ -341,7 +358,7 @@ public final class SphereWeather {
                 continue;
             }
             if (dropY[i] <= dropGround[i]) {
-                if (snowing) {
+                if (flake(i)) {
                     // The flake is gone as it lands, and another starts at the top
                     if (i < wanted) spawn(i, eye, eyeHeight, ground, false);
                     else dropLive[i] = false;
@@ -475,17 +492,16 @@ public final class SphereWeather {
      * pixels at unit distance.
      */
     public void renderRain(GL3 gl, Matrix4 viewProjection, SpherePosition eye, float[] colour, float daylight, float pointScale) {
-        if (snowing) {
-            renderSnow(gl, viewProjection, eye, colour, daylight, pointScale);
-            return;
-        }
+        // (the flakes, then the rain: in sleet some of each)
+        if (snowShare > 0f) renderSnow(gl, viewProjection, eye, colour, daylight, pointScale);
+        if (snowShare >= 1f) return;
         if (intensity <= 0f && !anyLive()) return;
         float streakLength = SHORTEST_STREAK + (LONGEST_STREAK - SHORTEST_STREAK) * intensity;
         int needed = MAX_DROPS * 4 * 4;
         if (rainVertices.length < needed) rainVertices = new float[needed];
         int v = 0;
         for (int i = 0; i < MAX_DROPS; i++) {
-            if (!dropLive[i]) continue;
+            if (!dropLive[i] || (flake(i) && splash[i] <= 0f)) continue;
             float u = dropU[i], w = dropV[i], y = dropY[i];
             if (splash[i] > 0f) {
                 // A splash: two drops kicked up and out, fading
@@ -525,9 +541,11 @@ public final class SphereWeather {
         int needed = MAX_DROPS * 4;
         if (rainVertices.length < needed) rainVertices = new float[needed];
         int v = 0;
+        // (in sleet the flakes are small, wet and sway less)
+        float sway = smoothstep(0.3f, 1f, snowShare);
         for (int i = 0; i < MAX_DROPS; i++) {
-            if (!dropLive[i]) continue;
-            v = put(eye, dropU[i] + sway(i), dropV[i] + sway(i + 7), dropY[i], 0.9f, v);
+            if (!dropLive[i] || !flake(i) || splash[i] > 0f) continue;
+            v = put(eye, dropU[i] + sway(i) * sway, dropV[i] + sway(i + 7) * sway, dropY[i], 0.9f, v);
         }
         int count = v / 4;
         if (count == 0) return;
@@ -541,7 +559,7 @@ public final class SphereWeather {
         float light = 0.5f + 0.5f * daylight;
         // Mostly white, with something of the oceans' colour in it
         snowShader.setFloat(gl, "colour", (0.45f * colour[0] + 0.55f) * light, (0.45f * colour[1] + 0.55f) * light, (0.45f * colour[2] + 0.55f) * light);
-        snowShader.setFloat(gl, "flakePixels", FLAKE_SIZE * pointScale);
+        snowShader.setFloat(gl, "flakePixels", FLAKE_SIZE * (0.45f + 0.55f * smoothstep(0.2f, 1f, snowShare)) * pointScale);
         gl.glDrawArrays(GL.GL_POINTS, 0, count);
         gl.glDepthMask(true);
         gl.glDisable(GL3.GL_PROGRAM_POINT_SIZE);

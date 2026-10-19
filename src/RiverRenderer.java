@@ -21,6 +21,8 @@ public final class RiverRenderer {
     private static final int FLOATS = 13;
     // How fast the ripples' pattern moves at the speed it's carried at (world units a second; see travel)
     private static final float FLOW_DRIFT = 4f;
+    // How much faster the water is shown flowing than its eased speed (so it reads as running water)
+    private static final float FLOW_SHOWN = 2f;
     // Over how far a river stills as it comes to a lake (or starts from one)
     private static final float CALM_EASE = 40f;
     // How far a river's water dips under the sea's wherever the ground as drawn is below the sea
@@ -143,7 +145,7 @@ public final class RiverRenderer {
         float[] t = new float[reach.size()];
         for (int k = 1; k < reach.size(); k++) {
             float speed = Math.max(1.2f, 0.5f * (reach.speed[k - 1] + reach.speed[k]));
-            float shown = (float) Math.sqrt(speed * FLOW_DRIFT);
+            float shown = FLOW_SHOWN * (float) Math.sqrt(speed * FLOW_DRIFT);
             t[k] = t[k - 1] + (reach.along[k] - reach.along[k - 1]) * FLOW_DRIFT / shown;
         }
         return t;

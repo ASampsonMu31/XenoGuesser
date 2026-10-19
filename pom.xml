@@ -13,6 +13,8 @@
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <djl.version>0.26.0</djl.version>
+        <!-- Developer switches (see src/Dev.java): off unless run with -Dxenoguesser.dev=true (run-dev.bat) -->
+        <xenoguesser.dev>false</xenoguesser.dev>
     </properties>
 
     <dependencyManagement>
@@ -172,6 +174,7 @@
                         <argument>java.desktop/sun.java2d=ALL-UNNAMED</argument>
                         <argument>--add-exports</argument>
                         <argument>java.desktop/sun.awt=ALL-UNNAMED</argument>
+                        <argument>-Dxenoguesser.dev=${xenoguesser.dev}</argument>
                         
                         <argument>-classpath</argument>
                         <classpath/>

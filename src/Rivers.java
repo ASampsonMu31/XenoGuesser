@@ -81,8 +81,10 @@ public final class Rivers {
     // How deep the channel is for the water's width
     private static final float DEPTH_PER_WIDTH = 0.6f;
     // The channel cut (a rounded trough, its sides easing in) reaches this much further either
-    // side than the water, and never less than LEAST_TROUGH (so the ground's mesh can draw it)
-    private static final float TROUGH_PER_HALF_WIDTH = 2.4f, LEAST_TROUGH = 12f;
+    // side than the water, and never less than LEAST_TROUGH (so the ground's mesh can draw it).
+    // (Snug round the water, so it stands high in its channel, filling it: at 2.4 it lay low in
+    // a wide trench, two thirds of the channel's depth below its rim; at 1.5 it's a third.)
+    private static final float TROUGH_PER_HALF_WIDTH = 1.5f, LEAST_TROUGH = 7f;
     // The banks beyond: how steeply they rise, how far they reach, and over how much of that they
     // ease back into the land
     private static final float BANK_SLOPE = 0.35f, BANK_REACH = 70f, BANK_EASE = 20f;
@@ -1339,6 +1341,38 @@ public final class Rivers {
      * The height of the fresh water's surface (a river's or a lake's) at a direction from the
      * planet's centre, where the ground there is groundHeight; NaN if it's not under fresh water.
      */
+    /** Whether any channel reaches the texel a place is in (with its banks: much wider than the water), a quick first look. */
+    public boolean channelsAbout(GeodesicChunkGrid.Direction direction) {
+        double x = direction.x(), y = direction.y(), z = direction.z();
+        double l = Math.sqrt(x * x + y * y + z * z);
+        int t = raster.index((float) (x / l * radius), (float) (y / l * radius), (float) (z / l * radius));
+        return cellStart[t + 1] > cellStart[t];
+    }
+
+    /**
+     * Whether a place on the datum is within margin (world units) of a river's channel (its
+     * trough, the water's bed and the banks just over it), whatever the ground's height there.
+     */
+    public boolean channelNear(GeodesicChunkGrid.Direction direction, float margin) {
+        double x = direction.x(), y = direction.y(), z = direction.z();
+        double l = Math.sqrt(x * x + y * y + z * z);
+        float px = (float) (x / l * radius), py = (float) (y / l * radius), pz = (float) (z / l * radius);
+        int t = raster.index(px, py, pz);
+        for (int i = cellStart[t]; i < cellStart[t + 1]; i++) {
+            int o = cellPieces[i] * SEGMENT;
+            float[] s = segments;
+            float ax = s[o], ay = s[o + 1], az = s[o + 2];
+            float ux = s[o + 3] - ax, uy = s[o + 4] - ay, uz = s[o + 5] - az;
+            float length2 = ux * ux + uy * uy + uz * uz;
+            float f = length2 > 0f ? ((px - ax) * ux + (py - ay) * uy + (pz - az) * uz) / length2 : 0f;
+            f = Math.max(0f, Math.min(1f, f));
+            float dx = px - (ax + ux * f), dy = py - (ay + uy * f), dz = pz - (az + uz * f);
+            float trough = s[o + 8] + (s[o + 9] - s[o + 8]) * f;
+            if (dx * dx + dy * dy + dz * dz < (trough + margin) * (trough + margin)) return true;
+        }
+        return false;
+    }
+
     public float waterAt(GeodesicChunkGrid.Direction direction, float groundHeight) {
         double x = direction.x(), y = direction.y(), z = direction.z();
         double l = Math.sqrt(x * x + y * y + z * z);
