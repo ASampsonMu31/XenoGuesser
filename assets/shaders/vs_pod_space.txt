@@ -1,0 +1,48 @@
+#version 330 core
+
+// What's seen through the landing pod's window, far off in space: streaking stars (mode 0, a quad each, or still ones as points),
+// the star the planet goes round, as a picture always facing the pod (1), the planet's globe
+// (2), and the sky above and the ground below seen through fogged glass (3). Everything is
+// placed round the eyes, in the frame the pod flies in, and turned into the view as the pod's
+// turned (viewProjection).
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 extra;
+
+out vec3 vDirection;
+out vec2 vUV;
+out float vBrightness;
+out vec3 vNormal;
+
+uniform int mode;
+uniform mat4 viewProjection;
+uniform float pointSize;
+// (1) the star: its direction and how wide it's drawn (as far off as the planet's in front of it)
+uniform vec3 billboardCentre;
+uniform float billboardSize;
+// (2) the planet: its middle, radius, and how its globe's turned (planet axes to the pod's frame)
+uniform vec3 planetCentre;
+uniform float planetRadius;
+uniform mat3 planetTurn;
+
+void main() {
+    vBrightness = extra.z;
+    vUV = extra.xy;
+    vec3 world;
+    if (mode == 1) {
+        // A square facing the eyes
+        vec3 forward = normalize(billboardCentre);
+        vec3 side = normalize(cross(forward, abs(forward.y) > 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
+        vec3 up = cross(side, forward);
+        world = billboardCentre + (side * position.x + up * position.y) * billboardSize;
+        vUV = position.xy * 0.5 + 0.5;
+    } else if (mode == 2) {
+        vNormal = planetTurn * position;
+        world = planetCentre + vNormal * planetRadius;
+    } else {
+        world = position;
+    }
+    vDirection = world;
+    gl_Position = viewProjection * vec4(world, 1.0);
+    gl_PointSize = pointSize * (0.6 + 0.8 * vBrightness);
+}

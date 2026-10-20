@@ -1,0 +1,159 @@
+#version 330 core
+
+// The landing pod's door, glass from edge to edge: clear in space, faintly catching the cabin's
+// lamp; glowing orange round its edge as the air burns past it; fogged milky as the pod comes
+// down, beaded with condensation: a few drops that gather and join as the mist thickens, and
+// bigger ones running the way gravity pulls (down the glass, or aside as the pod leans) right off
+// the edge, each leaving a channel of water behind it, wiped clear of the mist and broken into
+// little beads where it split. The water's faintly the colour of the planet's seas.
+// u and v run across the oval, (0.5, 0.5) its middle.
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 vUV;
+flat in int vPart;
+
+out vec4 fragColour;
+
+uniform vec3 viewPos;
+uniform float fog;        // 0 clear, 1 white-out
+uniform float plasma;     // the air burning past, 0..1
+uniform float cabinLight; // the lamp, 0 off, 1 on
+uniform vec3 fogLight;    // the light through the fog from outside
+uniform float time;
+uniform vec2 glassSize;   // the door's half width and half height (units)
+uniform vec2 slide;       // which way drops run on it (across, up), from gravity
+uniform vec3 waterTint;   // the planet's seas' colour, which the water's faintly tinted
+
+float hash1(float x) {
+    return fract(sin(x * 91.3458) * 47453.5453);
+}
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+
+vec2 hash2(vec2 p) {
+    return vec2(hash(p), hash(p + vec2(17.3, 41.9)));
+}
+
+// The water on the glass at p (units across the door): a field over 1 where there's a drop (drops
+// near each other run together, as metaballs), and how much the running drops have wiped the mist
+// away behind them. grow is how far the condensing has gone (0..1)
+vec2 water(vec2 p, float grow) {
+    float field = 0.0;
+    vec2 dir = normalize(slide);
+    vec2 across = vec2(-dir.y, dir.x);
+    float s = dot(p, dir), t = dot(p, across);
+
+    // Running drops: one to a lane across the way they run, the bigger the quicker, each running
+    // from above the glass right off its far edge and on, then starting again
+    float wipe = 0.0;
+    float running = smoothstep(0.45, 0.85, grow);
+    float lane = 1.9;
+    float id0 = floor(t / lane);
+    for (float k = -1.0; k <= 1.0; k += 1.0) {
+        float id = id0 + k;
+        float h = hash1(id + 3.1), h2 = hash1(id + 7.7);
+        if (h > 0.8 * running) continue;
+        float radius = (0.3 + 0.25 * h2) * running;
+        float speed = 0.8 + 2.2 * h2;
+        float span = 2.0 * glassSize.y + 22.0;
+        float at = mod(time * speed + h * 97.0, span) - span * 0.5;
+        float tc = (id + 0.5 + 0.3 * (h2 - 0.5)) * lane;
+        // (wandering a little side to side as it finds its way)
+        float centre = tc + 0.18 * sin(at * 1.3 + h * 20.0);
+        float ds = s - at, dt = t - centre;
+        field += radius * radius / (ds * ds * 0.8 + dt * dt + 1e-4);
+        // Behind it, the channel it's cut, all the way back to where it started: water along it,
+        // narrowing and drying the further back, the mist wiped from it
+        float trail = at + span * 0.5;
+        if (ds < 0.0 && ds > -trail) {
+            float fade = 0.35 + 0.65 * exp(ds / 9.0);
+            // (once the drop has run off the glass its channel dries away)
+            fade *= 1.0 - smoothstep(glassSize.y, span * 0.5, at);
+            float trackCentre = tc + 0.18 * sin(s * 1.3 + h * 20.0);
+            float width = radius * 0.32 * fade;
+            float dtt = t - trackCentre;
+            field += width * width / (dtt * dtt + 1e-4) * 0.9;
+            wipe = max(wipe, (1.0 - smoothstep(radius * 0.5, radius * 1.5, abs(dtt))) * (0.6 + 0.4 * fade));
+            // ...and beads left along it, where the drop split
+            float bead = floor(s / 1.1);
+            for (float j = -1.0; j <= 1.0; j += 1.0) {
+                float bs = (bead + j + 0.5) * 1.1 + 0.3 * (hash(vec2(id, bead + j)) - 0.5);
+                if (bs > at || at - bs > trail) continue;
+                float br = radius * (0.2 + 0.25 * hash(vec2(bead + j, id + 5.0)));
+                float bdt = t - (tc + 0.18 * sin(bs * 1.3 + h * 20.0));
+                field += br * br / ((s - bs) * (s - bs) + bdt * bdt + 1e-4);
+            }
+        }
+    }
+
+    // Still drops beaded here and there, more and bigger as the mist thickens; none where a drop has run
+    float size = 0.75;
+    vec2 cell = floor(p / size);
+    float still = 0.0;
+    for (float x = -1.0; x <= 1.0; x += 1.0) {
+        for (float y = -1.0; y <= 1.0; y += 1.0) {
+            vec2 id = cell + vec2(x, y);
+            vec2 h = hash2(id);
+            if (h.x > 0.05 + 0.25 * smoothstep(0.15, 0.8, grow)) continue;
+            vec2 centre = (id + 0.2 + 0.6 * hash2(id + 9.1)) * size;
+            float radius = size * (0.08 + 0.3 * h.y * h.y) * (0.4 + 0.6 * grow);
+            vec2 d = p - centre;
+            still += radius * radius / (dot(d, d) + 1e-4);
+        }
+    }
+    field += still * (1.0 - wipe);
+    return vec2(field, wipe);
+}
+
+void main() {
+    vec3 normal = normalize(aNormal);
+    vec3 toEye = normalize(viewPos - aPos);
+    float facing = abs(dot(normal, toEye));
+    float fresnel = 0.04 + 0.96 * pow(1.0 - facing, 5.0);
+    vec2 c = vUV - 0.5;
+    float edge = length(c) * 2.0;
+
+    // Clear glass: a faint sheen of the lamp
+    vec3 colour = vec3(0.75, 0.8, 0.85) * cabinLight;
+    float alpha = 0.04 + 0.35 * fresnel;
+
+    // Condensation: a mist, patchy and thickest at the edges, with drops on it
+    float patches = 0.5 + 0.25 * sin(vUV.x * 13.0 + 2.0 * sin(vUV.y * 7.0)) + 0.25 * sin(vUV.y * 17.0 + 3.0 * sin(vUV.x * 5.0));
+    vec2 w = fog > 0.05 ? water(c * 2.0 * glassSize, fog) : vec2(0.0);
+    float inDrop = smoothstep(0.85, 1.15, w.x);
+    float misted = clamp(fog * (0.55 + 0.3 * patches + 0.35 * edge), 0.0, 1.0);
+    // (a drop is a little lens: clearer than the mist round it, darker at its rim, bright where it catches the light)
+    misted *= 1.0 - 0.75 * max(inDrop, w.y * 0.8);
+    vec3 mist = fogLight * (0.75 + 0.25 * patches) + vec3(0.5, 0.52, 0.55) * cabinLight * 0.25;
+    colour = mix(colour, mist, misted);
+    // (never quite opaque: the sky and the ground show through, blurred)
+    alpha = mix(alpha, 0.72, misted);
+    // Each drop shaded as a little dome of water: the surface's slope from how the water deepens
+    // across the screen, lit from above, darker on its shadowed side, a glint where it faces the light
+    float depth = smoothstep(0.85, 4.0, w.x);
+    vec2 slope = vec2(dFdx(depth), dFdy(depth)) * 25.0;
+    vec3 n = normalize(vec3(-slope, 1.0));
+    float lit = dot(n, normalize(vec3(-0.35, 0.65, 0.65)));
+    float glint = pow(max(lit, 0.0), 24.0);
+    colour = mix(colour, colour * (0.6 + 0.55 * lit), inDrop * 0.8) + vec3(0.95, 0.97, 1.0) * glint * inDrop * 0.6 * fog;
+    // (the water faintly the colour of the seas)
+    colour = mix(colour, waterTint * (0.55 + 0.6 * lit), inDrop * 0.3);
+    alpha = max(alpha, inDrop * (0.25 + 0.35 * (1.0 - lit) + 0.4 * glint) * fog);
+
+    // The air burning past: orange to white-hot at the rim, flickering
+    float flicker = 0.75 + 0.25 * valueNoise(vec2(atan(c.y, c.x) * 4.0, time * 9.0));
+    float burn = plasma * smoothstep(0.35, 1.0, edge) * flicker;
+    colour += vec3(1.0, 0.45, 0.12) * burn * 1.6 + vec3(1.0, 0.85, 0.6) * pow(burn, 3.0);
+    alpha = max(alpha, burn * 0.9);
+
+    fragColour = vec4(colour, alpha);
+}

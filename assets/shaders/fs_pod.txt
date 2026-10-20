@@ -1,0 +1,161 @@
+#version 330 core
+
+// The inside of the landing pod: lit by its ceiling lamp and the glow of its own screens and
+// lights (not the sun), so with the lamp off the cabin is dark but for the blinking lights,
+// the scopes and the computer's screen. Parts (see PodInterior) choose a colour, how glossy
+// they are and how much they glow; some draw a picture of their own:
+//   blinking lights and buttons take their colour from v (an index into indicatorColours)
+//   and their phase from u; the scopes draw moving traces, each its own from floor(u); the
+//   computer's screen shows the terminal's picture; the dials' needles swing.
+
+in vec3 aPos;
+in vec3 aNormal;
+in vec2 vUV;
+flat in int vPart;
+
+out vec4 fragColour;
+
+const int PART_WALL = 0, PART_FLOOR = 1, PART_METAL = 2, PART_DARK = 3, PART_TRIM = 4, PART_LAMP = 5,
+          PART_SCOPE = 6, PART_LIGHT = 7, PART_BEIGE = 8, PART_FABRIC = 9, PART_RUBBER = 10,
+          PART_TERMINAL = 11, PART_BUTTON = 12, PART_PANEL = 13, PART_DIAL = 14, PART_SWITCH = 15,
+          PART_KEYS = 16, PART_PIPE = 17;
+const float PI = 3.14159265;
+
+uniform vec3 viewPos;
+uniform vec3 lightPos[4];
+uniform vec3 lightColour[4];
+uniform float lightReach[4];
+uniform vec3 ambientLight;
+uniform vec3 partColour[20];
+uniform float partShine[20];
+uniform float partGlow[20];
+uniform vec3 indicatorColours[4];
+uniform float time;
+// 0..1: how much the screens are troubled (re-entry): they flicker and their traces jump
+uniform float interference;
+uniform sampler2D terminalTexture;
+
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float valueNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+
+// A green phosphor scope: a grid, and a trace (sine, beating sines, a Lissajous figure or a
+// sweep with blips, by the screen's number) moving across it
+vec3 scope(vec2 uv, float which) {
+    vec2 p = fract(uv);
+    float kind = mod(which, 4.0);
+    float seed = hash(vec2(which, 3.7));
+    vec3 phosphor = vec3(0.35, 1.0, 0.5);
+    vec2 cells = abs(fract(p * vec2(8.0, 6.0)) - 0.5);
+    float grid = (1.0 - smoothstep(0.0, 0.04, min(cells.x, cells.y))) * 0.12;
+    float jitter = interference * (hash(vec2(floor(time * 30.0), which)) - 0.5) * 0.3;
+    float glow = 0.0;
+    if (kind < 0.5) {
+        float y = 0.5 + 0.32 * sin(p.x * PI * (4.0 + seed * 4.0) - time * (3.0 + seed * 3.0)) + jitter;
+        glow = exp(-pow((p.y - y) / 0.025, 2.0));
+    } else if (kind < 1.5) {
+        float y = 0.5 + 0.22 * sin(p.x * 18.0 - time * 5.0) * sin(p.x * 3.0 + time * (0.7 + seed)) + jitter;
+        glow = exp(-pow((p.y - y) / 0.025, 2.0));
+    } else if (kind < 2.5) {
+        // A Lissajous figure, its ratio slowly drifting
+        float best = 1.0;
+        for (int i = 0; i < 48; i++) {
+            float t = float(i) / 48.0 * 2.0 * PI;
+            vec2 q = vec2(0.5 + 0.38 * sin(3.0 * t + time * 0.9), 0.5 + 0.38 * sin((2.0 + 0.02 * sin(time * 0.3)) * t) + jitter);
+            best = min(best, length(p - q));
+        }
+        glow = exp(-pow(best / 0.03, 2.0));
+    } else {
+        // A radar sweep, blips fading behind it
+        vec2 d = p - 0.5;
+        float angle = atan(d.y, d.x);
+        float behind = mod(time * 2.0 - angle, 2.0 * PI);
+        float ring = step(length(d), 0.47);
+        glow = ring * exp(-behind * 2.0) * 0.8;
+        vec2 blip = vec2(0.5) + 0.3 * vec2(cos(seed * 40.0), sin(seed * 40.0));
+        glow += exp(-pow(length(p - blip) / 0.03, 2.0)) * exp(-mod(time * 2.0 - atan(blip.y - 0.5, blip.x - 0.5), 2.0 * PI));
+    }
+    float flicker = 1.0 - interference * 0.5 * hash(vec2(floor(time * 24.0), which + 1.0));
+    float scan = 0.85 + 0.15 * sin(p.y * 160.0);
+    return (phosphor * (glow + grid) * scan + vec3(0.01, 0.04, 0.02)) * flicker;
+}
+
+void main() {
+    vec3 normal = normalize(aNormal);
+    vec3 toEye = normalize(viewPos - aPos);
+    // Seen from either side (the walls are seen from inside)
+    if (dot(normal, toEye) < 0.0) normal = -normal;
+
+    int part = clamp(vPart, 0, 19);
+    vec3 albedo = partColour[part];
+    float shine = partShine[part];
+    vec3 emitted = vec3(0.0);
+
+    if (part == PART_WALL) {
+        // Panels with dark seams between them, and a faint grime
+        vec2 panel = abs(fract(vec2(vUV.x * 24.0, vUV.y * 4.0)) - 0.5);
+        float seam = smoothstep(0.47, 0.5, max(panel.x, panel.y));
+        albedo *= (1.0 - 0.45 * seam) * (0.92 + 0.08 * valueNoise(aPos.xz * 0.6 + aPos.y));
+    } else if (part == PART_FLOOR) {
+        // Grating: a grid of slots over the dark beneath
+        vec2 g = abs(fract(aPos.xz * 0.9) - 0.5);
+        float bar = step(0.32, max(g.x, g.y));
+        albedo = mix(vec3(0.03), albedo, bar);
+    } else if (part == PART_LIGHT || part == PART_BUTTON) {
+        vec3 colour = indicatorColours[int(clamp(vUV.y, 0.0, 3.0) + 0.5)];
+        float on = 1.0;
+        if (part == PART_LIGHT) {
+            // Each blinking at its own rate and phase (from u)
+            float rate = 0.4 + 2.2 * fract(vUV.x * 7.31);
+            on = step(0.45, fract(time * rate + vUV.x));
+        }
+        albedo = colour * 0.25;
+        emitted = colour * partGlow[part] * mix(0.08, 1.0, on);
+    } else if (part == PART_SCOPE) {
+        emitted = scope(vUV, floor(vUV.x)) * partGlow[part];
+        albedo = vec3(0.01);
+    } else if (part == PART_TERMINAL) {
+        vec3 picture = texture(terminalTexture, vec2(vUV.x, 1.0 - vUV.y)).rgb;
+        float flicker = 1.0 - interference * 0.4 * hash(vec2(floor(time * 20.0), 5.0));
+        emitted = picture * partGlow[part] * flicker;
+        albedo = vec3(0.01);
+    } else if (part == PART_DIAL) {
+        // A white face with a needle swinging back and forth
+        vec2 d = vUV - 0.5;
+        float r = length(d);
+        float which = hash(floor(aPos.xz * 0.5) + floor(aPos.y));
+        float needle = mix(-0.8, 0.8, 0.5 + 0.5 * sin(time * (0.5 + which * 2.0) + which * 20.0)) + interference * sin(time * 40.0) * 0.3;
+        vec2 dir = vec2(sin(needle), cos(needle));
+        float along = dot(d, dir), across = abs(d.x * dir.y - d.y * dir.x);
+        float mark = step(across, 0.02) * step(0.0, along) * step(along, 0.4);
+        float ticks = step(0.38, r) * step(r, 0.45) * step(0.8, fract(atan(d.x, d.y) * 3.0));
+        albedo = mix(vec3(0.85, 0.83, 0.75), vec3(0.08), max(mark, ticks)) * step(r, 0.5);
+        emitted = albedo * partGlow[part];
+    } else if (part == PART_KEYS) {
+        // A keyboard: rows of keys
+        vec2 k = abs(fract(vec2(vUV.x * 14.0, vUV.y * 5.0)) - 0.5);
+        albedo *= mix(0.55, 1.0, step(max(k.x, k.y), 0.38));
+    } else if (part == PART_LAMP) {
+        emitted = albedo * partGlow[part];
+    }
+
+    vec3 lit = ambientLight;
+    vec3 highlight = vec3(0.0);
+    for (int i = 0; i < 4; i++) {
+        vec3 toLight = lightPos[i] - aPos;
+        float distance = length(toLight);
+        vec3 l = toLight / max(distance, 1e-3);
+        float falloff = 1.0 / (1.0 + pow(distance / lightReach[i], 2.0));
+        lit += lightColour[i] * max(dot(normal, l), 0.0) * falloff;
+        vec3 h = normalize(l + toEye);
+        highlight += lightColour[i] * pow(max(dot(normal, h), 0.0), 8.0 + 60.0 * shine) * shine * falloff;
+    }
+    vec3 colour = albedo * lit + highlight * 0.5 + emitted;
+    fragColour = vec4(colour, 1.0);
+}

@@ -47,6 +47,14 @@ public class XenoGuesser extends JFrame {
   private long worldSeed;
   private LoadingProgress loadingProgress = new LoadingProgress();
   private LoadingScreen loadingScreen;
+  // The landing pod the player waits in as the world loads (see PodSequence): the 3D view's own
+  // drawing from Play until the hatch is opened, and whether its first frame has been shown
+  private PodSequence podSequence;
+  private boolean podShown;
+  // The planet's globe for the pod's window (see PlanetGlobeTexture), once it's made
+  private BufferedImage planetGlobe;
+  // JOGL's first profile probe takes seconds: made while the menu's up, so the pod can be shown at once
+  private static final Thread GL_WARM_UP = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
   private MainMenu mainMenu;
   private KeyAdapter escapeQuitListener;
   private JLayeredPane layeredPane;
@@ -150,6 +158,8 @@ public class XenoGuesser extends JFrame {
     // The planet's name is said (for the message from Xenocorp) while the menu is up
     TransmissionMessage.prepare(worldSeed);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
+    GL_WARM_UP.setDaemon(true);
+    GL_WARM_UP.start();
 
     this.addComponentListener(new ComponentAdapter() {
         @Override
@@ -298,12 +308,28 @@ public class XenoGuesser extends JFrame {
 
   private void startGame(boolean multiplayer) {
     if (loadingScreen != null) return;
-    loadingScreen = new LoadingScreen(loadingProgress, worldSeed, multiplayer);
+    planetGlobe = null;
+    loadingScreen = new LoadingScreen(worldSeed, multiplayer);
     loadingScreen.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
     layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
     layeredPane.remove(mainMenu);
     layeredPane.repaint();
     requestFocus();
+    // The pod's shown as soon as the 3D view can be opened (the menu's had time to warm it up)
+    int opening = generationRun + 1;
+    Thread open = new Thread(() -> {
+      try {
+        GL_WARM_UP.join();
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+      SwingUtilities.invokeLater(() -> {
+        if (opening == generationRun && canvas == null && loadingScreen != null) openPod(multiplayer);
+      });
+    }, "open-pod");
+    open.setDaemon(true);
+    open.start();
     // Enter skips the loading screen's message (from the start: the game's own keys come later)
     if (!loadingEnterInstalled) {
       loadingEnterInstalled = true;
@@ -339,9 +365,6 @@ public class XenoGuesser extends JFrame {
   private void generateWorld(KeyAdapter escapeQuitListener, int run) {
     // JOGL's first profile probe takes seconds; doing it here, alongside the writing systems,
     // keeps it off the UI thread where it would freeze the loading screen
-    Thread glWarmUp = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
-    glWarmUp.setDaemon(true);
-    glWarmUp.start();
     // In multiplayer the joiner's writing systems come from the host (M18): it never makes its
     // own, and only waits for them (if it must) before the nations are laid out
     Multiplayer session = Multiplayer.active();
@@ -377,6 +400,19 @@ public class XenoGuesser extends JFrame {
       // (and the moisture they bring to the land round them)
       climate.addRivers(worldNoise.rivers);
       worldNoise.climate = climate;
+      // The planet as the pod sees it coming in, made alongside the rest from here (the rivers cut its coasts)
+      long globeSeed = worldSeed;
+      Thread globe = new Thread(() -> {
+        BufferedImage image = PlanetGlobeTexture.make(worldNoise, seaLevelHeight, globeSeed);
+        SwingUtilities.invokeLater(() -> {
+          if (run != generationRun) return;
+          planetGlobe = image;
+          if (podSequence != null) podSequence.setGlobe(image);
+        });
+      }, "planet-globe");
+      globe.setDaemon(true);
+      globe.setPriority(Thread.MIN_PRIORITY);
+      globe.start();
       System.out.printf("[RIVERS] Worked out in %d ms%n", System.currentTimeMillis() - riversStarted);
       
       // (put in place by the first spawn)
@@ -406,11 +442,14 @@ public class XenoGuesser extends JFrame {
       listener.buildSoilRegions(art.palette());
 
       loadingProgress.begin(LoadingProgress.Stage.WINDOW);
-      glWarmUp.join();
+      GL_WARM_UP.join();
       if (run != generationRun) return;
+      // The map (its land and sea worked out point by point) made here, not on the UI thread,
+      // which the landing pod's frames wait on
+      MapPanel map = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise, physicalChunkSize, listener);
       SwingUtilities.invokeLater(() -> {
         if (run == generationRun) buildGameWindow(listener, camera, keyboardInput, worldNoise,
-          seaLevelHeight, totalRegionWidth, physicalChunkSize, escapeQuitListener);
+          seaLevelHeight, totalRegionWidth, physicalChunkSize, escapeQuitListener, map);
       });
     } catch (Exception e) {
       System.err.println("CRITICAL ERROR: World generation failed.");
@@ -421,16 +460,14 @@ public class XenoGuesser extends JFrame {
 
   private void buildGameWindow(XenoGuesser_GLEventListener listener, Camera camera, MyKeyboardInput keyboardInput,
                                PerlinNoise worldNoise, float seaLevelHeight, float totalRegionWidth,
-                               float physicalChunkSize, KeyAdapter escapeQuitListener) {
+                               float physicalChunkSize, KeyAdapter escapeQuitListener, MapPanel map) {
     glEventListener = listener;
-
-    GLCapabilities glcapabilities = new GLCapabilities(GLProfile.get(GLProfile.GL3));
-    // JOGL asks for a 16-bit depth buffer by default, too coarse for close, thin parts
-    glcapabilities.setDepthBits(24);
-    canvas = new GLCanvas(glcapabilities); 
-    canvas.setBackground(Color.BLACK); 
+    // (the 3D view is the pod's already, unless it's not been opened yet)
+    if (canvas == null) openPod(Multiplayer.isActive());
 
     gameHUD = new GameHUD();
+    // (nothing of the game's shown over the pod)
+    gameHUD.setVisible(false);
     // Multiplayer: quarter points instead of targets (M13), on the score panel too
     Multiplayer session = Multiplayer.active();
     multiplayerScore = session != null ? MultiplayerScore.of(session) : null;
@@ -439,15 +476,7 @@ glEventListener.setGameHUD(gameHUD);
     this.camera = camera;
     this.keyboardInput = keyboardInput;
 
-    minimap = new MapPanel(
-      750,
-      750,
-      totalRegionWidth,
-      seaLevelHeight,
-      worldNoise,
-      physicalChunkSize,
-      glEventListener
-    );
+    minimap = map;
 
     minimap.setMainApp(this);
     minimap.setGameHUD(gameHUD);
@@ -460,23 +489,151 @@ glEventListener.setGameHUD(gameHUD);
     minimap.setProceedLabel(() -> gameHUD.isQuarterEnd() ? "End of Quarter" : "Proceed to Shop");
 
 
-    canvas.addGLEventListener(glEventListener);
     // The mouse wheel (and a touchpad's pinch, which comes as one) zooms the view where the game mode allows it
     canvas.addMouseWheelListener(e -> {
       if (inGame && mouseCaptured) glEventListener.zoomBy(e.getPreciseWheelRotation());
     });
     installControls();
 
-    layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);
     layeredPane.add(minimap, JLayeredPane.PALETTE_LAYER);
     // (the shop over the results, under the score)
     layeredPane.add(shopPanel, Integer.valueOf(JLayeredPane.PALETTE_LAYER + 50));
     layeredPane.add(quarterPanel, Integer.valueOf(JLayeredPane.PALETTE_LAYER + 60));
     layeredPane.add(gameHUD, JLayeredPane.MODAL_LAYER);
     layoutComponents();
+    // The world's loading goes on under the pod, its drawing taken over once the hatch is opened
+    podSequence.attachGame(listener);
+  }
 
+  /**
+   * Opens the 3D view with the landing pod in it (see PodSequence), for the player to wait in
+   * while the world loads; the game's own drawing is handed to it later (buildGameWindow).
+   */
+  private void openPod(boolean multiplayer) {
+    GLCapabilities glcapabilities = new GLCapabilities(GLProfile.get(GLProfile.GL3));
+    // JOGL asks for a 16-bit depth buffer by default, too coarse for close, thin parts
+    glcapabilities.setDepthBits(24);
+    canvas = new GLCanvas(glcapabilities);
+    canvas.setBackground(Color.BLACK);
+    podShown = false;
+    podSequence = new PodSequence(new PodSequence.Host() {
+      @Override
+      public boolean worldReady() {
+        LoadingScreen screen = loadingScreen;
+        return screen != null && screen.worldReady();
+      }
+
+      @Override
+      public void openHatch() {
+        if (loadingScreen != null) loadingScreen.openHatch();
+      }
+
+      @Override
+      public float targetsAlpha() {
+        LoadingScreen screen = loadingScreen;
+        return screen == null ? 0f : screen.targetsAlpha();
+      }
+
+      @Override
+      public void showing() {
+        if (loadingScreen == null || canvas == null) return;
+        podShown = true;
+        loadingScreen.podShowing();
+        layoutComponents();
+        canvas.requestFocus();
+        updateMouseMode();
+      }
+    }, multiplayer, loadingProgress, worldSeed);
+    if (planetGlobe != null) podSequence.setGlobe(planetGlobe);
+    canvas.addGLEventListener(podSequence);
+    layeredPane.add(canvas, JLayeredPane.DEFAULT_LAYER);
+    installMouseLook();
+    installPodControls();
+    layoutComponents();
     animator = new FPSAnimator(canvas, 60);
     animator.start();
+  }
+
+  // Whether the pod's keys (and the mouse look, for the pod and the game) are listened for yet
+  private boolean podControlsInstalled, mouseLookInstalled;
+
+  /** In the pod: WASD walk, Space jumps, E uses what's faced, R says ready (multiplayer), Esc opens the settings. */
+  private void installPodControls() {
+    if (podControlsInstalled) return;
+    podControlsInstalled = true;
+    KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(e -> {
+      PodSequence pod = podSequence;
+      if (inGame || pod == null || pod.handedOver() || !podShown) return false;
+      if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof JTextComponent) return false;
+      int code = e.getKeyCode();
+      // (Enter skips the message: see startGame)
+      if (code == KeyEvent.VK_ENTER || e.getID() == KeyEvent.KEY_TYPED) return false;
+      if (e.getID() == KeyEvent.KEY_PRESSED) {
+        boolean firstPress = keysDown.add(code);
+        if (code == KeyEvent.VK_ESCAPE) {
+          if (firstPress) setSettingsOpen(!settingsOpen);
+          return true;
+        }
+        if (!settingsOpen && firstPress && code == KeyEvent.VK_SPACE) pod.jump();
+        if (!settingsOpen && firstPress && code == KeyEvent.VK_E) pod.use();
+        if (!settingsOpen && firstPress && code == KeyEvent.VK_R) pod.ready();
+      } else if (e.getID() == KeyEvent.KEY_RELEASED) {
+        keysDown.remove(code);
+      }
+      pod.setKeys(!settingsOpen && keysDown.contains(KeyEvent.VK_W), !settingsOpen && keysDown.contains(KeyEvent.VK_A),
+          !settingsOpen && keysDown.contains(KeyEvent.VK_S), !settingsOpen && keysDown.contains(KeyEvent.VK_D));
+      return true;
+    });
+  }
+
+  /** Mouse look, while the game or the pod has the mouse: its pointer hidden and kept near the middle of the view. */
+  private void installMouseLook() {
+    if (mouseLookInstalled) return;
+    mouseLookInstalled = true;
+    try {
+      robot = new Robot();
+    } catch (AWTException e) {
+      System.err.println("Mouse look unavailable: " + e.getMessage());
+    }
+    // (a run taking pictures of the pod leaves the mouse alone)
+    if (Dev.property("xenoguesser.podshot") != null) robot = null;
+    hiddenCursor = Toolkit.getDefaultToolkit().createCustomCursor(
+        new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), new Point(0, 0), "hidden");
+    Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
+      if (!mouseCaptured || canvas == null) return;
+      MouseEvent e = (MouseEvent) event;
+      if (e.getID() != MouseEvent.MOUSE_MOVED && e.getID() != MouseEvent.MOUSE_DRAGGED) return;
+      Point p = e.getLocationOnScreen();
+      if (lastMouse != null) {
+        int dx = p.x - lastMouse.x, dy = p.y - lastMouse.y;
+        if (dx != 0 || dy != 0) {
+          PodSequence pod = podSequence;
+          if (!inGame && pod != null && !pod.handedOver()) pod.look(dx * LOOK_SENSITIVITY, -dy * LOOK_SENSITIVITY);
+          else if (glEventListener != null) glEventListener.look(dx * LOOK_SENSITIVITY, -dy * LOOK_SENSITIVITY);
+        }
+      }
+      lastMouse = p;
+      Point centre = viewCentreOnScreen();
+      if (robot != null && (Math.abs(p.x - centre.x) > RECENTRE_DISTANCE || Math.abs(p.y - centre.y) > RECENTRE_DISTANCE)) {
+        // The jump back is not a movement: the next position read starts afresh
+        robot.mouseMove(centre.x, centre.y);
+        lastMouse = null;
+      }
+    }, AWTEvent.MOUSE_MOTION_EVENT_MASK);
+    addWindowFocusListener(new WindowAdapter() {
+      @Override
+      public void windowGainedFocus(WindowEvent e) {
+        updateMouseMode();
+      }
+
+      @Override
+      public void windowLostFocus(WindowEvent e) {
+        keysDown.clear();
+        if (keyboardInput != null) keyboardInput.releaseAll();
+        if (podSequence != null) podSequence.setKeys(false, false, false, false);
+        updateMouseMode();
+      }
+    });
   }
 
   /** Called on the UI thread once the first frame of the round has been drawn; the player then chooses when to start. */
@@ -486,11 +643,15 @@ glEventListener.setGameHUD(gameHUD);
     if (session != null) session.sendWorldReady();
     // A HUD test run goes straight in (in multiplayer it waits at Begin like anyone, so both go in together)
     if (Dev.property("xenoguesser.hudtest") != null && session == null) enterGame();
-    else loadingScreen.setWorldReady(this::enterGame);
+    // (the pod's hatch swings open, and out into the light, before the game's entered)
+    else loadingScreen.setWorldReady(() -> podSequence.openHatchThen(this::enterGame));
   }
 
   private void enterGame() {
     loadingScreen.stop();
+    // (the 3D view's the game's from now on)
+    podSequence.handOver();
+    keysDown.clear();
     // (the first round begins now: in multiplayer, on both PCs together)
     glEventListener.startRoundClock();
     // A shop before January (a HUD test run skips it), opened under the cockpit before it goes,
@@ -516,14 +677,7 @@ glEventListener.setGameHUD(gameHUD);
    * movement anywhere in the window turns the view while the game has the mouse.
    */
   private void installControls() {
-    try {
-      robot = new Robot();
-    } catch (AWTException e) {
-      System.err.println("Mouse look unavailable: " + e.getMessage());
-    }
-    hiddenCursor = Toolkit.getDefaultToolkit().createCustomCursor(
-        new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), new Point(0, 0), "hidden");
-
+    installMouseLook();
     KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(e -> {
       if (!inGame) return false;
       if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof JTextComponent) return false;
@@ -554,6 +708,8 @@ glEventListener.setGameHUD(gameHUD);
         if (firstPress) {
           switch (code) {
             case KeyEvent.VK_M: minimap.toggleSize(); break;
+            // X: the controls on offer skipped
+            case KeyEvent.VK_X: if (controlsOffered) withdrawControls(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
             // The inventory: each item by its number
             case KeyEvent.VK_1: case KeyEvent.VK_NUMPAD1:
@@ -579,37 +735,6 @@ glEventListener.setGameHUD(gameHUD);
       return false;
     });
 
-    Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
-      if (!mouseCaptured) return;
-      MouseEvent e = (MouseEvent) event;
-      if (e.getID() != MouseEvent.MOUSE_MOVED && e.getID() != MouseEvent.MOUSE_DRAGGED) return;
-      Point p = e.getLocationOnScreen();
-      if (lastMouse != null) {
-        int dx = p.x - lastMouse.x, dy = p.y - lastMouse.y;
-        if (dx != 0 || dy != 0) glEventListener.look(dx * LOOK_SENSITIVITY, -dy * LOOK_SENSITIVITY);
-      }
-      lastMouse = p;
-      Point centre = viewCentreOnScreen();
-      if (robot != null && (Math.abs(p.x - centre.x) > RECENTRE_DISTANCE || Math.abs(p.y - centre.y) > RECENTRE_DISTANCE)) {
-        // The jump back is not a movement: the next position read starts afresh
-        robot.mouseMove(centre.x, centre.y);
-        lastMouse = null;
-      }
-    }, AWTEvent.MOUSE_MOTION_EVENT_MASK);
-
-    addWindowFocusListener(new WindowAdapter() {
-      @Override
-      public void windowGainedFocus(WindowEvent e) {
-        updateMouseMode();
-      }
-
-      @Override
-      public void windowLostFocus(WindowEvent e) {
-        keysDown.clear();
-        keyboardInput.releaseAll();
-        updateMouseMode();
-      }
-    });
   }
 
   /** Whether a key is held down just now (while playing). */
@@ -636,9 +761,11 @@ glEventListener.setGameHUD(gameHUD);
   /** Takes or gives back the mouse to suit what is on screen. */
   private void updateMouseMode() {
     if (canvas == null || !canvas.isShowing()) return;
-    boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode() || shopPanel.isOpen()
-        || (quarterPanel != null && quarterPanel.isOpen()) || (controlsPanel != null && controlsPanel.isOpen());
-    boolean capture = inGame && !pointerNeeded && isFocused() && robot != null;
+    // (in the pod, only the settings need the pointer)
+    boolean inPod = !inGame && podSequence != null && !podSequence.handedOver() && podShown;
+    boolean pointerNeeded = settingsOpen || (!inPod && (minimap == null || minimap.isLargeMap() || minimap.isFullScreenRevealMode()
+        || shopPanel.isOpen() || (quarterPanel != null && quarterPanel.isOpen()) || (controlsPanel != null && controlsPanel.isOpen())));
+    boolean capture = (inGame || inPod) && !pointerNeeded && isFocused() && robot != null;
     if (capture == mouseCaptured) return;
     mouseCaptured = capture;
     lastMouse = null;
@@ -649,7 +776,7 @@ glEventListener.setGameHUD(gameHUD);
     if (capture) {
       Point centre = viewCentreOnScreen();
       robot.mouseMove(centre.x, centre.y);
-    } else if (minimap.isLargeMap() && !settingsOpen) {
+    } else if (minimap != null && minimap.isLargeMap() && !settingsOpen) {
       // The pointer appears over the middle of the map, ready to place a marker
       Point origin = minimap.getLocationOnScreen();
       robot.mouseMove(origin.x + minimap.getWidth() / 2, origin.y + minimap.getHeight() / 2);
@@ -688,11 +815,41 @@ glEventListener.setGameHUD(gameHUD);
   private ControlsPanel controlsPanel;
   private volatile boolean clockHeldForInstructions;
 
-  /** Enter (in the game): closes the controls, or skips the message playing (in the shop or over the game). */
+  /** Enter (in the game): closes the controls, skips the message playing (in the shop or over the game), or opens the controls on offer. */
   private void pressEnter() {
     if (controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
     else if (shopPanel != null && shopPanel.isOpen() && shopPanel.messagePlaying()) shopPanel.skipMessage();
     else if (messageStrip != null && messageStrip.isPlaying()) messageStrip.skip();
+    else if (controlsOffered) {
+      withdrawControls();
+      // (the round's clock waits while they cover the screen, as the first round's instructions aren't on it)
+      clockHeldForInstructions = true;
+      showControls(() -> clockHeldForInstructions = false);
+    }
+  }
+
+  // After January's message the controls are offered (Enter opens them, X skips), not shown
+  // straight over the game; the offer goes by itself after CONTROLS_OFFER_MS
+  private static final int CONTROLS_OFFER_MS = 30_000;
+  private boolean controlsOffered;
+  private javax.swing.Timer controlsOfferTimer;
+
+  /** Offers the controls: a hint over the game until Enter opens them, X skips them, or they're left. */
+  private void offerControls() {
+    if (!inGame || glEventListener == null) return;
+    controlsOffered = true;
+    glEventListener.setControlsOffered(true);
+    controlsOfferTimer = new javax.swing.Timer(CONTROLS_OFFER_MS, e -> withdrawControls());
+    controlsOfferTimer.setRepeats(false);
+    controlsOfferTimer.start();
+  }
+
+  /** The controls are no longer on offer (opened, skipped or left too long). */
+  private void withdrawControls() {
+    controlsOffered = false;
+    if (controlsOfferTimer != null) controlsOfferTimer.stop();
+    controlsOfferTimer = null;
+    if (glEventListener != null) glEventListener.setControlsOffered(false);
   }
 
   /** Whether the round's clock is held: the settings open, or January's message and the controls up. */
@@ -702,17 +859,16 @@ glEventListener.setGameHUD(gameHUD);
 
   /**
    * January's message (singleplayer, as the first round begins): "detailed instructions" from
-   * Xenocorp; said to its end (not skipped), the controls are shown after it. The round's clock
-   * runs on while it's said (as for every message), and waits only while the controls cover the
-   * screen.
+   * Xenocorp; said to its end (not skipped), the controls are offered after it (Enter to open
+   * them, X to skip; gone by themselves after 30 s). The round's clock runs on while it's said
+   * (as for every message), and waits only while the controls cover the screen.
    */
   private void startJanuaryMessage() {
     Thread load = new Thread(() -> {
       TransmissionMessage january = TransmissionMessage.load(TransmissionMessage.JANUARY, worldSeed);
       showMessage(january, skipped -> {
         if (skipped || !inGame) return;
-        clockHeldForInstructions = true;
-        showControls(() -> clockHeldForInstructions = false);
+        offerControls();
       });
     }, "january-message");
     load.setDaemon(true);
@@ -1168,6 +1324,7 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   private void backToMenuFromGame() {
+    withdrawControls();
     // Multiplayer: the room is left (the partner hears so) and this player's own menu choices come back
     Multiplayer session = Multiplayer.active();
     if (session != null) session.leave();
@@ -1189,6 +1346,8 @@ glEventListener.setGameHUD(gameHUD);
       if (c != null && c.getParent() == layeredPane) layeredPane.remove(c);
     }
     canvas = null;
+    podSequence = null;
+    podShown = false;
     glEventListener = null;
     minimap = null;
     gameHUD = null;
@@ -1488,7 +1647,15 @@ glEventListener.setGameHUD(gameHUD);
     }
     if (mainMenu != null) mainMenu.setBounds(0, top, paneWidth, paneHeight);
     if (multiplayerPanel != null) multiplayerPanel.setBounds(0, top, paneWidth, paneHeight);
-    if (loadingScreen != null) loadingScreen.setBounds(0, top, paneWidth, paneHeight);
+    if (loadingScreen != null) {
+      // (once the pod's in view, only the message's strip along the bottom)
+      if (podShown) {
+        int stripH = LoadingScreen.stripHeight(paneHeight);
+        loadingScreen.setBounds(0, top + paneHeight - stripH, paneWidth, stripH);
+      } else {
+        loadingScreen.setBounds(0, top, paneWidth, paneHeight);
+      }
+    }
     if (shopPanel != null) shopPanel.setBounds(0, top, paneWidth, paneHeight);
     if (quarterPanel != null) quarterPanel.setBounds(0, top, paneWidth, paneHeight);
     if (messageStrip != null) {
@@ -1500,7 +1667,9 @@ glEventListener.setGameHUD(gameHUD);
 
     // While the cockpit is up the 3D view (drawn by the system, over everything) waits just off
     // the window's edge at full size, still drawing as the world loads, so it can't cover it
-    boolean cockpit = (loadingScreen != null && loadingScreen.getParent() == layeredPane)
+    boolean inPod = podSequence != null && !podSequence.handedOver();
+    // (until the pod's first frame, the loading screen's black covers it)
+    boolean cockpit = (inPod && !podShown)
         // (and behind the results, while the next round is built behind them)
         || (minimap != null && minimap.isFullScreenRevealMode())
         // (and behind the shop before the first round)
@@ -1509,6 +1678,14 @@ glEventListener.setGameHUD(gameHUD);
         || (controlsPanel != null && controlsPanel.isOpen());
     // (far off, so however quickly the window is pulled wider it's never seen)
     canvas.setBounds(cockpit ? paneWidth + 20000 : 0, top, paneWidth - 2, paneHeight - 2);
+    // Nothing of the game's over the pod
+    if (minimap == null) return;
+    if (inPod) {
+      minimap.setVisible(false);
+      if (minimap.getLayersPanel() != null) minimap.getLayersPanel().setVisible(false);
+      if (minimap.getPreviewCard() != null) minimap.getPreviewCard().setVisible(false);
+      return;
+    }
     // The map sized afresh for the space there is now
     minimap.fitToWindow(paneWidth, paneHeight);
     updateMinimapBounds(layeredPane, minimap);

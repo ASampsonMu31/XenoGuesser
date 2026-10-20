@@ -76,6 +76,14 @@ public final class CellStream<T> {
      * sets the rest in range being worked out on builders (or, with all, works them out now),
      * and drops those well out of range. Returns whether anything came or went.
      */
+    // Whether the cells right round the viewer are made at once (on the caller's thread), not on the builders
+    private boolean nearAtOnce = true;
+
+    /** Whether the cells right round the viewer are made at once, on the caller's thread (as in play), or on the builders like the rest. */
+    public void setNearAtOnce(boolean atOnce) {
+        nearAtOnce = atOnce;
+    }
+
     public boolean update(SpherePosition viewer, ExecutorService builders, boolean all) {
         boolean changed = false;
         GeodesicChunkGrid.Cell viewerCell = grid.cellAt(viewer);
@@ -114,7 +122,7 @@ public final class CellStream<T> {
             Future<T> future = building.get(id);
             if (made == null && future == null) {
                 boolean near = SphereMath.angle(here, cell.centre()) <= immediate + cell.angularRadius();
-                if (all || near || builders == null) {
+                if (all || (near && nearAtOnce) || builders == null) {
                     made = builder.apply(id);
                 } else {
                     building.put(id, builders.submit(() -> builder.apply(id)));

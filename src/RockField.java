@@ -265,6 +265,18 @@ public class RockField {
      * (nearest first), and drops those left behind. With all, every tile in range is built
      * before returning (while loading, so the round starts with every rock in place).
      */
+    /** Whether every tile in range (as last updated) is built and up, near and far. */
+    public boolean allBuilt() {
+        if (!detailBuilding.isEmpty() || !farBuilding.isEmpty()) return false;
+        for (Map.Entry<GeodesicChunkGrid, List<GeodesicChunkGrid.Cell>> e : inRange.entrySet()) {
+            Map<Long, Tile> tiles = e.getKey() == detailGrid ? detailTiles : farTiles;
+            for (GeodesicChunkGrid.Cell cell : e.getValue()) {
+                if (!tiles.containsKey(cell.id())) return false;
+            }
+        }
+        return true;
+    }
+
     public void update(GL3 gl, SpherePosition viewer, boolean all) {
         updateTiles(gl, viewer, all, detailGrid, DETAIL_REACH, detailTiles, detailBuilding, false);
         updateTiles(gl, viewer, all, farGrid, FAR_REACH, farTiles, farBuilding, true);

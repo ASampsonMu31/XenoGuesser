@@ -168,6 +168,8 @@
                         <!-- Garbage collection without long pauses keeps the loading screen smooth -->
                         <argument>-XX:+UseZGC</argument>
                         <argument>-XX:+ZGenerational</argument>
+                        <!-- As the packaged game has it (see build-exe.bat): with less, making the world stalls on memory -->
+                        <argument>-XX:MaxRAMPercentage=70</argument>
                         <argument>--add-exports</argument>
                         <argument>java.base/java.lang=ALL-UNNAMED</argument>
                         <argument>--add-exports</argument>

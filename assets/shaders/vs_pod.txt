@@ -1,0 +1,29 @@
+#version 330 core
+
+// The inside of the landing pod as it comes down: each vertex moved by its bone (the chair,
+// the lights switch, the hatch), in the pod's own frame (y up from the ground under its middle,
+// the door towards +z)
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec3 normal;
+layout (location = 2) in vec2 texCoord;
+layout (location = 3) in float boneIndex;
+layout (location = 4) in float partKind;
+
+out vec3 aPos;
+out vec3 aNormal;
+out vec2 vUV;
+flat out int vPart;
+
+uniform mat4 bones[8];
+uniform mat4 viewProjection;
+
+void main() {
+    mat4 bone = bones[int(boneIndex + 0.5)];
+    vec4 world = bone * vec4(position, 1.0);
+    aPos = world.xyz;
+    aNormal = normalize(mat3(bone) * normal);
+    gl_Position = viewProjection * world;
+    vUV = texCoord;
+    vPart = int(partKind + 0.5);
+}
