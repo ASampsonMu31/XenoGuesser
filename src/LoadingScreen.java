@@ -187,6 +187,8 @@ public class LoadingScreen extends JComponent {
                 repaint(windowBox);
                 repaint(screenBox);
                 repaint(tickerBox);
+                // (and the score panel, while the targets are spoken of: see drawTargets)
+                if (role == null) repaint(targetsBox);
                 repaint(buttonBox);
             }
         });
@@ -303,6 +305,15 @@ public class LoadingScreen extends JComponent {
         return session != null && session.remoteBegun();
     }
 
+    /** Enter: the message stops (the button stays, to go on when ready); false if none was playing. */
+    public boolean skipMessage() {
+        if (!messagePlaying()) return false;
+        skipped = true;
+        if (message != null) message.stop();
+        repaint();
+        return true;
+    }
+
     private void pressButton() {
         if (enterGame == null || !buttonEnabled()) return;
         boolean skipping = messagePlaying();
@@ -346,6 +357,7 @@ public class LoadingScreen extends JComponent {
         drawSpacemen(g);
         layoutStrip(w, h);
         if (message != null && (clip == null || clip.intersects(tickerBox))) drawTicker(g);
+        if (message != null && (clip == null || clip.intersects(targetsBox))) drawTargets(g);
         if (enterGame != null && (clip == null || clip.intersects(buttonBox))) drawButton(g);
         g.dispose();
         paintNanos += System.nanoTime() - paintStart;
@@ -431,6 +443,58 @@ public class LoadingScreen extends JComponent {
         int dot = Math.round(stripH * 0.22f);
         g.fillOval(Math.round(stripH * 0.4f), tickerBox.y + (stripH - dot) / 2, dot, dot);
         HudStyle.label(g, "Xenocorp transmission", stripH * 0.4f + dot + 10, tickerBox.y + stripH * 0.6f, stripH * 0.25f, HudStyle.LABEL);
+        // ("[Enter] Skip" at its right, while it's being said)
+        if (messagePlaying()) MessageTicker.drawSkipHint(g, w, tickerBox.y, stripH);
+        g.dispose();
+    }
+
+    // How long the score panel and its arrow are shown from when "productivity" is said (M50:
+    // three times the 5.7 s to "Departing employees" they had), fading in and out over the ends;
+    // and when they were first shown (0 not yet)
+    private static final long TARGETS_SHOWN_MS = 17_200L, TARGETS_FADE_MS = 500L;
+    private long targetsShownAt;
+
+    // Where the score panel and its arrow are shown (see drawTargets)
+    private final Rectangle targetsBox = new Rectangle(0, 0, HudStyle.HUD_MARGIN * 2 + HudStyle.SCORE_W, HudStyle.HUD_MARGIN + HudStyle.SCORE_H + 150);
+
+    /**
+     * Singleplayer: from when the message says "productivity" (of the targets that must be met),
+     * for TARGETS_SHOWN_MS (on past the message's end, if need be, unless it's skipped), the score
+     * panel as it'll be in January at the top left (where the game shows it), an arrow bobbing
+     * under it pointing up at the quarter's target, fading in and out.
+     */
+    private void drawTargets(Graphics2D target) {
+        if (role != null || message == null || skipped) return;
+        long now = System.currentTimeMillis();
+        if (targetsShownAt == 0L) {
+            int from = message.transcript().indexOf("productivity targets");
+            if (from < 0 || !messagePlaying() || message.spokenCharacters() < from) return;
+            targetsShownAt = now;
+        }
+        long shown = now - targetsShownAt;
+        if (shown >= TARGETS_SHOWN_MS) return;
+        float alpha = Math.max(0f, Math.min(1f, Math.min(shown / (float) TARGETS_FADE_MS, (TARGETS_SHOWN_MS - shown) / (float) TARGETS_FADE_MS)));
+        if (alpha <= 0f) return;
+        Graphics2D g = (Graphics2D) target.create();
+        HudStyle.smooth(g);
+        g.setComposite(java.awt.AlphaComposite.getInstance(java.awt.AlphaComposite.SRC_OVER, alpha));
+        int m = HudStyle.HUD_MARGIN;
+        g.translate(m, m);
+        int quarterTarget = Math.round(GameHUD.TARGETS[0] * GameMode.current().targetShare / 50f) * 50;
+        HudStyle.paintScorePanel(g, 0, 0, 0, quarterTarget, 0, HudStyle.GLASS);
+        // The arrow: up at the target (the " / 800" after the productivity), bobbing
+        float bob = (float) Math.sin(System.nanoTime() / 1.6e8) * 6f;
+        float tipX = 232f, tipY = HudStyle.SCORE_H + 6f + bob, tailY = tipY + 64f;
+        g.setColor(HudStyle.GOLD);
+        g.setStroke(new java.awt.BasicStroke(6f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+        g.draw(new java.awt.geom.Line2D.Float(tipX, tipY + 10f, tipX, tailY));
+        java.awt.geom.Path2D head = new java.awt.geom.Path2D.Float();
+        head.moveTo(tipX, tipY);
+        head.lineTo(tipX - 13f, tipY + 18f);
+        head.lineTo(tipX + 13f, tipY + 18f);
+        head.closePath();
+        g.fill(head);
+        HudStyle.label(g, "Your target for January to March", tipX - 120f, tailY + 26f, 13f, HudStyle.GOLD);
         g.dispose();
     }
 

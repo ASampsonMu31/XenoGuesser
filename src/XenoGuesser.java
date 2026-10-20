@@ -54,6 +54,13 @@ public class XenoGuesser extends JFrame {
   private GameHUD gameHUD;
 
   public static void main(String[] args) {
+    // Nothing's written to the terminal but in development (M47): what the game logs as it
+    // makes the world and plays (where the round is, what's near) would give the answer away
+    if (!Dev.ENABLED) {
+      java.io.PrintStream nowhere = new java.io.PrintStream(java.io.OutputStream.nullOutputStream());
+      System.setOut(nowhere);
+      System.setErr(nowhere);
+    }
     RunFiles.prepare();
     // Keep the loading screen smooth: GL work runs on the animator's own thread rather than
     // the UI thread that draws the screen, and the background generators leave a core free
@@ -101,7 +108,38 @@ public class XenoGuesser extends JFrame {
       layeredPane.add(resizers[k], Integer.valueOf(TOP_LAYER + 1));
     }
     settingsMenu = new SettingsMenu(() -> setSettingsOpen(false), this::shutdownGame, this::applyDisplayMode);
+    // (the controls over the settings, which come back once they're closed)
+    settingsMenu.setOnControls(() -> {
+      settingsMenu.setVisible(false);
+      showControls(() -> {
+        if (settingsOpen) settingsMenu.setVisible(true);
+      });
+    });
     layeredPane.add(settingsMenu, Integer.valueOf(TOP_LAYER));
+    // The pop-up as an achievement's unlocked (M53), at the bottom right over the menus and
+    // panels; in the world the 3D view draws its own (see XenoGuesser_GLEventListener.drawHud)
+    javax.swing.JComponent toast = new javax.swing.JComponent() {
+      @Override
+      protected void paintComponent(java.awt.Graphics g0) {
+        Object[] now = Achievements.toast();
+        if (now == null) return;
+        Graphics2D g = (Graphics2D) g0.create();
+        HudStyle.smooth(g);
+        g.setComposite(java.awt.AlphaComposite.getInstance(java.awt.AlphaComposite.SRC_OVER, (Float) now[1]));
+        Achievements.paintToast(g, (Achievements.Achievement) now[0]);
+        g.dispose();
+      }
+    };
+    layeredPane.add(toast, Integer.valueOf(TOP_LAYER + 1));
+    new javax.swing.Timer(40, e -> {
+      Object[] now = Achievements.toast();
+      boolean worldShown = inGame && canvas != null && canvas.getX() < layeredPane.getWidth();
+      boolean show = now != null && !worldShown;
+      int m = HudStyle.HUD_MARGIN;
+      toast.setBounds(layeredPane.getWidth() - Achievements.TOAST_W - m, layeredPane.getHeight() - Achievements.TOAST_H - m, Achievements.TOAST_W, Achievements.TOAST_H);
+      if (show != toast.isVisible()) toast.setVisible(show);
+      if (show) toast.repaint();
+    }).start();
     applyDisplayMode();
 
     System.setProperty("sun.awt.noerasebackground", "true"); 
@@ -256,6 +294,8 @@ public class XenoGuesser extends JFrame {
   }
 
   /** The loading screen replaces the menu while this.worldSeed's world is generated (singleplayer or multiplayer). */
+  private boolean loadingEnterInstalled;
+
   private void startGame(boolean multiplayer) {
     if (loadingScreen != null) return;
     loadingScreen = new LoadingScreen(loadingProgress, worldSeed, multiplayer);
@@ -264,6 +304,14 @@ public class XenoGuesser extends JFrame {
     layeredPane.remove(mainMenu);
     layeredPane.repaint();
     requestFocus();
+    // Enter skips the loading screen's message (from the start: the game's own keys come later)
+    if (!loadingEnterInstalled) {
+      loadingEnterInstalled = true;
+      KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(e -> {
+        if (inGame || e.getID() != KeyEvent.KEY_PRESSED || e.getKeyCode() != KeyEvent.VK_ENTER) return false;
+        return loadingScreen != null && loadingScreen.skipMessage();
+      });
+    }
 
     // Everything that doesn't need the GL context is generated off the UI thread (after any
     // world given up halfway has finished being made, as they share the run's files)
@@ -308,8 +356,11 @@ public class XenoGuesser extends JFrame {
       loadingProgress.begin(LoadingProgress.Stage.SEA_LEVEL);
       PerlinNoise worldNoise = new PerlinNoise(worldSeed);
       float physicalChunkSize = 100.0f;
-      float totalRegionWidth = 150_000f;
+      // Each planet a little bigger or smaller than the last (M47): up to 8% either way, from
+      // its seed (so both players' PCs make it the same)
+      float totalRegionWidth = 150_000f * (0.92f + 0.16f * new java.util.Random(worldSeed * 104_729L + 17L).nextFloat());
       Planet.setWidth(totalRegionWidth);
+      System.out.printf("[PLANET] %.0f units round%n", totalRegionWidth);
       float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, worldNoise);
       // Where the map's left and right edges join: the meridian crossing the least land
       float joinLand = MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, worldNoise), seaLevelHeight);
@@ -480,10 +531,24 @@ glEventListener.setGameHUD(gameHUD);
       if (e.getID() == KeyEvent.KEY_PRESSED) {
         boolean firstPress = keysDown.add(code);   // ignore key repeat
         if (code == KeyEvent.VK_ESCAPE) {
-          if (firstPress) setSettingsOpen(!settingsOpen);
+          // (the controls, if they're up, closed first)
+          if (firstPress && controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
+          else if (firstPress) setSettingsOpen(!settingsOpen);
+          return true;
+        }
+        if (code == KeyEvent.VK_ENTER && settingsOpen && controlsPanel != null && controlsPanel.isOpen()) {
+          if (firstPress) controlsPanel.close();
           return true;
         }
         if (settingsOpen) return true;
+        // Enter: closes the controls, or skips the message playing (in the shop or over the game)
+        if (code == KeyEvent.VK_ENTER) {
+          if (firstPress) {
+            pressEnter();
+          }
+          return true;
+        }
+        if (controlsPanel != null && controlsPanel.isOpen()) return true;
         // (the shop and the quarter's result take the mouse only)
         if ((shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen())) return true;
         if (firstPress) {
@@ -548,6 +613,17 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   /** Whether a key is held down just now (while playing). */
+  /** Whether the player is out in a round, free to guess (no shop, verdict or loading screen in the way); the round's clock runs only then. */
+  public boolean roundInPlay() {
+    return inGame && glEventListener != null && glEventListener.roundInPlay() && !shopPanel.isOpen()
+        && (quarterPanel == null || !quarterPanel.isOpen());
+  }
+
+  /** Whether the settings are open over the game (singleplayer's round clock stops while they are). */
+  public boolean isSettingsOpen() {
+    return settingsOpen;
+  }
+
   public boolean isKeyHeld(int keyCode) {
     return keysDown.contains(keyCode);
   }
@@ -561,7 +637,7 @@ glEventListener.setGameHUD(gameHUD);
   private void updateMouseMode() {
     if (canvas == null || !canvas.isShowing()) return;
     boolean pointerNeeded = settingsOpen || minimap.isLargeMap() || minimap.isFullScreenRevealMode() || shopPanel.isOpen()
-        || (quarterPanel != null && quarterPanel.isOpen());
+        || (quarterPanel != null && quarterPanel.isOpen()) || (controlsPanel != null && controlsPanel.isOpen());
     boolean capture = inGame && !pointerNeeded && isFocused() && robot != null;
     if (capture == mouseCaptured) return;
     mouseCaptured = capture;
@@ -588,15 +664,125 @@ glEventListener.setGameHUD(gameHUD);
 
   /** Plays a message from Xenocorp over the game, its words scrolling along the bottom (above the map) until it's said. */
   private void showMessage(TransmissionMessage message) {
+    showMessage(message, null);
+  }
+
+  /** As showMessage; onEnd told when it ends (true if skipped). */
+  private void showMessage(TransmissionMessage message, java.util.function.Consumer<Boolean> onEnd) {
     SwingUtilities.invokeLater(() -> {
-      if (!inGame) return;
+      if (!inGame || message == null) {
+        if (onEnd != null) onEnd.accept(true);
+        return;
+      }
       if (messageStrip == null) {
         messageStrip = new MessageStrip();
         layeredPane.add(messageStrip, Integer.valueOf(JLayeredPane.MODAL_LAYER + 10));
       }
-      messageStrip.play(message);
+      messageStrip.play(message, onEnd);
       layoutComponents();
     });
+  }
+
+  // The controls, shown after January's message (singleplayer), and whether the round's clock is
+  // held for the message and them (the first round's: the instructions aren't on the clock)
+  private ControlsPanel controlsPanel;
+  private volatile boolean clockHeldForInstructions;
+
+  /** Enter (in the game): closes the controls, or skips the message playing (in the shop or over the game). */
+  private void pressEnter() {
+    if (controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
+    else if (shopPanel != null && shopPanel.isOpen() && shopPanel.messagePlaying()) shopPanel.skipMessage();
+    else if (messageStrip != null && messageStrip.isPlaying()) messageStrip.skip();
+  }
+
+  /** Whether the round's clock is held: the settings open, or January's message and the controls up. */
+  public boolean clockHeld() {
+    return settingsOpen || clockHeldForInstructions;
+  }
+
+  /**
+   * January's message (singleplayer, as the first round begins): "detailed instructions" from
+   * Xenocorp; said to its end (not skipped), the controls are shown after it. The round's clock
+   * runs on while it's said (as for every message), and waits only while the controls cover the
+   * screen.
+   */
+  private void startJanuaryMessage() {
+    Thread load = new Thread(() -> {
+      TransmissionMessage january = TransmissionMessage.load(TransmissionMessage.JANUARY, worldSeed);
+      showMessage(january, skipped -> {
+        if (skipped || !inGame) return;
+        clockHeldForInstructions = true;
+        showControls(() -> clockHeldForInstructions = false);
+      });
+    }, "january-message");
+    load.setDaemon(true);
+    load.start();
+  }
+
+  // The year's later messages (M52, singleplayer), by month (1 January, as the rounds are; 0 for
+  // none): October's or December's, whichever's to be played this game; and the month the
+  // oxygen's downgraded, if it is
+  private int seasonalMonth, oxygenMonth;
+  private static final int AUGUST = 8, OCTOBER = 10, DECEMBER = 12, OXYGEN_FROM = 7;
+  // The chance each month from July (with no other message) that it's the oxygen's
+  private static final float OXYGEN_CHANCE = 0.27f;
+
+  /**
+   * Chooses this game's later messages: August's always; October's or December's, an even
+   * chance of each; and in each month from July with no other message, until it's happened, a
+   * OXYGEN_CHANCE of the oxygen's downgrade.
+   */
+  private void planLaterMessages() {
+    java.util.Random rand = new java.util.Random(worldSeed * 6151L + 29L);
+    seasonalMonth = rand.nextBoolean() ? OCTOBER : DECEMBER;
+    oxygenMonth = 0;
+    for (int month = OXYGEN_FROM; month <= GameHUD.ROUNDS && oxygenMonth == 0; month++) {
+      if (month == AUGUST || month == seasonalMonth) continue;
+      if (rand.nextFloat() < OXYGEN_CHANCE) oxygenMonth = month;
+    }
+    // Developer aids: -Dxenoguesser.season=10 (or 12) and -Dxenoguesser.oxygenmonth=7 (0 for never)
+    seasonalMonth = Dev.integer("xenoguesser.season", seasonalMonth);
+    oxygenMonth = Dev.integer("xenoguesser.oxygenmonth", oxygenMonth);
+    System.out.println("[MESSAGES] August's, " + (seasonalMonth == OCTOBER ? "October's" : "December's")
+        + (oxygenMonth > 0 ? ", the oxygen's in month " + oxygenMonth : ", no oxygen's"));
+  }
+
+  /** The message for a month as it begins (singleplayer), if it has one. */
+  private void monthMessage(int month) {
+    String name = month == AUGUST ? TransmissionMessage.AUGUST
+        : month == seasonalMonth ? (month == OCTOBER ? TransmissionMessage.OCTOBER : TransmissionMessage.DECEMBER)
+        : month == oxygenMonth ? TransmissionMessage.OXYGEN : null;
+    if (name == null) return;
+    boolean oxygen = month == oxygenMonth;
+    Thread load = new Thread(() -> {
+      TransmissionMessage message = TransmissionMessage.load(name, worldSeed);
+      // The oxygen's downgraded once it's been said (or skipped), for the rest of the game
+      showMessage(message, skipped -> {
+        if (oxygen && inGame && glEventListener != null) glEventListener.downgradeOxygen();
+      });
+    }, "month-message");
+    load.setDaemon(true);
+    load.start();
+  }
+
+  /** The controls in the middle of the screen, until Continue or Enter. */
+  private void showControls(Runnable then) {
+    if (controlsPanel == null) {
+      controlsPanel = new ControlsPanel();
+      layeredPane.add(controlsPanel, Integer.valueOf(JLayeredPane.MODAL_LAYER + 20));
+    }
+    controlsPanel.open(() -> {
+      then.run();
+      layoutComponents();
+      layeredPane.revalidate();
+      layeredPane.repaint();
+      updateMouseMode();
+      canvas.requestFocus();
+    });
+    layoutComponents();
+    layeredPane.revalidate();
+    layeredPane.repaint();
+    updateMouseMode();
   }
 
   // Between a quarter's last results and the shop: whether its target was met
@@ -614,12 +800,26 @@ glEventListener.setGameHUD(gameHUD);
       multiplayerAfterResults(session, multiplayerScore);
       return;
     }
+    int money = gameHUD.getProductivity(), target = gameHUD.getTarget();
     if (!gameHUD.isQuarterEnd()) {
+      // (M50) Out of reach: even full marks in every round left of the quarter wouldn't meet its
+      // target, so it's lost now rather than played out
+      int left = GameHUD.ROUNDS_PER_QUARTER - 1 - (gameHUD.getRound() - 1) % GameHUD.ROUNDS_PER_QUARTER;
+      int best = money + left * MapPanel.FULL_MARKS;
+      if (best < target) {
+        quarterPanel.showOutOfReach(gameHUD.getQuarter(), money, target, left, best, () -> {
+          quarterPanel.close();
+          endGame(false);
+        });
+        layoutComponents();
+        return;
+      }
       openShop();
       return;
     }
-    int money = gameHUD.getProductivity(), target = gameHUD.getTarget();
     boolean passed = money >= target, won = passed && gameHUD.isLastRound();
+    // (the year won: this mode and kind of map's achievement, popping up over the verdict)
+    if (won) Achievements.unlock(Achievements.winFor(GameMode.current(), MapKind.current()));
     quarterPanel.show(gameHUD.getQuarter(), money, target, gameHUD.isLastRound(), () -> {
       quarterPanel.close();
       if (!passed) endGame(false);
@@ -739,6 +939,10 @@ glEventListener.setGameHUD(gameHUD);
   private void showGameEnd(Multiplayer session, MultiplayerScore score, String reason, Multiplayer.Role winner) {
     Multiplayer.Role me = session.role, them = me.other();
     boolean won = winner == me;
+    if (won) {
+      Achievements.unlock(Achievements.Achievement.WIN_MULTIPLAYER);
+      if (score.points(them) == 0) Achievements.unlock(Achievements.Achievement.FLAWLESS_MULTIPLAYER);
+    }
     java.util.List<String> lines = new java.util.ArrayList<>();
     java.util.List<Color> colours = new java.util.ArrayList<>();
     lines.add(reason);
@@ -908,6 +1112,7 @@ glEventListener.setGameHUD(gameHUD);
     glEventListener.setWorldHidden(true);
     // (round 0: before the first round, where everything is free), with Xenocorp's word on it
     ShopPanel shop = shopPanel;
+    // (nothing taken, nor the shop left, until the message has been said or skipped)
     Thread message = new Thread(() -> {
       TransmissionMessage gift = TransmissionMessage.load(TransmissionMessage.GIFT, worldSeed);
       SwingUtilities.invokeLater(() -> shop.playMessage(gift));
@@ -920,6 +1125,12 @@ glEventListener.setGameHUD(gameHUD);
       layoutComponents();
       canvas.requestFocus();
       updateMouseMode();
+      Achievements.unlock(Multiplayer.isActive() ? Achievements.Achievement.PLAY_MULTIPLAYER : Achievements.Achievement.PLAY_SINGLEPLAYER);
+      // January's message, and then the controls (singleplayer); and the year's later messages chosen
+      if (!Multiplayer.isActive()) {
+        planLaterMessages();
+        startJanuaryMessage();
+      }
     };
     Multiplayer session = Multiplayer.active();
     if (session == null) {
@@ -932,6 +1143,8 @@ glEventListener.setGameHUD(gameHUD);
           }),
           () -> session.remoteShopDone(0) ? null : "Waiting for Player " + session.remoteLabel());
     }
+    // (nothing taken, nor the shop left, until the message has been said or skipped)
+    shopPanel.holdForMessage();
     message.start();
     layoutComponents();
     updateMouseMode();
@@ -1007,7 +1220,11 @@ glEventListener.setGameHUD(gameHUD);
       shopPanel.close();
       // April's begun: a message from Xenocorp
       // (not in multiplayer: M24)
-      if (gameHUD.getRound() == 1 + GameHUD.ROUNDS_PER_QUARTER && !Multiplayer.isActive()) glEventListener.startAprilMessage(this::showMessage);
+      if (!Multiplayer.isActive()) {
+        if (gameHUD.getRound() == 1 + GameHUD.ROUNDS_PER_QUARTER) glEventListener.startAprilMessage(this::showMessage);
+        // (and the later ones, in their months: a round to a month)
+        else monthMessage(gameHUD.getRound());
+      }
     }
     // (the 3D view goes aside behind the results, and comes back for the next round)
     SwingUtilities.invokeLater(this::layoutComponents);
@@ -1047,9 +1264,25 @@ glEventListener.setGameHUD(gameHUD);
           break;
         }
         case "settings": setSettingsOpen(true); break;
+        // pause: the settings opened (the game paused) at -Dxenoguesser.pauseat=open,close (ms)
+        case "pause": {
+          String[] at = Dev.property("xenoguesser.pauseat", "6000,12000").split(",");
+          later(Integer.parseInt(at[0].trim()), () -> setSettingsOpen(true));
+          later(Integer.parseInt(at[1].trim()), () -> setSettingsOpen(false));
+          break;
+        }
         case "thermometer": later(1200, () -> glEventListener.useThermometer()); break;
         // lose: the game lost a moment in, back to the menu; restart: a new game from the menu after
         case "lose": later(1500, () -> endGame(false)); break;
+        // month: a month's message (-Dxenoguesser.month, 8 by default), as if it had just begun
+        case "month": later(1500, () -> {
+          planLaterMessages();
+          monthMessage(Dev.integer("xenoguesser.month", AUGUST));
+        }); break;
+        // portraits: the map's pictures of the plants and animals saved, as <-Dxenoguesser.portraits>_*.png, 20 s in
+        case "portraits": later(20000, () -> glEventListener.devSavePortraits(Dev.property("xenoguesser.portraits", "portrait"))); break;
+        // oxygen: the oxygen downgraded straight away (its blur and dizziness)
+        case "oxygen": later(1500, () -> glEventListener.downgradeOxygen()); break;
         // april: April's message, as if April had just begun
         case "april": later(1500, () -> glEventListener.startAprilMessage(this::showMessage)); break;
         case "restart": later(Dev.integer("xenoguesser.restartdelay", 5000), this::startSingleplayer); break;
@@ -1122,6 +1355,35 @@ glEventListener.setGameHUD(gameHUD);
           later(9000 + ms, () -> keyboardInput.w = false);
           break;
         }
+        // enter: Enter pressed at each of -Dxenoguesser.enterat=ms,... (skipping a message, closing the controls)
+        case "enter": {
+          for (String at : Dev.property("xenoguesser.enterat", "8000").split(",")) later(Integer.parseInt(at.trim()), this::pressEnter);
+          break;
+        }
+        // leaveshop: Next round pressed in the shop at -Dxenoguesser.leaveshopat (ms), if it can be
+        case "leaveshop": later(Dev.integer("xenoguesser.leaveshopat", 12000), () -> {
+          if (shopPanel.isOpen() && !shopPanel.messagePlaying()) shopPanel.nextRound();
+          else System.out.println("[TEST] The shop can't be left yet (its message is playing)");
+        }); break;
+        // pin: a marker put down (not guessed) at -Dxenoguesser.pinat=u,v, -Dxenoguesser.pindelay ms in
+        case "pin": later(Dev.integer("xenoguesser.pindelay", 5000), () -> minimap.devPlacePin()); break;
+        // screen: what's really on the screen over the window (the 3D view and all), saved to
+        // <-Dxenoguesser.screen>_<ms>.png at each of -Dxenoguesser.screenat=ms,...
+        case "screen": {
+          for (String at : Dev.property("xenoguesser.screenat", "8000").split(",")) {
+            int ms = Integer.parseInt(at.trim());
+            later(ms, () -> {
+              try {
+                Point origin = getContentPane().getLocationOnScreen();
+                BufferedImage image = new java.awt.Robot().createScreenCapture(new Rectangle(origin.x, origin.y, getContentPane().getWidth(), getContentPane().getHeight()));
+                javax.imageio.ImageIO.write(image, "png", new java.io.File(Dev.property("xenoguesser.screen", "screen") + "_" + ms + ".png"));
+              } catch (Exception ex) {
+                ex.printStackTrace();
+              }
+            });
+          }
+          break;
+        }
         case "lookdown": later(1500, () -> glEventListener.lookPitch(-70f)); break;
         // lookup: tilts the view up (to see what's overhead: wires, roofs)
         case "lookup": later(1500, () -> glEventListener.lookPitch(Float.parseFloat(Dev.property("xenoguesser.lookup", "25")))); break;
@@ -1147,7 +1409,7 @@ glEventListener.setGameHUD(gameHUD);
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
         case "zoom": {
           String[] at = Dev.property("xenoguesser.mapzoomat", "0.5,0.5").split(",");
-          later(1500, () -> minimap.devZoom(16f, Float.parseFloat(at[0]), Float.parseFloat(at[1])));
+          later(1500, () -> minimap.devZoom(Float.parseFloat(Dev.property("xenoguesser.mapzoom", "16")), Float.parseFloat(at[0]), Float.parseFloat(at[1])));
           break;
         }
         // guess: a guess two seconds in (-Dxenoguesser.guessdelay); shop: Proceed to Shop pressed
@@ -1233,6 +1495,7 @@ glEventListener.setGameHUD(gameHUD);
       int stripH = Math.max(44, paneHeight / 20);
       messageStrip.setBounds(0, top + paneHeight - stripH, paneWidth, stripH);
     }
+    if (controlsPanel != null) controlsPanel.setBounds(0, top, paneWidth, paneHeight);
     if (canvas == null) return;
 
     // While the cockpit is up the 3D view (drawn by the system, over everything) waits just off
@@ -1241,12 +1504,18 @@ glEventListener.setGameHUD(gameHUD);
         // (and behind the results, while the next round is built behind them)
         || (minimap != null && minimap.isFullScreenRevealMode())
         // (and behind the shop before the first round)
-        || (shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen());
+        || (shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen())
+        // (and behind the controls: the system draws the 3D view over anything in its way)
+        || (controlsPanel != null && controlsPanel.isOpen());
     // (far off, so however quickly the window is pulled wider it's never seen)
     canvas.setBounds(cockpit ? paneWidth + 20000 : 0, top, paneWidth - 2, paneHeight - 2);
     // The map sized afresh for the space there is now
     minimap.fitToWindow(paneWidth, paneHeight);
     updateMinimapBounds(layeredPane, minimap);
+    // (and while the game's paused in singleplayer, no map to study: M46)
+    boolean paused = settingsOpen && !Multiplayer.isActive() && !minimap.isFullScreenRevealMode();
+    minimap.setVisible(!paused);
+    if (paused && minimap.getLayersPanel() != null) minimap.getLayersPanel().setVisible(false);
     gameHUD.setBounds(HudStyle.HUD_MARGIN, top + HudStyle.HUD_MARGIN, gameHUD.getWidth(), gameHUD.getHeight());
   }
 

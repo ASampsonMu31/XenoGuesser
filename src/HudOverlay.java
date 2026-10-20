@@ -19,12 +19,13 @@ public class HudOverlay {
         int texture;
         int x, y;
         boolean visible = true;
+        float alpha = 1f;
     }
 
     private final Map<String, Element> elements = new LinkedHashMap<>();
     private Shader shader;
     private final int[] vao = new int[1], vbo = new int[1];
-    private float dim;
+    private float dim, edgeGlow;
 
     public void initialise(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_hud.txt", GamePaths.HOME + "assets/shaders/fs_hud.txt");
@@ -56,6 +57,12 @@ public class HudOverlay {
         }
     }
 
+    /** How opaque an element's drawn, 0 to 1. */
+    public void setAlpha(String key, float alpha) {
+        Element e = elements.get(key);
+        if (e != null) e.alpha = alpha;
+    }
+
     public void setVisible(String key, boolean visible) {
         Element e = elements.get(key);
         if (e != null) e.visible = visible;
@@ -76,6 +83,11 @@ public class HudOverlay {
         this.dim = dim;
     }
 
+    /** A red glow in from the screen's edges (e.g. the round's clock nearly out), 0 to 1; 0 for none. */
+    public void setEdgeGlow(float strength) {
+        this.edgeGlow = strength;
+    }
+
     public void draw(GL3 gl, int screenW, int screenH) {
         if (shader == null) return;
         gl.glDisable(GL.GL_DEPTH_TEST);
@@ -87,7 +99,16 @@ public class HudOverlay {
         gl.glBindVertexArray(vao[0]);
         if (dim > 0f) {
             shader.setInt(gl, "useImage", 0);
-            shader.setFloat(gl, "tint", 0.02f, 0.03f, 0.05f, dim);
+            // (near enough opaque, as while the game's paused, it's a flat grey: M46)
+            float grey = dim > 0.9f ? 0.16f : 0.03f;
+            shader.setFloat(gl, "tint", grey, grey + 0.01f, grey + 0.025f, dim);
+            shader.setFloat(gl, "rect", 0, 0, screenW, screenH);
+            gl.glDrawArrays(GL.GL_TRIANGLES, 0, 6);
+        }
+        if (edgeGlow > 0f) {
+            shader.setInt(gl, "useImage", 2);
+            shader.setFloat(gl, "tint", 1f, 0.05f, 0.03f, edgeGlow);
+            shader.setFloat(gl, "edge", Math.min(screenW, screenH) * 0.22f);
             shader.setFloat(gl, "rect", 0, 0, screenW, screenH);
             gl.glDrawArrays(GL.GL_TRIANGLES, 0, 6);
         }
@@ -99,6 +120,7 @@ public class HudOverlay {
             if (e.uploaded != e.image) upload(gl, e);
             gl.glBindTexture(GL.GL_TEXTURE_2D, e.texture);
             shader.setFloat(gl, "rect", e.x, e.y, e.uploaded.getWidth(), e.uploaded.getHeight());
+            shader.setFloat(gl, "alpha", e.alpha);
             gl.glDrawArrays(GL.GL_TRIANGLES, 0, 6);
         }
         gl.glBindVertexArray(0);

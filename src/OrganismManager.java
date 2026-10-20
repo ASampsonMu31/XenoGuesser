@@ -405,7 +405,8 @@ public class OrganismManager {
      * drawn by the GPU from three-quarters on, lit from the side (for the map's choices).
      */
     public java.awt.image.BufferedImage portrait(GL3 gl, int i, int size) {
-        java.awt.image.BufferedImage view = view(gl, i, 384, (float) Math.toRadians(-40), Planet.position(0.0, 0.0, 0.0));
+        // (at full detail, framed to the creature itself: M54)
+        java.awt.image.BufferedImage view = view(gl, i, 512, (float) Math.toRadians(-40), Planet.position(0.0, 0.0, 0.0), true);
         return view == null ? null : Offscreen.cropTogether(new java.awt.image.BufferedImage[] { view }, size)[0];
     }
 
@@ -417,6 +418,11 @@ public class OrganismManager {
      * level on flat ground at the origin.
      */
     public java.awt.image.BufferedImage view(GL3 gl, int i, int render, float heading, SpherePosition at) {
+        return view(gl, i, render, heading, at, false);
+    }
+
+    /** As view; fitted, framed to the creature itself (see Offscreen.captureFitted). */
+    public java.awt.image.BufferedImage view(GL3 gl, int i, int render, float heading, SpherePosition at, boolean fitted) {
         if (shader == null || i < 0 || i >= species.size()) return null;
         OrganismSpecies s = species.get(i);
         Creature c = create(s, at, new Random(seed * 131L + i));
@@ -434,9 +440,9 @@ public class OrganismManager {
         Matrix4 projection = com.xenoguesser.math.Matrix4Transform.perspective(45f, 1f, distance * 0.02f, distance * 4f);
         Matrix4 viewProjection = Matrix4.multiply(projection, view);
         Vector3 sun = new Vector3(eye.x + distance * 3f, eye.y + distance * 6f, eye.z - distance * 1f);
-        return Offscreen.capture(gl, render, () -> {
+        java.util.function.Consumer<Matrix4> draw = zoom -> {
             shader.use(gl);
-            shader.setFloatArray(gl, "viewProjection", viewProjection.toFloatArrayForGLSL());
+            shader.setFloatArray(gl, "viewProjection", Matrix4.multiply(zoom, viewProjection).toFloatArrayForGLSL());
             gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "skyRotation"), 1, false, new Matrix4(1).toFloatArrayForGLSL(), 0);
             shader.setVec3(gl, "viewPos", eye);
             shader.setVec3(gl, "sunPos", sun);
@@ -446,7 +452,8 @@ public class OrganismManager {
             beginCreatures(gl, null);
             drawPosed(gl, c, centreY, 0f, 0f);
             gl.glEnable(GL.GL_CULL_FACE);
-        });
+        };
+        return fitted ? Offscreen.captureFitted(gl, render, draw) : Offscreen.capture(gl, render, () -> draw.accept(new Matrix4(1)));
     }
 
     public int speciesCount() {
@@ -486,6 +493,17 @@ public class OrganismManager {
         showcase.clear();
         lastCentreCell = Long.MIN_VALUE;
     }
+
+    /**
+     * Places the round's creatures afresh from the same draw (M54: as the round begins, so none
+     * has wandered from where its range puts it while the round was waiting to start).
+     */
+    public void respawn() {
+        // (done by the next update, on the thread that moves them)
+        respawnWanted = true;
+    }
+
+    private volatile boolean respawnWanted;
 
     /**
      * Developer aid: a spot in the heart of some species' range, and a creature of that species
@@ -550,6 +568,10 @@ public class OrganismManager {
      */
     public void update(float dt, SpherePosition viewer, double roundTime) {
         this.roundTime = roundTime;
+        if (respawnWanted) {
+            respawnWanted = false;
+            clear(roundSalt);
+        }
         updates++;
         updatePopulation(viewer);
         float step = Math.min(dt, 0.1f);

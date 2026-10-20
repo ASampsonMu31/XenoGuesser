@@ -58,6 +58,11 @@ public class MainMenu extends JComponent {
     private final Rectangle[] modeButtons = new Rectangle[GameMode.values().length], mapButtons = new Rectangle[MapKind.values().length];
     private Rectangle hovered;
     private boolean chosen;
+    // The achievements' panel (M53): each one's row, its Reset button, and while Reset's being
+    // confirmed, the question's two buttons
+    private final Rectangle[] achievementRows = new Rectangle[Achievements.Achievement.values().length];
+    private final Rectangle resetButton = new Rectangle(), confirmReset = new Rectangle(), cancelReset = new Rectangle();
+    private boolean confirming;
     // Something to tell the player as the menu comes back (multiplayer: the partner left), or null
     private String notice;
 
@@ -75,12 +80,26 @@ public class MainMenu extends JComponent {
         setOpaque(true);
         for (int m = 0; m < modeButtons.length; m++) modeButtons[m] = new Rectangle();
         for (int m = 0; m < mapButtons.length; m++) mapButtons[m] = new Rectangle();
+        for (int a = 0; a < achievementRows.length; a++) achievementRows[a] = new Rectangle();
+        Achievements.setOnChange(this::repaint);
         loadArt();
         MouseAdapter mouse = new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
                 if (e.getButton() != MouseEvent.BUTTON1 || chosen) return;
-                if (singleButton.contains(e.getPoint())) {
+                // (while Reset's being confirmed, only its question's buttons do anything)
+                if (confirming) {
+                    if (confirmReset.contains(e.getPoint())) Achievements.reset();
+                    if (confirmReset.contains(e.getPoint()) || cancelReset.contains(e.getPoint())) {
+                        confirming = false;
+                        repaint();
+                    }
+                    return;
+                }
+                if (resetButton.contains(e.getPoint())) {
+                    confirming = true;
+                    repaint();
+                } else if (singleButton.contains(e.getPoint())) {
                     chosen = true;
                     onSingleplayer.run();
                 } else if (multiButton.contains(e.getPoint())) {
@@ -119,7 +138,11 @@ public class MainMenu extends JComponent {
             @Override
             public void mouseMoved(MouseEvent e) {
                 int mode = choiceAt(modeButtons, e.getX(), e.getY()), map = choiceAt(mapButtons, e.getX(), e.getY());
-                Rectangle over = singleButton.contains(e.getPoint()) ? singleButton
+                int achievement = choiceAt(achievementRows, e.getX(), e.getY());
+                Rectangle over = confirming ? (confirmReset.contains(e.getPoint()) ? confirmReset : cancelReset.contains(e.getPoint()) ? cancelReset : null)
+                        : resetButton.contains(e.getPoint()) ? resetButton
+                        : achievement >= 0 ? achievementRows[achievement]
+                        : singleButton.contains(e.getPoint()) ? singleButton
                         : multiButton.contains(e.getPoint()) ? multiButton
                         : quitButton.contains(e.getPoint()) ? quitButton
                         : mode >= 0 ? modeButtons[mode] : map >= 0 ? mapButtons[map] : null;
@@ -127,7 +150,7 @@ public class MainMenu extends JComponent {
                     hovered = over;
                     repaint();
                 }
-                boolean hand = over != null || spacemanBounds.contains(e.getPoint());
+                boolean hand = (over != null && choiceAt(achievementRows, e.getX(), e.getY()) < 0) || (!confirming && spacemanBounds.contains(e.getPoint()));
                 setCursor(hand ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
             }
         };
@@ -250,13 +273,128 @@ public class MainMenu extends JComponent {
                 new Color(220, 228, 240, 170));
         paintSpaceman(g, feetX, feetY, tall);
 
+        paintAchievements(g, w, h, unit);
         if (notice != null && !chosen) paintNotice(g, left, 470 * unit - 110 * unit, 520 * unit, unit);
+        if (confirming) paintResetQuestion(g, w, h, unit);
         if (chosen) {
             g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.5f));
             g.setColor(Color.BLACK);
             g.fillRect(0, 0, w, h);
         }
         g.dispose();
+    }
+
+    // The achievements' panel: how wide each of its two columns is, a row's height
+    private static final float ACHIEVEMENT_COLUMN = 290f, ACHIEVEMENT_ROW = 25f;
+
+    /**
+     * The achievements (M53), at the bottom in the middle: singleplayer (playing, and each win) down the left,
+     * the collections and multiplayer down the right, each ticked once it's unlocked; how many of
+     * them; what the one under the mouse is for; and Reset.
+     */
+    private void paintAchievements(Graphics2D g, int w, int h, float unit) {
+        Achievements.Achievement[] all = Achievements.Achievement.values();
+        int leftCount = 7, rows = Math.max(leftCount, all.length - leftCount);
+        float pad = 20 * unit, column = ACHIEVEMENT_COLUMN * unit, row = ACHIEVEMENT_ROW * unit;
+        float pw = pad * 2 + column * 2, ph = pad + 38 * unit + rows * row + 30 * unit + pad * 0.6f;
+        float px = w * 0.53f - pw / 2f, py = h - ph - 24 * unit;
+        // (grey, as the HUD's panels are)
+        HudStyle.panel(g, px, py, pw, ph, HudStyle.GLASS_SOLID);
+        // How many are done: a ring filling round in gold, the count inside it
+        float ring = 34 * unit, rx = px + pad, ry = py + pad - 10 * unit;
+        float share = Achievements.count() / (float) all.length;
+        g.setStroke(new BasicStroke(4f * unit, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.setColor(new Color(255, 255, 255, 40));
+        g.draw(new java.awt.geom.Ellipse2D.Float(rx, ry, ring, ring));
+        if (share > 0f) {
+            g.setColor(HudStyle.GOLD);
+            g.draw(new java.awt.geom.Arc2D.Float(rx, ry, ring, ring, 90f, -360f * share, java.awt.geom.Arc2D.OPEN));
+        }
+        g.setFont(HudStyle.font(Font.BOLD, 11 * unit));
+        String doneCount = String.valueOf(Achievements.count());
+        g.setColor(share > 0f ? HudStyle.GOLD : Color.WHITE);
+        g.drawString(doneCount, rx + (ring - g.getFontMetrics().stringWidth(doneCount)) / 2f, ry + (ring + g.getFontMetrics().getAscent() - g.getFontMetrics().getDescent()) / 2f);
+        HudStyle.label(g, "Achievements", rx + ring + 12 * unit, py + pad + 12 * unit, 15 * unit, Color.WHITE);
+        String tally = Math.round(share * 100f) + "% complete";
+        HudStyle.label(g, tally, rx + ring + 12 * unit + HudStyle.labelWidth(g, "Achievements", 15 * unit) + 14 * unit, py + pad + 12 * unit, 11 * unit, share > 0f ? HudStyle.GOLD : HudStyle.LABEL);
+        // Reset, at the heading's right
+        g.setFont(HudStyle.font(Font.BOLD, 12 * unit));
+        FontMetrics fm = g.getFontMetrics();
+        int rw = Math.round(fm.stringWidth("Reset") + 26 * unit), rh = Math.round(24 * unit);
+        resetButton.setBounds(Math.round(px + pw - pad - rw), Math.round(py + pad - 4 * unit), rw, rh);
+        boolean overReset = hovered == resetButton;
+        g.setColor(overReset ? new Color(150, 60, 55, 235) : new Color(40, 30, 34, 220));
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(resetButton.x, resetButton.y, rw, rh, 8 * unit, 8 * unit));
+        g.setColor(new Color(235, 140, 130));
+        g.draw(new java.awt.geom.RoundRectangle2D.Float(resetButton.x, resetButton.y, rw, rh, 8 * unit, 8 * unit));
+        g.setColor(Color.WHITE);
+        g.drawString("Reset", resetButton.x + (rw - fm.stringWidth("Reset")) / 2f, resetButton.y + (rh + fm.getAscent() - fm.getDescent()) / 2f);
+        g.setColor(new Color(120, 205, 235, 70));
+        g.fill(new java.awt.geom.Rectangle2D.Float(px + pad, py + pad + 30 * unit, pw - pad * 2, Math.max(1f, unit)));
+        // The rows
+        float top = py + pad + 38 * unit;
+        Achievements.Achievement shown = null;
+        for (int i = 0; i < all.length; i++) {
+            Achievements.Achievement a = all[i];
+            int col = i < leftCount ? 0 : 1, r = i < leftCount ? i : i - leftCount;
+            float x = px + pad + col * column, y = top + r * row;
+            achievementRows[i].setBounds(Math.round(x), Math.round(y), Math.round(column - 8 * unit), Math.round(row));
+            boolean done = Achievements.isUnlocked(a), over = hovered == achievementRows[i];
+            if (over) {
+                shown = a;
+                g.setColor(new Color(255, 255, 255, 18));
+                g.fill(new java.awt.geom.RoundRectangle2D.Float(x - 4 * unit, y + 1, column - 4 * unit, row - 2, 8 * unit, 8 * unit));
+            }
+            // The tick box: gold and ticked once it's unlocked
+            float box = 14 * unit, bx = x + 2 * unit, by = y + (row - box) / 2f;
+            g.setStroke(new BasicStroke(1.4f * Math.max(1f, unit)));
+            if (done) {
+                g.setColor(HudStyle.GOLD);
+                g.fill(new java.awt.geom.RoundRectangle2D.Float(bx, by, box, box, 4 * unit, 4 * unit));
+                g.setColor(new Color(30, 24, 10));
+                g.setStroke(new BasicStroke(2f * Math.max(1f, unit), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                Path2D tick = new Path2D.Float();
+                tick.moveTo(bx + box * 0.22f, by + box * 0.52f);
+                tick.lineTo(bx + box * 0.43f, by + box * 0.74f);
+                tick.lineTo(bx + box * 0.8f, by + box * 0.28f);
+                g.draw(tick);
+            } else {
+                g.setColor(new Color(255, 255, 255, 170));
+                g.draw(new java.awt.geom.RoundRectangle2D.Float(bx, by, box, box, 4 * unit, 4 * unit));
+            }
+            g.setFont(HudStyle.font(done ? Font.BOLD : Font.PLAIN, 14 * unit));
+            fm = g.getFontMetrics();
+            g.setColor(done ? HudStyle.GOLD : Color.WHITE);
+            g.drawString(a.title, bx + box + 10 * unit, y + (row + fm.getAscent() - fm.getDescent()) / 2f);
+        }
+        // What the one under the mouse is for
+        String about = shown != null ? shown.description() + (Achievements.isUnlocked(shown) ? "  (unlocked)" : "") : "Point at one to see how it's earned";
+        g.setFont(HudStyle.font(Font.PLAIN, 13 * unit));
+        g.setColor(shown != null ? Color.WHITE : new Color(200, 206, 216, 170));
+        g.drawString(about, px + pad, top + rows * row + 20 * unit);
+    }
+
+    /** The question before Reset: are they sure, it can't be undone. */
+    private void paintResetQuestion(Graphics2D g, int w, int h, float unit) {
+        g.setColor(new Color(0, 0, 0, 150));
+        g.fillRect(0, 0, w, h);
+        float qw = 560 * unit, qh = 210 * unit, qx = (w - qw) / 2f, qy = (h - qh) / 2f;
+        HudStyle.panel(g, qx, qy, qw, qh, HudStyle.GLASS_SOLID);
+        g.setFont(HudStyle.font(Font.BOLD, 24 * unit));
+        FontMetrics fm = g.getFontMetrics();
+        g.setColor(HudStyle.VALUE);
+        String ask = "Reset all achievements?";
+        g.drawString(ask, qx + (qw - fm.stringWidth(ask)) / 2f, qy + 58 * unit);
+        g.setFont(HudStyle.font(Font.PLAIN, 17 * unit));
+        fm = g.getFontMetrics();
+        g.setColor(new Color(235, 140, 130));
+        String warn = "Are you sure? This is an irreversible change.";
+        g.drawString(warn, qx + (qw - fm.stringWidth(warn)) / 2f, qy + 98 * unit);
+        float bw = 200 * unit, bh = 48 * unit, gap = 20 * unit, by = qy + qh - bh - 30 * unit;
+        confirmReset.setBounds(Math.round(qx + qw / 2f - gap / 2f - bw), Math.round(by), Math.round(bw), Math.round(bh));
+        cancelReset.setBounds(Math.round(qx + qw / 2f + gap / 2f), Math.round(by), Math.round(bw), Math.round(bh));
+        paintButton(g, confirmReset, "Reset", null, true, false, unit);
+        paintButton(g, cancelReset, "Cancel", null, true, true, unit);
     }
 
     /** The notice in the game's panel style, from x, its top at y, width wide. */

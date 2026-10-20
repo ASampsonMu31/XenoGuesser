@@ -15,15 +15,23 @@ import javax.swing.JPanel;
 /** The settings, opened with Esc during the game: the FPS counter, and fullscreen or windowed. */
 public class SettingsMenu extends JPanel {
 
-    public static final int W = 440, H = 362;
+    public static final int W = 440, H = 424;
 
     private final Runnable onResume;
     private final Runnable onQuit, onDisplayChanged;
+    // Opens the controls (M48), as enclosed with January's message
+    private Runnable onControls;
     private final Rectangle fpsRow = new Rectangle(30, 96, W - 60, 52);
     private final Rectangle fullscreenRow = new Rectangle(30, 158, W - 60, 52);
-    private final Rectangle resumeButton = new Rectangle(30, 258, (W - 72) / 2, 44);
-    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 258, (W - 72) / 2, 44);
+    private final Rectangle controlsRow = new Rectangle(30, 220, W - 60, 52);
+    private final Rectangle resumeButton = new Rectangle(30, 320, (W - 72) / 2, 44);
+    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 320, (W - 72) / 2, 44);
     private Rectangle hovered;
+
+    /** What the Controls row opens. */
+    public void setOnControls(Runnable onControls) {
+        this.onControls = onControls;
+    }
 
     public SettingsMenu(Runnable onResume, Runnable onQuit, Runnable onDisplayChanged) {
         this.onResume = onResume;
@@ -38,6 +46,7 @@ public class SettingsMenu extends JPanel {
             public void mouseMoved(MouseEvent e) {
                 Rectangle over = fpsRow.contains(e.getPoint()) ? fpsRow
                         : fullscreenRow.contains(e.getPoint()) ? fullscreenRow
+                        : controlsRow.contains(e.getPoint()) ? controlsRow
                         : resumeButton.contains(e.getPoint()) ? resumeButton
                         : quitButton.contains(e.getPoint()) ? quitButton : null;
                 if (over != hovered) {
@@ -63,6 +72,8 @@ public class SettingsMenu extends JPanel {
                     GameSettings.setFullscreen(!GameSettings.fullscreen());
                     onDisplayChanged.run();
                     repaint();
+                } else if (controlsRow.contains(e.getPoint())) {
+                    if (onControls != null) onControls.run();
                 } else if (resumeButton.contains(e.getPoint())) {
                     onResume.run();
                 } else if (quitButton.contains(e.getPoint())) {
@@ -92,6 +103,16 @@ public class SettingsMenu extends JPanel {
 
             paintToggle(g, fpsRow, "Show FPS counter", GameSettings.showFps(), "On", "Off");
             paintToggle(g, fullscreenRow, "Fullscreen", GameSettings.fullscreen(), "Fullscreen", "Windowed");
+            // Controls: opens them, an arrow at its right
+            paintRowBackground(g, controlsRow);
+            g.setFont(HudStyle.font(Font.PLAIN, 16f));
+            g.setColor(HudStyle.VALUE);
+            g.drawString("Controls", controlsRow.x + 16, controlsRow.y + 32);
+            int ax = controlsRow.x + controlsRow.width - 26, ay = controlsRow.y + controlsRow.height / 2;
+            g.setColor(hovered == controlsRow ? HudStyle.ACCENT : new Color(150, 160, 172));
+            g.setStroke(new BasicStroke(2.2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            g.drawLine(ax - 4, ay - 7, ax + 3, ay);
+            g.drawLine(ax + 3, ay, ax - 4, ay + 7);
 
             paintButton(g, resumeButton, "Resume", true);
             paintButton(g, quitButton, "Quit game", false);

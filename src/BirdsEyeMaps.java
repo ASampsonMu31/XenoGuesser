@@ -354,6 +354,8 @@ public class BirdsEyeMaps {
      * zoomed. Rows are worked out side by side.
      */
     public BufferedImage renderNationOverlay(NationGenerationManager nations) {
+        // (no nation coloured like the sea)
+        nations.avoidSeaColour(WATER);
         float[] heights = getDetailHeights();
         int n = detailResolution;
         int[] pixels = new int[n * n];
@@ -506,7 +508,8 @@ public class BirdsEyeMaps {
         };
     }
 
-    private static final Color BUILDING_COLOUR = new Color(140, 140, 144);
+    // (white, to stand out on any land)
+    private static final Color BUILDING_COLOUR = new Color(250, 250, 248);
 
     public BufferedImage[] renderBuildingLayer(InfrastructureManager infrastructure) {
         BufferedImage canvas = newLayer();
@@ -847,6 +850,7 @@ public class BirdsEyeMaps {
 
     /** Each nation in its colour, borders as sharp as the tile. */
     public MapTiles.Renderer nationTiles(NationGenerationManager nations) {
+        nations.avoidSeaColour(WATER);
         return (level, tx, ty, size) -> {
             float[] h = tileHeights(level, tx, ty, size);
             int w = size + 2;

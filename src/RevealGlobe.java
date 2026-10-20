@@ -19,6 +19,8 @@ public final class RevealGlobe {
     // The globe's radius as a share of the view's smaller side (the rod reaching out past the
     // poles still fits), the most it can be zoomed, and how far the rod sticks out (in radii)
     private static final double RADIUS_SHARE = 0.36, MAX_ZOOM = 12.0, ROD_REACH = 1.3;
+    // This globe's radius as a share of the view's smaller side (the results' RADIUS_SHARE; the map's larger)
+    private final double radiusShare;
     // Where the light comes from, in the view (x right, y up, z out of the screen)
     private static final double[] LIGHT = normalise(-0.45, 0.55, 0.7);
     private static final Color SPACE_TOP = new Color(18, 22, 38), SPACE_BOTTOM = new Color(34, 40, 62);
@@ -43,6 +45,12 @@ public final class RevealGlobe {
     private double dragLon, dragLat;
 
     public RevealGlobe(float totalRegionWidth) {
+        this(totalRegionWidth, RADIUS_SHARE);
+    }
+
+    /** A globe filling radiusShare of its view's smaller side (the rod still reaching out past it as far as fits). */
+    public RevealGlobe(float totalRegionWidth, double radiusShare) {
+        this.radiusShare = radiusShare;
         this.totalRegionWidth = totalRegionWidth;
         this.halfRegion = totalRegionWidth / 2f;
     }
@@ -95,6 +103,93 @@ public final class RevealGlobe {
     }
 
     /** Zooms in (steps above 0) or out by a factor per step. */
+    // ------------------------------------------------------------------ detail when zoomed (M47)
+
+    // The map's detail tiles over the part of the ball in view, at a level (level L has 2^L tiles
+    // across the chart, each MapTiles.SIZE square) by tileKey, each its pixels; where one isn't
+    // ready the whole texture's used. sourceKey names what they show. (detailLevel is the level
+    // at the equator: away from it the chart's stretched, by 1 / cos(latitude), so a coarser
+    // level shows as much there, and far fewer tiles are wanted near the poles: see levelAt)
+    private int detailLevel;
+    private java.util.Map<Long, int[]> detail = java.util.Map.of();
+    private String detailSource = "";
+
+    /**
+     * The tiles' level the ball wants to stay sharp in a view of w by h, its texture being
+     * textureWidth across: 0 while the whole texture's sharp enough.
+     */
+    public int detailLevel(int w, int h, int textureWidth) {
+        double across = 2.0 * Math.PI * radius(w, h);
+        if (across <= textureWidth * 1.1) return 0;
+        return Math.max(1, Math.min(8, (int) Math.ceil(Math.log(across / MapTiles.SIZE) / Math.log(2))));
+    }
+
+    /** A tile's key: its level, and where it is at that level. */
+    public static long tileKey(int level, int tx, int ty) {
+        return ((long) level << 56) | ((long) tx << 28) | ty;
+    }
+
+    public static int levelOf(long key) {
+        return (int) (key >>> 56);
+    }
+
+    public static int txOf(long key) {
+        return (int) ((key >>> 28) & 0xFFFFFFF);
+    }
+
+    public static int tyOf(long key) {
+        return (int) (key & 0xFFFFFFF);
+    }
+
+    /**
+     * The level wanted at a latitude for the equator's level: as many levels coarser as the
+     * chart's stretched there doubles (it's stretched by 1 / cos(latitude)).
+     */
+    private static int levelAt(double latitude, int equatorLevel) {
+        double stretch = 1.0 / Math.max(1e-3, Math.cos(latitude));
+        return Math.max(1, equatorLevel - (int) Math.floor(Math.log(stretch) / Math.log(2)));
+    }
+
+    /** The tiles (by tileKey) the ball shows in a view of w by h, for the equator's level (found from every few pixels). */
+    public java.util.Set<Long> visibleTiles(int w, int h, int level) {
+        java.util.Set<Long> found = new java.util.LinkedHashSet<>();
+        double r = radius(w, h), cx = w / 2.0, cy = h / 2.0;
+        double[][] a = axes();
+        // (out from the middle, so the tiles in the middle are drawn first)
+        int step = 6;
+        for (int py = 0; py < h; py += step) {
+            for (int px = 0; px < w; px += step) {
+                double vx = (px - cx) / r, vy = -(py - cy) / r, rr = vx * vx + vy * vy;
+                if (rr > 1.0) continue;
+                double[] uv = chartOf(vx, vy, Math.sqrt(1.0 - rr), a);
+                int at = levelAt(uv[2], level), n = 1 << at;
+                int tx = (int) (uv[0] * n), ty = (int) (uv[1] * n);
+                if (tx >= 0 && tx < n && ty >= 0 && ty < n) found.add(tileKey(at, tx, ty));
+            }
+        }
+        return found;
+    }
+
+    /** Gives the ball the tiles ready for it (drawn afresh only when they're different). */
+    public void setDetail(int level, java.util.Map<Long, int[]> tiles, String sourceKey) {
+        if (level == detailLevel && sourceKey.equals(detailSource) && tiles.keySet().equals(detail.keySet())) return;
+        detailLevel = level;
+        detail = tiles;
+        detailSource = sourceKey;
+        picture = null;
+    }
+
+    /** Where a point on the ball (vx, vy, vz in the view's axes) is on the chart, {u, v} (0 to 1), and its latitude. */
+    private double[] chartOf(double vx, double vy, double vz, double[][] a) {
+        double dx = vx * a[0][0] + vy * a[1][0] + vz * a[2][0];
+        double dy = vx * a[0][1] + vy * a[1][1] + vz * a[2][1];
+        double dz = vx * a[0][2] + vy * a[1][2] + vz * a[2][2];
+        double lat = Math.asin(Math.max(-1.0, Math.min(1.0, dy)));
+        lat = Math.max(-1.5, Math.min(1.5, lat));
+        double lon = Math.atan2(-dz, dx);
+        return new double[] { (MapProjection.x(lon) + halfRegion) / totalRegionWidth, (MapProjection.z(lat) + halfRegion) / totalRegionWidth, lat };
+    }
+
     public void zoomBy(double steps, double factor) {
         zoom = Math.max(1.0, Math.min(MAX_ZOOM, zoom * Math.pow(factor, steps)));
     }
@@ -106,7 +201,7 @@ public final class RevealGlobe {
     // ------------------------------------------------------------------ seeing it
 
     private double radius(int w, int h) {
-        return Math.min(w, h) * RADIUS_SHARE * zoom;
+        return Math.min(w, h) * radiusShare * zoom;
     }
 
     /** The view's axes in the world: {east (right), north (up), towards the viewer}. */
@@ -129,6 +224,21 @@ public final class RevealGlobe {
         double ny = d.x() * a[1][0] + d.y() * a[1][1] + d.z() * a[1][2];
         double cz = d.x() * a[2][0] + d.y() * a[2][1] + d.z() * a[2][2];
         return new double[] { x + w / 2.0 + ex * r, y + h / 2.0 - ny * r, cz };
+    }
+
+    /**
+     * The direction from the planet's centre under a point on screen (sx, sy) in a view of w by h
+     * at (x, y): the inverse of project; null off the ball.
+     */
+    public GeodesicChunkGrid.Direction unproject(double sx, double sy, int x, int y, int w, int h) {
+        double r = radius(w, h);
+        double vx = (sx - x - w / 2.0) / r, vy = -(sy - y - h / 2.0) / r;
+        double rr = vx * vx + vy * vy;
+        if (rr > 1.0) return null;
+        double vz = Math.sqrt(1.0 - rr);
+        double[][] a = axes();
+        return new GeodesicChunkGrid.Direction(vx * a[0][0] + vy * a[1][0] + vz * a[2][0], vx * a[0][1] + vy * a[1][1] + vz * a[2][1],
+                vx * a[0][2] + vy * a[1][2] + vz * a[2][2]).normalized();
     }
 
     /** Draws the space behind, the rod through the poles and the globe, in a view of w by h at (x, y). */
@@ -181,6 +291,8 @@ public final class RevealGlobe {
         double[][] a = axes();
         int[] tex = texture;
         int tw = textureW, th = textureH;
+        java.util.Map<Long, int[]> tiles = detail;
+        int equatorLevel = detailLevel, size = MapTiles.SIZE;
         int top = (int) Math.max(0, Math.floor(cy - r - 1)), bottom = (int) Math.min(h - 1, Math.ceil(cy + r + 1));
         java.util.stream.IntStream.rangeClosed(top, bottom).parallel().forEach(py -> {
             double vy = -(py + 0.5 - cy) / r;
@@ -190,19 +302,29 @@ public final class RevealGlobe {
                 double edge = (1.0 - Math.sqrt(rr)) * r + 0.5;   // (pixels inside the rim, for a smooth edge)
                 if (edge <= 0.0) continue;
                 double vz = Math.sqrt(Math.max(0.0, 1.0 - rr));
-                double dx = vx * a[0][0] + vy * a[1][0] + vz * a[2][0];
-                double dy = vx * a[0][1] + vy * a[1][1] + vz * a[2][1];
-                double dz = vx * a[0][2] + vy * a[1][2] + vz * a[2][2];
                 int rgb = 0x3060a0;
                 if (tex != null) {
-                    double lat = Math.asin(Math.max(-1.0, Math.min(1.0, dy)));
-                    lat = Math.max(-1.5, Math.min(1.5, lat));
-                    double lon = Math.atan2(-dz, dx);
-                    double u = (MapProjection.x(lon) + halfRegion) / totalRegionWidth;
-                    double v = (MapProjection.z(lat) + halfRegion) / totalRegionWidth;
-                    int tx = Math.max(0, Math.min(tw - 1, (int) (u * tw)));
-                    int ty = Math.max(0, Math.min(th - 1, (int) (v * th)));
-                    rgb = tex[ty * tw + tx];
+                    double[] uv = chartOf(vx, vy, vz, a);
+                    double u = uv[0], v = uv[1];
+                    // From the detail tile there, if it's ready; else the whole texture
+                    int[] tile = null;
+                    int sx = 0, sy = 0;
+                    if (equatorLevel > 0) {
+                        int n = 1 << levelAt(uv[2], equatorLevel);
+                        int tx = (int) (u * n), ty = (int) (v * n);
+                        if (tx >= 0 && tx < n && ty >= 0 && ty < n) {
+                            tile = tiles.get(tileKey(levelAt(uv[2], equatorLevel), tx, ty));
+                            sx = Math.max(0, Math.min(size - 1, (int) ((u * n - tx) * size)));
+                            sy = Math.max(0, Math.min(size - 1, (int) ((v * n - ty) * size)));
+                        }
+                    }
+                    if (tile != null) {
+                        rgb = tile[sy * size + sx];
+                    } else {
+                        int tx = Math.max(0, Math.min(tw - 1, (int) (u * tw)));
+                        int ty = Math.max(0, Math.min(th - 1, (int) (v * th)));
+                        rgb = tex[ty * tw + tx];
+                    }
                 }
                 // Lit from the upper left, never quite dark; the air's haze thickening to the rim
                 double light = 0.5 + 0.55 * Math.max(0.0, vx * LIGHT[0] + vy * LIGHT[1] + vz * LIGHT[2]);

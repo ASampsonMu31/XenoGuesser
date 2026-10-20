@@ -1,0 +1,37 @@
+#version 330 core
+
+// The oxygen's downgrade (M52): light-headedness. The view blurred, swaying and turning a little
+// about the middle, seen double (a ghost drifting to one side and back) and darker at the edges,
+// all the more the greater the strength (0 none, 1 the worst)
+
+in vec2 uv;
+out vec4 fragColour;
+
+uniform sampler2D scene;
+uniform float strength;
+uniform float time;
+uniform vec2 texel;      // one pixel, in uv
+
+void main() {
+    vec2 centre = uv - 0.5;
+    // The sway: drifting slowly about, and turning a little
+    float twist = sin(time * 0.5) * strength * 0.02;
+    vec2 turned = vec2(centre.x * cos(twist) - centre.y * sin(twist), centre.x * sin(twist) + centre.y * cos(twist));
+    // (drawn a little closer, the stronger, so the sway and the ghost never reach past the edges)
+    vec2 at = turned * (1.0 - 0.05 * strength) + 0.5 + vec2(sin(time * 0.9), cos(time * 0.7)) * strength * 0.012;
+    // The blur: a disc of samples, wider the stronger
+    float radius = strength * 9.0;
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 16; i++) {
+        float angle = float(i) * 2.39996;
+        float r = sqrt((float(i) + 0.5) / 16.0) * radius;
+        sum += texture(scene, at + vec2(cos(angle), sin(angle)) * r * texel).rgb;
+    }
+    vec3 blurred = sum / 16.0;
+    // Seeing double: a ghost of the view off to one side, coming and going
+    vec2 ghost = vec2(sin(time * 1.3), sin(time * 0.8) * 0.4) * strength * 0.018;
+    vec3 colour = mix(blurred, texture(scene, at + ghost).rgb, 0.35 * strength);
+    // Darker round the edges
+    colour *= 1.0 - strength * 0.45 * smoothstep(0.35, 0.85, length(centre));
+    fragColour = vec4(colour, 1.0);
+}
