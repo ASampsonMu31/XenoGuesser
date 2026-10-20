@@ -245,6 +245,23 @@ public class OrganismMesh {
             }
         }
 
+        /**
+         * A single vertex of the current bone and part, placed by the current transform (for
+         * surfaces a lathe or box can't make, such as a wall with a doorway cut in it); returns
+         * its index, for triangle().
+         */
+        public int vertex(float x, float y, float z, float nx, float ny, float nz, float u, float v) {
+            int index = vertexFloats / STRIDE;
+            addVertex(Affine.transformPoint(transform, x, y, z),
+                    Affine.normalise(Affine.transformDirection(transform, nx, ny, nz)), u, v);
+            return index;
+        }
+
+        /** A triangle between three vertices already added. */
+        public void triangle(int a, int b, int c) {
+            addTriangle(a, b, c);
+        }
+
         private void addVertex(float[] p, float[] n, float u, float v) {
             if (vertexFloats + STRIDE > vertices.length) {
                 vertices = Arrays.copyOf(vertices, vertices.length * 2);

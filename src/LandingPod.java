@@ -28,9 +28,9 @@ public class LandingPod {
     private static final float LEG_SHOULDER = 22f, FOOT_OUT = (float) (36.0 * Math.sin(Math.PI * 0.25));
 
     // The hull: a cone from the heat shield up to a rounded top
-    private static final float HULL_BASE = 14f, HULL_TOP = 58f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
+    static final float HULL_BASE = 14f, HULL_TOP = 58f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
     // The hatch platform's floor, and where the stairs leave it
-    private static final float PLATFORM_HEIGHT = 17f, PLATFORM_FRONT = 27f;
+    static final float PLATFORM_HEIGHT = 17f, PLATFORM_FRONT = 27f;
     private static final float STAIR_RUN = 5f, STAIR_LENGTH = 20f;
     // How wide the stairs (and the platform at their top) are, and the hatch's dark doorway and
     // metal frame: singleplayer's, and multiplayer's, wide enough for two side by side (M11)
@@ -174,20 +174,20 @@ public class LandingPod {
     // How high the stairs' handrails stand above the treads
     private static final float RAIL_HEIGHT = 17f;
 
-    private static float hullHeightAt(float t) {
+    static float hullHeightAt(float t) {
         if (t < 0.8f) return HULL_BASE + (HULL_TOP - 9f - HULL_BASE) * (t / 0.8f);
         float a = (t - 0.8f) / 0.2f * (float) Math.PI * 0.5f;
         return HULL_TOP - 9f + 9f * (float) Math.sin(a);
     }
 
-    private static float hullRadiusAt(float t) {
+    static float hullRadiusAt(float t) {
         if (t < 0.8f) return HULL_RADIUS + (TOP_RADIUS - HULL_RADIUS) * (t / 0.8f);
         float a = (t - 0.8f) / 0.2f * (float) Math.PI * 0.5f;
         return TOP_RADIUS * (float) Math.cos(a);
     }
 
     /** The hull's radius at a height on its conical part. */
-    private static float radiusAtHeight(float y) {
+    static float radiusAtHeight(float y) {
         float f = Math.max(0f, Math.min(1f, (y - HULL_BASE) / (HULL_TOP - 9f - HULL_BASE)));
         return HULL_RADIUS + (TOP_RADIUS - HULL_RADIUS) * f;
     }

@@ -425,6 +425,8 @@ public class TransmissionMessage {
             ended = true;
         }, "message-audio");
         writer.setDaemon(true);
+        // (ahead of the world being made, so the voice never stutters while it is)
+        writer.setPriority(Thread.MAX_PRIORITY);
         writer.start();
         Thread poll = new Thread(() -> {
             while (!stopped && !ended) {

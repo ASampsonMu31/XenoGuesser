@@ -30,7 +30,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 1;
+    public static final int PROTOCOL_VERSION = 2;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -54,6 +54,20 @@ public final class Multiplayer {
     static final byte LEAVE = 10;
     static final byte STAGE_DONE = 11;
     static final byte ALPHABETS = 12;
+    // In the landing pod as the world loads (see PodSequence): how far each PC's loaded, where
+    // each player is in the cabin, the lights switch and pushes of the chair, and (from the
+    // host, whose it is) where the chair is
+    static final byte LOAD_PROGRESS = 13;
+    static final byte POD_POSE = 14;
+    static final byte POD_EVENT = 15;
+    static final byte CHAIR_STATE = 16;
+
+    // POD_EVENT kinds
+    public static final byte POD_LIGHTS_OFF = 1;
+    public static final byte POD_CHAIR_PUSH = 2;
+    public static final byte POD_READY = 3;
+    // How often the loading, the pod pose and the chair are sent (ms)
+    private static final long PROGRESS_INTERVAL_MS = 250, POD_POSE_INTERVAL_MS = 50, CHAIR_INTERVAL_MS = 66;
 
     // Stage ids for STAGE_DONE, the lock-step points that have no message of their own: a
     // quarter's verdict panel (plus the quarter, 1 to 4), and a final decider's (plus its number)
@@ -165,6 +179,17 @@ public final class Multiplayer {
     private volatile boolean closed;
     private volatile String remoteJavaVersion;
     private volatile long lastHeardMs;
+
+    // In the pod: this PC's share loaded, its player's pose there {x, y, z, yaw, pitch} and the
+    // chair's {x, z, vx, vz, angle} (host only), latest first, and when each last went
+    private volatile float localProgress = -1f;
+    private volatile float[] localPodPose, localChair;
+    private long lastProgressSentMs, lastPodPoseSentMs, lastChairSentMs;
+    // ...and the partner's: their share loaded, their pose in the pod {x, y, z, yaw, pitch, when
+    // received}, the chair as the host has it, and the lights switched and chair pushed by them
+    private volatile float remoteProgress;
+    private volatile float[] remotePodPose, remoteChair;
+    private final java.util.concurrent.ConcurrentLinkedQueue<float[]> remotePodEvents = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     // What the partner has said
     private volatile boolean remoteWorldReady;
@@ -374,6 +399,46 @@ public final class Multiplayer {
         return remoteBegun;
     }
 
+    /** The partner's share of their world loaded, 0 to 1 (1 once it's ready). */
+    public float remoteProgress() {
+        return remoteWorldReady ? 1f : remoteProgress;
+    }
+
+    /** The partner's pose in the pod {x, y, z, yaw, pitch, this PC's time it came (ms)}, or null. */
+    public float[] remotePodPose() {
+        return remotePodPose;
+    }
+
+    /** The chair as the host's PC has it {x, z, vx, vz, angle}, or null. */
+    public float[] remoteChair() {
+        return remoteChair;
+    }
+
+    /** The next thing the partner did in the pod {kind, a, b}, or null. */
+    public float[] nextPodEvent() {
+        return remotePodEvents.poll();
+    }
+
+    /** This PC's share loaded (sent four times a second). */
+    public void publishProgress(float progress) {
+        localProgress = progress;
+    }
+
+    /** This player's pose in the pod {x, y, z, yaw, pitch} (sent twenty times a second). */
+    public void publishPodPose(float[] pose) {
+        localPodPose = pose;
+    }
+
+    /** Host: the chair {x, z, vx, vz, angle} (sent fifteen times a second). */
+    public void publishChair(float[] chair) {
+        localChair = chair;
+    }
+
+    /** Something done in the pod: the lights switched off, or the chair pushed from (a, b). */
+    public void sendPodEvent(byte kind, float a, float b) {
+        send(message(POD_EVENT, 1 + 8).put(kind).putFloat(a).putFloat(b), true);
+    }
+
     public Guess remoteGuess(int round) {
         return remoteGuesses.get(round);
     }
@@ -466,7 +531,8 @@ public final class Multiplayer {
         if (closed || t == null) return;
         if (MUTE_AFTER_MS != null && playing && System.currentTimeMillis() - playingSince > MUTE_AFTER_MS) return;
         m.flip();
-        if (m.get(0) != POSE) System.out.println("[MP] -> " + describe(m));
+        byte kind = m.get(0);
+        if (kind != POSE && kind != LOAD_PROGRESS && kind != POD_POSE && kind != CHAIR_STATE) System.out.println("[MP] -> " + describe(m));
         t.send(m, reliable);
     }
 
@@ -509,7 +575,9 @@ public final class Multiplayer {
             notifyListeners(l -> l.disconnected(reason));
             return;
         }
-        if (!ready || closed || now - lastPoseSentMs < POSE_INTERVAL_MS) return;
+        if (!ready || closed) return;
+        tickPod(now);
+        if (now - lastPoseSentMs < POSE_INTERVAL_MS) return;
         Pose pose = localPose.get();
         if (pose == null) return;
         lastPoseSentMs = now;
@@ -520,6 +588,29 @@ public final class Multiplayer {
         send(m, false);
     }
 
+    /** The pod's own news, each at its own pace (networking thread). */
+    private void tickPod(long now) {
+        float progress = localProgress;
+        if (progress >= 0f && now - lastProgressSentMs >= PROGRESS_INTERVAL_MS) {
+            lastProgressSentMs = now;
+            send(message(LOAD_PROGRESS, 4).putFloat(progress), false);
+        }
+        float[] pose = localPodPose;
+        if (pose != null && now - lastPodPoseSentMs >= POD_POSE_INTERVAL_MS) {
+            lastPodPoseSentMs = now;
+            ByteBuffer m = message(POD_POSE, 5 * 4);
+            for (int i = 0; i < 5; i++) m.putFloat(pose[i]);
+            send(m, false);
+        }
+        float[] chair = localChair;
+        if (chair != null && role == Role.HOST && now - lastChairSentMs >= CHAIR_INTERVAL_MS) {
+            lastChairSentMs = now;
+            ByteBuffer m = message(CHAIR_STATE, 5 * 4);
+            for (int i = 0; i < 5; i++) m.putFloat(chair[i]);
+            send(m, false);
+        }
+    }
+
     // ---- Receiving ----
 
     /** Reads one message from the partner (networking thread). Anything malformed is ignored with a log line. */
@@ -528,7 +619,7 @@ public final class Multiplayer {
         if (length == 0) return;
         lastHeardMs = System.currentTimeMillis();
         byte type = m.get(m.position());
-        if (type != POSE) System.out.println("[MP] <- " + describe(m.duplicate()));
+        if (type != POSE && type != LOAD_PROGRESS && type != POD_POSE && type != CHAIR_STATE) System.out.println("[MP] <- " + describe(m.duplicate()));
         try {
             m.get();
             boolean changed = read(type, m);
@@ -626,6 +717,33 @@ public final class Multiplayer {
                 notifyListeners(l -> l.disconnected(reason));
                 return false;
             }
+            case LOAD_PROGRESS -> {
+                float progress = m.getFloat();
+                if (m.hasRemaining()) return false;
+                remoteProgress = Math.max(remoteProgress, Math.max(0f, Math.min(1f, progress)));
+                return false;
+            }
+            case POD_POSE -> {
+                float[] pose = new float[6];
+                for (int i = 0; i < 5; i++) pose[i] = m.getFloat();
+                if (m.hasRemaining()) return false;
+                pose[5] = System.currentTimeMillis();
+                remotePodPose = pose;
+                return false;
+            }
+            case POD_EVENT -> {
+                float[] event = { m.get(), m.getFloat(), m.getFloat() };
+                if (m.hasRemaining()) return false;
+                remotePodEvents.add(event);
+                return false;
+            }
+            case CHAIR_STATE -> {
+                float[] chair = new float[5];
+                for (int i = 0; i < 5; i++) chair[i] = m.getFloat();
+                if (m.hasRemaining() || role != Role.JOIN) return false;
+                remoteChair = chair;
+                return false;
+            }
             case ALPHABETS -> {
                 int size = m.getInt();
                 if (size < 0 || size != m.remaining() || !expect(Role.JOIN, "ALPHABETS")) {
@@ -712,6 +830,10 @@ public final class Multiplayer {
                 case LEAVE -> "LEAVE";
                 case STAGE_DONE -> "STAGE_DONE " + m.getInt();
                 case ALPHABETS -> "ALPHABETS " + m.getInt() + " bytes";
+                case LOAD_PROGRESS -> "LOAD_PROGRESS " + m.getFloat();
+                case POD_POSE -> "POD_POSE";
+                case POD_EVENT -> "POD_EVENT " + m.get();
+                case CHAIR_STATE -> "CHAIR_STATE";
                 default -> "unknown type " + type + " (" + original.remaining() + " bytes)";
             };
         } catch (BufferUnderflowException e) {

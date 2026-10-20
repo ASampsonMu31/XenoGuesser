@@ -303,9 +303,12 @@ private static class SpeciesConfig {
     private boolean worldReady = false;
     private int framesRenderedSinceReady = 0;
     // While loading, grass seeding may keep going for this long per frame; in play it seeds one far chunk per frame
-    private static final long LOADING_GRASS_BUDGET_NANOS = 45_000_000L;
+    // (small, so the landing pod's frames keep coming while it's done behind them: at least one step a frame)
+    private static final long LOADING_GRASS_BUDGET_NANOS = 8_000_000L;
     // Between rounds the new surroundings are built in slices of this long per frame
     private static final long ROUND_LOADING_BUDGET_NANOS = 45_000_000L;
+    // ...and the world's first load, under the landing pod (see deferFirstFrames)
+    private static final long POD_LOADING_BUDGET_NANOS = 10_000_000L;
     private boolean roundLoading = false;
     private long roundChunkDeadline;
     private long roundLoadingStarted;
@@ -825,10 +828,16 @@ private static class SpeciesConfig {
     private volatile boolean mapsReady;
     private long loadingMapsFrom;
 
+    // The set-up's steps (see coreSteps and finishSteps), once begun
+    private List<Runnable> coreSteps, finishSteps;
+
     private boolean advanceLoading() {
         if (loadingStep == 0) {
-            loading.begin(LoadingProgress.Stage.GPU_UPLOAD);
-            initialiseCore();
+            if (coreSteps == null) {
+                loading.begin(LoadingProgress.Stage.GPU_UPLOAD);
+                coreSteps = coreSteps();
+            }
+            if (!runSteps(coreSteps)) return false;
             loadingStep++;
             loading.begin(LoadingProgress.Stage.FLORA);
             return false;
@@ -849,7 +858,8 @@ private static class SpeciesConfig {
             return false;
         }
         if (loadingStep == floraSteps + 1) {
-            finishInitialise();
+            if (finishSteps == null) finishSteps = finishSteps();
+            if (!runSteps(finishSteps)) return false;
             loadingStep++;
             return false;
         }
@@ -869,7 +879,11 @@ private static class SpeciesConfig {
             return false;
         }
         // Every rock round the landing site, near and far, is in place before the round starts
-        if (rockField != null) rockField.update(gl, camera.getSpherePosition(), true);
+        // (made on the builder threads, put up as each is ready, so no one frame takes them all)
+        if (rockField != null) {
+            rockField.update(gl, camera.getSpherePosition(), false);
+            if (!rockField.allBuilt()) return false;
+        }
         loading.begin(LoadingProgress.Stage.FIRST_FRAME);
         startTime = getSeconds();
         lastElapsedTime = 0;
@@ -1013,6 +1027,12 @@ private static class SpeciesConfig {
             ocean.start();
             scale.setDaemon(true);
             scale.start();
+        }
+        // (in the landing pod: ready now, the first frames drawn once the hatch is opened)
+        if (firstFramesDeferred && !loading.isFinished()) {
+            loading.finish();
+            if (onWorldReady != null) javax.swing.SwingUtilities.invokeLater(onWorldReady);
+            return;
         }
 
         // The weather's heard only while the world's in view: checked first, before a frame given
@@ -1332,6 +1352,14 @@ private static class SpeciesConfig {
         this.onWorldReady = onWorldReady;
     }
 
+    // Whether the world's ready as soon as it's loaded, its first frames drawn only once it's
+    // shown (while the landing pod's up, they'd only stall its frames, seen by no one)
+    private volatile boolean firstFramesDeferred;
+
+    public void deferFirstFrames() {
+        firstFramesDeferred = true;
+    }
+
     /**
      * How far the soil's colour departs from the base soil texture over the whole sphere, as a
      * cube map (see SphereRaster) of per-channel ratios, halved to fit in [0, 1], three bytes a
@@ -1546,20 +1574,66 @@ private static class SpeciesConfig {
         return Matrix4.fromColumns(m);
     }
 
-    private void initialiseCore() {
+    /**
+     * The GL side's set-up (textures, shaders, the posts, signs and sea), as many small steps,
+     * run a few to a frame (see runSteps) so the landing pod's frames keep coming as it's done.
+     */
+    private List<Runnable> coreSteps() {
+        // Every picture the steps put on the GPU, read and decoded ahead on a background thread
+        List<String> pictures = new ArrayList<>(List.of(WorldArtGenerator.pathFor(WorldArtGenerator.SOIL),
+                WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_TILE), WorldArtGenerator.pathFor(WorldArtGenerator.SEA),
+                WorldArtGenerator.pathFor(WorldArtGenerator.SKY), WorldArtGenerator.pathFor(WorldArtGenerator.SUN_GLOW)));
+        for (int s = 0; s < NUM_SPECIES; s++) pictures.add(WorldArtGenerator.pathFor(WorldArtGenerator.leafName(s)));
+        for (String name : infraManager.textureJobs().keySet()) pictures.add(WorldArtGenerator.pathFor(name));
+        pictures.add(WorldArtGenerator.pathFor(WorldArtGenerator.GRASS_ATLAS));
+        TextureLibrary.prefetch(gl.getGLProfile(), pictures);
+        List<Runnable> steps = new ArrayList<>();
         // All textures were generated for this world by WorldArtGenerator before the window opened
-        textures = new TextureLibrary();
-        // Repeating: dirt tracks lay it at world scale, well past one tile
-        textures.addWrap(gl, "dirt_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL));
+        steps.add(() -> {
+            textures = new TextureLibrary();
+            // Repeating: dirt tracks lay it at world scale, well past one tile
+            textures.addWrap(gl, "dirt_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL));
+        });
         // (the ground's own, on its triangular cells: clamped, as it has its own margins round them)
-        textures.add(gl, "soil_tile", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_TILE));
-        textures.add(gl, "water_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SEA));
-        textures.add(gl, "sky", WorldArtGenerator.pathFor(WorldArtGenerator.SKY));
-        textures.add(gl, "sun_glow", WorldArtGenerator.pathFor(WorldArtGenerator.SUN_GLOW));
+        steps.add(() -> textures.add(gl, "soil_tile", WorldArtGenerator.pathFor(WorldArtGenerator.SOIL_TILE)));
+        steps.add(() -> textures.add(gl, "water_diffuse", WorldArtGenerator.pathFor(WorldArtGenerator.SEA)));
+        steps.add(() -> textures.add(gl, "sky", WorldArtGenerator.pathFor(WorldArtGenerator.SKY)));
+        steps.add(() -> textures.add(gl, "sun_glow", WorldArtGenerator.pathFor(WorldArtGenerator.SUN_GLOW)));
         for (int s = 0; s < NUM_SPECIES; s++) {
-            textures.add(gl, "leaf" + s, WorldArtGenerator.pathFor(WorldArtGenerator.leafName(s)));
+            int species = s;
+            steps.add(() -> textures.add(gl, "leaf" + species, WorldArtGenerator.pathFor(WorldArtGenerator.leafName(species))));
         }
+        steps.add(this::initialiseLightAndSky);
+        steps.add(() -> sphereWeather = new SphereWeather(gl, worldSeed));
+        steps.add(this::initialiseCoreShaders);
+        steps.add(this::initialiseGround);
+        // Each nation's wall, roof and fence textures repeat across surfaces
+        for (String name : infraManager.textureJobs().keySet()) {
+            steps.add(() -> {
+                textures.addWrap(gl, name, WorldArtGenerator.pathFor(name));
+                enableAnisotropicFiltering(textures.get(name));
+            });
+        }
+        steps.add(this::initialisePosts);
+        steps.add(this::initialiseSigns);
+        for (int n = 1; n <= totalNationsCount; n++) {
+            int nation = n;
+            steps.add(() -> initialiseSign(nation));
+        }
+        steps.add(() -> {
+            // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
+            floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
+            floraOutlines = new float[NUM_SPECIES][FLORA_VARIATIONS][];
+            floraLeafModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
+            leafShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_leaf.txt");
+        });
+        steps.add(this::initialiseWater);
+        steps.add(this::initialiseGrass);
+        return steps;
+    }
 
+    /** The sea's texture repeating, the light and the sun, and the sky. */
+    private void initialiseLightAndSky() {
         Texture waterTexInstance = textures.get("water_diffuse");
         waterTexInstance.bind(gl);
         gl.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_REPEAT);
@@ -1585,14 +1659,17 @@ private static class SpeciesConfig {
         lights[0] = l;
 
         sphereSkyRenderer = new SphereSkyRenderer(gl);
-        sphereWeather = new SphereWeather(gl, worldSeed);
-        
+    }
 
+    private void initialiseCoreShaders() {
         terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_solid.txt");
         glassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_glass.txt", GamePaths.HOME + "assets/shaders/fs_glass.txt");
+    }
 
+    /** The ground's material, and the cube maps of the soil's regions and the sea's waves. */
+    private void initialiseGround() {
         terrainMaterial = new Material(
             new Vector3(1.0f, 1.0f, 1.0f), 
             new Vector3(1.0f, 1.0f, 1.0f), 
@@ -1608,12 +1685,10 @@ private static class SpeciesConfig {
         // The sea's waves: how big they are and the distance to the shore, by direction
         float[] waves = regionalManager.waveFieldTexels();
         if (waves != null) waveFieldTexture = uploadCubeMap(regionalManager.waveFieldSide(), waves);
+    }
 
-        // Each nation's wall, roof and fence textures repeat across surfaces
-        for (String name : infraManager.textureJobs().keySet()) {
-            textures.addWrap(gl, name, WorldArtGenerator.pathFor(name));
-            enableAnisotropicFiltering(textures.get(name));
-        }
+    /** The renderer for the world, and each nation's posts. */
+    private void initialisePosts() {
         infraManager.setNationTextures(textures::get);
         terrainRenderer = new Renderer();
         // (the sun lights the world: its position is kept relative to the eyes, see render)
@@ -1654,10 +1729,17 @@ private static class SpeciesConfig {
             postModelsByNation.put(n, postModel);
         }
 
+    }
+
+    // The signs' board, shared by every nation's (see initialiseSign)
+    private Mesh signMeshBase;
+
+    /** The signs' shader and board. */
+    private void initialiseSigns() {
         // 3. Pre-compile the flat TwoTriangles billboard models for each nation with Text Atlas Mapping
         signboardShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_signboard.txt");
-        Mesh signMeshBase = signBoardMesh(gl, 16);
-        
+        signMeshBase = signBoardMesh(gl, 16);
+
         this.nationAtlases = new HashMap<>();
         this.nationAtlasSizes = new HashMap<>();
         this.nationDirections = new HashMap<>();
@@ -1671,8 +1753,11 @@ private static class SpeciesConfig {
         if (totalAvailableAlphabets == 0) {
             System.err.println("Warning: No alphabet folders found in generated_alphabets!");
         }
-        
-        for (int n = 1; n <= totalNationsCount; n++) {
+    }
+
+    /** A nation's sign: its writing's atlas and its board's model. */
+    private void initialiseSign(int n) {
+        {
             // Writing direction (0=LR, 1=RL, 2=UD, 3=DU) and alphabet, shared with the shops and packets
             int direction = infraManager.scripts().direction(n);
             nationDirections.put(n, direction);
@@ -1703,14 +1788,6 @@ private static class SpeciesConfig {
             Model signModel = new Model("sign_nation_" + n, signMeshBase, new Matrix4(1), signboardShader, signMaterial, terrainRenderer, camera);
             signModelsByNation.put(n, signModel);
         }
-        
-        // --- MULTI-SPECIES 3D GEOMETRY COMPILATION PIPELINE ---
-        floraBranchModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
-        floraOutlines = new float[NUM_SPECIES][FLORA_VARIATIONS][];
-        floraLeafModelsLOD = new Model[NUM_SPECIES][3][FLORA_VARIATIONS];
-        
-        leafShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_leaf.txt");
-        initialiseWaterAndGrass();
     }
 
     private void initialiseFloraVariation(int s, int variation, int onlyLod) {
@@ -1805,7 +1882,7 @@ private static class SpeciesConfig {
         return new Mesh(gl, vertices, indices);
     }
 
-    private void initialiseWaterAndGrass() {
+    private void initialiseWater() {
         sphereWaterShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_water.txt",
                 GamePaths.HOME + "assets/shaders/fs_sphere_water.txt");
         riverShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_river.txt", GamePaths.HOME + "assets/shaders/fs_river.txt");
@@ -1818,8 +1895,10 @@ private static class SpeciesConfig {
         );
         waterMaterial.setDiffuseMap(textures.get("water_diffuse"));
         seaGrid = createWaterGrid(gl);
+    }
 
-        textures.add(gl, "grass_atlas", WorldArtGenerator.pathFor(WorldArtGenerator.GRASS_ATLAS));
+    private void initialiseGrass() {
+        textures.add(gl, "grass_atlas",  WorldArtGenerator.pathFor(WorldArtGenerator.GRASS_ATLAS));
         
         Texture grassTex = textures.get("grass_atlas");
         grassTex.bind(gl);
@@ -1911,17 +1990,52 @@ private static class SpeciesConfig {
         peoplePictures = null;
     }
 
-    private void finishInitialise() {
-                organismManager.initialise(gl);
-                drawSpeciesPortraits(gl);
-        inhabitants.initialise(gl);
-        // Pictures of the locals, for signs
-        deletePeoplePictures();
-        inhabitants.setFlags(n -> textures.get(InfrastructureManager.nationTextureName("flag", n)));
-        inhabitants.setPackaging(n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
-        peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, infraManager.products(),
-                n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
-        if (Dev.property("xenoguesser.dumpart") != null) dumpPeoplePictures();
+    /** The rest of the set-up once the trees are made (creatures, people, the player, the rocks, the first spawn), a step at a time as coreSteps. */
+    private List<Runnable> finishSteps() {
+        List<Runnable> steps = new ArrayList<>();
+        steps.add(() -> organismManager.initialise(gl));
+        // (a picture of each species, one at a time)
+        steps.add(() -> portraitsMade = new java.awt.Image[organismManager.speciesCount()]);
+        for (int i = 0; i < organismManager.speciesCount(); i++) {
+            int species = i;
+            steps.add(() -> portraitsMade[species] = organismManager.portrait(gl, species, 96));
+        }
+        steps.add(() -> showSpeciesPortraits(portraitsMade));
+        // (and each plant's, likewise: so the map's and the shop's choices have them from the start)
+        steps.add(() -> floraMade = new java.awt.Image[NUM_SPECIES]);
+        for (int s = 0; s < NUM_SPECIES; s++) {
+            int species = s;
+            steps.add(() -> floraMade[species] = floraPortrait(gl, species));
+        }
+        steps.add(() -> showFloraPortraits(floraMade));
+        steps.add(() -> inhabitants.initialise(gl));
+        steps.add(() -> {
+            // Pictures of the locals, for signs
+            deletePeoplePictures();
+            inhabitants.setFlags(n -> textures.get(InfrastructureManager.nationTextureName("flag", n)));
+            inhabitants.setPackaging(n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
+            peoplePictures = inhabitants.renderPictures(gl, totalNationsCount, infraManager.products(),
+                    n -> textures.get(InfrastructureManager.nationTextureName("packaging", n)));
+            if (Dev.property("xenoguesser.dumpart") != null) dumpPeoplePictures();
+        });
+        steps.add(this::initialiseBodies);
+        steps.add(() -> landingPod.initialise(gl));
+        steps.add(() -> {
+            rockField = rocks();
+            rockField.setKeepout((p, r) -> {
+                if (podCovers(p, r)) return true;
+                return infraManager.isRoadLocation(p, r + 2f) || infraManager.isBuildingLocation(p, r + 4f);
+            });
+            rockField.initialise(gl, terrainBuilders);
+        });
+        steps.add(() -> hud.initialise(gl));
+        steps.add(this::spawnPlayerAtRandomLocation);
+        steps.add(() -> createDepthFramebuffer(gl, currentWidth, currentHeight));
+        return steps;
+    }
+
+    /** The player's own body, and in multiplayer the partner's. */
+    private void initialiseBodies() {
         playerBody.initialise(gl);
         Multiplayer session = Multiplayer.active();
         if (session != null) {
@@ -1932,16 +2046,35 @@ private static class SpeciesConfig {
             partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, session.role.other().litTrimColour());
             partnerBody.initialise(gl);
         }
-        landingPod.initialise(gl);
-        rockField = rocks();
-        rockField.setKeepout((p, r) -> {
-            if (podCovers(p, r)) return true;
-            return infraManager.isRoadLocation(p, r + 2f) || infraManager.isBuildingLocation(p, r + 4f);
-        });
-        rockField.initialise(gl, terrainBuilders);
-        hud.initialise(gl);
-        spawnPlayerAtRandomLocation();
-        createDepthFramebuffer(gl, currentWidth, currentHeight);
+    }
+
+    // The set-up steps under way (coreSteps, then finishSteps), and how many of them are done
+    private List<Runnable> setUpSteps;
+    private int setUpDone;
+    // How long a frame's set-up steps may take together (always at least one a frame)
+    private static final long SET_UP_BUDGET_NANOS = 6_000_000L;
+    // Developer aid: -Dxenoguesser.podstalls logs each set-up step that takes long
+    private static final boolean LOG_SLOW_STEPS = Dev.property("xenoguesser.podstalls") != null;
+
+    /**
+     * Runs the next of the set-up steps, as many as fit in SET_UP_BUDGET_NANOS (at least one),
+     * reporting how far through they are; true once they're all done.
+     */
+    private boolean runSteps(List<Runnable> steps) {
+        if (setUpSteps != steps) {
+            setUpSteps = steps;
+            setUpDone = 0;
+        }
+        long end = System.nanoTime() + SET_UP_BUDGET_NANOS;
+        do {
+            long started = System.nanoTime();
+            steps.get(setUpDone).run();
+            long took = (System.nanoTime() - started) / 1_000_000L;
+            if (LOG_SLOW_STEPS && took > 40) System.out.printf("[STALL] Set-up step %d of %d took %d ms%n", setUpDone + 1, steps.size(), took);
+            setUpDone++;
+        } while (setUpDone < steps.size() && System.nanoTime() < end);
+        loading.report(setUpDone / (float) steps.size());
+        return setUpDone >= steps.size();
     }
 
     /**
@@ -2566,8 +2699,12 @@ private static class SpeciesConfig {
         // Right round the player is built at once; everything else waits for spare time, a
         // slice of each frame (bigger while loading), so crossing into a new cell never
         // stalls a frame building the whole of the next row
+        // (under the landing pod nothing's seen until it's all built, so even what's right round
+        // the player waits its turn, and the pod's frames keep coming)
+        if (firstFramesDeferred && !worldReady) return System.nanoTime() > roundChunkDeadline;
         if (ring <= 1) return false;
-        if ((roundLoading || !worldReady) && ring <= 2) return false;
+        // (while loading, the next ring too: but not under the landing pod, where it's not seen and the pod's frames matter more)
+        if ((roundLoading || (!worldReady && !firstFramesDeferred)) && ring <= 2) return false;
         return System.nanoTime() > roundChunkDeadline;
     }
 
@@ -2588,13 +2725,13 @@ private static class SpeciesConfig {
             Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 2 - 1)), r -> {
                 Thread thread = new Thread(r, "terrain-builder");
                 thread.setDaemon(true);
-                thread.setPriority(Thread.NORM_PRIORITY - 1);
+                thread.setPriority(Thread.NORM_PRIORITY - 2);
                 return thread;
             });
-    // The world's first build gets every spare thread too
+    // The world's first build gets every spare thread too (but one, so the frames keep coming)
     { setBuilderThreads(true); }
     private static final int PLAY_BUILDERS = Math.max(1, Math.min(3, Runtime.getRuntime().availableProcessors() / 2 - 1));
-    private static final int LOADING_BUILDERS = Math.max(PLAY_BUILDERS, Runtime.getRuntime().availableProcessors() - 1);
+    private static final int LOADING_BUILDERS = Math.max(PLAY_BUILDERS, Runtime.getRuntime().availableProcessors() - 2);
 
     /** More builder threads while a round loads behind the results, fewer while it's being played. */
     private void setBuilderThreads(boolean loading) {
@@ -3242,7 +3379,9 @@ private static class SpeciesConfig {
 
     private void updateVisibleChunks(boolean forceImmediate) {
         boolean loadingNow = roundLoading || teleportLoading || !worldReady;
-        roundChunkDeadline = System.nanoTime() + (loadingNow ? ROUND_LOADING_BUDGET_NANOS : PLAY_CHUNK_BUDGET_NANOS);
+        // (the world's first load under the landing pod takes a smaller slice, so the pod's frames keep coming)
+        long budget = !loadingNow ? PLAY_CHUNK_BUDGET_NANOS : firstFramesDeferred && !worldReady ? POD_LOADING_BUDGET_NANOS : ROUND_LOADING_BUDGET_NANOS;
+        roundChunkDeadline = System.nanoTime() + budget;
         infraManager.prepareRoadNetwork(seaLevelHeight, worldNoise);
         boolean pending = false;
 
@@ -3336,6 +3475,10 @@ private static class SpeciesConfig {
      */
     private void updateVegetation(boolean all) {
         SpherePosition here = camera.getSpherePosition();
+        // (under the landing pod, even the plants right round the player are made on the builders)
+        boolean underPod = firstFramesDeferred && !worldReady;
+        floraStream.setNearAtOnce(!underPod);
+        grassStream.setNearAtOnce(!underPod);
         floraStream.update(here, terrainBuilders, all);
         if (grassStream.update(here, terrainBuilders, all)) grassDirty = true;
 
@@ -3385,7 +3528,8 @@ private static class SpeciesConfig {
             }
             return new Object[] { staging, written };
         };
-        if (all || drawnGrassInstances == 0) {
+        // (straight away when there's none yet; but under the landing pod, on a worker, so its frames keep coming)
+        if (all || (drawnGrassInstances == 0 && !(firstFramesDeferred && !worldReady))) {
             try {
                 Object[] gathered = gather.call();
                 uploadGrass((float[]) gathered[0], (Integer) gathered[1]);
@@ -3891,6 +4035,25 @@ private static class SpeciesConfig {
         // (the map's hint goes with the map while the game's paused: M46)
         if (hud.has("mapHint")) hud.setVisible("mapHint", !GameClock.isPaused());
 
+        // After January's message: the offer of the controls, low in the middle (Enter opens them, X skips)
+        boolean offered = controlsOffered;
+        if (offered && (rescaled || !hud.has("controlsOffer"))) {
+            String[] keys = { "Enter", "Open the controls", "X", "Skip" };
+            BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+            java.awt.Graphics2D pg = probe.createGraphics();
+            HudStyle.smooth(pg);
+            int w = HudStyle.hintWidth(pg, keys);
+            pg.dispose();
+            BufferedImage image = HudStyle.canvas(w, HudStyle.HINT_H, scale * 1.4f, g);
+            HudStyle.paintHint(g[0], w, keys);
+            g[0].dispose();
+            hud.put("controlsOffer", image, 0, 0);
+        }
+        if (hud.has("controlsOffer")) {
+            hud.setVisible("controlsOffer", offered && !GameClock.isPaused());
+            hud.move("controlsOffer", (screenWidth - hud.width("controlsOffer")) / 2, Math.round(screenHeight * 0.7f));
+        }
+
         hud.setDim(!menuOpen ? 0f : GameClock.isPaused() ? PAUSED_DIM : 0.45f);
         hud.draw(gl, screenWidth, screenHeight);
     }
@@ -4389,8 +4552,28 @@ private static class SpeciesConfig {
         });
     }
 
-    // Each plant species' picture for the map, once drawn
+    // Each plant species' picture for the map, once drawn, and those being drawn (see finishSteps)
     private volatile java.awt.Image[] floraPortraits;
+    private java.awt.Image[] floraMade;
+
+    /** A plant species' picture, for the map's and the shop's choices. */
+    private java.awt.Image floraPortrait(GL3 gl, int species) {
+        BufferedImage view = floraView(gl, species, PREVIEW_RENDER, (float) Math.toRadians(30), true);
+        return view == null ? null : Offscreen.cropTogether(new BufferedImage[] { view }, 96)[0];
+    }
+
+    /** The plants' pictures, drawn: for the book and the map. */
+    private void showFloraPortraits(java.awt.Image[] portraits) {
+        floraPortraits = portraits;
+        giveBookPictures();
+        if (minimap == null) return;
+        // (a plant's range already chosen gets its picture now)
+        Overlay shown = currentDebugFactor;
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            if (shown != null && shown.factor() == FactorName.FLORA && shown == currentDebugFactor) minimap.setOverlayPicture(portraits[shown.species()]);
+            minimap.repaint();
+        });
+    }
     // The animal or plant to show turning beside the map: wanted, being drawn (its frames so far)
     private volatile Overlay previewWanted;
     private Overlay previewBuilding;
@@ -4405,20 +4588,11 @@ private static class SpeciesConfig {
      */
     private void advancePreviews(GL3 gl) {
         if (!worldReady || roundLoading || minimap == null) return;
+        // (normally drawn while loading: see finishSteps)
         if (floraPortraits == null) {
             java.awt.Image[] portraits = new java.awt.Image[NUM_SPECIES];
-            for (int s = 0; s < NUM_SPECIES; s++) {
-                BufferedImage view = floraView(gl, s, PREVIEW_RENDER, (float) Math.toRadians(30), true);
-                portraits[s] = view == null ? null : Offscreen.cropTogether(new BufferedImage[] { view }, 96)[0];
-            }
-            floraPortraits = portraits;
-            giveBookPictures();
-            // (a plant's range already chosen gets its picture now)
-            Overlay shown = currentDebugFactor;
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                if (shown != null && shown.factor() == FactorName.FLORA && shown == currentDebugFactor) minimap.setOverlayPicture(portraits[shown.species()]);
-                minimap.repaint();
-            });
+            for (int s = 0; s < NUM_SPECIES; s++) portraits[s] = floraPortrait(gl, s);
+            showFloraPortraits(portraits);
         }
         Overlay wanted = previewWanted;
         if (wanted == null) return;
@@ -4554,9 +4728,11 @@ private static class SpeciesConfig {
     }
 
     /** Draws each species' picture for the map (with the GL context, once its meshes are made). */
-    private void drawSpeciesPortraits(GL3 gl) {
-        java.awt.Image[] portraits = new java.awt.Image[organismManager.speciesCount()];
-        for (int i = 0; i < portraits.length; i++) portraits[i] = organismManager.portrait(gl, i, 96);
+    // The species' pictures as they're drawn (see finishSteps)
+    private java.awt.Image[] portraitsMade;
+
+    /** The species' pictures, drawn: for the book and the map. */
+    private void showSpeciesPortraits(java.awt.Image[] portraits) {
         speciesPortraits = portraits;
         giveBookPictures();
         if (minimap == null) return;
@@ -5347,6 +5523,14 @@ private static class SpeciesConfig {
 
     public void setWorldHidden(boolean hidden) {
         worldHidden = hidden;
+    }
+
+    // Whether the controls are on offer (after January's message: see XenoGuesser.offerControls)
+    private volatile boolean controlsOffered;
+
+    /** Shows or hides the offer of the controls over the game. */
+    public void setControlsOffered(boolean offered) {
+        controlsOffered = offered;
     }
 
     /** Stops the weather's sound (the game's over). */

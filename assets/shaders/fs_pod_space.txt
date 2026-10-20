@@ -1,0 +1,51 @@
+#version 330 core
+
+in vec3 vDirection;
+in vec2 vUV;
+in float vBrightness;
+in vec3 vNormal;
+
+out vec4 fragColour;
+
+uniform int mode;
+uniform int asPoints;
+uniform sampler2D image;
+uniform vec3 tint;
+uniform float alpha;
+// (2) where the star's light comes from, and the thin air's colour round the rim
+uniform vec3 lightDirection;
+uniform vec3 atmosphere;
+// (3) which way is up through the fog (the pod's frame), and the sky's and the ground's colours
+uniform vec3 skyUp;
+uniform vec3 skyColour;
+uniform vec3 groundColour;
+
+void main() {
+    if (mode == 0) {
+        // A star's streak, fading from its head, or a still star, a soft dot
+        float round = asPoints == 1 ? smoothstep(0.5, 0.15, length(gl_PointCoord - 0.5)) : 1.0;
+        fragColour = vec4(tint * vBrightness, vBrightness * round * alpha);
+    } else if (mode == 1) {
+        vec4 c = texture(image, vUV);
+        fragColour = vec4(c.rgb * tint, c.a * alpha);
+    } else if (mode == 2) {
+        vec3 n = normalize(vNormal);
+        // (drawn without depth: only the side facing the eyes)
+        if (dot(n, -vDirection) < 0.0) discard;
+        vec3 albedo = texture(image, vUV).rgb;
+        float lit = max(dot(n, -lightDirection), 0.0);
+        // A soft line between day and night, and a little light on the night side
+        float day = smoothstep(-0.08, 0.25, dot(n, -lightDirection));
+        vec3 colour = albedo * (0.04 + 1.05 * day * (0.35 + 0.65 * lit));
+        // The air at the rim, bright on the day side
+        vec3 toEye = normalize(-vDirection);
+        float rim = pow(1.0 - max(dot(n, toEye), 0.0), 3.0);
+        colour += atmosphere * rim * (0.15 + 0.85 * day);
+        fragColour = vec4(colour, alpha);
+    } else {
+        // Through fogged glass: a bright sky above, the ground darker below, blurred into each other
+        float up = dot(normalize(vDirection), skyUp);
+        vec3 colour = mix(groundColour, skyColour, smoothstep(-0.35, 0.3, up));
+        fragColour = vec4(colour, alpha);
+    }
+}

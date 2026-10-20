@@ -675,6 +675,20 @@ public class PlayerBody {
         float moved = lastEye == null ? 0f : (float) SphereMath.distance(lastEye, eye);
         lastEye = eye;
         if (moved > 50f) moved = 0f;   // a teleport, not a step
+        update(dt, moved, swimming, (float) Math.cos(Planet.latitude(eye)));
+    }
+
+    /**
+     * Moves the body on by one frame somewhere off the planet (inside the landing pod as it
+     * comes down): moved is how far the eyes went this frame, and the compass's needle feels
+     * the pull it would at the equator.
+     */
+    public void update(float dt, float moved, boolean swimming) {
+        update(dt, moved, swimming, 1f);
+    }
+
+    /** As update, the compass needle pulled north as strongly as pull (1 at the equator, 0 at a pole). */
+    private void update(float dt, float moved, boolean swimming, float pull) {
         float speed = dt > 0 ? moved / dt : 0f;
         float targetWalking = Math.min(1f, speed / 40f);
         walking += (targetWalking - walking) * Math.min(1f, dt * 6f);
@@ -704,7 +718,6 @@ public class PlayerBody {
             // it. The pull weakens towards the poles, where the planet's field points into the
             // ground: there the needle is sluggish, any jolt sends it wandering, and at the
             // pole itself it points anywhere
-            float pull = (float) Math.cos(Planet.latitude(eye));
             float step = Math.min(dt, 0.05f);
             float wobble = (1f - pull) * (1f - pull) * 6f;
             needleSpin += (-38f * pull * pull * (float) Math.sin(needleAngle) - 4.5f * needleSpin
@@ -724,14 +737,23 @@ public class PlayerBody {
     public void render(GL3 gl, Camera camera, float aspect, Vector3 sunPos, float[] sunColour, Vector3 ambient,
                        Matrix4 skyRotation, Texture sky, float waterLevel, float[] waterTint) {
         if (mesh == null) return;
+        Matrix4 projection = Matrix4Transform.perspective(45, aspect, 0.3f, 60f);
+        render(gl, camera.getLocalForward(), camera.localViewProjection(projection), sunPos, sunColour, ambient,
+                skyRotation, sky, waterLevel, waterTint);
+    }
+
+    /**
+     * Draws the body over the finished scene from anywhere, not only the planet's camera
+     * (inside the landing pod as it comes down): forward is the way the view faces and
+     * viewProjection takes the body's frame (the eyes at the origin, y up) to the screen.
+     */
+    public void render(GL3 gl, float[] forward, Matrix4 viewProjection, Vector3 sunPos, float[] sunColour, Vector3 ambient,
+                       Matrix4 skyRotation, Texture sky, float waterLevel, float[] waterTint) {
+        if (mesh == null) return;
         Vector3 eye = new Vector3(0f, 0f, 0f);
-        float[] forward = camera.getLocalForward();
         float heading = (float) Math.atan2(forward[0], forward[2]);
         pitch = (float) Math.asin(Math.max(-1f, Math.min(1f, forward[1])));
         pose(eye, heading);
-
-        Matrix4 projection = Matrix4Transform.perspective(45, aspect, 0.3f, 60f);
-        Matrix4 viewProjection = camera.localViewProjection(projection);
 
         gl.glClear(GL.GL_DEPTH_BUFFER_BIT);
         gl.glDisable(GL.GL_CULL_FACE);
@@ -805,6 +827,16 @@ public class PlayerBody {
     public void renderInWorld(GL3 gl, Matrix4 viewProjection, SpherePosition cameraEye, SpherePosition at, float heading,
                               Vector3 sunDirection, float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky) {
         if (mesh == null) return;
+        renderPlaced(gl, viewProjection, SphereFrame.at(at).modelMatrix(1f, cameraEye), heading, sunDirection, sunColour, ambient, skyRotation, sky);
+    }
+
+    /**
+     * As renderInWorld, anywhere (inside the landing pod as it comes down): anchor takes the
+     * body's frame (the middle of its visor at the origin, y up) to where viewProjection expects.
+     */
+    public void renderPlaced(GL3 gl, Matrix4 viewProjection, Matrix4 anchor, float heading,
+                             Vector3 sunDirection, float[] sunColour, Vector3 ambient, Matrix4 skyRotation, Texture sky) {
+        if (mesh == null) return;
         // Posed with its eyes moved so the middle of the visor, not the eye point, is at the origin
         float c = (float) Math.cos(heading), s = (float) Math.sin(heading);
         float vx = VISOR_FROM_EYE[0] * c + VISOR_FROM_EYE[2] * s, vz = -VISOR_FROM_EYE[0] * s + VISOR_FROM_EYE[2] * c;
@@ -812,7 +844,7 @@ public class PlayerBody {
         pose(new Vector3(-vx, -VISOR_FROM_EYE[1], -vz), heading);
 
         SphereRender.configure(gl, shader, viewProjection, sunDirection, sunColour, ambient, skyRotation);
-        SphereRender.setAnchor(gl, shader, SphereFrame.at(at).modelMatrix(1f, cameraEye));
+        SphereRender.setAnchor(gl, shader, anchor);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "bones"), BONES, false, bones, 0);
         if (sky != null) {
             gl.glActiveTexture(GL3.GL_TEXTURE2);

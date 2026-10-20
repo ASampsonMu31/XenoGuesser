@@ -48,12 +48,43 @@ public class TextureLibrary {
     return t;
   }
 
+  // Pictures read ahead of need (see prefetch), by file name, on a background thread
+  private static final Map<String, java.util.concurrent.Future<TextureData>> PREFETCHED = new java.util.concurrent.ConcurrentHashMap<>();
+  private static final java.util.concurrent.ExecutorService READER = java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+    Thread thread = new Thread(r, "texture-reader");
+    thread.setDaemon(true);
+    thread.setPriority(Thread.NORM_PRIORITY - 1);
+    return thread;
+  });
+
+  /**
+   * Starts reading and decoding these picture files (and making their mipmaps) on a background
+   * thread, so loading them later only has to put them on the GPU, not hold up the GL thread.
+   */
+  public static void prefetch(GLProfile profile, Iterable<String> filenames) {
+    for (String filename : filenames) {
+      PREFETCHED.computeIfAbsent(filename, f -> READER.submit(() -> TextureIO.newTextureData(profile, new File(f), true, null)));
+    }
+  }
+
+  /** The texture from a file: from its prefetched picture if it was read ahead, otherwise read now. */
+  private static Texture newTexture(String filename) throws Exception {
+    java.util.concurrent.Future<TextureData> ahead = PREFETCHED.remove(filename);
+    if (ahead != null) {
+      try {
+        return TextureIO.newTexture(ahead.get());
+      } catch (Exception e) {
+        // (read again below)
+      }
+    }
+    return TextureIO.newTexture(new File(filename), true);
+  }
+
   // mip-mapping is included in the below example
   public static Texture loadTexture(GL3 gl3, String filename) {
-    Texture t = null; 
+    Texture t = null;
     try {
-      File f = new File(filename);
-      t = (Texture)TextureIO.newTexture(f, true);
+      t = newTexture(filename);
       t.bind(gl3);
       t.setTexParameteri(gl3, GL3.GL_TEXTURE_WRAP_S, GL3.GL_CLAMP_TO_EDGE);
       t.setTexParameteri(gl3, GL3.GL_TEXTURE_WRAP_T, GL3.GL_CLAMP_TO_EDGE); 
@@ -68,10 +99,9 @@ public class TextureLibrary {
   }
 
   public static Texture loadTextureWrap(GL3 gl3, String filename) {
-    Texture t = null; 
+    Texture t = null;
     try {
-      File f = new File(filename);
-      t = (Texture)TextureIO.newTexture(f, true);
+      t = newTexture(filename);
       t.bind(gl3);
       t.setTexParameteri(gl3, GL3.GL_TEXTURE_WRAP_S, GL3.GL_REPEAT);
       t.setTexParameteri(gl3, GL3.GL_TEXTURE_WRAP_T, GL3.GL_REPEAT); 
