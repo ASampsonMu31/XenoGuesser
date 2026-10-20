@@ -30,6 +30,9 @@ uniform mat4 skyRotation;
 
 const float PI = 3.14159265359;
 
+#include "shadows_include"
+
+
 void main() {
     // 1. Sample the texture 
     vec4 texColor = texture(diffuse_texture, aTexCoord);
@@ -47,6 +50,8 @@ void main() {
     vec3 norm = normalize(gl_FrontFacing ? aNormal : -aNormal);
     vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3)); 
     float diff = max(dot(norm, lightDir), 0.2);
+    // (in another's shadow, or deep in the tree's own, less of the sun's)
+    diff *= mix(0.35, 1.0, sunShadow(aPos, norm));
     
     vec3 result = (ambientLight + diff) * finalLeafColor;
     

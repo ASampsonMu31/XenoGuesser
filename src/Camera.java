@@ -115,8 +115,17 @@ public class Camera {
     return cachedView;
   }
 
+  // While the sun's shadows are drawn (see ShadowMaps): the view from the sun, used in place of the camera's
+  private Matrix4 viewProjectionOverride;
+
+  /** Draws everything through this view-projection instead of the camera's (null: the camera's again). */
+  public void overrideViewProjection(Matrix4 viewProjection) {
+    viewProjectionOverride = viewProjection;
+  }
+
   /** Projection times the camera-relative view. */
   public Matrix4 getSphereViewProjection() {
+    if (viewProjectionOverride != null) return viewProjectionOverride;
     if (cachedViewProjection == null) cachedViewProjection = Matrix4.multiply(perspective, getSphereView());
     return cachedViewProjection;
   }

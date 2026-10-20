@@ -1145,6 +1145,8 @@ private static class SpeciesConfig {
         } else if (IS_DEBUG_MODE_ACTIVE && loading.isFinished() && ++framesRenderedSinceReady == 150) {
             // A second capture a moment later shows what has moved
             saveFrame(gl, "later_frame.png");
+        } else if (FRAME_SEQUENCE > 0 && loading.isFinished() && framesRenderedSinceReady > 150 && framesRenderedSinceReady <= 150 + FRAME_SEQUENCE) {
+            saveFrame(gl, "sequence_" + (framesRenderedSinceReady - 150) + ".png");
         }
     }
 
@@ -1662,6 +1664,8 @@ private static class SpeciesConfig {
     }
 
     private void initialiseCoreShaders() {
+        shadowMaps.initialise(gl);
+        shadowCutoutShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_shadow_cutout.txt");
         terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
         depthPrePassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_solid.txt");
@@ -3712,6 +3716,9 @@ private static class SpeciesConfig {
 
         String skyTextureKey = "sky";
 
+        // --- PASS 0: THE SUN'S SHADOWS (drawn from the sun, for everything lit by it to look up) ---
+        renderShadows(gl, eye, sunDirection, sunElevation);
+
         // --- PASS 1: DEPTH PRE-PASS ---
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
         gl.glClear(GL3.GL_DEPTH_BUFFER_BIT);
@@ -3873,6 +3880,9 @@ private static class SpeciesConfig {
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         captureLensDepth(gl);
+        // (no shadows on the player's own body, drawn in a frame of its own, nor on anything drawn
+        // after this frame's world, such as the map's pictures)
+        Shader.clearShadows(gl);
 
         if (hideFirstPerson) return;
 
@@ -3906,6 +3916,108 @@ private static class SpeciesConfig {
 
     // The geodesic cell (at the trees' and grass's level) the player was in when last looked at
     private long lastVegetationCell = Long.MIN_VALUE;
+
+    // Developer aid: -Dxenoguesser.framesequence=6 saves that many frames in a row after later_frame.png
+    // (sequence_1.png on), to see what changes from one frame to the next
+    private static final int FRAME_SEQUENCE = Dev.integer("xenoguesser.framesequence", 0);
+
+    // The sun's shadows (see ShadowMaps), and the sun's height (degrees) at which they're at full strength
+    private final ShadowMaps shadowMaps = new ShadowMaps();
+    // Leafy things drawn into the shadows (only where their picture's solid)
+    private Shader shadowCutoutShader;
+    private static final float SHADOWS_FULL_ABOVE = 8f;
+
+    /**
+     * Draws the sun's shadow maps round the eyes (the near one every frame, the far one every
+     * other frame) and hands them to every shader that draws shadows; or, with shadows off in the
+     * settings or the sun down, none. Everything's drawn by its own drawing, with the camera's view
+     * swapped for the sun's and the colour turned off; only near the eyes for the near map are the
+     * smaller things (creatures, people, rocks, the pod) drawn too.
+     */
+    private void renderShadows(GL3 gl, SpherePosition eye, Vector3 sunDirection, float sunElevation) {
+        float strength = GameSettings.shadows() ? smoothStep(0f, SHADOWS_FULL_ABOVE, sunElevation) : 0f;
+        // (nothing samples the maps while they're drawn into)
+        Shader.clearShadows(gl);
+        if (strength <= 0f || geodesicTerrainModel == null) return;
+        boolean[] due = shadowMaps.dueThisFrame();
+        float[] sunColour = { 1f, 1f, 1f };
+        Matrix4 skyRotation = new Matrix4(1f);
+        for (int map = 0; map < 2; map++) {
+            if (!due[map]) continue;
+            float reach = map == 0 ? ShadowMaps.NEAR_REACH : ShadowMaps.FAR_REACH;
+            Matrix4 sunView = shadowMaps.begin(gl, map, eye, sunDirection);
+            camera.overrideViewProjection(sunView);
+            // (the buildings and trees drawn with only their depth: leaves with their see-through parts left out)
+            Renderer.beginCasting(depthPrePassShader, shadowCutoutShader, java.util.Set.of(leafShader, signboardShader));
+            try {
+                gl.glDisable(GL.GL_CULL_FACE);
+                // (the ground, hills shading valleys, into the far map only: it's the whole patch to the
+                // horizon, and its own small bumps don't need the near one)
+                if (map == 1) {
+                    depthPrePassShader.use(gl);
+                    geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
+                }
+                castInfrastructure(gl, eye, reach);
+                castFlora(gl, eye, reach, map == 0 ? 0 : 2);
+                if (map == 0) {
+                    organismManager.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, null, (float) (getSeconds() - startTime));
+                    inhabitants.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, null, (float) (getSeconds() - startTime));
+                    gl.glDisable(GL.GL_CULL_FACE);
+                    rockField.render(gl, sunView, eye, camera.getSphereForwardDirection(), sunDirection, sunColour, ambientLight, skyRotation, null);
+                    landingPod.render(gl, sunView, eye, sunDirection, sunColour, ambientLight, skyRotation, null);
+                    if (partnerBody != null && partner.hasPose()) {
+                        partnerBody.renderInWorld(gl, sunView, eye, partner.eye(), (float) partner.heading(),
+                                sunDirection, sunColour, ambientLight, skyRotation, null);
+                    }
+                }
+            } finally {
+                Renderer.endCasting();
+                camera.overrideViewProjection(null);
+                shadowMaps.end(gl, sceneFbo, currentWidth, currentHeight);
+            }
+        }
+        gl.glEnable(GL.GL_CULL_FACE);
+        shadowMaps.publish(gl, eye, sunDirection, strength);
+    }
+
+    /** The buildings, roads and walls within reach of the eyes into a shadow map, whether in view or not. */
+    private void castInfrastructure(GL3 gl, SpherePosition eye, float reach) {
+        for (List<InfrastructureObject> objects : infraCache.values()) {
+            for (InfrastructureObject object : objects) {
+                if (object.type != InfrastructureObject.Type.BATCH) continue;
+                double dx = object.centre.x() - eye.x(), dy = object.centre.y() - eye.y(), dz = object.centre.z() - eye.z();
+                double r = reach + object.boundingRadius;
+                if (dx * dx + dy * dy + dz * dz > r * r) continue;
+                object.renderBatch(gl, ambientLight, nightProportion, solidShader, terrainShader, terrainRenderer, camera);
+            }
+        }
+    }
+
+    /** The trees and shrubs within reach of the eyes into a shadow map (at least as coarse as lod), whether in view or not. */
+    private void castFlora(GL3 gl, SpherePosition eye, float reach, int lod) {
+        for (List<SphereFlora> plants : floraStream.ready().values()) {
+            for (SphereFlora plant : plants) {
+                SpherePosition position = plant.position();
+                double dx = position.x() - eye.x(), dy = position.y() - eye.y(), dz = position.z() - eye.z();
+                double distanceSquared = dx * dx + dy * dy + dz * dz;
+                double r = reach + FLORA_CULL_RADIUS * plant.scale();
+                if (distanceSquared > r * r) continue;
+                int detail = Math.max(lod, distanceSquared > 135.0 * 135.0 ? 2 : distanceSquared > 65.0 * 65.0 ? 1 : 0);
+                Model branch = floraBranchModelsLOD[plant.speciesIndex()][detail][plant.modelIndex()];
+                Model leaves = floraLeafModelsLOD[plant.speciesIndex()][detail][plant.modelIndex()];
+                if (branch == null || leaves == null) continue;
+                branch.setModelMatrix(plant.model());
+                branch.render(gl, ambientLight, nightProportion);
+                leaves.setModelMatrix(plant.model());
+                leaves.render(gl, ambientLight, nightProportion);
+            }
+        }
+    }
+
+    private static float smoothStep(float from, float to, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - from) / (to - from)));
+        return t * t * (3f - 2f * t);
+    }
 
     /**
      * The HUD over the finished frame: the round and score at the top left, the FPS in the

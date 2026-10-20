@@ -75,6 +75,9 @@ float snowAt(vec3 world, vec3 n) {
 
 uniform vec3 viewPos;
 uniform vec3 sunPos;
+
+#include "shadows_include"
+
 uniform vec3 sunColour;
 uniform vec3 ambientLight;
 uniform sampler2D skyTexture;
@@ -100,7 +103,7 @@ float valueNoise(vec3 p) {
 void main() {
     vec3 n = normalize(aNormal);
     vec3 lightDir = normalize(sunPos - aPos);
-    float diffuse = max(dot(n, lightDir), 0.0);
+    float diffuse = max(dot(n, lightDir), 0.0) * sunShadow(aPos, n);
     // Speckled grain in the stone
     // (in the rock's own tile, so it stays put as the camera moves)
     float grain = 0.84 + 0.2 * valueNoise(aGrain * 0.9) + 0.12 * valueNoise(aGrain * 4.3);

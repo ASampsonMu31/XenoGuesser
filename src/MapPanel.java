@@ -1772,25 +1772,10 @@ public class MapPanel extends JPanel {
                     goalShown = q[2] >= 0.0;
                 }
 
-                int pinLength = 16;       
-                int headDiameter = 12;    
-                int headRadius = headDiameter / 2;
-                if (pinShown) {
-
-                g2d.setColor(new Color(180, 182, 185)); 
-                g2d.setStroke(new BasicStroke(2.0f));
-                g2d.drawLine(displayPinX, displayPinY, displayPinX, displayPinY - pinLength);
-
-                g2d.setStroke(originalStroke);
-                int circleX = displayPinX - headRadius;
-                int circleY = (displayPinY - pinLength) - headRadius;
-
+                int pinLength = MapMarkers.PIN_LENGTH;
+                int headDiameter = MapMarkers.PIN_HEAD;
                 // (in multiplayer, in this player's colour)
-                g2d.setColor(ownColour() != null ? ownColour() : new Color(200, 40, 40));
-                g2d.fillOval(circleX, circleY, headDiameter, headDiameter);
-                g2d.setColor(new Color(30, 30, 30));
-                g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
-                }
+                if (pinShown) MapMarkers.pin(g2d, displayPinX, displayPinY, ownColour() != null ? ownColour() : new Color(220, 40, 40));
                 if (isFullScreenReveal && partnerPin != null) drawPartnerPin(g2d, mapX, mapY, pinLength, headDiameter);
                 // (multiplayer: this player's own pin named too, with "(You)")
                 Multiplayer pinSession = Multiplayer.active();
@@ -1800,23 +1785,7 @@ public class MapPanel extends JPanel {
                 }
 
                 if (isFullScreenReveal && goalShown && (resultsShown() || currentPhase == RevealPhase.DRAW_LINES)) {
-                    int flagPoleLength = 22;
-
-                    g2d.setColor(Color.LIGHT_GRAY);
-                    g2d.setStroke(new BasicStroke(2.5f));
-                    g2d.drawLine(displayGoalX, displayGoalY, displayGoalX, displayGoalY - flagPoleLength);
-                    g2d.setStroke(originalStroke);
-
-                    Polygon flagPoly = new Polygon();
-                    int flagTopY = displayGoalY - flagPoleLength;
-                    flagPoly.addPoint(displayGoalX, flagTopY);
-                    flagPoly.addPoint(displayGoalX + 16, flagTopY + 6); 
-                    flagPoly.addPoint(displayGoalX, flagTopY + 12);
-
-                    g2d.setColor(new Color(45, 180, 45)); 
-                    g2d.fill(flagPoly);
-                    g2d.setColor(Color.BLACK);
-                    g2d.draw(flagPoly);
+                    MapMarkers.flag(g2d, displayGoalX, displayGoalY);
                 }
 
                 g2d.setClip(markerClip);
@@ -2457,16 +2426,7 @@ public class MapPanel extends JPanel {
         double[] p = screenOf(partnerPin, mapX, mapY);
         if (p[2] < 0.0) return;
         int x = (int) Math.round(p[0]), y = (int) Math.round(p[1]);
-        Stroke old = g2d.getStroke();
-        g2d.setColor(new Color(180, 182, 185));
-        g2d.setStroke(new BasicStroke(2.0f));
-        g2d.drawLine(x, y, x, y - pinLength);
-        g2d.setStroke(old);
-        int r = headDiameter / 2;
-        g2d.setColor(partnerColour());
-        g2d.fillOval(x - r, y - pinLength - r, headDiameter, headDiameter);
-        g2d.setColor(new Color(30, 30, 30));
-        g2d.drawOval(x - r, y - pinLength - r, headDiameter, headDiameter);
+        MapMarkers.pin(g2d, x, y, partnerColour());
         Multiplayer session = Multiplayer.active();
         if (session == null) return;
         drawPinLabel(g2d, "Employee " + session.remoteLabel(), x, y, pinLength, headDiameter, brighter(partnerColour()));

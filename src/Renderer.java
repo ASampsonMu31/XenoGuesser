@@ -12,6 +12,25 @@ public class Renderer {
 
   public Renderer() {}
 
+  // While the sun's shadows are drawn (see ShadowMaps): the shaders things are drawn with instead
+  // of their own (only their depth matters), and the one leafy things' shaders stand for
+  private static Shader casterShader, cutoutCasterShader;
+  private static java.util.Set<Shader> cutoutShaders = java.util.Set.of();
+
+  /**
+   * From now on, until endCasting, every mesh drawn through a Renderer is drawn with caster (only
+   * its depth), or, if it's drawn with one of cutouts, with cutout (its see-through parts left out).
+   */
+  public static void beginCasting(Shader caster, Shader cutout, java.util.Set<Shader> cutouts) {
+    casterShader = caster;
+    cutoutCasterShader = cutout;
+    cutoutShaders = cutouts;
+  }
+
+  public static void endCasting() {
+    casterShader = null;
+  }
+
   public void setLights(Light[] lights) {
     this.lights = lights;
   }
@@ -147,6 +166,19 @@ public class Renderer {
   private void draw(GL3 gl, Mesh mesh, Matrix4 modelMatrix, Shader shader, Material material,
                     Vector3 ambientLight, float nightProportion, Matrix4 viewProjection,
                     Vector3 origin, Vector3 viewPosition, Light[] lights) {
+    if (casterShader != null) {
+      // Into the sun's shadows: only where it is (and, if leafy, where its picture's solid)
+      boolean cutout = cutoutShaders.contains(shader) && material.diffuseMapExists();
+      Shader caster = cutout ? cutoutCasterShader : casterShader;
+      caster.use(gl);
+      setView(gl, caster, modelMatrix, viewProjection, origin);
+      if (cutout) doDiffuseMap(gl, caster, material.getDiffuseMap());
+      mesh.render(gl);
+      // (its own shader in use again, as after drawing it normally: whatever's set on it next, such
+      // as a run-down wall's grime being put back to none, must go to it, not to the caster)
+      shader.use(gl);
+      return;
+    }
     shader.use(gl);
     setView(gl, shader, modelMatrix, viewProjection, origin);
     shader.setVec3(gl, "viewPos", viewPosition);

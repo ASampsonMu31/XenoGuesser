@@ -1,0 +1,12 @@
+#version 330 core
+
+// Drawing a leafy thing into the sun's shadow maps: only its depth, and nothing where its picture
+// is see-through (so leaves cast leaf shapes, not squares)
+
+in vec2 aTexCoord;
+
+uniform sampler2D diffuse_texture;
+
+void main() {
+    if (texture(diffuse_texture, aTexCoord).a < 0.5) discard;
+}
