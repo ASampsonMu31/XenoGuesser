@@ -127,9 +127,11 @@ void main() {
         albedo = vec3(0.01);
     } else if (part == PART_DIAL) {
         // A white face with a needle swinging back and forth
-        vec2 d = vUV - 0.5;
+        // (each dial's u shifted by twice its index, so one needle swings across the whole face)
+        float index = floor(vUV.x * 0.5);
+        vec2 d = vUV - vec2(index * 2.0 + 0.5, 0.5);
         float r = length(d);
-        float which = hash(floor(aPos.xz * 0.5) + floor(aPos.y));
+        float which = hash(vec2(index, 7.0));
         float needle = mix(-0.8, 0.8, 0.5 + 0.5 * sin(time * (0.5 + which * 2.0) + which * 20.0)) + interference * sin(time * 40.0) * 0.3;
         vec2 dir = vec2(sin(needle), cos(needle));
         float along = dot(d, dir), across = abs(d.x * dir.y - d.y * dir.x);

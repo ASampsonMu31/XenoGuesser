@@ -80,6 +80,11 @@ private static class SpeciesConfig {
 
         float baseAbundance;
 
+        // What it looks like (see Flora.Design), and its body's colours and markings (see fs_flora)
+        Flora.Design design;
+        Vector3 bodyColour, patternColour;
+        float pattern, patternScale;
+
         public SpeciesConfig(String name, int leafTexNum, float leafScale,
                              float baseBRate, float varBRate, float baseSWidth, float varSWidth,
                              float baseWDecl, float varWDecl, float baseSDist, float varSDist,
@@ -157,6 +162,8 @@ private static class SpeciesConfig {
     private float freezingPoint;
 
     private Shader terrainShader;
+    // The plants' bodies: bark, skin, orbs, spikes (see fs_flora)
+    private Shader floraShader;
     private Renderer terrainRenderer;
     private Material terrainMaterial;
     private Matrix4 globalModelMatrix;
@@ -336,7 +343,9 @@ private static class SpeciesConfig {
       NATIONS("Nations"),
       BOLLARDS("Bollards"),
       ROAD_LINES("Road lines"),
-      UTILITY_POLES("Utility poles");
+      UTILITY_POLES("Utility poles"),
+      ARCHITECTURE("Architecture"),
+      LANDMARKS("Landmarks");
 
       private final String label;
 
@@ -477,6 +486,9 @@ private static class SpeciesConfig {
         // Create a Random instance tied strictly to this world's seed
         // This guarantees variety per game, but perfect uniformity on the same seed
         Random speciesSeeder = new Random(worldSeed);
+        // Each species' form, from a stream of its own (so the rest of each species is as it was):
+        // the trees all different forms, and the shrubs
+        Flora.Design.Form[][] forms = plantForms(new Random(worldSeed * 0x9E3779B97F4A7C15L + 77L));
 
         for (int s = 0; s < NUM_SPECIES; s++) {
             boolean isTree = (s < 4); // First 4 are Trees, last 4 are Shrubs
@@ -576,6 +588,16 @@ private static class SpeciesConfig {
                 Math.min(deadB, 1.0f)
             );
 
+            // What it looks like: its form and what grows on it (the branching forms keep the
+            // branching above; every other is as wide at its foot as its design's stem)
+            Random looks = new Random(worldSeed * 7919L + s * 104729L);
+            Flora.Design design = Flora.Design.of(forms[isTree ? 0 : 1][isTree ? s : s - 4], !isTree, looks);
+            design.leafScale = leafScale;
+            if (design.form != Flora.Design.Form.TREE && design.form != Flora.Design.Form.WEEPING) {
+                baseSWidth = design.width;
+                varSWidth = 0f;
+            }
+
             // Construct the runtime configuration profile
             speciesConfigs[s] = new SpeciesConfig(
                 name, leafTexNum, leafScale,
@@ -584,6 +606,11 @@ private static class SpeciesConfig {
                 baseBAngle, varBAngle, healthyColor, dyingColor, trunkColor,
                 tempMean, tempStdDev, patchNoiseScale, baseAbundance
             );
+            speciesConfigs[s].design = design;
+            plantMarkings(speciesConfigs[s], looks);
+            if (Dev.ENABLED) System.out.println("[FLORA] Plant " + s + ": " + design.kind() + (design.leaves ? ", leaves" : "")
+                    + (design.spikes > 0f ? ", spikes" : "") + (design.orbs > 0f ? ", orbs" : "") + (design.strands > 0 ? ", strands" : "")
+                    + (design.skin ? ", skin" : "") + ", pattern " + (int) speciesConfigs[s].pattern);
 
             // Compile Ecosystem Pipeline Rules for this dynamic configuration
             SpeciesConfig sc = speciesConfigs[s];
@@ -597,7 +624,8 @@ private static class SpeciesConfig {
         }
 
         // Each plant's range (see SpeciesRange): spawning and its heatmap both follow it
-        floraRanges = floraRanges(SpeciesRange.land(worldNoise, seaLevelHeight));
+        landPoints = SpeciesRange.land(worldNoise, seaLevelHeight);
+        floraRanges = floraRanges(landPoints);
 
         // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
         Random rand = new Random(this.worldSeed);
@@ -623,6 +651,33 @@ private static class SpeciesConfig {
         this.soilVariantAFactor = this.regionalManager.createNoiseMap(0.7e-5f);
         this.soilVariantBFactor = this.regionalManager.createNoiseMap(1.05e-5f);
         this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
+        // The groves among the landmarks, found before any plant is placed (they thicken them)
+        infraManager.landmarks().findGroves(worldSeed, landPoints, p -> TerrainMesh.getLayeredHeight(p, worldNoise), seaLevelHeight,
+                nationManager::getNationAt, new Landmarks.Plants() {
+                    public int count() {
+                        return NUM_SPECIES;
+                    }
+
+                    public float raw(int species, GeodesicChunkGrid.Direction place) {
+                        return floraRaw(species, place);
+                    }
+
+                    public float share(int species, float raw) {
+                        return floraRanges[species].share(raw);
+                    }
+
+                    public String name(int species) {
+                        return floraName(species);
+                    }
+
+                    public Vector3 leaves(int species) {
+                        return speciesConfigs[species].healthyColor;
+                    }
+
+                    public Vector3 trunk(int species) {
+                        return speciesConfigs[species].trunkColor;
+                    }
+                });
         inhabitants.setCollision(geodesicCollision);
         // What's solid on the sphere: the pod, trees, rocks, and the buildings, fences, rails and
         // sign posts
@@ -737,6 +792,7 @@ private static class SpeciesConfig {
             // each other one part way towards the neighbour whose it is, on the side it's built)
             java.util.Map<Integer, float[]> middles = new HashMap<>();
             for (float[] place : maps.nationLabelPlaces(nationManager)) if (place[4] > 0.5f) middles.put((int) place[0], place);
+            List<Object[]> architectureMain = new ArrayList<>(), architectureOthers = new ArrayList<>();
             for (float[] place : middles.values()) {
                 int nation = (int) place[0];
                 for (Object[] design : infraManager.bollardDesigns(nation)) {
@@ -749,7 +805,21 @@ private static class SpeciesConfig {
                     float[] at = towardsNeighbour(place, middles.get((Integer) design[1]));
                     pictures.get(FactorName.UTILITY_POLES).add(new Object[] { ((UtilityPoleStyle) design[0]).picture(MAP_PICTURE_HEIGHT), at[0], at[1] });
                 }
+                // (and a nation's province, with its own take on the nation's architecture, in the
+                // middle of the province: gathered first, then thinned out, see spaceOut)
+                for (Object[] design : infraManager.architecturePictures(nation, MAP_PICTURE_HEIGHT)) {
+                    float[] at;
+                    if ((Integer) design[1] < 0) {
+                        double[] spot = (double[]) design[2];
+                        double[] map = MapProjection.toMap(new GeodesicChunkGrid.Direction(spot[0], spot[1], spot[2]));
+                        at = new float[] { (float) map[0], (float) map[1] };
+                    } else {
+                        at = towardsNeighbour(place, middles.get((Integer) design[1]));
+                    }
+                    (((Integer) design[1]) == 0 ? architectureMain : architectureOthers).add(new Object[] { design[0], at[0], at[1] });
+                }
             }
+            pictures.get(FactorName.ARCHITECTURE).addAll(spaceOut(architectureMain, architectureOthers));
             mapPictures = pictures;
             // (a picture map already chosen gets its pictures now)
             javax.swing.SwingUtilities.invokeLater(() -> {
@@ -774,6 +844,28 @@ private static class SpeciesConfig {
             allOverlays().parallelStream().forEach(this::overlayImage);
             mapsReady = true;
             System.out.printf("[MINIMAP] Bird's-eye maps ready in %d ms%n", System.currentTimeMillis() - startTime);
+
+            // The landmarks: the natural landforms found now the land's known, then each one's
+            // picture, stood where it is (after the rest, as the round needn't wait for them)
+            Landmarks landmarks = infraManager.landmarks();
+            landmarks.findLandforms(worldSeed, landPoints, p -> TerrainMesh.getLayeredHeight(p, worldNoise), seaLevelHeight, nationManager::getNationAt);
+            WorldPalette palette = worldArt.palette();
+            java.util.function.Function<float[], Vector3> v = c -> new Vector3(c[0], c[1], c[2]);
+            landmarks.setLook(new Landmark.Look(v.apply(palette.skyZenith), v.apply(palette.skyHorizon), v.apply(palette.grassLush),
+                    v.apply(palette.grassDry), v.apply(palette.soilBase), v.apply(palette.seaLight)));
+            List<Object[]> landmarkPictures = new ArrayList<>();
+            for (Landmark landmark : landmarks.all()) {
+                BufferedImage picture = landmark.render(LANDMARK_PICTURE_HEIGHT);
+                landmark.picture = picture;
+                double[] at = MapProjection.toMap(landmark.place());
+                landmarkPictures.add(new Object[] { picture, (float) at[0], (float) at[1], landmark.name, landmark.caption, landmark.kind.label });
+            }
+            java.util.Map<FactorName, List<Object[]>> withLandmarks = new java.util.EnumMap<>(mapPictures);
+            withLandmarks.put(FactorName.LANDMARKS, landmarkPictures);
+            mapPictures = withLandmarks;
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (minimap != null && currentPictureMap == FactorName.LANDMARKS) choosePictureMap(currentPictureMap);
+            });
         }, "birds-eye-map-renderer");
         mapThread.setDaemon(true);
         mapThread.start();
@@ -1145,6 +1237,8 @@ private static class SpeciesConfig {
         } else if (IS_DEBUG_MODE_ACTIVE && loading.isFinished() && ++framesRenderedSinceReady == 150) {
             // A second capture a moment later shows what has moved
             saveFrame(gl, "later_frame.png");
+        } else if (FRAME_SEQUENCE > 0 && loading.isFinished() && framesRenderedSinceReady > 150 && framesRenderedSinceReady <= 150 + FRAME_SEQUENCE) {
+            saveFrame(gl, "sequence_" + (framesRenderedSinceReady - 150) + ".png");
         }
     }
 
@@ -1662,7 +1756,10 @@ private static class SpeciesConfig {
     }
 
     private void initialiseCoreShaders() {
+        shadowMaps.initialise(gl);
+        shadowCutoutShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_shadow_cutout.txt");
         terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
+        floraShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_flora.txt");
         depthPrePassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_depth_only.txt");
         solidShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_solid.txt");
         glassShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_glass.txt", GamePaths.HOME + "assets/shaders/fs_glass.txt");
@@ -1825,19 +1922,80 @@ private static class SpeciesConfig {
                 Material leafMat = new Material(new Vector3(0.9f, 0.9f, 0.9f), new Vector3(0.2f, 0.2f, 0.2f), new Vector3(0.0f, 0.0f, 0.0f), 1.0f);
                 leafMat.setDiffuseMap(textures.get("leaf" + texNum));
 
+                Flora.Design design = sc.design.copy();
+                design.branchingRate = bRate;
+                design.startWidth = sWidth;
+                design.widthDecline = wDecl;
+                design.stoppingDistance = sDist;
+                design.meanBranchAngle = bAngle;
+
                 for (int lod = onlyLod; lod <= onlyLod; lod++) {
                     
                     Flora.FloraBundle fBundle = Flora.generateFloraBundle(
-                        gl, worldSeed + (i * 7382L) + s * 8831L, 
-                        bRate, sWidth, wDecl, sDist, bAngle, lodSlices[lod], sc.leafScale, lod
+                        gl, worldSeed + (i * 7382L) + s * 8831L, design, lodSlices[lod], lod
                     );
                     
                     floraOutlines[s][i] = fBundle.outline;
-                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Matrix4(1), terrainShader, floraMat, terrainRenderer, camera);
+                    floraBranchModelsLOD[s][lod][i] = new Model("flora_branch_s" + s + "_" + i + "_lod" + lod, fBundle.branchMesh, new Matrix4(1), floraShader, floraMat, terrainRenderer, camera);
                     floraLeafModelsLOD[s][lod][i] = new Model("flora_leaf_s" + s + "_" + i + "_lod" + lod, fBundle.leafMesh, new Matrix4(1), leafShader, leafMat, terrainRenderer, camera);
                 }
             }
         }
+    }
+
+    /**
+     * The plants' forms: {the four trees', the four shrubs'}, each four different forms drawn
+     * from r (so a world might have a giant mushroom, a palm, a cactus and an orb tree).
+     */
+    private static Flora.Design.Form[][] plantForms(Random r) {
+        Flora.Design.Form[][] forms = new Flora.Design.Form[2][];
+        for (int k = 0; k < 2; k++) {
+            List<Flora.Design.Form> all = new ArrayList<>(List.of(Flora.Design.Form.values()));
+            java.util.Collections.shuffle(all, r);
+            forms[k] = all.subList(0, 4).toArray(new Flora.Design.Form[0]);
+        }
+        return forms;
+    }
+
+    /**
+     * A species' body colour (anything from a cactus green to a fungal violet), and its markings:
+     * spots, stripes, pits or rings (or none) in a second colour, drawn from r.
+     */
+    private static void plantMarkings(SpeciesConfig sc, Random r) {
+        float hue = r.nextFloat(), saturation = 0.3f + r.nextFloat() * 0.5f, brightness = 0.45f + r.nextFloat() * 0.45f;
+        sc.bodyColour = hsb(hue, saturation, brightness);
+        // (mostly a contrasting hue; sometimes the body's own, much paler or darker)
+        if (r.nextFloat() < 0.6f) {
+            sc.patternColour = hsb(hue + 0.35f + r.nextFloat() * 0.3f, 0.5f + r.nextFloat() * 0.4f, 0.6f + r.nextFloat() * 0.4f);
+        } else {
+            sc.patternColour = hsb(hue, saturation * 0.5f, r.nextBoolean() ? Math.min(1f, brightness * 1.7f) : brightness * 0.4f);
+        }
+        // Which markings, the likelier ones by form (a mushroom's spots, a cactus' stripes down its ribs, a palm's rings)
+        float[] odds = switch (sc.design.form) {
+            case MUSHROOM -> new float[] { 0.15f, 0.55f, 0.1f, 0.15f, 0.05f };
+            case CACTUS -> new float[] { 0.2f, 0.15f, 0.35f, 0.25f, 0.05f };
+            case PALM -> new float[] { 0.2f, 0.1f, 0.1f, 0.1f, 0.5f };
+            default -> new float[] { 0.25f, 0.25f, 0.2f, 0.2f, 0.1f };
+        };
+        float pick = r.nextFloat();
+        int pattern = 0;
+        while (pattern < odds.length - 1 && pick >= odds[pattern]) pick -= odds[pattern++];
+        sc.pattern = pattern;
+        sc.patternScale = 5f + r.nextInt(8);
+    }
+
+    private static Vector3 hsb(float hue, float saturation, float brightness) {
+        int rgb = java.awt.Color.HSBtoRGB(hue, Math.min(1f, saturation), Math.min(1f, brightness));
+        return new Vector3(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f);
+    }
+
+    /** A plant species' body colours and markings, for floraShader (accent: its orbs', the plant's foliage colour). */
+    private void floraBodyUniforms(GL3 gl, SpeciesConfig sc, Vector3 accent) {
+        floraShader.setVec3(gl, "u_BodyColour", sc.bodyColour);
+        floraShader.setVec3(gl, "u_PatternColour", sc.patternColour);
+        floraShader.setVec3(gl, "u_AccentColour", accent);
+        floraShader.setFloat(gl, "u_Pattern", sc.pattern);
+        floraShader.setFloat(gl, "u_PatternScale", sc.patternScale);
     }
 
     // Vertices along each side of the sea's grid; spacing grows from about 2 units under the
@@ -2199,8 +2357,16 @@ private static class SpeciesConfig {
         if ("herd".equals(devView)) spawn = orElse(organismManager.herdViewpoint(dynamicRand), spawn);
         // On a river's bank (-Dxenoguesser.riverwidth=20: one at least that wide), looking across and up it
         if ("river".equals(devView)) spawn = orElse(riverViewpoint(dynamicRand), spawn);
+        // Where plant species -Dxenoguesser.plant (random by default) grows thickest
+        if ("plant".equals(devView)) spawn = orElse(plantViewpoint(dynamicRand), spawn);
         // On a side road looking at where it meets (at a step it would have had) a greater one
         if ("junction".equals(devView)) spawn = orElse(infraManager.junctionViewpoint(dynamicRand), spawn);
+        // Across from one of the richest houses, dressed in all its architecture; or back from a
+        // big city's tower, looking up at it
+        if ("ornate".equals(devView)) spawn = orElse(infraManager.ornateHouseViewpoint(dynamicRand), spawn);
+        if ("tower".equals(devView)) spawn = orElse(infraManager.towerViewpoint(dynamicRand), spawn);
+        // In front of one of the famous landmarks (-Dxenoguesser.landmark=spire, stones or ruin for one kind)
+        if ("landmark".equals(devView)) spawn = orElse(infraManager.landmarkViewpoint(dynamicRand), spawn);
         // At a road's edge looking along its bollards
         if ("bollard".equals(devView)) spawn = orElse(infraManager.bollardViewpoint(dynamicRand), spawn);
         // In town between two utility poles, looking along the road
@@ -2409,6 +2575,26 @@ private static class SpeciesConfig {
         return null;
     }
 
+    /** Developer aid: where a plant species (-Dxenoguesser.plant, or any) grows thickest of a few thousand places tried. */
+    private Viewpoint plantViewpoint(java.util.Random rand) {
+        int s = Dev.integer("xenoguesser.plant", rand.nextInt(NUM_SPECIES));
+        SpherePosition best = null;
+        float most = 0f;
+        for (int attempt = 0; attempt < 4000; attempt++) {
+            double x = rand.nextGaussian(), y = rand.nextGaussian(), z = rand.nextGaussian(), l = Math.sqrt(x * x + y * y + z * z);
+            GeodesicChunkGrid.Direction d = new GeodesicChunkGrid.Direction(x / l, y / l, z / l);
+            SpherePosition at = SphereMath.atAltitude(d, 0.0);
+            if (TerrainMesh.getLayeredHeight(at, worldNoise) <= seaLevelHeight + 2f) continue;
+            float here = floraRanges[s].keep(floraRaw(s, d));
+            if (here > most) {
+                most = here;
+                best = at;
+            }
+        }
+        System.out.println("[DEV] Plant " + s + " (" + speciesConfigs[s].design.kind() + ") thickest found: " + most);
+        return best == null ? null : new Viewpoint(best, rand.nextDouble() * Math.PI * 2);
+    }
+
     /** Developer aid: on the shore of a lake of a dozen texels or more, looking across it. */
     private Viewpoint lakeViewpoint(java.util.Random rand) {
         Rivers rivers = worldNoise.rivers;
@@ -2503,7 +2689,7 @@ private static class SpeciesConfig {
             float under = TerrainMesh.getLayeredHeight(candidate, worldNoise);
             boolean onBridge = !Float.isNaN(deck) && feet >= deck - 3f && deck > under + 1f;
             double clearance = onBridge ? Math.max(jumpHeight, feet - under) : jumpHeight;
-            if (!floating && !onBridge && jumpHeight < 1f && sphereTooSteep(lastFree, candidate)) break;
+            if (!floating && !onBridge && jumpHeight < 1f && sphereTooSteep(lastFree, candidate, feet)) break;
             SpherePosition resolved = geodesicCollision.resolveFirm(lastFree, candidate, PLAYER_RADIUS, PLAYER, clearance);
             if (geodesicCollision.blockedStatic(resolved, PLAYER_RADIUS * 0.98, clearance)) break;
             if (!startsInRoad && infraManager != null && infraManager.blocksWalker(resolved, feet, head)) break;
@@ -2543,6 +2729,24 @@ private static class SpeciesConfig {
         SpherePosition behind = SphereMath.move(at, heading + Math.PI, 3.0);
         float rise = TerrainMesh.getLayeredHeight(ahead, worldNoise)
                 - TerrainMesh.getLayeredHeight(behind, worldNoise);
+        return rise / 6f > MAX_CLIMB;
+    }
+
+    /**
+     * Whether a step is too steep for someone with their feet at feet: only if the ground and
+     * what they'd walk on (a road's deck, levelled over the dips and ruts beneath it) are both
+     * too steep. A road can run smoothly over ground that's steep under it, and stepping onto a
+     * low road is a short rise of its own over ground that's gentle. Along a road itself
+     * (ahead and behind both on it) nothing is too steep: what's built to be walked is.
+     */
+    private boolean sphereTooSteep(SpherePosition at, SpherePosition toward, float feet) {
+        if (!sphereTooSteep(at, toward)) return false;
+        if (infraManager == null) return true;
+        double heading = SphereMath.heading(at, toward);
+        SpherePosition ahead = SphereMath.move(at, heading, 3.0);
+        SpherePosition behind = SphereMath.move(at, heading + Math.PI, 3.0);
+        if (infraManager.isRoadLocation(ahead, 0f) && infraManager.isRoadLocation(behind, 0f)) return false;
+        float rise = infraManager.walkingSurfaceY(ahead, feet) - infraManager.walkingSurfaceY(behind, feet);
         return rise / 6f > MAX_CLIMB;
     }
 
@@ -2766,8 +2970,12 @@ private static class SpeciesConfig {
 
     // Each plant species' range: where it's common, and how many there are along it (SpeciesRange)
     private SpeciesRange[] floraRanges;
+    // Points spread evenly over the land (see SpeciesRange.land), for the ranges and the landmarks
+    private List<GeodesicChunkGrid.Direction> landPoints = List.of();
     // The most of one tree or shrub species in a chunk's area, even in its heartland
     private static final float FLORA_PEAK_CAP = 2.0f;
+    // How many times its peak a plant stands in its famous grove (see Landmarks)
+    private static final float GROVE_THICKNESS = 3.0f;
 
     /** A plant species' abundance before its range is applied, per chunk's area. */
     private float floraRaw(int species, GeodesicChunkGrid.Direction d) {
@@ -2859,6 +3067,10 @@ private static class SpeciesConfig {
             double attempts = range.peak * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
             int count = (int) attempts;
             if (cRand.nextFloat() < attempts - count) count++;
+            // (in a famous grove, three times as many, kept thick all through it)
+            int usual = count;
+            boolean grove = infraManager.landmarks().groveNear(s, middle, cell.angularRadius() * Planet.radius());
+            if (grove) count = (int) Math.ceil(range.peak * area * GROVE_THICKNESS);
             for (int i = 0; i < count; i++) {
                 SpherePosition at = SphereMath.atAltitude(cell.point(cRand.nextDouble(), cRand.nextDouble()), 0.0);
                 // (every plant draws the same numbers whether or not it's kept, so each is always the same)
@@ -2866,7 +3078,9 @@ private static class SpeciesConfig {
                 float scale = 0.70f + cRand.nextFloat() * 0.60f;
                 float rotation = cRand.nextFloat() * 360.0f;
                 float kept = cRand.nextFloat();
-                if (kept >= range.keep(floraRaw(s, SphereMath.direction(at)))) continue;
+                float keep = i < usual ? range.keep(floraRaw(s, SphereMath.direction(at))) : 0f;
+                if (grove) keep = Math.max(keep, 0.9f * infraManager.landmarks().groveBoost(s, at));
+                if (kept >= keep) continue;
                 float ground = TerrainMesh.getLayeredHeight(at, worldNoise);
                 if (ground <= seaLevelHeight + 0.1f || slopeAt(at) >= 0.9f || podCovers(at, 8f) || underFreshWater(at, ground)) continue;
                 if (infraManager.isClearedForRoad(at, 11.0f, 3.0f) || infraManager.isBuildingLocation(at, 6.0f)) continue;
@@ -2927,6 +3141,8 @@ private static class SpeciesConfig {
 
         float[] blades = new float[attempts * 5];
         int writeIdx = 0;
+        // (none on a landmark's steps and platform: only looked for where one's near)
+        boolean landmarkNear = infraManager.landmarks().covers(middle, (float) (cell.angularRadius() * Planet.radius()));
         // The terrain mesh's vertex heights, each worked out once for the cell (by terrain cell, row and column)
         java.util.Map<Long, Float> meshHeights = new java.util.HashMap<>();
         for (int i = 0; i < attempts; i++) {
@@ -2960,6 +3176,7 @@ private static class SpeciesConfig {
             SpherePosition at = SphereMath.atAltitude(direction, ground - GRASS_SLOPE_SINK * Math.min(slope, 1.2f));
             if (podCovers(at, -2f)) continue;
             if (infraManager.isClearedForRoad(at, 11.0f, 1.5f)) continue;
+            if (landmarkNear && !Float.isNaN(infraManager.landmarks().floorAt(at))) continue;
 
             // (each stretched over the whole range there is on the planet, so the shortest and
             // tallest, the driest and lushest, are all seen)
@@ -3347,8 +3564,11 @@ private static class SpeciesConfig {
         floraTriangles = 0;
         if (visibleFlora.isEmpty()) return;
         gl.glDisable(GL.GL_CULL_FACE);
+        floraShader.use(gl);
+        gl.glUniformMatrix4fv(gl.glGetUniformLocation(floraShader.getID(), "skyRotation"), 1, false, skyRotation.toFloatArrayForGLSL(), 0);
         for (int i = 0; i < visibleFlora.size(); i++) {
             SphereFlora plant = visibleFlora.get(i);
+            floraBodyUniforms(gl, speciesConfigs[plant.speciesIndex()], plant.leafLight());
             Model branch = floraBranchModelsLOD[plant.speciesIndex()][visibleLods.get(i)][plant.modelIndex()];
             branch.setModelMatrix(plant.model());
             branch.render(gl, ambientLight, nightProportion);
@@ -3712,6 +3932,15 @@ private static class SpeciesConfig {
 
         String skyTextureKey = "sky";
 
+        // The creatures and people moved on first, so their shadows are cast from where they're
+        // drawn this frame (a frame behind, a moving vehicle's shadow fell on its rider's back)
+        // (the herds walk paths fixed by the round's clock: see OrganismManager.Herd)
+        organismManager.update((float) deltaTime, eye, getSeconds() - roundClockStart);
+        inhabitants.update((float) deltaTime, eye);
+
+        // --- PASS 0: THE SUN'S SHADOWS (drawn from the sun, for everything lit by it to look up) ---
+        renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
+
         // --- PASS 1: DEPTH PRE-PASS ---
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
         gl.glClear(GL3.GL_DEPTH_BUFFER_BIT);
@@ -3794,10 +4023,7 @@ private static class SpeciesConfig {
         renderGeodesicInfrastructure(gl, skyRotation);
         renderFlora(gl, skyRotation);
 
-        // --- CREATURES AND PEOPLE ---
-        // (the herds walk paths fixed by the round's clock: see OrganismManager.Herd)
-        organismManager.update((float) deltaTime, eye, getSeconds() - roundClockStart);
-        inhabitants.update((float) deltaTime, eye);
+        // --- CREATURES AND PEOPLE (moved on before the shadows) ---
         // The player is solid to everything else too; then this frame's bodies take over
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
         geodesicCollision.endFrame();
@@ -3873,6 +4099,9 @@ private static class SpeciesConfig {
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         captureLensDepth(gl);
+        // (no shadows on the player's own body, drawn in a frame of its own, nor on anything drawn
+        // after this frame's world, such as the map's pictures)
+        Shader.clearShadows(gl);
 
         if (hideFirstPerson) return;
 
@@ -3906,6 +4135,109 @@ private static class SpeciesConfig {
 
     // The geodesic cell (at the trees' and grass's level) the player was in when last looked at
     private long lastVegetationCell = Long.MIN_VALUE;
+
+    // Developer aid: -Dxenoguesser.framesequence=6 saves that many frames in a row after later_frame.png
+    // (sequence_1.png on), to see what changes from one frame to the next
+    private static final int FRAME_SEQUENCE = Dev.integer("xenoguesser.framesequence", 0);
+
+    // The sun's shadows (see ShadowMaps), and the sun's height (degrees) at which they're at full strength
+    private final ShadowMaps shadowMaps = new ShadowMaps();
+    // Leafy things drawn into the shadows (only where their picture's solid)
+    private Shader shadowCutoutShader;
+    private static final float SHADOWS_FULL_ABOVE = 8f;
+
+    /**
+     * Draws the sun's shadow maps round the eyes (the near one every frame, the far one every
+     * other frame) and hands them to every shader that draws shadows; or, with shadows off in the
+     * settings or the sun down, none. Everything's drawn by its own drawing, with the camera's view
+     * swapped for the sun's and the colour turned off; only near the eyes for the near map are the
+     * smaller things (creatures, people, rocks, the pod) drawn too.
+     */
+    private void renderShadows(GL3 gl, SpherePosition eye, Vector3 sunDirection, float sunElevation, float time) {
+        float strength = GameSettings.shadows() ? smoothStep(0f, SHADOWS_FULL_ABOVE, sunElevation) : 0f;
+        // (nothing samples the maps while they're drawn into)
+        Shader.clearShadows(gl);
+        if (strength <= 0f || geodesicTerrainModel == null) return;
+        boolean[] due = shadowMaps.dueThisFrame();
+        float[] sunColour = { 1f, 1f, 1f };
+        Matrix4 skyRotation = new Matrix4(1f);
+        for (int map = 0; map < 2; map++) {
+            if (!due[map]) continue;
+            float reach = map == 0 ? ShadowMaps.NEAR_REACH : ShadowMaps.FAR_REACH;
+            Matrix4 sunView = shadowMaps.begin(gl, map, eye, sunDirection);
+            camera.overrideViewProjection(sunView);
+            // (the buildings and trees drawn with only their depth: leaves with their see-through parts left out)
+            Renderer.beginCasting(depthPrePassShader, shadowCutoutShader, java.util.Set.of(leafShader, signboardShader));
+            try {
+                gl.glDisable(GL.GL_CULL_FACE);
+                // (the ground, hills shading valleys, into the far map only: it's the whole patch to the
+                // horizon, and its own small bumps don't need the near one)
+                if (map == 1) {
+                    depthPrePassShader.use(gl);
+                    geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
+                }
+                castInfrastructure(gl, eye, reach);
+                castFlora(gl, eye, reach, map == 0 ? 0 : 2);
+                if (map == 0) {
+                    // (posed at the same moment as they're drawn, so their shadows move with them)
+                    organismManager.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, null, time);
+                    inhabitants.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, null, time);
+                    gl.glDisable(GL.GL_CULL_FACE);
+                    rockField.render(gl, sunView, eye, camera.getSphereForwardDirection(), sunDirection, sunColour, ambientLight, skyRotation, null);
+                    landingPod.render(gl, sunView, eye, sunDirection, sunColour, ambientLight, skyRotation, null);
+                    if (partnerBody != null && partner.hasPose()) {
+                        partnerBody.renderInWorld(gl, sunView, eye, partner.eye(), (float) partner.heading(),
+                                sunDirection, sunColour, ambientLight, skyRotation, null);
+                    }
+                }
+            } finally {
+                Renderer.endCasting();
+                camera.overrideViewProjection(null);
+                shadowMaps.end(gl, sceneFbo, currentWidth, currentHeight);
+            }
+        }
+        gl.glEnable(GL.GL_CULL_FACE);
+        shadowMaps.publish(gl, eye, sunDirection, strength);
+    }
+
+    /** The buildings, roads and walls within reach of the eyes into a shadow map, whether in view or not. */
+    private void castInfrastructure(GL3 gl, SpherePosition eye, float reach) {
+        for (List<InfrastructureObject> objects : infraCache.values()) {
+            for (InfrastructureObject object : objects) {
+                if (object.type != InfrastructureObject.Type.BATCH) continue;
+                double dx = object.centre.x() - eye.x(), dy = object.centre.y() - eye.y(), dz = object.centre.z() - eye.z();
+                double r = reach + object.boundingRadius;
+                if (dx * dx + dy * dy + dz * dz > r * r) continue;
+                object.renderBatch(gl, ambientLight, nightProportion, solidShader, terrainShader, terrainRenderer, camera);
+            }
+        }
+    }
+
+    /** The trees and shrubs within reach of the eyes into a shadow map (at least as coarse as lod), whether in view or not. */
+    private void castFlora(GL3 gl, SpherePosition eye, float reach, int lod) {
+        for (List<SphereFlora> plants : floraStream.ready().values()) {
+            for (SphereFlora plant : plants) {
+                SpherePosition position = plant.position();
+                double dx = position.x() - eye.x(), dy = position.y() - eye.y(), dz = position.z() - eye.z();
+                double distanceSquared = dx * dx + dy * dy + dz * dz;
+                double r = reach + FLORA_CULL_RADIUS * plant.scale();
+                if (distanceSquared > r * r) continue;
+                int detail = Math.max(lod, distanceSquared > 135.0 * 135.0 ? 2 : distanceSquared > 65.0 * 65.0 ? 1 : 0);
+                Model branch = floraBranchModelsLOD[plant.speciesIndex()][detail][plant.modelIndex()];
+                Model leaves = floraLeafModelsLOD[plant.speciesIndex()][detail][plant.modelIndex()];
+                if (branch == null || leaves == null) continue;
+                branch.setModelMatrix(plant.model());
+                branch.render(gl, ambientLight, nightProportion);
+                leaves.setModelMatrix(plant.model());
+                leaves.render(gl, ambientLight, nightProportion);
+            }
+        }
+    }
+
+    private static float smoothStep(float from, float to, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - from) / (to - from)));
+        return t * t * (3f - 2f * t);
+    }
 
     /**
      * The HUD over the finished frame: the round and score at the top left, the FPS in the
@@ -4228,7 +4560,10 @@ private static class SpeciesConfig {
             ownedOverlays.addAll(allOverlays());
         }
         for (MapPanel.Layer layer : startingLayers) minimap.setLayerShown(layer, true);
+        // Developer aid: -Dxenoguesser.picturemap=Landmarks (or another map of pictures) starts with it shown
+        for (FactorName f : PICTURE_MAPS) if (f.label().equalsIgnoreCase(Dev.property("xenoguesser.picturemap", ""))) currentPictureMap = f;
         refreshMapChoices();
+        if (currentPictureMap != null) choosePictureMap(currentPictureMap);
         if (currentDebugFactor != null) chooseGradient(currentDebugFactor);
     }
 
@@ -4418,7 +4753,7 @@ private static class SpeciesConfig {
         java.util.LinkedHashMap<String, List<Overlay>> groups = new java.util.LinkedHashMap<>();
         List<Overlay> top = new ArrayList<>();
         for (FactorName f : new FactorName[] { FactorName.TEMPERATURE, FactorName.RAINFALL, FactorName.SOIL_COLOUR, FactorName.WEALTH, FactorName.NATIONS,
-                FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES }) {
+                FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES, FactorName.ARCHITECTURE, FactorName.LANDMARKS }) {
             top.add(Overlay.of(f));
         }
         groups.put("", top);
@@ -4480,11 +4815,14 @@ private static class SpeciesConfig {
     // The maps of pictures rather than colours: each nation's bollard, road markings or utility
     // pole stood on its main land, over the plain map, no borders (see chooseGradient); their
     // pictures ({picture, worldX, worldZ}), once drawn, and how tall
-    private static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES);
+    private static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES,
+            FactorName.ARCHITECTURE, FactorName.LANDMARKS);
     private volatile java.util.Map<FactorName, List<Object[]>> mapPictures = java.util.Map.of();
     // The map of pictures shown (over any heatmap: M47), or null
     private volatile FactorName currentPictureMap;
     private static final int MAP_PICTURE_HEIGHT = 128;
+    // How tall the landmarks' pictures are (shown in their popups on the map)
+    private static final int LANDMARK_PICTURE_HEIGHT = 220;
 
     /**
      * Where on the map a nation's design is pictured, {worldX, worldZ}: its middle (where its
@@ -4499,16 +4837,42 @@ private static class SpeciesConfig {
         return new float[] { own[1] + dx * 0.45f, own[2] + dz * 0.45f };
     }
 
+    // How far apart (shares of the map's width, across and up) the architecture map's pictures
+    // stand: they're wide, so further apart across than up
+    private static final float PICTURE_GAP_ACROSS = 0.13f, PICTURE_GAP_UP = 0.08f;
+
+    /**
+     * Thins out pictures ({picture, worldX, worldZ}) so they don't crowd together on the map: the
+     * main ones first, each kept unless it's on top of one already kept (closer than half the
+     * gap), then the others (neighbours' designs, provinces') only where they're a whole gap clear
+     * of every one kept. (Across the map's join, the short way round.)
+     */
+    private List<Object[]> spaceOut(List<Object[]> main, List<Object[]> others) {
+        List<Object[]> kept = new ArrayList<>();
+        for (int pass = 0; pass < 2; pass++) {
+            float gap = pass == 0 ? 0.5f : 1f;
+            for (Object[] p : pass == 0 ? main : others) {
+                boolean clear = true;
+                for (Object[] k : kept) {
+                    float dx = Math.abs((Float) p[1] - (Float) k[1]), dz = Math.abs((Float) p[2] - (Float) k[2]);
+                    dx = Math.min(dx, TOTAL_REGION_WIDTH - dx);
+                    float ex = dx / (PICTURE_GAP_ACROSS * gap * TOTAL_REGION_WIDTH), ez = dz / (PICTURE_GAP_UP * gap * TOTAL_REGION_WIDTH);
+                    if (ex * ex + ez * ez < 1f) {
+                        clear = false;
+                        break;
+                    }
+                }
+                if (clear) kept.add(p);
+            }
+        }
+        return kept;
+    }
+
     /** A picture map's pictures (none yet until they're drawn). */
     private List<Object[]> picturesOf(FactorName f) {
         return mapPictures.getOrDefault(f, List.of());
     }
 
-    /** A picture map's icon: its first nation's picture; null before they're drawn. */
-    private java.awt.Image pictureIcon(FactorName f) {
-        List<Object[]> pictures = picturesOf(f);
-        return pictures.isEmpty() ? null : (java.awt.Image) pictures.get(0)[0];
-    }
 
     private java.awt.Image choiceIcon(String label) {
         for (Overlay o : allOverlays()) {
@@ -4518,7 +4882,6 @@ private static class SpeciesConfig {
                 return loadIcon(o.factor() == FactorName.FLORA ? "flora" : "animal");
             }
         }
-        for (FactorName f : PICTURE_MAPS) if (label.equals(f.label) && pictureIcon(f) != null) return pictureIcon(f);
         String file = switch (label) {
             case "Contours" -> "contours";
             case "Rivers" -> "rivers";
@@ -4532,6 +4895,12 @@ private static class SpeciesConfig {
             case "Rocks", "Rock frequency", "Rock size" -> "rocks";
             case "Wealth" -> "wealth";
             case "Nations" -> "nations";
+            // (the maps of pictures: the same icon every game, whatever this world's designs)
+            case "Bollards" -> "bollards";
+            case "Road lines" -> "road_lines";
+            case "Utility poles" -> "utility_poles";
+            case "Architecture" -> "architecture";
+            case "Landmarks" -> "landmarks";
             case "Grass abundance", GRASS_GROUP -> "grass";
             case "Grass height" -> "grass_height";
             case "Grass colour" -> "grass_colour";
@@ -4616,10 +4985,10 @@ private static class SpeciesConfig {
         previewWanted = null;
         previewBuilding = null;
         String name = overlayLabel(wanted);
-        String kind = wanted.factor() == FactorName.FLORA ? (wanted.species() < 4 ? "Tree" : "Shrub") : "Animal";
+        String kind = wanted.factor() == FactorName.FLORA ? speciesConfigs[wanted.species()].design.kind() : "Animal";
         javax.swing.SwingUtilities.invokeLater(() -> {
             if (currentDebugFactor != null && currentDebugFactor.equals(wanted)) {
-                minimap.setPreview(name, kind, frames, wanted.factor() == FactorName.FLORA ? leafPicture(wanted.species()) : null);
+                minimap.setPreview(name, kind, frames, wanted.factor() == FactorName.FLORA ? detailPicture(wanted.species()) : null);
             }
         });
     }
@@ -4640,6 +5009,69 @@ private static class SpeciesConfig {
     }
 
     /** Plant species s's leaf, in its own colours (its texture runs from the dark shade to the light). */
+    /**
+     * What's shown beside a plant on the map to compare: its leaf, or if it has none, one of its
+     * orbs or its spikes; nothing if it bears none of them (a bare mushroom or cactus).
+     */
+    private BufferedImage detailPicture(int s) {
+        Flora.Design d = speciesConfigs[s].design;
+        if (d.leaves) return leafPicture(s);
+        if (d.orbs > 0f) return orbPicture(leafLightColour(speciesConfigs[s].healthyColor));
+        if (d.spikes > 0f) return spikePicture();
+        return null;
+    }
+
+    // The detail pictures' size (pixels square), as the leaves'
+    private static final int DETAIL_PICTURE = 128;
+
+    /** One of a plant's orbs: a glossy ball of its colour, lit from the upper left. */
+    private static BufferedImage orbPicture(Vector3 colour) {
+        BufferedImage image = new BufferedImage(DETAIL_PICTURE, DETAIL_PICTURE, BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+        int size = DETAIL_PICTURE * 3 / 4, at = (DETAIL_PICTURE - size) / 2;
+        java.awt.Color base = awtColour(colour, 1f), dark = awtColour(colour, 0.35f), light = awtColour(colour, 1.5f);
+        g.setPaint(new java.awt.RadialGradientPaint(new java.awt.geom.Point2D.Float(at + size * 0.38f, at + size * 0.36f), size * 0.7f,
+                new float[] { 0f, 0.45f, 1f }, new java.awt.Color[] { light, base, dark }));
+        g.fillOval(at, at, size, size);
+        // (its shine)
+        g.setPaint(new java.awt.RadialGradientPaint(new java.awt.geom.Point2D.Float(at + size * 0.33f, at + size * 0.3f), size * 0.16f,
+                new float[] { 0f, 1f }, new java.awt.Color[] { new java.awt.Color(255, 255, 255, 220), new java.awt.Color(255, 255, 255, 0) }));
+        g.fillOval(at, at, size, size);
+        g.dispose();
+        return image;
+    }
+
+    /** A plant's spikes: a tuft of three, pale at the root and dark at the tip (as fs_flora draws them). */
+    private static BufferedImage spikePicture() {
+        BufferedImage image = new BufferedImage(DETAIL_PICTURE, DETAIL_PICTURE, BufferedImage.TYPE_INT_ARGB);
+        java.awt.Graphics2D g = image.createGraphics();
+        g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+        float n = DETAIL_PICTURE;
+        float rootX = n * 0.5f, rootY = n * 0.88f;
+        java.awt.Color pale = new java.awt.Color(230, 219, 189), tip = new java.awt.Color(56, 46, 41);
+        float[][] spikes = { { -0.42f, 0.62f, 0.07f }, { 0.42f, 0.62f, 0.07f }, { 0f, 0.8f, 0.09f } };
+        for (float[] spike : spikes) {
+            double angle = spike[0];
+            float length = n * spike[1], width = n * spike[2];
+            float tx = rootX + (float) Math.sin(angle) * length, ty = rootY - (float) Math.cos(angle) * length;
+            float sx = (float) Math.cos(angle) * width, sy = (float) Math.sin(angle) * width;
+            java.awt.geom.Path2D.Float shape = new java.awt.geom.Path2D.Float();
+            shape.moveTo(rootX - sx, rootY - sy);
+            shape.lineTo(tx, ty);
+            shape.lineTo(rootX + sx, rootY + sy);
+            shape.closePath();
+            g.setPaint(new java.awt.GradientPaint(rootX + (tx - rootX) * 0.3f, rootY + (ty - rootY) * 0.3f, pale, rootX + (tx - rootX) * 0.85f, rootY + (ty - rootY) * 0.85f, tip));
+            g.fill(shape);
+        }
+        g.dispose();
+        return image;
+    }
+
+    private static java.awt.Color awtColour(Vector3 c, float brightness) {
+        return new java.awt.Color(Math.min(1f, c.x * brightness), Math.min(1f, c.y * brightness), Math.min(1f, c.z * brightness));
+    }
+
     private BufferedImage leafPicture(int s) {
         BufferedImage leaf = worldArt.leaf(speciesConfigs[s].leafTexNum);
         if (leaf == null) return null;
@@ -4695,8 +5127,8 @@ private static class SpeciesConfig {
         java.util.function.Consumer<Matrix4> draw = zoom -> {
             Matrix4 shown = Matrix4.multiply(zoom, viewProjection);
             gl.glDisable(GL3.GL_CULL_FACE);
-            terrainShader.use(gl);
-            terrainShader.setFloat(gl, "useSoilRegions", 0.0f);
+            floraShader.use(gl);
+            floraBodyUniforms(gl, sc, leafLightColour(sc.healthyColor));
             trunk.setModelMatrix(model);
             trunk.renderWith(gl, light, shown, eye);
             leafShader.use(gl);
@@ -4771,8 +5203,8 @@ private static class SpeciesConfig {
         // An animal's or plant's range: it's shown turning round beside the map
         if (factorName != null && factorName.species() >= 0) {
             boolean plant = factor == FactorName.FLORA;
-            minimap.setPreview(overlayLabel(factorName), plant ? (factorName.species() < 4 ? "Tree" : "Shrub") : "Animal", null,
-                    plant ? leafPicture(factorName.species()) : null);
+            minimap.setPreview(overlayLabel(factorName), plant ? speciesConfigs[factorName.species()].design.kind() : "Animal", null,
+                    plant ? detailPicture(factorName.species()) : null);
             previewWanted = factorName;
         } else {
             minimap.setPreview(null, null, null, null);

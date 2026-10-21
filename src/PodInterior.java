@@ -34,6 +34,8 @@ public class PodInterior {
     // Where the hull's cone gives way to its rounded top, and the top of the cabin inside it
     private static final float CONE_TOP = LandingPod.HULL_TOP - 9f;
     static final float CEILING = LandingPod.HULL_TOP - WALL;
+    // How far out from the middle the ceiling lamp's ring reaches
+    static final float LAMP_REACH = 4.5f;
 
     // The door: an oval taller than wide, its foot just above the floor (singleplayer's, and
     // multiplayer's, wider for two side by side, as the doorway outside is)
@@ -298,7 +300,7 @@ public class PodInterior {
     private void buildLamp(OrganismMesh.Builder b) {
         float y = CEILING - 1.8f;
         b.resetTransform().part(PART_METAL);
-        b.box(0f, y + 0.5f, 0f, 9f, 0.8f, 9f);
+        b.box(0f, y + 0.5f, 0f, LAMP_REACH * 2f, 0.8f, LAMP_REACH * 2f);
         b.part(PART_LAMP);
         int centre = b.vertex(0f, y, 0f, 0f, -1f, 0f, 0.5f, 0.5f);
         int previous = -1;

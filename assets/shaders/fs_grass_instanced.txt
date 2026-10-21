@@ -23,6 +23,7 @@ uniform mat4 skyRotation;
 
 const float PI = 3.14159265359;
 
+
 // Seeded per world: grass colour where conditions are poor, and where they are best
 uniform vec3 u_GrassDry;
 uniform vec3 u_GrassLush;

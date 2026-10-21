@@ -5,6 +5,10 @@ public final class GameSettings {
 
     private static final Preferences STORE = Preferences.userRoot().node("xenoguesser");
     private static volatile boolean showFps = STORE.getBoolean("showFps", true);
+    // The sun's shadows (see ShadowMaps): on unless turned off
+    // (developer aid: -Dxenoguesser.shadows=on or off overrides it for this run)
+    private static volatile boolean shadows = Dev.property("xenoguesser.shadows") != null
+            ? !"off".equals(Dev.property("xenoguesser.shadows")) : STORE.getBoolean("shadows", true);
     // Fullscreen, or in a window: always fullscreen at startup (a window is for this game only)
     private static volatile boolean fullscreen = true;
 
@@ -17,6 +21,19 @@ public final class GameSettings {
 
     public static void setFullscreen(boolean on) {
         fullscreen = on;
+    }
+
+    public static boolean shadows() {
+        return shadows;
+    }
+
+    public static void setShadows(boolean on) {
+        shadows = on;
+        try {
+            STORE.putBoolean("shadows", on);
+        } catch (Exception e) {
+            // Settings that can't be saved still apply for this game
+        }
     }
 
     public static boolean showFps() {

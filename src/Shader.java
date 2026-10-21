@@ -20,8 +20,8 @@ public class Shader {
   /* The constructor */
   public Shader(GL3 gl, String vertexPath, String fragmentPath) {
     try {
-      vertexShaderSource = new String(Files.readAllBytes(Paths.get(vertexPath)), Charset.defaultCharset());
-      fragmentShaderSource = new String(Files.readAllBytes(Paths.get(fragmentPath)), Charset.defaultCharset());
+      vertexShaderSource = withIncludes(new String(Files.readAllBytes(Paths.get(vertexPath)), Charset.defaultCharset()));
+      fragmentShaderSource = withIncludes(new String(Files.readAllBytes(Paths.get(fragmentPath)), Charset.defaultCharset()));
     }
     catch (IOException e) {
       e.printStackTrace();
@@ -31,6 +31,72 @@ public class Shader {
     synchronized (ALL) {
       ALL.add(this);
     }
+  }
+
+  /**
+   * A shader's source with each #include "name" line replaced by assets/shaders/name.txt (code
+   * shared by many shaders, such as the sun's shadows).
+   */
+  private static String withIncludes(String source) throws IOException {
+    java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?m)^[ \\t]*#include \"(\\w+)\"[ \\t]*\\r?$").matcher(source);
+    StringBuilder out = new StringBuilder();
+    while (m.find()) {
+      String included = new String(Files.readAllBytes(Paths.get(GamePaths.HOME + "assets/shaders/" + m.group(1) + ".txt")), Charset.defaultCharset());
+      m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(included));
+    }
+    m.appendTail(out);
+    return out.toString();
+  }
+
+  // The texture units the sun's shadow maps are always bound to (see setShadows)
+  public static final int SHADOW_NEAR_UNIT = 13, SHADOW_FAR_UNIT = 14;
+
+  /**
+   * The sun's shadows (see ShadowMaps) for every shader that draws them: the maps (texture ids,
+   * bound to their units here), their views from the sun (relative to the eyes), how dark the
+   * shadows are (0: none), how far each map reaches, a texel of each, the bias against a surface
+   * shading itself in each, and the way to the sun.
+   */
+  public static void setShadows(GL3 gl, int nearMap, int farMap, float[] nearMatrix, float[] farMatrix, float strength,
+                                float nearReach, float farReach, float nearTexel, float farTexel,
+                                float nearBias, float farBias, float[] sunDirection) {
+    gl.glActiveTexture(GL3.GL_TEXTURE0 + SHADOW_NEAR_UNIT);
+    gl.glBindTexture(GL3.GL_TEXTURE_2D, nearMap);
+    gl.glActiveTexture(GL3.GL_TEXTURE0 + SHADOW_FAR_UNIT);
+    gl.glBindTexture(GL3.GL_TEXTURE_2D, farMap);
+    gl.glActiveTexture(GL3.GL_TEXTURE0);
+    synchronized (ALL) {
+      for (Shader shader : ALL) {
+        if (shader.ID == 0 || shader.location(gl, "shadowStrength") == -1) continue;
+        gl.glUseProgram(shader.ID);
+        shader.setFloat(gl, "shadowStrength", strength);
+        if (strength <= 0f) continue;
+        shader.setInt(gl, "shadowMapNear", SHADOW_NEAR_UNIT);
+        shader.setInt(gl, "shadowMapFar", SHADOW_FAR_UNIT);
+        shader.setFloatArray(gl, "shadowMatrixNear", nearMatrix);
+        shader.setFloatArray(gl, "shadowMatrixFar", farMatrix);
+        shader.setFloat(gl, "shadowReach", nearReach, farReach);
+        shader.setFloat(gl, "shadowTexel", nearTexel, farTexel);
+        shader.setFloat(gl, "shadowBias", nearBias, farBias);
+        shader.setFloat(gl, "shadowSunDir", sunDirection[0], sunDirection[1], sunDirection[2]);
+      }
+    }
+  }
+
+  /** No shadows drawn by any shader (and the maps unbound, so they can be drawn into). */
+  public static void clearShadows(GL3 gl) {
+    synchronized (ALL) {
+      for (Shader shader : ALL) {
+        if (shader.ID == 0 || shader.location(gl, "shadowStrength") == -1) continue;
+        gl.glUseProgram(shader.ID);
+        shader.setFloat(gl, "shadowStrength", 0f);
+      }
+    }
+    gl.glActiveTexture(GL3.GL_TEXTURE0 + SHADOW_NEAR_UNIT);
+    gl.glBindTexture(GL3.GL_TEXTURE_2D, 0);
+    gl.glActiveTexture(GL3.GL_TEXTURE0 + SHADOW_FAR_UNIT);
+    gl.glBindTexture(GL3.GL_TEXTURE_2D, 0);
+    gl.glActiveTexture(GL3.GL_TEXTURE0);
   }
 
   // Every shader made, so the fog and snow can be handed to all of them at once
@@ -66,7 +132,7 @@ public class Shader {
   /** The cube map samplers and the texture units they are always bound to. */
   public static final int SNOW_UNIT = 11, SOIL_REGION_UNIT = 6, WAVE_UNIT = 12;
   private static final Object[][] CUBE_UNITS = { { "snowCover", SNOW_UNIT }, { "soilRegionMap", SOIL_REGION_UNIT },
-      { "waveMap", WAVE_UNIT } };
+      { "waveMap", WAVE_UNIT }, { "shadowMapNear", 13 }, { "shadowMapFar", 14 } };
 
   public static void setSnowCover(GL3 gl, int unit, float fresh, float today, float[] climate, float[] colour, float planetRadius) {
     synchronized (ALL) {
@@ -204,7 +270,8 @@ public class Shader {
     program.add(fragmentShaderCode);
     program.link(gl, System.out);
     // The cube maps get texture units of their own from the start (every sampler begins on unit
-    // 0, and a cube and a 2D sampler may not share one): the snow's and the soil colour's
+    // 0, and a cube and a 2D sampler may not share one): the snow's and the soil colour's; and
+    // the sun's shadow maps, for the same reason (a shadow sampler may not share one either)
     int[] current = new int[1];
     gl.glGetIntegerv(GL3.GL_CURRENT_PROGRAM, current, 0);
     gl.glUseProgram(program.program());

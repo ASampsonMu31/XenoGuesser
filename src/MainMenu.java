@@ -288,13 +288,13 @@ public class MainMenu extends JComponent {
     private static final float ACHIEVEMENT_COLUMN = 290f, ACHIEVEMENT_ROW = 25f;
 
     /**
-     * The achievements (M53), at the bottom in the middle: singleplayer (playing, and each win) down the left,
+     * The achievements (M53), at the bottom in the middle: singleplayer (playing, each win, and the pod's chair in the dark) down the left,
      * the collections and multiplayer down the right, each ticked once it's unlocked; how many of
      * them; what the one under the mouse is for; and Reset.
      */
     private void paintAchievements(Graphics2D g, int w, int h, float unit) {
         Achievements.Achievement[] all = Achievements.Achievement.values();
-        int leftCount = 7, rows = Math.max(leftCount, all.length - leftCount);
+        int leftCount = 8, rows = Math.max(leftCount, all.length - leftCount);
         float pad = 20 * unit, column = ACHIEVEMENT_COLUMN * unit, row = ACHIEVEMENT_ROW * unit;
         float pw = pad * 2 + column * 2, ph = pad + 38 * unit + rows * row + 30 * unit + pad * 0.6f;
         float px = w * 0.53f - pw / 2f, py = h - ph - 24 * unit;

@@ -164,6 +164,11 @@ public final class NationKinship {
         return angle(centres[Math.max(1, Math.min(numNations, nation))], new double[] { x / l, y / l, z / l });
     }
 
+    /** A nation's middle: a unit direction {x, y, z} from the planet's middle. */
+    public double[] centre(int nation) {
+        return centres[Math.max(1, Math.min(numNations, nation))].clone();
+    }
+
     /** Whether two nations are kindred neighbours: they share a land border and a culture. */
     public boolean kin(int a, int b) {
         if (a == b || a < 1 || b < 1 || a > numNations || b > numNations || !bordering[a][b]) return false;

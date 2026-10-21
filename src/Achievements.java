@@ -24,6 +24,8 @@ public final class Achievements {
         WIN_STILL_BALANCED("Win a No Move Balanced game", null, 3),
         WIN_STILL_URBAN("Win a No Move Urban game", null, 4),
         WIN_STILL_RURAL("Win a No Move Rural game", null, 5),
+        MOVES_IN_THE_DARK("Moves in the dark", "Push the chair in the landing pod with the lights off", 14),
+        LIGHTS_OUT("Lights out", "Headbutt the ceiling light in the landing pod", 15),
         TECHNICIAN("Technician", "Unlock all gadgets in one game", 6),
         INFRASTRUCTURE_EXPERT("Infrastructure Expert", "Unlock all infrastructure maps in one game", 7),
         BOTANIST("Botanist", "Unlock all flora heatmaps in one game", 8),

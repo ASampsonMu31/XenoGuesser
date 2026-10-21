@@ -19,6 +19,9 @@ out vec4 fragColour;
 
 uniform vec3 viewPos;
 uniform vec3 sunPos;
+
+#include "shadows_include"
+
 uniform vec3 sunColour;
 uniform vec3 ambientLight;
 uniform sampler2D skyTexture;
@@ -192,9 +195,10 @@ void main() {
     vec3 viewDir = normalize(viewPos - aPos);
     if (dot(n, viewDir) < 0.0) n = -n;
     vec3 lightDir = normalize(sunPos - aPos);
-    float diffuse = max(dot(n, lightDir), 0.0);
+    float shade = sunShadow(aPos, n);
+    float diffuse = max(dot(n, lightDir), 0.0) * shade;
     vec3 halfway = normalize(lightDir + viewDir);
-    float specular = pow(max(dot(n, halfway), 0.0), mix(12.0, 90.0, shine)) * shine * 0.8;
+    float specular = pow(max(dot(n, halfway), 0.0), mix(12.0, 90.0, shine)) * shine * 0.8 * shade;
     // A faint rim of sky light picks out the silhouette
     float rim = pow(1.0 - max(dot(n, viewDir), 0.0), 3.0) * 0.25;
 

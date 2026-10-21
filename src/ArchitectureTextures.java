@@ -27,6 +27,10 @@ public final class ArchitectureTextures {
             return render(rng, WALL_SIZE, variant.colour, 0.07f, 0.05f, true);
         }
         boolean stone = variant.finish == BuildingStyle.WallFinish.STONE;
+        if (variant.pattern != BuildingStyle.Pattern.COURSED) {
+            return patterned(rng, WALL_SIZE, variant.pattern, stone, variant.mortarFraction, variant.colour, variant.mortarColour,
+                    variant.colourVariation);
+        }
         return masonry(rng, WALL_SIZE, COURSES_PER_TILE, variant.brickAspect, variant.bond, stone,
                 variant.mortarFraction, variant.colour, variant.mortarColour, variant.colourVariation);
     }
@@ -105,6 +109,138 @@ public final class ArchitectureTextures {
                 float bevel = 0.78f + 0.22f * ProceduralTextures.smoothstep(mortarHalf, mortarHalf + 4f, edgeDist);
                 float lum = shade[c][unit] * bevel * (1f + 0.10f * speckle[i] * 1.7f + 0.06f * surface[i]);
                 float h = WorldPalette.clamp01(0.5f + hueShift[c][unit] * 4f);
+                float r = (base[0] + (warm[0] - base[0]) * (h - 0.5f) * 2f) * lum;
+                float g = (base[1] + (warm[1] - base[1]) * (h - 0.5f) * 2f) * lum;
+                float b = (base[2] + (warm[2] - base[2]) * (h - 0.5f) * 2f) * lum;
+                img.setRGB(x, y, rgb(r, g, b));
+            }
+        }
+        return img;
+    }
+
+    // Triangles and honeycomb: seven units across the texture, eight rows down
+    private static final int PATTERN_COLUMNS = 7, PATTERN_ROWS = 8;
+
+    /**
+     * How much wider than tall (in the world) a wall texture of this pattern is, so its units come
+     * out regular: equilateral triangles and regular hexagons, seven across and eight rows down.
+     */
+    public static float patternAspect(BuildingStyle.Pattern pattern) {
+        return pattern == BuildingStyle.Pattern.GRID || pattern == BuildingStyle.Pattern.COURSED ? 1f
+                : PATTERN_COLUMNS * (float) Math.sqrt(3.0) / (PATTERN_ROWS * 1.5f);
+    }
+
+    /**
+     * Alien masonry: equilateral triangles in rows, pointing up and down by turns; a honeycomb
+     * of hexagons; or a plain grid of square panels. As with bricks, each unit has its own shade,
+     * a speckled face and darkened, chipped edges, set in mortar. Worked out in the world's own
+     * proportions (x stretched by patternAspect), so the units are regular once on a wall.
+     */
+    static BufferedImage patterned(Random rng, int n, BuildingStyle.Pattern pattern, boolean irregular, float mortarFraction,
+                                   Vector3 unitColour, Vector3 mortarColour, float colourVariation) {
+        float aspect = patternAspect(pattern);
+        int rows = PATTERN_ROWS, columns = pattern == BuildingStyle.Pattern.GRID ? PATTERN_ROWS : PATTERN_COLUMNS;
+        float rowH = (float) n / rows;
+        float period = n * aspect;   // the texture's width in row-height units' pixels
+        int units = rows * columns * 2;
+        float[] shade = new float[units], hueShift = new float[units];
+        for (int i = 0; i < units; i++) {
+            shade[i] = 1f + (float) rng.nextGaussian() * colourVariation * (irregular ? 1.6f : 1f);
+            hueShift[i] = (float) rng.nextGaussian() * colourVariation * 0.4f;
+        }
+        float[] speckle = TileableNoise.blurWrap(TileableNoise.white(rng, n), n, 1);
+        float[] surface = TileableNoise.spectral(rng, n, 1.2, 1.0, 0.0, 8);
+        float[] chip = TileableNoise.spectral(rng, n, 1.0, 1.0, 0.0, 24);
+        float[] mortarGrain = TileableNoise.white(rng, n);
+        float mortarHalf = mortarFraction * rowH * 0.5f;
+        float[] base = {unitColour.x, unitColour.y, unitColour.z};
+        float[] warm = {Math.min(1f, unitColour.x * 1.1f), unitColour.y, unitColour.z * 0.9f};
+        float hexR = rowH / 1.5f, hexDx = period / columns;
+        float side = period / columns;   // a triangle's side
+
+        BufferedImage img = new BufferedImage(n, n, BufferedImage.TYPE_INT_RGB);
+        for (int y = 0; y < n; y++) {
+            for (int x = 0; x < n; x++) {
+                int i = y * n + x;
+                float xs = x * aspect;
+                int unit;
+                float edgeDist;
+                switch (pattern) {
+                    case GRID -> {
+                        int cx = (int) (x / rowH), cy = (int) (y / rowH);
+                        float fx = x - cx * rowH, fy = y - cy * rowH;
+                        unit = (cy * columns + cx) % units;
+                        edgeDist = Math.min(Math.min(fx, rowH - fx), Math.min(fy, rowH - fy));
+                    }
+                    case TRIANGLE -> {
+                        int r = Math.min(rows - 1, (int) (y / rowH));
+                        float v = (y - r * rowH) / rowH;   // 0 at the row's top
+                        float shifted = ((xs - (r % 2) * side * 0.5f) % period + period) % period;
+                        int k = Math.min(columns - 1, (int) (shifted / side));
+                        float f = shifted / side - k;
+                        int index;
+                        float gap;   // across to the nearest slanting edge, along the row
+                        if (Math.abs(f - 0.5f) <= v * 0.5f) {
+                            index = 2 * k;
+                            gap = (v * 0.5f - Math.abs(f - 0.5f)) * side;
+                        } else {
+                            index = Math.floorMod(f < 0.5f ? 2 * k - 1 : 2 * k + 1, columns * 2);
+                            gap = (Math.abs(f - 0.5f) - v * 0.5f) * side;
+                        }
+                        unit = (r * columns * 2 + index) % units;
+                        float slanted = gap * (float) Math.sqrt(3.0) * 0.5f;
+                        edgeDist = Math.min(slanted, Math.min(v, 1f - v) * rowH);
+                    }
+                    default -> {
+                        // Honeycomb: the nearest of the hexagons' middles, and how far to the
+                        // edge it shares with the next nearest
+                        float best = Float.MAX_VALUE;
+                        int bestUnit = 0;
+                        float bx = 0f, by = 0f;
+                        float[][] seen = new float[12][];
+                        int seenCount = 0;
+                        int row = (int) Math.floor(y / rowH);
+                        for (int dr = -1; dr <= 1; dr++) {
+                            int rr = row + dr;
+                            float cy = rr * rowH + rowH * 0.5f;
+                            float offset = Math.floorMod(rr, 2) * hexDx * 0.5f;
+                            int col = (int) Math.floor((xs - offset) / hexDx);
+                            for (int dc = -1; dc <= 2; dc++) {
+                                int cc = col + dc;
+                                float cx = cc * hexDx + offset + hexDx * 0.5f;
+                                float dx = xs - cx, dy = y - cy;
+                                float d = dx * dx + dy * dy;
+                                if (seenCount < seen.length) seen[seenCount++] = new float[] { cx, cy, d };
+                                if (d < best) {
+                                    best = d;
+                                    bestUnit = Math.floorMod(rr, rows) * columns + Math.floorMod(cc, columns);
+                                    bx = cx;
+                                    by = cy;
+                                }
+                            }
+                        }
+                        // (to the bisector between the nearest middle and each other)
+                        float edge = Float.MAX_VALUE;
+                        for (int s = 0; s < seenCount; s++) {
+                            float[] c = seen[s];
+                            float ex = c[0] - bx, ey = c[1] - by;
+                            float span = (float) Math.sqrt(ex * ex + ey * ey);
+                            if (span < 1e-3f) continue;
+                            edge = Math.min(edge, (c[2] - best) / (2f * span));
+                        }
+                        unit = bestUnit % units;
+                        edgeDist = edge * 0.9f;
+                    }
+                }
+                edgeDist += chip[i] * 1.2f;
+                if (edgeDist < mortarHalf) {
+                    float m = 1f + 0.12f * mortarGrain[i];
+                    img.setRGB(x, y, rgb(mortarColour.x * m, mortarColour.y * m, mortarColour.z * m));
+                    continue;
+                }
+                float bevel = 0.78f + 0.22f * ProceduralTextures.smoothstep(mortarHalf, mortarHalf + 4f, edgeDist);
+                float lum = shade[unit] * bevel * (1f + 0.10f * speckle[i] * 1.7f + 0.06f * surface[i]);
+                float h = WorldPalette.clamp01(0.5f + hueShift[unit] * 4f);
                 float r = (base[0] + (warm[0] - base[0]) * (h - 0.5f) * 2f) * lum;
                 float g = (base[1] + (warm[1] - base[1]) * (h - 0.5f) * 2f) * lum;
                 float b = (base[2] + (warm[2] - base[2]) * (h - 0.5f) * 2f) * lum;

@@ -90,6 +90,8 @@ public class InfrastructureManager {
     private final Map<Integer, GuardRailStyle> guardRailStyles;
     // Each nation's roadside bollards (see BollardStyle) and utility poles (see UtilityPoleStyle)
     private final BollardStyle.World bollardWorld;
+    // The world's ways of dressing buildings up, and where each is built (see ArchitectureStyle)
+    private final ArchitectureStyle.World architectureWorld;
     private final UtilityPoleStyle.World poleWorld;
     private final Map<Integer, FenceStyle> fenceStyles;
     private final Map<String, Material> materials = new HashMap<>();
@@ -166,6 +168,9 @@ public class InfrastructureManager {
     private final java.util.Set<Long> cellsRecorded = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private List<Obstacle> recording;
     private final Map<Long, List<House>> housesByCell = new HashMap<>();
+    // The world's famous landmarks (see Landmarks): the built ones planned with the roads, before the houses
+    private final Landmarks landmarks = new Landmarks();
+    private static final String LANDMARK_PART = "landmark:";
     private volatile boolean roadNetworkInitialized;
     private float seaLevel;
     private PerlinNoise terrainNoise;
@@ -200,6 +205,9 @@ public class InfrastructureManager {
         // The deck's height at each subdivision, once worked out: as drawn (meeting greater roads
         // at their height), and by its own ground alone
         volatile float[] deck, ownDeck;
+        // Its asphalt's edges as drawn, and a cul-de-sac's disc's height, once worked out
+        volatile float[][][] edges;
+        volatile float discLevel = Float.NaN;
         private boolean railed;
 
         private RoadSegment(SphereFrame frame, SpherePosition from, SpherePosition to, Vector3 start, Vector3 end,
@@ -257,6 +265,8 @@ public class InfrastructureManager {
         private int frontagePath;
                 private int wallVariant;
         private int form;
+        // Its architecture: which of the world's designs it's dressed in (see ArchitectureStyle.World)
+        private int architecture;
         // Fence: a tall security boundary, the outline's shape, whether a neighbour's fence
         // already runs along a side, and any extra fenced paddock (local minX, maxX, minZ, maxZ)
         private boolean secure;
@@ -374,6 +384,8 @@ public class InfrastructureManager {
         this.poleWorld = UtilityPoleStyle.generateForNations(seed, numNations, kinship);
         System.out.println("[BOLLARDS] " + bollardWorld.designs().summary());
         System.out.println("[POLES] " + poleWorld.designs().summary());
+        this.architectureWorld = ArchitectureStyle.generateForNations(seed, numNations, kinship);
+        System.out.println("[ARCHITECTURE] " + architectureWorld.summary());
         this.flags = FlagDesigner.design(seed, numNations, kinship);
         this.scripts = new NationScripts(seed, numNations, cultures);
         this.borderGap = hostileBorderDistance();
@@ -543,7 +555,7 @@ public class InfrastructureManager {
      * Picks a house's wall variety from its nation's mix, tilted by its town's own favourites,
      * so a town has a recognisable look without every house matching.
      */
-    private int chooseWallVariant(SpherePosition place, int nationId, long houseSeed) {
+    private int chooseWallVariant(SpherePosition place, int nationId, long houseSeed, BuildingStyle.Pattern liked) {
         float[] weights = buildingStyles.get(nationId).wallVariantWeights;
         SettlementManager.Settlement town = settlementManager.getUrbanness(place) > 0.05f
                 ? settlementManager.dominantSettlementAt(place) : null;
@@ -553,6 +565,8 @@ public class InfrastructureManager {
         for (int v = 0; v < weights.length; v++) {
             float townBias = townRand == null ? 1.0f : (float) Math.exp(townRand.nextGaussian() * 0.6);
             tilted[v] = weights[v] * townBias;
+            // (the local architecture's favourite masonry, if it's an alien one, is built far more)
+            if (liked != BuildingStyle.Pattern.COURSED && wallVariants.get(v).pattern == liked) tilted[v] *= 12f;
             total += tilted[v];
         }
         float pick = new Random(houseSeed).nextFloat() * total;
@@ -822,6 +836,7 @@ public class InfrastructureManager {
         }
 
         findBorderChecks();
+        planLandmarks();
 
         long startTime = System.currentTimeMillis();
         placeHouses();
@@ -891,6 +906,45 @@ public class InfrastructureManager {
         float distance = house.depth * 0.5f + house.setback + Math.max(house.width, house.depth) * 1.6f;
         float x = house.width * 0.35f;
         return viewpoint(house.frame, x, distance, -x, -distance);
+    }
+
+    /** Developer aid: across from one of the richest tenth of houses (not towers), looking at it; null if none. */
+    public Viewpoint ornateHouseViewpoint(Random rand) {
+        List<House> rich = new ArrayList<>();
+        for (House house : houses) if (!styleOf(house).tower && house.shop == null) rich.add(house);
+        if (rich.isEmpty()) return null;
+        rich.sort((a, b) -> Float.compare(b.richness, a.richness));
+        House house = rich.get(rand.nextInt(Math.max(1, rich.size() / 10)));
+        float distance = house.depth * 0.5f + house.setback + Math.max(house.width, house.depth) * 1.3f;
+        float x = house.width * 0.45f;
+        return viewpoint(house.frame, x, distance, -x, -distance);
+    }
+
+    /** Developer aid: well back from one of the richest towers, facing it; null if none. */
+    public Viewpoint towerViewpoint(Random rand) {
+        List<House> towers = new ArrayList<>();
+        for (House house : houses) if (styleOf(house).tower) towers.add(house);
+        if (towers.isEmpty()) return null;
+        towers.sort((a, b) -> Float.compare(b.richness, a.richness));
+        House house = towers.get(rand.nextInt(Math.max(1, towers.size() / 4)));
+        float distance = house.depth * 0.5f + house.mainWallHeight * 0.9f;
+        return viewpoint(house.frame, house.width * 0.6f, distance, -house.width * 0.6f, -distance);
+    }
+
+    /**
+     * Developer aid: in front of one of the built landmarks (of the kind -Dxenoguesser.landmark
+     * names, spire, stones or ruin, if any), far enough back to see it whole; null if there's none.
+     */
+    public Viewpoint landmarkViewpoint(Random rand) {
+        String wanted = Dev.property("xenoguesser.landmark");
+        List<Landmark> built = new ArrayList<>();
+        for (Landmark lm : landmarks.all()) {
+            if (lm.kind.built && (wanted == null || lm.kind.name().equalsIgnoreCase(wanted))) built.add(lm);
+        }
+        if (built.isEmpty()) return null;
+        Landmark lm = built.get(rand.nextInt(built.size()));
+        float distance = lm.kind == Landmark.Kind.SPIRE ? lm.tallest() * 0.55f : lm.reach * 1.25f;
+        return viewpoint(lm.frame, distance * 0.08f, distance, -distance * 0.08f, -distance);
     }
 
     /**
@@ -1096,21 +1150,43 @@ public class InfrastructureManager {
 
     /**
      * The altitude of what someone walking at a place stands on, with their feet at feet: a
-     * road's surface (or a bridge's deck) only if it's within STEP_UP of the ground there, so
-     * they step up onto it, or their feet are already up at it (on it, or come down onto it from
-     * a jump); otherwise the ground, under a bridge as well as beside a raised road.
+     * road's surface (or a bridge's deck) only if it's within STEP_UP of the ground there or of
+     * their feet, so they step up onto it, or their feet are already up at it (on it, or come
+     * down onto it from a jump); otherwise the ground, under a bridge as well as beside a raised
+     * road.
      */
     public float walkingSurfaceY(SpherePosition place, float feet) {
         float surface = walkingSurfaceY(place);
         place = SphereMath.atAltitude(place, 0.0);
         float ground = TerrainMesh.getLayeredHeight(place, terrainNoise);
-        if (surface - ground <= STEP_UP || feet >= surface - LAND_ON) return surface;
+        // (stepped up onto from where the feet are, if they're up on something: from one road
+        // onto another meeting it a little higher, not only from the ground)
+        if (surface - Math.max(ground, feet) <= STEP_UP) return surface;
+        // (where one road passes over another, as a hairpin's legs, the highest within reach:
+        // not the ground beneath the lower)
+        float reached = Float.NaN;
+        if (roadNetworkInitialized) {
+            for (float y : drawnRoadsY(place, 1.5f)) {
+                if (y >= ground && y - Math.max(ground, feet) <= STEP_UP && (Float.isNaN(reached) || y > reached)) reached = y;
+            }
+        }
+        if (!Float.isNaN(reached)) return reached;
+        // (a bridge is open beneath, but solid through its depth: feet already up within it, as
+        // after a stride or a landing that sank into a steep deck, come up onto it rather than
+        // down through it to the ground inside)
+        Object[] bridge = roadNetworkInitialized ? bridgeDeckAt(place, 0f) : null;
+        if (bridge != null && feet > bridgeUnderside(bridge)) return surface;
         return ground;
+    }
+
+    /** The height of the underside of a bridge's deck (as bridgeDeckAt gives it): its planks' logs, or its slab. */
+    private static float bridgeUnderside(Object[] bridge) {
+        return (Float) bridge[1] - (((Bridge) bridge[0]).kind == BridgeKind.PLANKS ? PLANK_THICK + LOG : SLAB);
     }
 
     /**
      * Whether a road or bridge stands in the way of someone (their feet at feet, their head at
-     * head) at a place: a made road raised more than STEP_UP over the ground there (solid down to
+     * head) at a place: a made road raised more than STEP_UP over the ground there and their feet (solid down to
      * the ground, its wall or bank) or a bridge's deck (solid through its depth, open beneath),
      * where their body's beside it rather than up on it.
      */
@@ -1118,57 +1194,68 @@ public class InfrastructureManager {
         if (!roadNetworkInitialized) return false;
         place = SphereMath.atAltitude(place, 0.0);
         float ground = TerrainMesh.getLayeredHeight(place, terrainNoise);
+        // (a landmark's platform, where it stands higher than a step over the ground and the feet)
+        float floor = landmarks.floorAt(place);
+        if (!Float.isNaN(floor) && floor - Math.max(ground, feet) > STEP_UP) return head > ground && feet < floor;
         float top, bottom;
         Object[] bridge = bridgeDeckAt(place, BODY_MARGIN);
         if (bridge != null) {
             top = (Float) bridge[1];
-            bottom = top - (((Bridge) bridge[0]).kind == BridgeKind.PLANKS ? PLANK_THICK + LOG : SLAB);
+            bottom = bridgeUnderside(bridge);
         } else {
-            if (roadDepth(place) < -BODY_MARGIN) return false;
-            top = drawnRoadY(place, BODY_MARGIN);
-            if (Float.isNaN(top)) top = roadSurfaceY(place);
+            // (no wall where there's a road to stand on within reach: where one passes over
+            // another, as a hairpin's legs, the lower is walked along; nor where none is drawn)
+            top = Float.NaN;
+            for (float y : drawnRoadsY(place, BODY_MARGIN)) {
+                if (y - Math.max(ground, feet) <= STEP_UP) return false;
+                if (Float.isNaN(top) || y > top) top = y;
+            }
+            if (Float.isNaN(top)) return false;
             bottom = ground;
         }
-        if (top - ground <= STEP_UP || feet >= top - LAND_ON) return false;
+        // (as in walkingSurfaceY, stepped up onto from the ground or from what the feet are on)
+        if (top - Math.max(ground, feet) <= STEP_UP) return false;
         return head > bottom && feet < top;
     }
 
     // (a body this far from a road's edge meets it)
     private static final float BODY_MARGIN = 3f;
-    // A road this little above the ground is stepped up onto; one higher must be climbed (jumped)
-    // onto, the feet coming down on it from no lower than LAND_ON below its surface
-    private static final float STEP_UP = 4f, LAND_ON = 2.5f;
+    // A road this little above the ground, or above what the feet are on, is stepped up onto; one
+    // higher must be climbed (jumped) onto, the feet coming down on it from no lower than this
+    // below its surface
+    private static final float STEP_UP = 4f;
 
     /**
      * The altitude of what someone walking at a place stands on: the road's raised surface on
      * a road (eased down to the ground over a pace or so beyond its edge), otherwise the ground.
      */
     public float walkingSurfaceY(SpherePosition place) {
+        float surface = roadOrGroundY(place);
+        // (up on a landmark's steps and platform)
+        float floor = landmarks.floorAt(place);
+        return Float.isNaN(floor) ? surface : Math.max(surface, floor);
+    }
+
+    /** The road's raised surface at a place, or the ground (see walkingSurfaceY). */
+    private float roadOrGroundY(SpherePosition place) {
         place = SphereMath.atAltitude(place, 0.0);
         float ground = TerrainMesh.getLayeredHeight(place, terrainNoise);
         if (!roadNetworkInitialized) return ground;
         // (on a bridge, its deck, a track's planks as well as a made road's)
         Object[] bridge = bridgeDeckAt(place, 0f);
         if (bridge != null) return Math.max(ground, (Float) bridge[1]);
-        float inside = roadDepth(place);
-        final float easing = 1.5f;
-        if (inside <= -easing) return ground;
         // (the road as it's drawn: level across, meeting others at junctions)
-        float road = drawnRoadY(place, easing);
-        if (Float.isNaN(road)) road = roadSurfaceY(place);
-        float t = Math.min(1f, (inside + easing) / easing);
-        return ground + (road - ground) * t;
-    }
-
-    /** How far inside the nearest made road's edge a place is (negative outside it). */
-    private float roadDepth(SpherePosition place) {
-        float best = -Float.MAX_VALUE;
-        for (RoadSegment segment : segmentsNear(place, 2f + MAX_ROAD_HALF_WIDTH)) {
-            if (segment.roadClass == RoadPath.RoadClass.DIRT) continue;
-            float distance = (float) Math.sqrt(distanceSquaredToSegment(place, segment));
-            best = Math.max(best, segment.width * 0.5f - distance);
+        final float easing = 1.5f;
+        float road = Float.NaN, outside = 0f;
+        for (float[] hit : drawnRoads(place, easing)) {
+            if (Float.isNaN(road) || hit[0] > road) {
+                road = hit[0];
+                outside = hit[1];
+            }
         }
-        return best;
+        if (Float.isNaN(road)) return ground;
+        float t = 1f - outside / easing;
+        return ground + (road - ground) * t;
     }
 
     /** Whether a place lies within clearance of any house (including its extension). */
@@ -1177,6 +1264,8 @@ public class InfrastructureManager {
             return false;
         }
         place = SphereMath.atAltitude(place, 0.0);
+        // (a landmark's ground counts as built on: trees, rocks and the landing pod keep off it)
+        if (landmarks.covers(place, clearance)) return true;
         for (House house : houseIndex.near(place, clearance)) {
             float[] local = local(house, place);
             if (local[0] >= house.houseMinX() - clearance && local[0] <= house.houseMaxX() + clearance
@@ -1268,7 +1357,7 @@ public class InfrastructureManager {
         // The plots kept so far, filed at the middle of each plot reaching its corners
         for (House candidate : candidates) {
             SpherePosition centre = world(candidate, candidate.plotCentreLocalX(), 0f, candidate.plotCentreLocalZ());
-            boolean blocked = straddlesFencedBorder(candidate);
+            boolean blocked = straddlesFencedBorder(candidate) || landmarks.covers(centre, candidate.plotRadius() + PLOT_GAP);
             if (!blocked) {
                 for (House other : plotIndex.near(centre, candidate.plotRadius() + PLOT_GAP)) {
                     if (plotsOverlap(candidate, other)) {
@@ -1376,7 +1465,9 @@ public class InfrastructureManager {
             if (!settleOnGround(house, style) || !isPlotClearOfRoads(house)) {
                 continue;
             }
-            house.wallVariant = chooseWallVariant(house.frame.origin(), house.nationId, house.seed);
+            house.architecture = Math.max(0, architectureWorld.at(house.nationId, SphereMath.direction(house.frame.origin())));
+            house.wallVariant = chooseWallVariant(house.frame.origin(), house.nationId, house.seed,
+                    architectureWorld.style(house.architecture).pattern);
         decideFence(house);
         decideLook(house);
             candidates.add(house);
@@ -1493,7 +1584,9 @@ public class InfrastructureManager {
         if (!settleOnGround(house, style) || !isPlotClearOfRoads(house)) {
             return null;
         }
-        house.wallVariant = chooseWallVariant(house.frame.origin(), house.nationId, house.seed);
+        house.architecture = Math.max(0, architectureWorld.at(house.nationId, SphereMath.direction(house.frame.origin())));
+        house.wallVariant = chooseWallVariant(house.frame.origin(), house.nationId, house.seed,
+                architectureWorld.style(house.architecture).pattern);
         decideFence(house);
         decideLook(house);
         return house;
@@ -1724,6 +1817,8 @@ public class InfrastructureManager {
             // do; what's seen through windows (curtains, rooms, shop interiors) lasts nearly as long
             batch.setDetailDistance(p -> p.name.equals("goods") || p.name.equals("shelf") || p.name.equals("flag"), 700f);
             batch.setDetailDistance(p -> p.name.startsWith("curtain") || p.name.equals("interior") || p.name.equals("shopinterior"), 1700f);
+            // (and houses' small ornaments and spikes before the houses themselves)
+            batch.setDetailDistance(p -> p.name.startsWith("orn@") || p.name.startsWith("spike@"), 1500f);
             return batch;
         }
     }
@@ -1779,6 +1874,10 @@ public class InfrastructureManager {
                     }
                 }
             }
+        }
+
+        for (Landmark landmark : landmarks.inCell(cell)) {
+            bakeLandmark(batches.computeIfAbsent(landmark.nation, NationBatch::new), landmark);
         }
 
         borderFences(batches, cell);
@@ -1897,6 +1996,37 @@ public class InfrastructureManager {
                 int v = Integer.parseInt(part.substring("wall_variant".length()));
                 return texturedOr(wallVariantTextureName(v), wallVariants.get(v).colour, specular, 2.0f);
             }
+            // A landmark's colours ("landmark:which:slot")
+            if (part.startsWith(LANDMARK_PART)) {
+                String[] which = part.substring(LANDMARK_PART.length()).split(":");
+                Landmark landmark = landmarks.get(Integer.parseInt(which[0]));
+                int slot = Integer.parseInt(which[1]);
+                Vector3 colour = landmark.colours[slot];
+                float shine = landmark.shine[slot];
+                if (slot == Landmark.GLASS) {
+                    return new Material(colour, colour, new Vector3(0.7f, 0.7f, 0.7f), shine);
+                }
+                Vector3 glint = shine > 30f ? new Vector3(0.6f, 0.58f, 0.5f) : specular;
+                return new Material(colour, colour, glint, shine);
+            }
+            // An architecture's ornaments, spikes and neon, by which of the world's designs ("part@design")
+            int at = part.indexOf('@');
+            if (at > 0) {
+                ArchitectureStyle arch = architectureWorld.style(Integer.parseInt(part.substring(at + 1)));
+                return switch (part.substring(0, at)) {
+                    case "orn" -> {
+                        float shine = arch.ornamentShine > 30f ? 0.6f : 0.2f;
+                        yield new Material(arch.ornamentColour, arch.ornamentColour, new Vector3(shine, shine, shine), arch.ornamentShine);
+                    }
+                    case "spike" -> new Material(arch.spikeColour, arch.spikeColour, new Vector3(0.4f, 0.4f, 0.4f), 32.0f);
+                    default -> {
+                        // Neon: lit by itself, bright by day and glowing at night
+                        Vector3 colour = part.startsWith("neonb") ? arch.neonB : arch.neonA;
+                        Vector3 dim = Vector3.multiply(colour, 0.35f);
+                        yield new Material(dim, dim, new Vector3(0.3f, 0.3f, 0.3f), Vector3.multiply(colour, 0.95f), 16.0f);
+                    }
+                };
+            }
             GuardRailStyle rail = guardRailStyles.get(nationId);
             // A bollard's or a pole's parts, by which of the world's designs it is ("part#design")
             int hash = part.indexOf('#');
@@ -1976,11 +2106,7 @@ public class InfrastructureManager {
                     // The ground's own soil texture: the track is the ground, worn bare
                     return texturedOr("dirt_diffuse", new Vector3(0.5f, 0.4f, 0.3f), new Vector3(0.1f, 0.1f, 0.1f), 4.0f);
                 case "finery": {
-                    // The nation's dressing stone: marble, cream stone, gilt or dark granite
-                    Random pick = nationRandom(83L, nationId);
-                    Vector3[] stones = { new Vector3(0.9f, 0.89f, 0.86f), new Vector3(0.9f, 0.82f, 0.64f),
-                            new Vector3(0.86f, 0.66f, 0.22f), new Vector3(0.22f, 0.22f, 0.25f) };
-                    Vector3 stone = stones[pick.nextInt(stones.length)];
+                    Vector3 stone = dressingStone(nationId);
                     return new Material(stone, stone, new Vector3(0.35f, 0.33f, 0.3f), 32.0f);
                 }
                 case "driveway": {
@@ -1989,6 +2115,11 @@ public class InfrastructureManager {
                     float grey = 0.36f + tint.nextFloat() * 0.2f;
                     Vector3 paving = new Vector3(grey + tint.nextFloat() * 0.08f, grey + tint.nextFloat() * 0.05f, grey);
                     return new Material(paving, paving, new Vector3(0.05f, 0.05f, 0.05f), 2.0f);
+                }
+                case "techmetal": {
+                    // A tower's brushed alloy fittings
+                    Vector3 alloy = new Vector3(0.74f, 0.76f, 0.8f);
+                    return new Material(alloy, alloy, new Vector3(0.65f, 0.65f, 0.65f), 48.0f);
                 }
                 case "wood": {
                     // Weathered timber
@@ -2035,6 +2166,113 @@ public class InfrastructureManager {
                     return texturedOr(nationTextureName("fence", nationId), fenceStyles.get(nationId).colour, specular, 2.0f);
             }
         });
+    }
+
+    /** A nation's dressing stone: marble, cream stone, gilt or dark granite. */
+    private Vector3 dressingStone(int nationId) {
+        Random pick = nationRandom(83L, nationId);
+        Vector3[] stones = { new Vector3(0.9f, 0.89f, 0.86f), new Vector3(0.9f, 0.82f, 0.64f),
+                new Vector3(0.86f, 0.66f, 0.22f), new Vector3(0.22f, 0.22f, 0.25f) };
+        return stones[pick.nextInt(stones.length)];
+    }
+
+    // ==========================================
+    //          LANDMARKS
+    // ==========================================
+
+    /** The world's landmarks: the built ones (planned), and the natural ones once found. */
+    public Landmarks landmarks() {
+        return landmarks;
+    }
+
+    /** Plans the built landmarks beside the roads (see Landmarks.planBuilt), before any house is placed. */
+    private void planLandmarks() {
+        List<Landmarks.RoadSpot> spots = new ArrayList<>();
+        List<RoadSegment> all = new ArrayList<>();
+        for (List<RoadSegment> bucket : roadSegmentsByCell.values()) all.addAll(bucket);
+        all.sort((a, b) -> a.pathIndex != b.pathIndex ? Integer.compare(a.pathIndex, b.pathIndex) : Float.compare(a.startDistance, b.startDistance));
+        for (RoadSegment segment : all) {
+            if (segment.culDeSac || segment.length < 20f) continue;
+            SpherePosition middle = segment.frame.origin();
+            double heading = SphereFrame.at(middle).headingTo(segment.to);
+            spots.add(new Landmarks.RoadSpot(middle, heading, segment.width * 0.5f, segment.nationId, segment.roadClass == RoadPath.RoadClass.DIRT));
+        }
+        Landmarks.World world = new Landmarks.World() {
+            public float ground(SpherePosition place) {
+                return TerrainMesh.getLayeredHeight(place, terrainNoise);
+            }
+
+            public int nationAt(SpherePosition place) {
+                return nationManager.getNationAt(place);
+            }
+
+            public float urbanness(SpherePosition place) {
+                return settlementManager.getUrbanness(place);
+            }
+
+            public float richness(int nation, SpherePosition place) {
+                return areaRichness(nation, settlementManager.getUrbanness(place), place);
+            }
+
+            public float nationRichness(int nation) {
+                return InfrastructureManager.this.nationRichness(nation);
+            }
+
+            public boolean nearRoad(SpherePosition place, float clearance) {
+                return isRoadLocation(place, clearance);
+            }
+
+            public ArchitectureStyle architecture(int nation, SpherePosition place) {
+                int design = architectureWorld.at(nation, SphereMath.direction(place));
+                return architectureWorld.style(Math.max(0, design));
+            }
+
+            public boolean freshWater(SpherePosition place, float ground) {
+                Rivers rivers = terrainNoise.rivers;
+                return rivers != null && !Float.isNaN(rivers.waterAt(SphereMath.direction(place), ground));
+            }
+
+            public Vector3 stone(int nation) {
+                return dressingStone(nation);
+            }
+
+            public Vector3 wall(int nation) {
+                BuildingStyle style = buildingStyles.get(nation);
+                return style != null ? style.wallColour : new Vector3(0.7f, 0.68f, 0.64f);
+            }
+        };
+        landmarks.planBuilt(worldSeed, buildingStyles.size(), spots, world, seaLevel,
+                place -> TerrainMesh.getLayeredHeight(place, terrainNoise), this::batchCell);
+    }
+
+    /**
+     * A landmark into its nation's batch in its cell: its faces in its own frame (raised to its
+     * base), in its colours, and what's solid of it filed for walking into.
+     */
+    private void bakeLandmark(NationBatch batch, Landmark landmark) {
+        int which = landmarks.indexOf(landmark);
+        batch.place(inWorld(landmark.frame, false));
+        Landmark.Geometry geometry = landmark.geometry;
+        float base = landmark.base;
+        for (int i = 0; i < geometry.faces.size(); i++) {
+            float[][] corners = geometry.faces.get(i);
+            float[] n = geometry.normals.get(i);
+            MeshBuilder builder = batch.builder(LANDMARK_PART + which + ":" + geometry.slots.get(i));
+            int first = -1;
+            for (float[] c : corners) {
+                int index = builder.addVertex(c[0], c[1] + base, c[2], n[0], n[1], n[2], 0f, 0f);
+                if (first < 0) first = index;
+            }
+            for (int k = 1; k < corners.length - 1; k++) builder.addTriangle(first, first + k, first + k + 1);
+        }
+        float wide = Math.max(landmark.reach, landmark.halfDepth);
+        batch.include(-wide, base - landmark.drop, -wide, 0f);
+        batch.include(wide, base + landmark.tallest(), wide, 0f);
+        batch.place(null);
+        for (float[] c : landmark.circles) recordCircle(landmark.frame.toSphere(c[0], 0.0, c[1]), c[2]);
+        for (float[] w : landmark.walls) {
+            recordSegment(landmark.frame.toSphere(w[0], 0.0, w[1]), landmark.frame.toSphere(w[2], 0.0, w[3]), w[4], w[5]);
+        }
     }
 
     // ==========================================
@@ -2100,20 +2338,36 @@ public class InfrastructureManager {
                 SpherePosition place = world(segment, segment.start.x + (segment.end.x - segment.start.x) * t,
                         segment.start.z + (segment.end.z - segment.start.z) * t);
                 float pull = 0f, target = own[i];
+                // (each greater road's height where the place is on it as drawn, by the segment
+                // it's on: see drawnRoadY. The nearest end's, for one beyond a segment's end
+                // that runs on into the next, is the height further along a climbing road)
+                List<Object[]> greaterRoads = new ArrayList<>(4);
                 for (RoadSegment other : segmentsNear(place, MAX_ROAD_HALF_WIDTH + JUNCTION_RAMP)) {
                     if (other.pathIndex == segment.pathIndex || other.roadClass == RoadPath.RoadClass.DIRT || !greater(other, segment)) continue;
-                    double[] p = other.frame.fromSphere(place);
-                    float ux = other.end.x - other.start.x, uz = other.end.z - other.start.z, l2 = ux * ux + uz * uz;
-                    float f = l2 > 0f ? Math.max(0f, Math.min(1f, (float) (((p[0] - other.start.x) * ux + (p[2] - other.start.z) * uz) / l2))) : 0f;
-                    float distance = (float) Math.hypot(p[0] - (other.start.x + ux * f), p[2] - (other.start.z + uz * f));
-                    float beyond = distance - other.width * 0.5f;
-                    if (beyond >= JUNCTION_RAMP) continue;
+                    float[] on = onDrawn(other, other.frame.fromSphere(place));
+                    if (on[1] - other.width * 0.5f >= JUNCTION_RAMP) continue;
+                    Object[] mine = null;
+                    for (Object[] road : greaterRoads) if (((RoadSegment) road[0]).pathIndex == other.pathIndex) mine = road;
+                    if (mine == null) {
+                        greaterRoads.add(new Object[] { other, on });
+                    } else {
+                        float[] was = (float[]) mine[1];
+                        if (on[0] > was[0] || (on[0] == was[0] && on[1] < was[1])) {
+                            mine[0] = other;
+                            mine[1] = on;
+                        }
+                    }
+                }
+                for (Object[] road : greaterRoads) {
+                    RoadSegment other = (RoadSegment) road[0];
+                    float[] on = (float[]) road[1];
+                    float beyond = on[1] - other.width * 0.5f;
                     float s = beyond <= 0f ? 1f : 1f - beyond / JUNCTION_RAMP;
                     s = s * s * (3f - 2f * s);
                     if (s > pull) {
                         pull = s;
                         float[] theirs = ownDeckHeights(other);
-                        float scaled = f * ROAD_SEGMENT_SUBDIVISIONS;
+                        float scaled = on[2] * ROAD_SEGMENT_SUBDIVISIONS;
                         int k = Math.min((int) scaled, ROAD_SEGMENT_SUBDIVISIONS - 1);
                         target = theirs[k] + (theirs[k + 1] - theirs[k]) * (scaled - k) - (beyond <= 0f ? JUNCTION_UNDER : 0f);
                     }
@@ -2149,27 +2403,190 @@ public class InfrastructureManager {
         return deck;
     }
 
+    /** The heights of the made roads a place is on, or within slack of the edge of, as drawn (see drawnRoads). */
+    private float[] drawnRoadsY(SpherePosition place, float slack) {
+        List<float[]> roads = drawnRoads(place, slack);
+        float[] heights = new float[roads.size()];
+        for (int r = 0; r < heights.length; r++) heights[r] = roads.get(r)[0];
+        return heights;
+    }
+
     /**
-     * The height of the made road a place is on as it's drawn (level across the road from its
-     * centreline, as deckHeights has it, junctions and all); of two overlapping, the higher. NaN
-     * on none (within slack of its edge).
+     * The made roads a place is on, or within slack of the edge of, as their asphalt is drawn
+     * (appendRoadSegment's triangles, a cul-de-sac's disc), each as {its height there (at its
+     * nearest point, off it), how far outside it the place is (0 on it)}: one each, unless one
+     * road passes over the place twice (a hairpin's legs, far apart along it), when each pass
+     * is a road of its own. Where the place is on any, only those it's on, and of different
+     * roads meeting only the greatest: it's drawn on top of any lesser one, which is level
+     * across its own width and so stands above it on one side wherever it climbs (see
+     * deckHeights). Empty on none.
+     * <p>
+     * Walking goes on what's drawn, not on a road's centreline (the deck's height at the
+     * nearest point of it, out to its width): a segment's end otherwise reaches on half the
+     * road's width at its own height, and on the inside of a bend its next segment's reaches
+     * back, both unseen steps as high as the road climbs in that far.
      */
-    private float drawnRoadY(SpherePosition place, float slack) {
-        float best = Float.NaN;
-        for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + slack)) {
+    private List<float[]> drawnRoads(SpherePosition place, float slack) {
+        // Each road's segment the place is on, and {height, outside, how far along its path}
+        List<RoadSegment> roads = new ArrayList<>(4);
+        List<float[]> hits = new ArrayList<>(4);
+        // (as far out as a mitred corner reaches: see miterOffset)
+        for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH / 0.35f + slack)) {
             if (segment.roadClass == RoadPath.RoadClass.DIRT) continue;
             double[] p = segment.frame.fromSphere(place);
-            float ux = segment.end.x - segment.start.x, uz = segment.end.z - segment.start.z, l2 = ux * ux + uz * uz;
-            float f = l2 > 0f ? Math.max(0f, Math.min(1f, (float) (((p[0] - segment.start.x) * ux + (p[2] - segment.start.z) * uz) / l2))) : 0f;
-            float distance = (float) Math.hypot(p[0] - (segment.start.x + ux * f), p[2] - (segment.start.z + uz * f));
-            if (distance > segment.width * 0.5f + slack) continue;
-            float[] deck = deckHeights(segment);
-            float scaled = f * ROAD_SEGMENT_SUBDIVISIONS;
-            int k = Math.min((int) scaled, ROAD_SEGMENT_SUBDIVISIONS - 1);
-            float y = deck[k] + (deck[k + 1] - deck[k]) * (scaled - k);
-            if (Float.isNaN(best) || y > best) best = y;
+            float[] hit = drawnHit(segment, p[0], p[2]);
+            if (hit[1] > slack) continue;
+            float alongPath = segment.startDistance + hit[2] * segment.length;
+            // (the same pass of the same road: near enough along it, its next segment or the last)
+            int mine = -1;
+            for (int r = 0; r < roads.size(); r++) {
+                if (roads.get(r).pathIndex == segment.pathIndex && Math.abs(hits.get(r)[2] - alongPath) < 3f * segment.width) mine = r;
+            }
+            float[] entry = { hit[0], hit[1], alongPath };
+            if (mine < 0) {
+                roads.add(segment);
+                hits.add(entry);
+            } else if (hit[1] < hits.get(mine)[1] || (hit[1] == 0f && hits.get(mine)[1] == 0f && hit[0] > hits.get(mine)[0])) {
+                roads.set(mine, segment);
+                hits.set(mine, entry);
+            }
+        }
+        List<float[]> found = new ArrayList<>(roads.size());
+        for (int r = 0; r < roads.size(); r++) {
+            if (hits.get(r)[1] > 0f) continue;
+            boolean under = false;
+            for (int q = 0; q < roads.size(); q++) {
+                if (q != r && hits.get(q)[1] == 0f && roads.get(q).pathIndex != roads.get(r).pathIndex
+                        && greater(roads.get(q), roads.get(r))) under = true;
+            }
+            if (!under) found.add(new float[] { hits.get(r)[0], 0f });
+        }
+        if (!found.isEmpty()) return found;
+        for (float[] hit : hits) found.add(new float[] { hit[0], hit[1] });
+        return found;
+    }
+
+    /**
+     * Where a place (x, z in a segment's frame) is on the segment's asphalt as drawn:
+     * {its height there (at its nearest point, if off it), how far outside it the place is (0
+     * on it), the share along the segment}. Where a sharp bend folds the asphalt over on
+     * itself, the higher, as it's seen.
+     */
+    private float[] drawnHit(RoadSegment segment, double x, double z) {
+        if (segment.culDeSac) {
+            // (a flat disc round its start: see appendCulDeSac)
+            float out = (float) Math.max(0.0, Math.hypot(x - segment.start.x, z - segment.start.z) - segment.width * 0.5f);
+            return new float[] { culDeSacLevel(segment), out, 0f };
+        }
+        float[][][] edges = drawnEdges(segment);
+        float[][] left = edges[0], right = edges[1];
+        float[] best = null;
+        for (int i = 0; i < ROAD_SEGMENT_SUBDIVISIONS; i++) {
+            // (the two triangles appendRoadSegment draws between these subdivisions)
+            for (float[] hit : new float[][] { triangleHit(left[i], right[i], left[i + 1], x, z), triangleHit(right[i], right[i + 1], left[i + 1], x, z) }) {
+                if (best == null || hit[1] < best[1] || (hit[1] == 0f && best[1] == 0f && hit[0] > best[0])) {
+                    best = new float[] { hit[0], hit[1], (i + 0.5f) / ROAD_SEGMENT_SUBDIVISIONS };
+                }
+            }
         }
         return best;
+    }
+
+    /** A segment's asphalt's left and right edges at each subdivision, as appendRoadSegment draws them: {left, right}. */
+    private float[][][] drawnEdges(RoadSegment segment) {
+        float[][][] known = segment.edges;
+        if (known != null) return known;
+        float[] deck = deckHeights(segment);
+        float half = segment.width * 0.5f;
+        float[][][] edges = { offsetEdge(segment, -half, deck), offsetEdge(segment, half, deck) };
+        // (kept once the deck is: see deckHeights)
+        if (segment.deck != null) segment.edges = edges;
+        return edges;
+    }
+
+    /** The height of a cul-de-sac's disc (see appendCulDeSac). */
+    private float culDeSacLevel(RoadSegment segment) {
+        float known = segment.discLevel;
+        if (!Float.isNaN(known)) return known;
+        float level = roadSurfaceY(world(segment, segment.start.x, segment.start.z));
+        if (bridgesReady || terrainNoise.rivers == null) segment.discLevel = level;
+        return level;
+    }
+
+    /**
+     * Where a place (x, z) is on a triangle of points {x, y, z}: {its height there, 0} inside
+     * it, otherwise {its height at the nearest point of its edge, how far that is}.
+     */
+    private static float[] triangleHit(float[] a, float[] b, float[] c, double x, double z) {
+        double d = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+        if (Math.abs(d) > 1e-9) {
+            double wa = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / d;
+            double wb = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / d;
+            double wc = 1.0 - wa - wb;
+            if (wa >= -1e-6 && wb >= -1e-6 && wc >= -1e-6) return new float[] { (float) (wa * a[1] + wb * b[1] + wc * c[1]), 0f };
+        }
+        float[] best = null;
+        for (float[][] edge : new float[][][] { { a, b }, { b, c }, { c, a } }) {
+            float[] p = edge[0], q = edge[1];
+            double ex = q[0] - p[0], ez = q[2] - p[2], l2 = ex * ex + ez * ez;
+            double s = l2 > 0.0 ? Math.max(0.0, Math.min(1.0, ((x - p[0]) * ex + (z - p[2]) * ez) / l2)) : 0.0;
+            float away = (float) Math.hypot(x - (p[0] + ex * s), z - (p[2] + ez * s));
+            // (never quite 0 off it, so it's told from on it)
+            away = Math.max(away, 1e-4f);
+            if (best == null || away < best[1]) best = new float[] { (float) (p[1] + (q[1] - p[1]) * s), away };
+        }
+        return best;
+    }
+
+    /**
+     * Where a place (p, in a segment's frame) is on the segment as drawn: {1 if alongside it (0
+     * if beyond either end), how far out from its centreline, the share along it}; beyond an
+     * end, as at that end.
+     */
+    private float[] onDrawn(RoadSegment segment, double[] p) {
+        float[] across = acrossDrawn(segment, p[0], p[2]);
+        if (across != null) return new float[] { 1f, across[1], across[0] };
+        float ux = segment.end.x - segment.start.x, uz = segment.end.z - segment.start.z, l2 = ux * ux + uz * uz;
+        float f = l2 > 0f ? Math.max(0f, Math.min(1f, (float) (((p[0] - segment.start.x) * ux + (p[2] - segment.start.z) * uz) / l2))) : 0f;
+        return new float[] { 0f, (float) Math.hypot(p[0] - (segment.start.x + ux * f), p[2] - (segment.start.z + uz * f)), f };
+    }
+
+    /**
+     * Where on a segment's drawn road a place (x, z in its frame) lies: {the share along it
+     * whose cross-section passes through the place, how far out along that the place is from
+     * the centreline}; null if no cross-section does. Where the road bends sharply its
+     * cross-sections cross on the inside of the bend, and more than one passes through a place
+     * there: the nearest the centreline, the one it's on as drawn.
+     */
+    private float[] acrossDrawn(RoadSegment segment, double x, double z) {
+        float[] best = null;
+        final int looks = 8;
+        float before = aheadOfSection(segment, 0f, x, z);
+        for (int j = 1; j <= looks; j++) {
+            float t1 = (float) j / looks, after = aheadOfSection(segment, t1, x, z);
+            // (a cross-section between these two passes through it: found by halving)
+            if (before >= 0f && after <= 0f) {
+                float lo = (float) (j - 1) / looks, hi = t1;
+                for (int k = 0; k < 11; k++) {
+                    float mid = (lo + hi) * 0.5f;
+                    if (aheadOfSection(segment, mid, x, z) >= 0f) lo = mid; else hi = mid;
+                }
+                float t = (lo + hi) * 0.5f;
+                Vector3 tangent = lerpTangent(segment.startTangent, segment.endTangent, t);
+                float cx = segment.start.x + (segment.end.x - segment.start.x) * t, cz = segment.start.z + (segment.end.z - segment.start.z) * t;
+                float out = (float) Math.abs((x - cx) * tangent.z - (z - cz) * tangent.x);
+                if (best == null || out < best[1]) best = new float[] { t, out };
+            }
+            before = after;
+        }
+        return best;
+    }
+
+    /** How far a place (x, z in a segment's frame) is ahead of the segment's drawn cross-section a share t along it. */
+    private float aheadOfSection(RoadSegment segment, float t, double x, double z) {
+        Vector3 tangent = lerpTangent(segment.startTangent, segment.endTangent, t);
+        float cx = segment.start.x + (segment.end.x - segment.start.x) * t, cz = segment.start.z + (segment.end.z - segment.start.z) * t;
+        return (float) ((x - cx) * tangent.x + (z - cz) * tangent.z);
     }
 
     private float[][] offsetEdge(RoadSegment segment, float offset, float[] deck) {
@@ -3166,25 +3583,35 @@ public class InfrastructureManager {
     /** A bridge's deck under a place on it (within its road's width), as {bridge, deck height}; null if it's on none. */
     private Object[] bridgeDeckAt(SpherePosition place, float margin) {
         if (!bridgesReady) return null;
+        // (of the segments it's within reach of, the nearest: the one it's on as drawn, see drawnRoadY)
+        Object[] nearest = null;
+        float nearestDistance2 = Float.MAX_VALUE;
         for (RoadSegment segment : segmentsNear(place, MAX_ROAD_HALF_WIDTH + margin + BRIDGE_WIDER)) {
             if (!bridgesByPath.containsKey(segment.pathIndex)) continue;
             double[] p = segment.frame.fromSphere(place);
             float ux = segment.end.x - segment.start.x, uz = segment.end.z - segment.start.z;
             float length2 = ux * ux + uz * uz;
-            float t = length2 > 0f ? (float) (((p[0] - segment.start.x) * ux + (p[2] - segment.start.z) * uz) / length2) : 0f;
-            t = Math.max(0f, Math.min(1f, t));
+            float raw = length2 > 0f ? (float) (((p[0] - segment.start.x) * ux + (p[2] - segment.start.z) * uz) / length2) : 0f;
+            float t = Math.max(0f, Math.min(1f, raw));
             float dx = (float) p[0] - (segment.start.x + ux * t), dz = (float) p[2] - (segment.start.z + uz * t);
             // (as wide as the bridge is built: its planks' overhang, its parapets or its ribs past
             // the road's edge, and a little more for the corners where its segments meet)
             float half = segment.width * 0.5f + margin + BRIDGE_WIDER;
             if (dx * dx + dz * dz > half * half) continue;
-            float along = segment.startDistance + t * segment.length;
+            // (how far along the path the place is, not the nearest end's distance: a place
+            // beyond a segment's end, as a wide road's next segment reaches back half its width
+            // along the road, would otherwise take the deck's height there, a step on a hump)
+            float along = segment.startDistance + raw * segment.length;
             Bridge bridge = bridgeAt(segment, along);
             if (bridge == null) continue;
             float wide = segment.width * 0.5f + margin + bridgeOverhang(bridge.kind) + 1f;
-            if (dx * dx + dz * dz <= wide * wide) return new Object[] { bridge, bridge.deck(along) };
+            float distance2 = dx * dx + dz * dz;
+            if (distance2 <= wide * wide && distance2 < nearestDistance2) {
+                nearest = new Object[] { bridge, bridge.deck(along) };
+                nearestDistance2 = distance2;
+            }
         }
-        return null;
+        return nearest;
     }
 
     // The most any bridge reaches past its road's edge (see bridgeOverhang), and a little more
@@ -3855,6 +4282,12 @@ public class InfrastructureManager {
         String roofPart = "roof" + worn;
         HouseWall[] walls = extrudeWalls(batch.builder(wallPart), house, footprint, house.mainWallHeight, style.taper, smooth,
                 variant.tileWidth, variant.tileHeight);
+        // Dressed in its architecture, as far as the household can afford (see ArchitectureStyle.dress)
+        ArchitectureStyle arch = architectureWorld.style(house.architecture);
+        ArchitectureStyle.Dress dress = arch.dress(house.seed, house.richness, house.grand, style.tower);
+        // (a shop's front is its shop window, kept flat)
+        boolean shaped = dress.relief && house.shop == null && !style.tower;
+        if (shaped) shapeWalls(walls, house, style, arch);
 
         if (style.footprint == BuildingStyle.Footprint.BOX) {
                         float[] roofV = roofVertices.get(roofKey(house.nationId, house.form));
@@ -3886,6 +4319,7 @@ public class InfrastructureManager {
                     centreX + house.extensionSide * 0.1f, centreZ);
                         HouseWall[] wingWalls = extrudeWalls(batch.builder(wallPart), house, wing, house.extensionWallHeight, 1.0f, false,
                     variant.tileWidth, variant.tileHeight);
+            if (shaped) shapeWalls(wingWalls, house, style, arch);
             bake(batch.builder(roofPart), roofVertices.get(roofKey(house.nationId, house.form)), roofIndices.get(roofKey(house.nationId, house.form)), house,
                     house.extensionWidth + 2.0f * extensionOverhang, style.roofHeight * scale * style.extensionHeightRatio,
                     house.extensionDepth + 2.0f * extensionOverhang, centreX, house.extensionWallHeight, centreZ, style.roofTileSize);
@@ -3910,6 +4344,8 @@ public class InfrastructureManager {
         if (new Random(house.seed ^ 0xF1A6L).nextFloat() < patriotismOf(house.nationId) * (0.1f + 0.3f * urbanness)) {
             wallFlag(batch, house, front, house.doorBase + style.doorHeight * scale + 3.5f);
         }
+        if (style.tower) dressTower(batch, house, style, walls, arch, dress);
+        else dressHouse(batch, house, style, walls, footprint, arch, dress);
         emitWalls(batch.builder(wallPart), house, walls, variant.tileWidth, variant.tileHeight);
 
         float roofTop = house.baseY + house.mainWallHeight + style.roofHeight * scale;
@@ -3961,6 +4397,563 @@ public class InfrastructureManager {
         solidBox(stone, boxCorners(bx, bz, ax, az, nx, nz, width * 0.5f + 2f * r + 1.5f, r * 1.1f, top, top + 2.2f * scale));
     }
 
+    // ------------------------------------------------------------------ ARCHITECTURE
+
+    /**
+     * A house's roof as its architecture dresses it: the corners round its eaves (house-local, y
+     * above the base) and which of them sweep out into horns, the edges cresting runs along
+     * ({a, b}), its ridges ({a, b}), its middle and its highest point.
+     */
+    private static final class RoofOutline {
+        float[][] eaves;
+        boolean[] horned;
+        final List<float[][]> edges = new ArrayList<>();
+        final List<float[][]> ridges = new ArrayList<>();
+        float[] centre, peak;
+    }
+
+    private static RoofOutline roofOutline(House house, BuildingStyle style, float[][] footprint) {
+        RoofOutline roof = new RoofOutline();
+        float scale = house.sizeScale, overhang = style.roofOverhang * scale;
+        float wallTop = house.mainWallHeight, top = wallTop + style.roofHeight * scale;
+        BuildingStyle.RoofType type = style.roofType;
+        float eaveY = type == BuildingStyle.RoofType.FLAT ? top : wallTop;
+        if (style.footprint == BuildingStyle.Footprint.BOX) {
+            float hw = house.width * style.taper * 0.5f + overhang, hd = house.depth * style.taper * 0.5f + overhang;
+            // (a mono-pitch roof is high along the back)
+            float backY = type == BuildingStyle.RoofType.SHED ? top : eaveY;
+            roof.eaves = new float[][] { { -hw, eaveY, hd }, { hw, eaveY, hd }, { hw, backY, -hd }, { -hw, backY, -hd } };
+            roof.horned = new boolean[] { true, true, true, true };
+            roof.centre = new float[] { 0f, eaveY, 0f };
+            roof.peak = new float[] { 0f, top, 0f };
+            switch (type) {
+                case GABLE -> {
+                    roof.edges.add(new float[][] { roof.eaves[0], roof.eaves[1] });
+                    roof.edges.add(new float[][] { roof.eaves[2], roof.eaves[3] });
+                    roof.ridges.add(new float[][] { { -hw, top, 0f }, { hw, top, 0f } });
+                }
+                case HIP -> {
+                    for (int i = 0; i < 4; i++) roof.edges.add(new float[][] { roof.eaves[i], roof.eaves[(i + 1) % 4] });
+                    float r = style.hipRidgeHalfLength() * hw * 2f;
+                    roof.ridges.add(new float[][] { { -r, top, 0f }, { r, top, 0f } });
+                }
+                case SHED -> {
+                    roof.edges.add(new float[][] { roof.eaves[0], roof.eaves[1] });
+                    roof.ridges.add(new float[][] { roof.eaves[3], roof.eaves[2] });
+                    roof.peak = new float[] { 0f, top, -hd + 1.5f };
+                }
+                default -> {
+                    for (int i = 0; i < 4; i++) roof.edges.add(new float[][] { roof.eaves[i], roof.eaves[(i + 1) % 4] });
+                }
+            }
+            return roof;
+        }
+        // Round and polygonal houses: the eaves as centredRoof builds them
+        int n = footprint.length;
+        float cx = 0, cz = 0, radius = 0;
+        for (float[] p : footprint) { cx += p[0]; cz += p[1]; }
+        cx /= n; cz /= n;
+        for (float[] p : footprint) radius += Math.hypot(p[0] - cx, p[1] - cz);
+        radius /= n;
+        float grow = style.taper * (1.0f + overhang / Math.max(1.0f, radius * style.taper));
+        roof.eaves = new float[n][];
+        roof.horned = new boolean[n];
+        boolean round = style.footprint == BuildingStyle.Footprint.ROUND;
+        for (int i = 0; i < n; i++) {
+            roof.eaves[i] = new float[] { cx + (footprint[i][0] - cx) * grow, eaveY, cz + (footprint[i][1] - cz) * grow };
+            roof.horned[i] = !round || i % 5 == 2;
+        }
+        for (int i = 0; i < n; i++) roof.edges.add(new float[][] { roof.eaves[i], roof.eaves[(i + 1) % n] });
+        roof.centre = new float[] { cx, eaveY, cz };
+        roof.peak = new float[] { cx, top, cz };
+        return roof;
+    }
+
+    /** A house-local point (y above the base) in the frame the batch is building in. */
+    private static float[] framePoint(House house, float[] p) {
+        return new float[] { p[0], house.baseY + p[1], p[2] };
+    }
+
+    /** The level unit direction from a to b, or from the middle out through a point. */
+    private static float[] levelDirection(float[] from, float[] to) {
+        return normalise(new float[] { to[0] - from[0], 0f, to[2] - from[2] });
+    }
+
+    /**
+     * A house dressed in its architecture, as much as it wears (see ArchitectureStyle.dress):
+     * the roof's corners swept up, drooping or curled into horns; cresting along its eaves and
+     * ridge; something standing on its top; spikes from its walls; neon under its eaves.
+     */
+    private void dressHouse(NationBatch batch, House house, BuildingStyle style, HouseWall[] walls, float[][] footprint,
+                            ArchitectureStyle arch, ArchitectureStyle.Dress dress) {
+        if (!(dress.horns || dress.crest || dress.topper || dress.spikes || dress.neonEaves)) return;
+        RoofOutline roof = roofOutline(house, style, footprint);
+        String design = "@" + arch.design;
+        MeshBuilder ornament = batch.builder("orn" + design), spikes = batch.builder("spike" + design);
+        float scale = Math.max(0.7f, house.sizeScale);
+        float highest = roof.peak[1];
+        float across = 0f;
+        for (float[] e : roof.eaves) across = Math.max(across, dist(e, roof.centre));
+
+        if (dress.horns) {
+            // Each in three pieces, bending as it goes, thinning to a point
+            float length = arch.hornLength * across * 2f, thick = arch.hornThickness * scale;
+            float[] bend = switch (arch.horns) {
+                case UPTURNED -> new float[] { 12f, 32f, 58f };
+                case DROOPING -> new float[] { -8f, -26f, -48f };
+                default -> new float[] { 8f, 62f, 125f };
+            };
+            for (int i = 0; i < roof.eaves.length; i++) {
+                if (!roof.horned[i]) continue;
+                float[] out = levelDirection(roof.centre, roof.eaves[i]);
+                float[] at = framePoint(house, sub(roof.eaves[i], scale3(out, thick)));
+                for (int k = 0; k < 3; k++) {
+                    double angle = Math.toRadians(bend[k]);
+                    float[] dir = { out[0] * (float) Math.cos(angle), (float) Math.sin(angle), out[2] * (float) Math.cos(angle) };
+                    float[] next = add(at, scale3(dir, length / 3f + (k == 0 ? thick : 0f)));
+                    float r0 = thick * (1f - k / 3f), r1 = thick * (1f - (k + 1) / 3f);
+                    addTube(ornament, at, next, r0, k == 2 ? 0f : r1, 6);
+                    at = next;
+                }
+                highest = Math.max(highest, at[1] - house.baseY);
+            }
+        }
+
+        if (dress.crest) {
+            float size = arch.crestSize * scale, gap = size * arch.crestSpacing;
+            List<float[][]> runs = new ArrayList<>(roof.edges);
+            if (dress.ridgeCrest) runs.addAll(roof.ridges);
+            for (float[][] edge : runs) {
+                float length = dist(edge[0], edge[1]);
+                if (length < 1f) continue;
+                float[] along = normalise(sub(edge[1], edge[0]));
+                float[] out = normalise(new float[] { along[2], 0f, -along[0] });
+                float[] middle = mid(edge[0], edge[1]);
+                if (dot3(out, sub(middle, roof.centre)) < 0f) out = scale3(out, -1f);
+                int count = Math.max(1, Math.round(length / gap));
+                for (int k = 0; k < count; k++) {
+                    float[] p = framePoint(house, lerp(edge[0], edge[1], (k + 0.5f) / count));
+                    crestItem(arch.crest == ArchitectureStyle.Crest.SPIKES ? spikes : ornament, arch.crest, p, along, out, size);
+                }
+            }
+            highest = Math.max(highest, roof.peak[1] + size * 2f);
+        }
+
+        if (dress.topper) {
+            float height = arch.topperHeight * scale;
+            topper(ornament, spikes, arch.topper, framePoint(house, roof.peak), height, house.seed);
+            highest = Math.max(highest, roof.peak[1] + height * 1.15f);
+        }
+
+        if (dress.spikes && house.shop == null) wallSpikes(spikes, house, style, walls, arch);
+
+        if (dress.neonEaves) {
+            MeshBuilder neon = batch.builder("neon" + design);
+            for (HouseWall wall : walls) {
+                float y = wall.topA[1] - 1.2f;
+                float[] a = add(wallPoint(wall, 0f, y), scale3(wall.cornerA, 0.6f));
+                float[] b = add(wallPoint(wall, 1f, y), scale3(wall.cornerB, 0.6f));
+                addRod(neon, framePoint(house, a), framePoint(house, b), 0.35f);
+            }
+        }
+        batch.include(0f, house.baseY + highest, 0f, across + 4f);
+    }
+
+    /** One piece of cresting standing on p (in the frame), along an edge running along, out facing away from the roof. */
+    private void crestItem(MeshBuilder builder, ArchitectureStyle.Crest crest, float[] p, float[] along, float[] out, float size) {
+        float[] up = { 0f, 1f, 0f };
+        switch (crest) {
+            case ORBS -> addOrb(builder, add(p, scale3(up, size * 0.55f)), size * 0.5f);
+            case TEETH -> {
+                // A pointed plate along the edge
+                float[][] outline = { add(p, scale3(along, -size * 0.45f)), add(p, scale3(along, size * 0.45f)), add(p, scale3(up, size * 1.4f)) };
+                addSlab(builder, outline, out, Math.max(0.3f, size * 0.18f));
+            }
+            case BLOCKS -> {
+                float[] c = add(p, scale3(up, size * 0.5f));
+                float half = size * 0.4f, deep = size * 0.25f;
+                float[][] corners = new float[8][];
+                float[][] round = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } };
+                for (int i = 0; i < 4; i++) {
+                    float[] side = add(scale3(along, half * round[i][0]), scale3(out, deep * round[i][1]));
+                    corners[i] = add(add(p, side), scale3(up, -0.2f));
+                    corners[i + 4] = add(add(p, side), scale3(up, size));
+                }
+                solidBox(builder, corners);
+            }
+            case SPIKES -> addTube(builder, p, add(p, scale3(up, size * 2f)), size * 0.22f, 0f, 5);
+            case RINGS -> addLoop(builder, add(p, scale3(up, size * 0.6f)), out, size * 0.5f, Math.max(0.15f, size * 0.1f), 10);
+            default -> { }
+        }
+    }
+
+    /** What stands on a roof's top (p, in the frame): on a thin mast, height tall. */
+    private void topper(MeshBuilder ornament, MeshBuilder rod, ArchitectureStyle.Topper kind, float[] p, float height, long seed) {
+        float thin = Math.max(0.25f, height * 0.022f);
+        float[] up = { 0f, 1f, 0f };
+        float[] top = add(p, scale3(up, height));
+        Random rand = new Random(seed ^ 0x70FFE5L);
+        double heading = rand.nextDouble() * Math.PI * 2;
+        float[] facing = { (float) Math.cos(heading), 0f, (float) Math.sin(heading) };
+        float[] across = { -facing[2], 0f, facing[0] };
+        float r = height * 0.2f;
+        // (the mast stops short where something round sits on it)
+        float mastTop = kind == ArchitectureStyle.Topper.ORB ? height - r : kind == ArchitectureStyle.Topper.HOOP ? height - 2.2f * r : height;
+        addRod(rod, sub(p, scale3(up, 1f)), add(p, scale3(up, mastTop)), thin);
+        switch (kind) {
+            case MAST -> {
+                for (int k = 0; k < 3; k++) {
+                    float y = height * (0.88f - 0.2f * k), half = height * (0.1f + 0.07f * k);
+                    float[] dir = k % 2 == 0 ? facing : across;
+                    float[] c = add(p, scale3(up, y));
+                    addRod(rod, add(c, scale3(dir, -half)), add(c, scale3(dir, half)), thin * 0.8f);
+                }
+                addOrb(ornament, top, thin * 2.2f);
+            }
+            case ORB -> addOrb(ornament, add(p, scale3(up, height - r * 0.2f)), r);
+            case TRIDENT -> {
+                float[] bar = add(p, scale3(up, height * 0.7f));
+                addRod(ornament, add(bar, scale3(across, -r)), add(bar, scale3(across, r)), thin * 1.2f);
+                for (float side : new float[] { -1f, 0f, 1f }) {
+                    float[] foot = add(bar, scale3(across, side * r));
+                    float tall = height * (side == 0f ? 0.42f : 0.32f);
+                    addRod(ornament, foot, add(foot, scale3(up, tall * 0.7f)), thin * 1.1f);
+                    addTube(ornament, add(foot, scale3(up, tall * 0.7f)), add(foot, scale3(up, tall)), thin * 2.2f, 0f, 4);
+                }
+            }
+            case VANE -> {
+                // An arrow on a pivot, a tall fin at its tail
+                float[] pivot = add(p, scale3(up, height * 0.8f));
+                float[] head = add(pivot, scale3(facing, r * 1.8f)), tail = add(pivot, scale3(facing, -r * 1.8f));
+                addRod(ornament, tail, head, thin);
+                addTube(ornament, head, add(head, scale3(facing, r * 0.8f)), thin * 3f, 0f, 4);
+                float[][] fin = { tail, add(tail, scale3(facing, r * 1.1f)), add(add(tail, scale3(up, r * 1.2f)), scale3(facing, -r * 0.4f)) };
+                addSlab(ornament, fin, across, thin * 0.8f);
+            }
+            case HOOP -> addLoop(ornament, add(p, scale3(up, height - r * 1.1f)), facing, r * 1.1f, thin * 1.3f, 16);
+            case DISH -> {
+                // A dish on the mast's top, tipped up towards a heading
+                float[] aim = normalise(add(facing, scale3(up, 0.8f)));
+                float[] centre = add(p, scale3(up, height * 0.9f));
+                addTube(ornament, add(centre, scale3(aim, -r * 0.35f)), centre, r * 0.15f, r * 1.1f, 10);
+                addTube(ornament, centre, add(centre, scale3(aim, 0.2f)), r * 1.1f, r * 1.1f, 10);
+                addRod(rod, centre, add(centre, scale3(aim, r * 1.1f)), thin * 0.6f);
+            }
+            case SPIRAL -> {
+                float[] last = null;
+                for (int k = 0; k <= 36; k++) {
+                    float t = k / 36f;
+                    double a = t * Math.PI * 5 + heading;
+                    float radius = r * (1f - 0.6f * t);
+                    float[] q = add(add(p, scale3(up, height * (0.2f + 0.8f * t))),
+                            new float[] { (float) Math.cos(a) * radius, 0f, (float) Math.sin(a) * radius });
+                    if (last != null) addRod(ornament, last, q, thin * 0.9f);
+                    last = q;
+                }
+            }
+            case CRESCENT -> {
+                // A crescent moon on the mast, turned to a heading: an arc thickest in its middle
+                float[] centre = add(p, scale3(up, height - r));
+                float[] last = null;
+                for (int k = 0; k <= 12; k++) {
+                    double a = Math.toRadians(-140 + 280 * k / 12.0);
+                    float[] q = add(centre, add(scale3(up, -(float) Math.cos(a) * r), scale3(facing, (float) Math.sin(a) * r)));
+                    if (last != null) addRod(ornament, last, q, thin * (1f + 2.2f * (float) Math.sin(Math.PI * (k - 0.5) / 12.0)));
+                    last = q;
+                }
+            }
+            default -> { }
+        }
+    }
+
+    /** Spikes from a house's walls, kept above head height and clear of its windows. */
+    private void wallSpikes(MeshBuilder builder, House house, BuildingStyle style, HouseWall[] walls, ArchitectureStyle arch) {
+        float scale = Math.max(0.7f, house.sizeScale);
+        float length = arch.spikeLength * scale;
+        float lowest = house.doorBase + style.doorHeight * house.sizeScale + 3f;
+        Random rand = new Random(house.seed ^ 0x5B1CE5L);
+        float floorH = style.wallHeight * house.sizeScale / Math.max(1, style.floors);
+        boolean round = style.footprint == BuildingStyle.Footprint.ROUND;
+        for (HouseWall wall : walls) {
+            float height = wall.topA[1];
+            if (height - lowest < 2f) continue;
+            switch (arch.wallSpikes) {
+                case ROW -> {
+                    List<Float> heights = new ArrayList<>();
+                    for (int f = 1; f < style.floors; f++) heights.add(house.doorBase + floorH * f);
+                    heights.add(Math.max(lowest, height - 3.5f));
+                    int count = Math.max(1, Math.round(wall.length / (9f * scale)));
+                    for (float y : heights) {
+                        if (y < lowest) continue;
+                        for (int k = 0; k < count; k++) {
+                            float s = (k + 0.5f) / count;
+                            if (inOpening(wall, s, y, length * 0.3f)) continue;
+                            float[] out = normalise(add(wall.normal, new float[] { 0f, -0.12f, 0f }));
+                            wallSpike(builder, house, wall, s, y, out, length);
+                        }
+                    }
+                }
+                case CORNERS -> {
+                    if (round && wall.index % 5 != 0) continue;
+                    for (float t : new float[] { 0.45f, 0.7f, 0.95f }) {
+                        float y = Math.max(lowest, height * t);
+                        float[] out = normalise(add(wall.cornerA, new float[] { 0f, 0.5f, 0f }));
+                        wallSpike(builder, house, wall, 0f, y, out, length * 1.3f);
+                    }
+                }
+                default -> {
+                    // Thorns: short spikes scattered over the walls
+                    int count = 3 + Math.round(wall.length * (height - lowest) / (120f * scale * scale));
+                    for (int k = 0; k < Math.min(count, 14); k++) {
+                        float s = 0.05f + 0.9f * rand.nextFloat(), y = lowest + (height - lowest - 1f) * rand.nextFloat();
+                        if (inOpening(wall, s, y, length * 0.4f)) continue;
+                        float[] out = normalise(add(wall.normal, new float[] { (rand.nextFloat() - 0.5f) * 0.5f, (rand.nextFloat() - 0.6f) * 0.6f,
+                                (rand.nextFloat() - 0.5f) * 0.5f }));
+                        wallSpike(builder, house, wall, s, y, out, length * (0.45f + 0.3f * rand.nextFloat()));
+                    }
+                }
+            }
+        }
+    }
+
+    /** Whether a point on a wall (s along it, height y) is in or within margin of one of its windows. */
+    private static boolean inOpening(HouseWall wall, float s, float y, float margin) {
+        float ms = margin / Math.max(1f, wall.length);
+        for (float[] o : wall.openings) {
+            if (s > o[0] - ms && s < o[1] + ms && y > o[2] - margin && y < o[3] + margin) return true;
+        }
+        return false;
+    }
+
+    private void wallSpike(MeshBuilder builder, House house, HouseWall wall, float s, float y, float[] out, float length) {
+        float[] base = wallPoint(wall, s, y);
+        float[] from = framePoint(house, sub(base, scale3(out, 0.4f)));
+        float[] to = framePoint(house, add(base, scale3(out, length)));
+        addTube(builder, from, to, Math.max(0.3f, length * 0.16f), 0f, 5);
+    }
+
+    /**
+     * A tower in a big city dressed in its architecture's high tech, as far as the area is well
+     * off (see ArchitectureStyle.dress): neon up its corners and round it every few floors, blades
+     * down its corners, rings round its middle and a crown on its roof.
+     */
+    private void dressTower(NationBatch batch, House house, BuildingStyle style, HouseWall[] walls,
+                            ArchitectureStyle arch, ArchitectureStyle.Dress dress) {
+        if (!(dress.neonCorners || dress.neonBands || dress.blades || dress.rings || dress.crown)) return;
+        String design = "@" + arch.design;
+        MeshBuilder metal = batch.builder("techmetal"), neonA = batch.builder("neon" + design), neonB = batch.builder("neonb" + design);
+        float height = walls[0].topA[1];
+        float floorH = style.wallHeight * house.sizeScale / Math.max(1, style.floors);
+        boolean round = style.footprint == BuildingStyle.Footprint.ROUND;
+        float radius = 0f;
+        for (HouseWall wall : walls) {
+            radius = Math.max(radius, (float) Math.hypot(wall.bottomA[0], wall.bottomA[2]));
+        }
+        float topY = height + style.roofHeight * house.sizeScale;
+        float highest = topY;
+
+        for (HouseWall wall : walls) {
+            boolean corner = !round || wall.index % 5 == 0;
+            if (dress.neonCorners && corner) {
+                float[] a = add(wallPoint(wall, 0f, house.doorBase + floorH), scale3(wall.cornerA, 0.6f));
+                float[] b = add(wallPoint(wall, 0f, height - 0.5f), scale3(wall.cornerA, 0.6f));
+                addRod(neonA, framePoint(house, a), framePoint(house, b), 0.45f);
+            }
+            if (dress.blades && corner && !round) {
+                // A thin blade standing out from the corner, from the second floor to above the roof
+                float y0 = house.doorBase + floorH * 2f, y1 = height + 6f;
+                float depth = Math.min(12f, radius * 0.12f + 3f), half = 0.45f;
+                float[] out = wall.cornerA, flat = { -out[2], 0f, out[0] };
+                float[] bottom = wallPoint(wall, 0f, y0), lean = sub(wallPoint(wall, 0f, height), bottom);
+                lean = scale3(lean, (y1 - y0) / Math.max(1f, height - y0));
+                float[][] corners = new float[8][];
+                float[][] base = { add(bottom, scale3(flat, -half)), add(add(bottom, scale3(out, depth)), scale3(flat, -half)),
+                        add(add(bottom, scale3(out, depth)), scale3(flat, half)), add(bottom, scale3(flat, half)) };
+                for (int i = 0; i < 4; i++) {
+                    corners[i] = framePoint(house, base[i]);
+                    corners[i + 4] = framePoint(house, add(base[i], lean));
+                }
+                solidBox(metal, corners);
+            }
+            if (dress.neonBands) {
+                for (int f = arch.bandEvery; f < style.floors; f += arch.bandEvery) {
+                    float y = house.doorBase + floorH * f;
+                    float[] a = add(wallPoint(wall, 0f, y), scale3(wall.cornerA, 0.5f));
+                    float[] b = add(wallPoint(wall, 1f, y), scale3(wall.cornerB, 0.5f));
+                    addRod(neonB, framePoint(house, a), framePoint(house, b), 0.35f);
+                }
+            }
+        }
+
+        float[] centre = { 0f, 0f, 0f }, up = { 0f, 1f, 0f };
+        if (dress.rings) {
+            // Rings round the tower's middle, held out on struts, lit underneath
+            float[] heights = height > 260f ? new float[] { 0.42f, 0.7f } : new float[] { 0.6f };
+            for (float t : heights) {
+                float y = house.doorBase + (height - house.doorBase) * t;
+                float ringR = radius * 1.25f + 8f;
+                float[] c = framePoint(house, new float[] { 0f, y, 0f });
+                addLoop(metal, c, up, ringR, 1.1f, 28);
+                addLoop(neonA, add(c, scale3(up, -1.6f)), up, ringR - 0.4f, 0.4f, 28);
+                for (HouseWall wall : walls) {
+                    if (round && wall.index % 5 != 0) continue;
+                    float[] from = wallPoint(wall, 0.5f, y);
+                    float[] out = levelDirection(centre, from);
+                    addRod(metal, framePoint(house, from), framePoint(house, new float[] { out[0] * ringR, y, out[2] * ringR }), 0.6f);
+                }
+            }
+        }
+
+        if (dress.crown) {
+            float[] roofTop = framePoint(house, new float[] { 0f, topY, 0f });
+            switch (arch.crown) {
+                case SPIRE -> {
+                    float tall = Math.min(180f, height * 0.35f);
+                    addTube(metal, roofTop, add(roofTop, scale3(up, tall)), radius * 0.16f, 0f, 8);
+                    addOrb(neonA, add(roofTop, scale3(up, tall * 0.55f)), radius * 0.09f + 0.8f);
+                    highest = topY + tall;
+                }
+                case HALO -> {
+                    float lift = radius * 0.6f + 6f, ringR = radius * 0.75f;
+                    for (int k = 0; k < 3; k++) {
+                        double a = k * Math.PI * 2 / 3;
+                        float[] foot = add(roofTop, new float[] { (float) Math.cos(a) * ringR * 0.5f, 0f, (float) Math.sin(a) * ringR * 0.5f });
+                        float[] head = add(roofTop, new float[] { (float) Math.cos(a) * ringR, lift, (float) Math.sin(a) * ringR });
+                        addRod(metal, foot, head, 0.8f);
+                    }
+                    addLoop(neonA, add(roofTop, scale3(up, lift)), up, ringR, 0.9f, 32);
+                    addLoop(metal, add(roofTop, scale3(up, lift - 1.6f)), up, ringR, 0.7f, 32);
+                    highest = topY + lift + 2f;
+                }
+                case FINS -> {
+                    int fins = round ? 6 : Math.min(8, walls.length);
+                    float tall = radius * 0.9f + 8f;
+                    for (int k = 0; k < fins; k++) {
+                        float[] dir;
+                        if (round) {
+                            double a = k * Math.PI * 2 / fins;
+                            dir = new float[] { (float) Math.cos(a), 0f, (float) Math.sin(a) };
+                        } else {
+                            dir = walls[k % walls.length].cornerA;
+                        }
+                        float[] inner = add(roofTop, scale3(dir, radius * 0.55f)), outer = add(roofTop, scale3(dir, radius * 0.95f));
+                        float[] tip = add(add(roofTop, scale3(dir, radius * 1.05f)), scale3(up, tall));
+                        addSlab(metal, new float[][] { inner, outer, tip }, new float[] { -dir[2], 0f, dir[0] }, 1.2f);
+                    }
+                    highest = topY + tall;
+                }
+                case DISHES -> {
+                    float mast = radius * 0.8f + 10f;
+                    addRod(metal, roofTop, add(roofTop, scale3(up, mast)), 0.7f);
+                    addOrb(neonA, add(roofTop, scale3(up, mast)), 1.2f);
+                    for (int k = 0; k < 3; k++) {
+                        double a = k * Math.PI * 2 / 3 + 0.4;
+                        float[] dir = { (float) Math.cos(a), 0f, (float) Math.sin(a) };
+                        float[] foot = add(roofTop, scale3(dir, radius * 0.45f)), head = add(foot, scale3(up, 5f));
+                        addRod(metal, foot, head, 0.5f);
+                        float[] aim = normalise(add(dir, scale3(up, 0.7f)));
+                        float dish = radius * 0.16f + 2f;
+                        addTube(metal, add(head, scale3(aim, -dish * 0.3f)), head, dish * 0.15f, dish, 10);
+                        addTube(metal, head, add(head, scale3(aim, 0.2f)), dish, dish, 10);
+                    }
+                    highest = topY + mast + 2f;
+                }
+                case ORB -> {
+                    float column = radius * 0.3f + 4f, orb = radius * 0.35f + 2f;
+                    addTube(metal, roofTop, add(roofTop, scale3(up, column)), radius * 0.12f + 1f, radius * 0.08f + 0.6f, 8);
+                    addOrb(neonB, add(roofTop, scale3(up, column + orb * 0.9f)), orb);
+                    highest = topY + column + orb * 2f;
+                }
+                default -> { }
+            }
+        }
+        batch.include(0f, house.baseY + highest, 0f, radius * 1.5f + 10f);
+    }
+
+    /**
+     * A closed tube from p0 to p1 (in the frame), radius r0 at one end and r1 at the other, sides
+     * round; a cone, ending in a point, when r1 is 0.
+     */
+    private static void addTube(MeshBuilder builder, float[] p0, float[] p1, float r0, float r1, int sides) {
+        float[] axis = sub(p1, p0);
+        float length = (float) Math.sqrt(dot3(axis, axis));
+        if (length < 1e-4f || r0 < 1e-4f) return;
+        axis = scale3(axis, 1f / length);
+        float[] side = normalise(cross(axis, Math.abs(axis[1]) > 0.9f ? new float[] { 1f, 0f, 0f } : new float[] { 0f, 1f, 0f }));
+        float[] other = normalise(cross(side, axis));
+        float[][] ring0 = new float[sides][], ring1 = new float[sides][];
+        for (int k = 0; k < sides; k++) {
+            double a = k * Math.PI * 2 / sides;
+            float[] round = add(scale3(side, (float) Math.cos(a)), scale3(other, (float) Math.sin(a)));
+            ring0[k] = add(p0, scale3(round, r0));
+            ring1[k] = add(p1, scale3(round, r1));
+        }
+        float[] inside = add(p0, scale3(axis, length * (r1 < 1e-4f ? 0.25f : 0.5f)));
+        for (int k = 0; k < sides; k++) {
+            int j = (k + 1) % sides;
+            if (r1 < 1e-4f) builder.addConvexFace(inside, ring0[k], ring0[j], p1);
+            else builder.addConvexFace(inside, ring0[k], ring0[j], ring1[j], ring1[k]);
+        }
+        builder.addConvexFace(inside, ring0);
+        if (r1 >= 1e-4f) builder.addConvexFace(inside, ring1);
+    }
+
+    /** A ball (in the frame), in bands of facets. */
+    private static void addOrb(MeshBuilder builder, float[] centre, float radius) {
+        int bands = 5, around = 10;
+        float[][][] rings = new float[bands + 1][][];
+        for (int b = 0; b <= bands; b++) {
+            double phi = Math.PI * b / bands - Math.PI / 2;
+            rings[b] = new float[around][];
+            for (int k = 0; k < around; k++) {
+                double a = k * Math.PI * 2 / around;
+                rings[b][k] = new float[] { centre[0] + radius * (float) (Math.cos(phi) * Math.cos(a)), centre[1] + radius * (float) Math.sin(phi),
+                        centre[2] + radius * (float) (Math.cos(phi) * Math.sin(a)) };
+            }
+        }
+        for (int b = 0; b < bands; b++) {
+            for (int k = 0; k < around; k++) {
+                int j = (k + 1) % around;
+                if (b == 0) builder.addConvexFace(centre, rings[0][0], rings[1][j], rings[1][k]);
+                else if (b == bands - 1) builder.addConvexFace(centre, rings[b][k], rings[b][j], rings[bands][0]);
+                else builder.addConvexFace(centre, rings[b][k], rings[b][j], rings[b + 1][j], rings[b + 1][k]);
+            }
+        }
+    }
+
+    /** A hoop (in the frame) round centre, square in section, its face square to axis. */
+    private void addLoop(MeshBuilder builder, float[] centre, float[] axis, float radius, float half, int segments) {
+        float[] n = normalise(axis);
+        float[] side = normalise(cross(n, Math.abs(n[1]) > 0.9f ? new float[] { 1f, 0f, 0f } : new float[] { 0f, 1f, 0f }));
+        float[] other = normalise(cross(side, n));
+        float[] last = null;
+        for (int k = 0; k <= segments; k++) {
+            double a = k * Math.PI * 2 / segments;
+            float[] q = add(centre, add(scale3(side, (float) Math.cos(a) * radius), scale3(other, (float) Math.sin(a) * radius)));
+            if (last != null) addRod(builder, last, q, half);
+            last = q;
+        }
+    }
+
+    /** A flat plate (in the frame): a convex outline given thickness across it, along across. */
+    private static void addSlab(MeshBuilder builder, float[][] outline, float[] across, float thickness) {
+        int n = outline.length;
+        float[] off = scale3(normalise(across), thickness * 0.5f);
+        float[][] front = new float[n][], back = new float[n][];
+        float[] inside = new float[3];
+        for (int i = 0; i < n; i++) {
+            front[i] = add(outline[i], off);
+            back[i] = sub(outline[i], off);
+            for (int k = 0; k < 3; k++) inside[k] += outline[i][k] / n;
+        }
+        builder.addConvexFace(inside, front);
+        builder.addConvexFace(inside, back);
+        for (int i = 0; i < n; i++) {
+            int j = (i + 1) % n;
+            builder.addConvexFace(inside, front[i], front[j], back[j], back[i]);
+        }
+    }
+
     /** The eight corners of an upright box: bottom four then top four, in order round. */
     private static float[][] boxCorners(float cx, float cz, float ax, float az, float nx, float nz, float halfAlong, float halfOut, float y0, float y1) {
         float[][] corners = new float[8][];
@@ -3999,6 +4992,103 @@ public class InfrastructureManager {
         float u;
         float slant;
         final List<float[]> openings = new ArrayList<>();
+        // Outward and level at each end, halfway between this wall's and its neighbour's
+        // normals, so walls meeting at a corner move it alike when their surface is shaped
+        float[] cornerA, cornerB;
+        // The surface's shape (see ArchitectureStyle.Relief, NONE for flat): how far it stands
+        // out at most, from what height up (the ground floor's level) to the top, how tall the
+        // floors it repeats on are (0 for once up the whole wall), and how far apart its flutes or studs
+        ArchitectureStyle.Relief relief = ArchitectureStyle.Relief.NONE;
+        float reliefDepth, reliefBase, reliefFloor, reliefPitch;
+    }
+
+    /**
+     * Shapes walls' surfaces in an architecture's relief: bulging between the corners, swelling,
+     * pinched in or creased across (once up the wall, or floor by floor), or fluted or studded,
+     * with the flutes and studs a whole number to a wall so each starts and ends flat. No deeper
+     * than a small share of the wall's width.
+     */
+    private static void shapeWalls(HouseWall[] walls, House house, BuildingStyle style, ArchitectureStyle arch) {
+        float height = walls[0].topA[1];
+        float rise = Math.max(1f, height - house.doorBase);
+        float floor = 0f;
+        if (arch.reliefPerFloor && style.floors > 1) {
+            // (floors fitted exactly into the wall, so the shape ends where the roof sits)
+            int floors = Math.max(1, Math.round(rise / (style.wallHeight * house.sizeScale / style.floors)));
+            floor = rise / floors;
+        }
+        float depth = Math.min(arch.reliefDepth * Math.max(0.7f, house.sizeScale), Math.max(0.6f, Math.min(house.width, house.depth) * 0.07f));
+        for (HouseWall wall : walls) {
+            wall.relief = arch.relief;
+            wall.reliefDepth = depth;
+            wall.reliefBase = house.doorBase;
+            wall.reliefFloor = floor;
+            wall.reliefPitch = arch.reliefPitch * Math.max(0.7f, house.sizeScale);
+        }
+    }
+
+    /** How far a shaped wall's surface stands out from its flat face at s along it (0..1) and height y. */
+    private static float reliefAt(HouseWall wall, float s, float y) {
+        if (wall.relief == ArchitectureStyle.Relief.NONE) return 0f;
+        float height = wall.topA[1];
+        float up = y - wall.reliefBase;
+        if (up <= 0f || y >= height) return 0f;
+        float t = wall.reliefFloor > 0f ? up / wall.reliefFloor - (float) Math.floor(up / wall.reliefFloor)
+                : up / (height - wall.reliefBase);
+        float d = wall.reliefDepth;
+        float sin = (float) Math.sin(Math.PI * t), tent = 1f - Math.abs(2f * t - 1f);
+        int ribs = Math.max(1, Math.round(wall.length / Math.max(2f, wall.reliefPitch)));
+        float across = s * ribs - (float) Math.floor(s * ribs), rib = 1f - Math.abs(2f * across - 1f);
+        return switch (wall.relief) {
+            case PILLOW -> d * (float) Math.sin(Math.PI * s) * sin;
+            case BARREL -> d * sin;
+            case PINCH -> -d * 0.8f * sin;
+            case CHEVRON -> d * tent;
+            case FLUTED -> d * 0.6f * rib;
+            case STUDDED -> {
+                // (rows of studs as tall as they're wide, a whole number up the wall)
+                float rise = wall.reliefFloor > 0f ? wall.reliefFloor : height - wall.reliefBase;
+                int rows = Math.max(1, Math.round(rise / Math.max(2f, wall.reliefPitch)));
+                float v = t * rows - (float) Math.floor(t * rows);
+                yield d * 0.7f * rib * (1f - Math.abs(2f * v - 1f));
+            }
+            default -> 0f;
+        };
+    }
+
+    /** Whether a relief's surface is creased (flat faces meeting at edges) rather than smoothly curved. */
+    private static boolean creased(ArchitectureStyle.Relief relief) {
+        return relief == ArchitectureStyle.Relief.CHEVRON || relief == ArchitectureStyle.Relief.FLUTED
+                || relief == ArchitectureStyle.Relief.STUDDED;
+    }
+
+    /**
+     * Where a shaped wall's surface needs cutting so it can bend: s along it (0..1) and heights
+     * up it, at every crease and often enough round its curves.
+     */
+    private static void reliefCuts(HouseWall wall, java.util.TreeSet<Float> cuts, java.util.TreeSet<Float> levels) {
+        if (wall.relief == ArchitectureStyle.Relief.NONE) return;
+        float height = wall.topA[1];
+        float rise = height - wall.reliefBase;
+        if (rise <= 0f) return;
+        boolean creased = creased(wall.relief);
+        float period = wall.reliefFloor > 0f ? wall.reliefFloor : rise;
+        int steps = creased ? 2 : 6;
+        if (wall.relief == ArchitectureStyle.Relief.STUDDED) {
+            int rows = Math.max(1, Math.round(period / Math.max(2f, wall.reliefPitch)));
+            steps = rows * 2;
+        }
+        for (float y = wall.reliefBase; y < height - 1e-3f; y += period) {
+            for (int k = 0; k <= steps; k++) levels.add(Math.min(height, y + period * k / steps));
+        }
+        switch (wall.relief) {
+            case PILLOW -> { for (int k = 1; k < 8; k++) cuts.add(k / 8f); }
+            case FLUTED, STUDDED -> {
+                int ribs = Math.max(1, Math.round(wall.length / Math.max(2f, wall.reliefPitch)));
+                for (int k = 1; k < ribs * 2; k++) cuts.add(k / (ribs * 2f));
+            }
+            default -> { }
+        }
     }
 
     /**
@@ -4079,6 +5169,10 @@ public class InfrastructureManager {
             wall.slant = dist(mid(wall.topA, wall.topB), mid(wall.bottomA, wall.bottomB));
             wall.u = u;
             u += wall.length;
+            float[] level = { wall.normal[0], 0f, wall.normal[2] };
+            float[] before = walls[(i + n - 1) % n].normal, after = walls[(i + 1) % n].normal;
+            wall.cornerA = normalise(add(level, new float[] { before[0], 0f, before[2] }));
+            wall.cornerB = normalise(add(level, new float[] { after[0], 0f, after[2] }));
         }
         return walls;
     }
@@ -4089,6 +5183,13 @@ public class InfrastructureManager {
         float[] top = lerp(wall.topA, wall.topB, s);
         float[] p = lerp(bottom, top, Math.max(0f, Math.min(1f, y / wall.topA[1])));
         p[1] = y;
+        // (a shaped wall's surface stands out or in from there: see reliefAt)
+        float relief = reliefAt(wall, s, y);
+        if (relief != 0f) {
+            float[] out = normalise(lerp(wall.cornerA, wall.cornerB, s));
+            p[0] += out[0] * relief;
+            p[2] += out[2] * relief;
+        }
         return p;
     }
 
@@ -4100,10 +5201,21 @@ public class InfrastructureManager {
      * piece meeting several short ones along a floor line would leave a hairline crack there.
      */
     private void emitWalls(MeshBuilder builder, House house, HouseWall[] walls, float tileWidth, float tileHeight) {
+        // (shaped walls' corners bend: every wall is cut at every other's window heights too, so
+        // walls meeting at a corner bend it at the same places and leave no crack along it)
+        java.util.TreeSet<Float> shared = new java.util.TreeSet<>();
+        for (HouseWall wall : walls) {
+            if (wall.relief == ArchitectureStyle.Relief.NONE) continue;
+            for (float[] o : wall.openings) {
+                shared.add(Math.max(0f, Math.min(wall.topA[1], o[2])));
+                shared.add(Math.max(0f, Math.min(wall.topA[1], o[3])));
+            }
+        }
         for (HouseWall wall : walls) {
             float height = wall.topA[1];
             java.util.TreeSet<Float> levels = new java.util.TreeSet<>();
             java.util.TreeSet<Float> cuts = new java.util.TreeSet<>();
+            if (wall.relief != ArchitectureStyle.Relief.NONE) levels.addAll(shared);
             levels.add(0f);
             levels.add(height);
             cuts.add(0f);
@@ -4114,6 +5226,7 @@ public class InfrastructureManager {
                 cuts.add(Math.max(0f, Math.min(1f, o[0])));
                 cuts.add(Math.max(0f, Math.min(1f, o[1])));
             }
+            reliefCuts(wall, cuts, levels);
             Float[] ys = levels.toArray(new Float[0]);
             Float[] ss = cuts.toArray(new Float[0]);
             for (int b = 0; b + 1 < ys.length; b++) {
@@ -4142,12 +5255,32 @@ public class InfrastructureManager {
         float[][] corners = { wallPoint(wall, s0, y0), wallPoint(wall, s1, y0), wallPoint(wall, s1, y1), wallPoint(wall, s0, y1) };
         float[] ss = { s0, s1, s1, s0 }, yy = { y0, y0, y1, y1 };
         int[] index = new int[4];
+        // A shaped wall's piece is tilted as its surface is: by its own face if creased, else
+        // smoothly by the surface's slope at each corner
+        float[] face = null;
+        if (wall.relief != ArchitectureStyle.Relief.NONE && creased(wall.relief)) {
+            face = normalise(cross(sub(corners[1], corners[0]), sub(corners[3], corners[0])));
+            if (dot3(face, wall.normal) < 0f) face = scale3(face, -1f);
+        }
         for (int i = 0; i < 4; i++) {
             float[] n = normalise(lerp(wall.normalA, wall.normalB, ss[i]));
+            if (wall.relief != ArchitectureStyle.Relief.NONE) {
+                float[] tilted = face != null ? face : surfaceNormal(wall, ss[i], yy[i]);
+                n = normalise(add(n, sub(tilted, wall.normal)));
+            }
             index[i] = houseVertex(builder, house, corners[i], n, (wall.u + ss[i] * wall.length) / tileWidth,
                     wall.slant * (yy[i] / height) / tileHeight);
         }
         addOutwardQuad(builder, house, index[0], index[1], index[2], index[3], corners[0], corners[1], corners[2], wall.normal);
+    }
+
+    /** The outward normal of a shaped wall's surface at s along it and height y (by its slopes either way there). */
+    private static float[] surfaceNormal(HouseWall wall, float s, float y) {
+        float es = Math.min(0.02f, 1f / Math.max(4f, wall.length)), ey = 0.4f;
+        float[] across = sub(wallPoint(wall, Math.min(1f, s + es), y), wallPoint(wall, Math.max(0f, s - es), y));
+        float[] up = sub(wallPoint(wall, s, Math.min(wall.topA[1], y + ey)), wallPoint(wall, s, Math.max(0f, y - ey)));
+        float[] n = normalise(cross(across, up));
+        return dot3(n, wall.normal) < 0f ? scale3(n, -1f) : n;
     }
 
     /**
@@ -4646,6 +5779,36 @@ public class InfrastructureManager {
         int[] designs = bollardWorld.designs().designsOf(nationId), from = bollardWorld.designs().fromNationsOf(nationId);
         for (int k = 0; k < designs.length; k++) list.add(new Object[] { bollardWorld.design(nationId, designs[k]), from[k] });
         return list;
+    }
+
+    /**
+     * A nation's architecture for the map (see ArchitectureStyle.picture), each {its picture (its
+     * traditional house dressed in it, height pixels tall), the neighbour it's from (0 for its main
+     * one, built over most of its land; -1 for its own province's take on that), and for a
+     * province's, a direction {x, y, z} in the middle of the province}.
+     */
+    public List<Object[]> architecturePictures(int nationId, int height) {
+        List<Object[]> list = new ArrayList<>();
+        BuildingStyle[] forms = formStyles.get(nationId);
+        if (forms == null) return list;
+        for (Object[] design : architectureWorld.designsOf(nationId)) {
+            ArchitectureStyle arch = architectureWorld.style((Integer) design[0]);
+            BuildingStyle.WallVariant walls = wallVariants.get(typicalWall(nationId, arch.pattern));
+            java.awt.image.BufferedImage picture = arch.picture(height, forms[0], walls);
+            list.add(design.length > 2 ? new Object[] { picture, design[1], design[2] } : new Object[] { picture, design[1] });
+        }
+        return list;
+    }
+
+    /** A nation's commonest wall variety in a masonry pattern (any, should it build none in it). */
+    private int typicalWall(int nationId, BuildingStyle.Pattern pattern) {
+        float[] weights = buildingStyles.get(nationId).wallVariantWeights;
+        int best = 0, bestOfPattern = -1;
+        for (int v = 0; v < weights.length; v++) {
+            if (weights[v] > weights[best] && wallVariants.get(v).pattern == BuildingStyle.Pattern.COURSED) best = v;
+            if (wallVariants.get(v).pattern == pattern && (bestOfPattern < 0 || weights[v] > weights[bestOfPattern])) bestOfPattern = v;
+        }
+        return bestOfPattern >= 0 ? bestOfPattern : best;
     }
 
     /** The shop nearest a place within reach, preferring one in the same nation; null if none. */
@@ -5268,6 +6431,17 @@ public class InfrastructureManager {
         float[] along = normalise(sub(wall.bottomB, wall.bottomA));
         float[][] corners = new float[4][];
         float[][] local = { { -halfW, -halfH }, { halfW, -halfH }, { halfW, halfH }, { -halfW, halfH } };
+        // On a shaped wall, stood out as far as its surface does anywhere behind it, so none of
+        // it is buried in a bulge
+        float relief = -Float.MAX_VALUE;
+        if (wall.relief != ArchitectureStyle.Relief.NONE) {
+            for (int a = 0; a <= 4; a++) {
+                for (int b = 0; b <= 6; b++) {
+                    float sa = s + (a / 4f - 0.5f) * 2f * halfW / Math.max(1e-3f, wall.length);
+                    relief = Math.max(relief, reliefAt(wall, Math.max(0f, Math.min(1f, sa)), centreY + (b / 6f - 0.5f) * 2f * halfH));
+                }
+            }
+        }
         for (int i = 0; i < 4; i++) {
             float y = centreY + local[i][1];
             float t = Math.max(0f, Math.min(1f, y / wallHeight));
@@ -5276,6 +6450,7 @@ public class InfrastructureManager {
             float[] onWall = lerp(bottom, top, t);
             onWall[1] = y;
             float[] p = add(add(onWall, scale3(along, local[i][0])), scale3(wall.normal, offset));
+            if (relief != -Float.MAX_VALUE) p = add(p, scale3(wall.normal, relief));
             corners[i] = new float[] { p[0], house.baseY + p[1], p[2] };
         }
         float[] inside = { (wall.bottomA[0] + wall.bottomB[0]) * 0.5f - wall.normal[0] * 5.0f, house.baseY + centreY,
@@ -6206,7 +7381,8 @@ public class InfrastructureManager {
             NationBatch batch = batches.computeIfAbsent(booth.nation, NationBatch::new);
             SpherePosition origin = booth.frame.origin();
             // Built of the plain local material (the nation's walls there), seen from inside and out
-            int variant = chooseWallVariant(origin, booth.nation, (long) (origin.x() * 31.0) ^ (long) (origin.z() * 17.0));
+            int variant = chooseWallVariant(origin, booth.nation, (long) (origin.x() * 31.0) ^ (long) (origin.z() * 17.0),
+                    BuildingStyle.Pattern.COURSED);
             MeshBuilder concrete = batch.builder(BOOTH_PART + variant);
             concrete.setPlanarTextureScale(1.0f / wallVariants.get(variant).tileWidth);
             batch.place(inWorld(booth.frame, false));

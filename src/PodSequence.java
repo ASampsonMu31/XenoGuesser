@@ -457,6 +457,7 @@ public class PodSequence implements GLEventListener {
         physics.setCircles(others);
         physics.step(dt, (forward ? 1f : 0f) - (back ? 1f : 0f), (right ? 1f : 0f) - (left ? 1f : 0f));
         body.update(dt, physics.moved, false);
+        if (physics.hitLamp) Achievements.unlock(Achievements.Achievement.LIGHTS_OUT);
         java.util.List<float[]> players = new java.util.ArrayList<>();
         players.add(new float[] { physics.x, physics.z, PodPhysics.RADIUS });
         if (partnerSeen) players.add(new float[] { partner[0], partner[2], PodPhysics.RADIUS });
@@ -660,6 +661,7 @@ public class PodSequence implements GLEventListener {
             }
             case CHAIR -> {
                 chair.push(physics.x, physics.z, 1f);
+                if (lightsOffAt >= 0f && now - lightsOffAt < LIGHTS_OFF) Achievements.unlock(Achievements.Achievement.MOVES_IN_THE_DARK);
                 // (the host's PC moves the chair for both; the joiner's pushes it too, for now, and follows)
                 if (session != null && role == Multiplayer.Role.JOIN) session.sendPodEvent(Multiplayer.POD_CHAIR_PUSH, physics.x, physics.z);
             }

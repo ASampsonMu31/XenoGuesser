@@ -23,6 +23,8 @@ public class PodPhysics {
     float vx, vy, vz;
     float yaw = (float) (Math.PI * 0.5), pitch;
     boolean onFloor = true;
+    // Whether the head hit the ceiling lamp this step, going up
+    boolean hitLamp;
     // Gravity as it is felt just now (see PodTimeline), and how far the feet went last step
     final float[] gravity = { 0f, -GRAVITY, 0f };
     float moved;
@@ -130,9 +132,13 @@ public class PodPhysics {
             onFloor = true;
         }
         // The top of the dome
+        hitLamp = false;
         if (y + HEAD > PodInterior.CEILING) {
             y = PodInterior.CEILING - HEAD;
-            if (vy > 0f) vy = 0f;
+            if (vy > 0f) {
+                hitLamp = Math.hypot(x, z) < PodInterior.LAMP_REACH + RADIUS;
+                vy = 0f;
+            }
         }
         // The leaning walls: kept in from them at the feet and at the head (where they're nearest)
         float reach = Math.min(PodInterior.radiusAt(y + 2f), PodInterior.radiusAt(y + HEAD)) - RADIUS;

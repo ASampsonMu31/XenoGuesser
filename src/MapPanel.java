@@ -560,7 +560,18 @@ public class MapPanel extends JPanel {
                 }
             }
         });
+        this.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseExited(MouseEvent e) {
+                hoverLandmark(Integer.MIN_VALUE / 2, Integer.MIN_VALUE / 2);
+            }
+        });
         this.addMouseMotionListener(new MouseAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                hoverLandmark(e.getX(), e.getY());
+            }
+
             @Override
             public void mouseDragged(MouseEvent e) {
                 if (dragFrom == null || !(isLarge || isFullScreenReveal)) return;
@@ -1015,16 +1026,177 @@ public class MapPanel extends JPanel {
         if (pictures != null) {
             placed = new ArrayList<>();
             for (Object[] p : pictures) {
-                placed.add(new Object[] { p[0], ((Float) p[1] + halfRegion) / totalRegionWidth, ((Float) p[2] + halfRegion) / totalRegionWidth });
+                Object[] at = p.clone();
+                at[1] = ((Float) p[1] + halfRegion) / totalRegionWidth;
+                at[2] = ((Float) p[2] + halfRegion) / totalRegionWidth;
+                placed.add(at);
             }
         }
         this.picturesName = placed != null ? name : null;
         this.mapPictures = placed;
+        hoveredLandmark = null;
+        landmarkMarks = List.of();
         repaint();
+    }
+
+    // The landmarks' markers where they were last drawn, each {centre x, centre y, radius, its
+    // picture's entry}, and the one the mouse is over (its popup shown), if any
+    private volatile List<Object[]> landmarkMarks = List.of();
+    private volatile Object[] hoveredLandmark;
+    // Each landmark picture's round thumbnail, for its marker
+    private final java.util.Map<BufferedImage, BufferedImage> landmarkThumbs = new java.util.IdentityHashMap<>();
+
+    /** Which landmark's marker (if any) is under the mouse: its popup is shown while it is. */
+    private void hoverLandmark(int x, int y) {
+        Object[] over = null;
+        if (isLarge && !isFullScreenReveal) {
+            for (Object[] mark : landmarkMarks) {
+                float dx = x - (Float) mark[0], dy = y - (Float) mark[1], r = (Float) mark[2] + 3f;
+                if (dx * dx + dy * dy <= r * r) over = (Object[]) mark[3];
+            }
+        }
+        if (over != hoveredLandmark) {
+            hoveredLandmark = over;
+            repaint();
+        }
+    }
+
+    /** A landmark's picture cut to a disc, size pixels across, with a rim. */
+    private BufferedImage landmarkThumb(BufferedImage picture) {
+        synchronized (landmarkThumbs) {
+            return landmarkThumbs.computeIfAbsent(picture, ignored -> {
+                int size = 72;
+                BufferedImage thumb = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+                Graphics2D g = thumb.createGraphics();
+                g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+                g.fill(new java.awt.geom.Ellipse2D.Float(0, 0, size, size));
+                g.setComposite(AlphaComposite.SrcIn);
+                // (its middle, a square of the picture's shorter side, a little below centre where the landmark stands)
+                int side = Math.min(picture.getWidth(), picture.getHeight());
+                int sx = (picture.getWidth() - side) / 2, sy = Math.min(picture.getHeight() - side, (picture.getHeight() - side) / 2 + side / 10);
+                g.drawImage(picture, 0, 0, size, size, sx, sy, sx + side, sy + side, null);
+                g.dispose();
+                return thumb;
+            });
+        }
+    }
+
+    /**
+     * The landmarks' markers (a picture with a name: see setPictureOverlay): each a round
+     * thumbnail of it on a pin over its place; and over the one the mouse is on, its popup.
+     */
+    private void drawLandmarks(Graphics2D g2d, int mapX, int mapY, List<Object[]> pictures) {
+        boolean small = currentMapSize < 300;
+        float radius = small ? 9f : Math.min(22f, 15f + zoom * 1.2f);
+        List<Object[]> marks = new ArrayList<>();
+        Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
+        g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        Object[] hovered = hoveredLandmark;
+        float[] hoveredAt = null;
+        for (Object[] p : pictures) {
+            for (int copy = -1; copy <= 1; copy++) {
+                float[] at = uvScreen((Float) p[1], (Float) p[2], copy, mapX, mapY);
+                if (at == null) continue;
+                if (at[0] < mapX || at[0] >= mapX + currentMapSize || at[1] < mapY || at[1] >= mapY + mapHeight()) continue;
+                // (the pin's foot on its place, the thumbnail above it)
+                float cx = at[0], cy = at[1] - radius - 7f;
+                boolean over = p == hovered;
+                float r = over ? radius + 3f : radius;
+                Polygon pin = new Polygon();
+                pin.addPoint(Math.round(at[0]), Math.round(at[1]));
+                pin.addPoint(Math.round(cx - r * 0.45f), Math.round(cy + r * 0.8f));
+                pin.addPoint(Math.round(cx + r * 0.45f), Math.round(cy + r * 0.8f));
+                g2d.setColor(new Color(0, 0, 0, 70));
+                g2d.fill(new java.awt.geom.Ellipse2D.Float(cx - r - 1f, cy - r + 2f, r * 2f + 2f, r * 2f + 2f));
+                g2d.setColor(over ? LANDMARK_GOLD : new Color(250, 248, 240));
+                g2d.fill(pin);
+                g2d.fill(new java.awt.geom.Ellipse2D.Float(cx - r - 2.5f, cy - r - 2.5f, r * 2f + 5f, r * 2f + 5f));
+                g2d.drawImage(landmarkThumb((BufferedImage) p[0]), Math.round(cx - r), Math.round(cy - r), Math.round(r * 2f), Math.round(r * 2f), null);
+                marks.add(new Object[] { cx, cy, r, p });
+                if (over) hoveredAt = new float[] { cx, cy, r };
+            }
+        }
+        landmarkMarks = marks;
+        // Developer aid: -Dxenoguesser.landmarkpopup=n shows the nth landmark's popup, as if hovered over
+        if (hovered == null && !marks.isEmpty() && Dev.property("xenoguesser.landmarkpopup") != null) {
+            Object[] first = marks.get(Math.min(marks.size() - 1, Dev.integer("xenoguesser.landmarkpopup", 0)));
+            hovered = (Object[]) first[3];
+            hoveredAt = new float[] { (Float) first[0], (Float) first[1], (Float) first[2] };
+        }
+        if (hovered != null && hoveredAt != null && !small) drawLandmarkPopup(g2d, mapX, mapY, hovered, hoveredAt);
+        if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
+    }
+
+    private static final Color LANDMARK_GOLD = new Color(240, 196, 92);
+
+    /** A landmark's popup beside its marker: its picture, its kind, its name and a line about it. */
+    private void drawLandmarkPopup(Graphics2D g2d, int mapX, int mapY, Object[] p, float[] mark) {
+        BufferedImage picture = (BufferedImage) p[0];
+        String name = (String) p[3], caption = p.length > 4 ? (String) p[4] : "", kind = p.length > 5 ? ((String) p[5]).toUpperCase(java.util.Locale.ROOT) : "";
+        int pad = 10;
+        int pictureH = Math.min(picture.getHeight(), Math.max(120, mapHeight() / 3));
+        int pictureW = Math.round(picture.getWidth() * pictureH / (float) picture.getHeight());
+        int cardW = Math.max(pictureW, 230) + pad * 2;
+        Font kindFont = new Font("Arial", Font.BOLD, 10), nameFont = new Font("Arial", Font.BOLD, 15), textFont = new Font("Arial", Font.PLAIN, 12);
+        FontMetrics textFm = g2d.getFontMetrics(textFont);
+        List<String> lines = wrap(caption, textFm, cardW - pad * 2);
+        int cardH = pad + pictureH + 8 + g2d.getFontMetrics(kindFont).getHeight() + g2d.getFontMetrics(nameFont).getHeight()
+                + lines.size() * textFm.getHeight() + pad;
+        // (above its marker if there's room, else below; kept on the map)
+        int x = Math.round(mark[0] - cardW / 2f);
+        int y = Math.round(mark[1] - mark[2] - 10 - cardH);
+        if (y < mapY + 6) y = Math.round(mark[1] + mark[2] + 16);
+        x = Math.max(mapX + 6, Math.min(mapX + currentMapSize - cardW - 6, x));
+        y = Math.max(mapY + 6, Math.min(mapY + mapHeight() - cardH - 6, y));
+        g2d.setColor(new Color(0, 0, 0, 90));
+        g2d.fillRoundRect(x + 3, y + 4, cardW, cardH, 14, 14);
+        g2d.setColor(new Color(24, 25, 30, 240));
+        g2d.fillRoundRect(x, y, cardW, cardH, 14, 14);
+        g2d.setColor(LANDMARK_GOLD);
+        g2d.setStroke(new BasicStroke(1.5f));
+        g2d.drawRoundRect(x, y, cardW, cardH, 14, 14);
+        g2d.drawImage(picture, x + (cardW - pictureW) / 2, y + pad, pictureW, pictureH, null);
+        int textY = y + pad + pictureH + 8;
+        g2d.setFont(kindFont);
+        g2d.setColor(LANDMARK_GOLD);
+        textY += g2d.getFontMetrics().getAscent();
+        g2d.drawString(kind, x + pad, textY);
+        g2d.setFont(nameFont);
+        g2d.setColor(Color.WHITE);
+        textY += g2d.getFontMetrics().getHeight();
+        g2d.drawString(name, x + pad, textY);
+        g2d.setFont(textFont);
+        g2d.setColor(new Color(205, 210, 220));
+        for (String line : lines) {
+            textY += textFm.getHeight();
+            g2d.drawString(line, x + pad, textY);
+        }
+    }
+
+    /** Text broken into lines no wider than width. */
+    private static List<String> wrap(String text, FontMetrics fm, int width) {
+        List<String> lines = new ArrayList<>();
+        StringBuilder line = new StringBuilder();
+        for (String word : text.split(" ")) {
+            if (line.length() > 0 && fm.stringWidth(line + " " + word) > width) {
+                lines.add(line.toString());
+                line.setLength(0);
+            }
+            if (line.length() > 0) line.append(' ');
+            line.append(word);
+        }
+        if (line.length() > 0) lines.add(line.toString());
+        return lines;
     }
 
     /** The map's pictures (see setPictureOverlay), each standing on its place, at a size readable on the map (they don't grow with zooming). */
     private void drawMapPictures(Graphics2D g2d, int mapX, int mapY, List<Object[]> pictures) {
+        if (!pictures.isEmpty() && pictures.get(0).length > 3) {
+            drawLandmarks(g2d, mapX, mapY, pictures);
+            return;
+        }
         float span = zoom * currentMapSize;
         float originX = mapX - viewLeft() * span, originY = mapY - viewTop() * span;
         int tall = currentMapSize < 300 ? 30 : Math.round(Math.min(80f, 50f + zoom * 4f));
@@ -1772,25 +1944,10 @@ public class MapPanel extends JPanel {
                     goalShown = q[2] >= 0.0;
                 }
 
-                int pinLength = 16;       
-                int headDiameter = 12;    
-                int headRadius = headDiameter / 2;
-                if (pinShown) {
-
-                g2d.setColor(new Color(180, 182, 185)); 
-                g2d.setStroke(new BasicStroke(2.0f));
-                g2d.drawLine(displayPinX, displayPinY, displayPinX, displayPinY - pinLength);
-
-                g2d.setStroke(originalStroke);
-                int circleX = displayPinX - headRadius;
-                int circleY = (displayPinY - pinLength) - headRadius;
-
+                int pinLength = MapMarkers.PIN_LENGTH;
+                int headDiameter = MapMarkers.PIN_HEAD;
                 // (in multiplayer, in this player's colour)
-                g2d.setColor(ownColour() != null ? ownColour() : new Color(200, 40, 40));
-                g2d.fillOval(circleX, circleY, headDiameter, headDiameter);
-                g2d.setColor(new Color(30, 30, 30));
-                g2d.drawOval(circleX, circleY, headDiameter, headDiameter);
-                }
+                if (pinShown) MapMarkers.pin(g2d, displayPinX, displayPinY, ownColour() != null ? ownColour() : new Color(220, 40, 40));
                 if (isFullScreenReveal && partnerPin != null) drawPartnerPin(g2d, mapX, mapY, pinLength, headDiameter);
                 // (multiplayer: this player's own pin named too, with "(You)")
                 Multiplayer pinSession = Multiplayer.active();
@@ -1800,23 +1957,7 @@ public class MapPanel extends JPanel {
                 }
 
                 if (isFullScreenReveal && goalShown && (resultsShown() || currentPhase == RevealPhase.DRAW_LINES)) {
-                    int flagPoleLength = 22;
-
-                    g2d.setColor(Color.LIGHT_GRAY);
-                    g2d.setStroke(new BasicStroke(2.5f));
-                    g2d.drawLine(displayGoalX, displayGoalY, displayGoalX, displayGoalY - flagPoleLength);
-                    g2d.setStroke(originalStroke);
-
-                    Polygon flagPoly = new Polygon();
-                    int flagTopY = displayGoalY - flagPoleLength;
-                    flagPoly.addPoint(displayGoalX, flagTopY);
-                    flagPoly.addPoint(displayGoalX + 16, flagTopY + 6); 
-                    flagPoly.addPoint(displayGoalX, flagTopY + 12);
-
-                    g2d.setColor(new Color(45, 180, 45)); 
-                    g2d.fill(flagPoly);
-                    g2d.setColor(Color.BLACK);
-                    g2d.draw(flagPoly);
+                    MapMarkers.flag(g2d, displayGoalX, displayGoalY);
                 }
 
                 g2d.setClip(markerClip);
@@ -2457,16 +2598,7 @@ public class MapPanel extends JPanel {
         double[] p = screenOf(partnerPin, mapX, mapY);
         if (p[2] < 0.0) return;
         int x = (int) Math.round(p[0]), y = (int) Math.round(p[1]);
-        Stroke old = g2d.getStroke();
-        g2d.setColor(new Color(180, 182, 185));
-        g2d.setStroke(new BasicStroke(2.0f));
-        g2d.drawLine(x, y, x, y - pinLength);
-        g2d.setStroke(old);
-        int r = headDiameter / 2;
-        g2d.setColor(partnerColour());
-        g2d.fillOval(x - r, y - pinLength - r, headDiameter, headDiameter);
-        g2d.setColor(new Color(30, 30, 30));
-        g2d.drawOval(x - r, y - pinLength - r, headDiameter, headDiameter);
+        MapMarkers.pin(g2d, x, y, partnerColour());
         Multiplayer session = Multiplayer.active();
         if (session == null) return;
         drawPinLabel(g2d, "Employee " + session.remoteLabel(), x, y, pinLength, headDiameter, brighter(partnerColour()));
