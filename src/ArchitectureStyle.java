@@ -26,9 +26,9 @@ import com.xenoguesser.math.Vector3;
  *
  * Few designs go round the world: neighbours share them, kindred ones above all (see
  * RegionalDesigns), and a nation may build a neighbour's near that neighbour. Within a nation one
- * province often has its own take on the nation's design (a few of its traits different). How much
- * of its finery a building wears depends on how well off the household is: the poor build plain,
- * the rich ornately; and only the richest towers glow.
+ * province often has its own take on the nation's design (a few of its traits different). Within
+ * a design's land nearly every building wears it, so it's recognisable street to street: only some
+ * of the poorest houses build plain, the rich add a few extras; and only the richest towers glow.
  */
 public final class ArchitectureStyle {
     public enum Relief { NONE, PILLOW, BARREL, PINCH, CHEVRON, FLUTED, STUDDED }
@@ -312,32 +312,35 @@ public final class ArchitectureStyle {
     }
 
     /**
-     * What a building of this design wears, rolled from its own seed: the walls' shape is the
-     * tradition, on most of them whoever lives there; the finery comes with money, the ornate
-     * design's richest houses wearing all of it and the poor little or none; a grand house all it
-     * has. A tower's high tech likewise, its neon only where people are well off.
+     * What a building of this design wears, rolled from its own seed. The design is the local
+     * tradition, so most buildings wear nearly all of it (as the map pictures it) whoever lives
+     * there: only some of the poorest houses go plain (keeping just the walls' shape), and the
+     * odd house leaves out a piece. Money adds the extras: the ridge's cresting and neon under
+     * the eaves. A tower's high tech likewise, its neon only where people are well off.
      */
     public Dress dress(long seed, float richness, boolean grand, boolean tower) {
         Random rand = new Random(seed ^ 0xA4C8E7L);
         Dress d = new Dress();
         float rich = Math.max(0f, Math.min(1f, richness));
-        float finery = ornateness * (0.1f + 0.9f * (float) Math.pow(rich, 1.3)) + (grand ? 0.45f : 0f);
         if (tower) {
             float tech = 0.15f + 0.85f * rich;
             d.neonCorners = neonCorners && rich > 0.3f && rand.nextFloat() < tech;
             d.neonBands = neonBands && rich > 0.4f && rand.nextFloat() < tech;
-            d.crown = crown != Crown.NONE && rand.nextFloat() < 0.35f + 0.65f * rich;
-            d.blades = blades && rand.nextFloat() < 0.25f + 0.6f * rich;
-            d.rings = rings && rand.nextFloat() < rich * rich * 1.3f;
+            d.crown = crown != Crown.NONE && rand.nextFloat() < 0.75f + 0.25f * rich;
+            d.blades = blades && rand.nextFloat() < 0.7f + 0.3f * rich;
+            d.rings = rings && rand.nextFloat() < 0.55f + 0.45f * rich;
             return d;
         }
-        d.relief = relief != Relief.NONE && rand.nextFloat() < 0.6f + 0.3f * ornateness;
-        d.horns = horns != Horns.NONE && rand.nextFloat() < 0.3f + 0.35f * ornateness + 0.3f * rich;
-        d.crest = crest != Crest.NONE && rand.nextFloat() < finery;
-        d.ridgeCrest = d.crest && ridgeCrest && rand.nextFloat() < 0.4f + 0.6f * rich;
-        d.topper = topper != Topper.NONE && rand.nextFloat() < 0.2f + 0.45f * ornateness * (0.4f + 0.6f * rich) + (grand ? 0.3f : 0f);
-        d.spikes = wallSpikes != WallSpikes.NONE && rand.nextFloat() < finery * 0.85f;
-        d.neonEaves = neonEaves && rich > 0.55f && rand.nextFloat() < (rich - 0.55f) * 2.2f;
+        d.relief = relief != Relief.NONE && rand.nextFloat() < 0.95f;
+        // (a plain house: poor, and its builders not much for finery)
+        boolean plain = !grand && rand.nextFloat() < 0.2f * (1f - rich) * (1.2f - ornateness);
+        float wears = grand ? 1f : 0.88f + 0.1f * rich;
+        d.horns = !plain && horns != Horns.NONE && rand.nextFloat() < wears;
+        d.crest = !plain && crest != Crest.NONE && rand.nextFloat() < wears;
+        d.ridgeCrest = d.crest && ridgeCrest && rand.nextFloat() < 0.6f + 0.4f * rich;
+        d.topper = !plain && topper != Topper.NONE && rand.nextFloat() < wears - 0.08f;
+        d.spikes = !plain && wallSpikes != WallSpikes.NONE && rand.nextFloat() < wears;
+        d.neonEaves = neonEaves && rich > 0.45f && rand.nextFloat() < (rich - 0.45f) * 2.5f;
         return d;
     }
 

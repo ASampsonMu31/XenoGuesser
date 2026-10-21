@@ -341,6 +341,8 @@ public class PodSequence implements GLEventListener {
     @Override
     public void init(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
+        // (which graphics card and driver, should anything go wrong: see CrashLog)
+        CrashLog.setRenderer(gl.glGetString(GL.GL_RENDERER) + ", OpenGL " + gl.glGetString(GL.GL_VERSION));
         // (the frames come first: the world's made on lesser threads)
         Thread.currentThread().setPriority(Thread.MAX_PRIORITY - 1);
         interior.initialise(gl);
@@ -363,8 +365,22 @@ public class PodSequence implements GLEventListener {
         if (g != null && gameStarted) g.reshape(drawable, x, y, w, h);
     }
 
+    /**
+     * A frame, the pod's or (once handed over) the game's: anything thrown in one is written to the
+     * crash log and the next frame comes regardless, where otherwise the animator would stop and the
+     * view freeze for good.
+     */
     @Override
     public void display(GLAutoDrawable drawable) {
+        try {
+            frame(drawable);
+        } catch (RuntimeException | OutOfMemoryError e) {
+            CrashLog.write("A frame failed" + (handedOver ? "" : " (in the pod)"), e);
+            e.printStackTrace();
+        }
+    }
+
+    private void frame(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
         XenoGuesser_GLEventListener g = game;
         long frameStart = System.nanoTime();

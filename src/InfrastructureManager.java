@@ -535,7 +535,7 @@ public class InfrastructureManager {
         for (int f = 0; f < weights.length; f++) {
             float townBias = townRand == null ? 1.0f : (float) Math.exp(townRand.nextGaussian() * 0.7);
             float lift = Math.max(0.0f, forms[f].wallHeight / forms[0].wallHeight - 1.0f);
-            float usual = (float) Math.pow(Math.max(1e-4f, weights[f]), 1.0f - 0.75f * richness);
+            float usual = (float) Math.pow(Math.max(1e-4f, weights[f]), 1.0f - 0.35f * richness);
             tilted[f] = forms[f].tower ? 0f : usual * townBias * (1.0f + 3.0f * urbanness * lift + 4.0f * richness * richness * lift);
             total += tilted[f];
         }
@@ -553,20 +553,28 @@ public class InfrastructureManager {
 
     /**
      * Picks a house's wall variety from its nation's mix, tilted by its town's own favourites,
-     * so a town has a recognisable look without every house matching.
+     * so a town has a recognisable look without every house matching; but most walls are built
+     * in the local architecture's favourite masonry (LIKED_MASONRY of them), as the map shows it.
      */
+    private static final float LIKED_MASONRY = 0.8f;
+
     private int chooseWallVariant(SpherePosition place, int nationId, long houseSeed, BuildingStyle.Pattern liked) {
         float[] weights = buildingStyles.get(nationId).wallVariantWeights;
         SettlementManager.Settlement town = settlementManager.getUrbanness(place) > 0.05f
                 ? settlementManager.dominantSettlementAt(place) : null;
         float[] tilted = new float[weights.length];
-        float total = 0;
+        float likedTotal = 0, otherTotal = 0;
         Random townRand = town == null ? null : new Random(worldSeed ^ (town.rank * 0x9E3779B97F4A7C15L));
         for (int v = 0; v < weights.length; v++) {
             float townBias = townRand == null ? 1.0f : (float) Math.exp(townRand.nextGaussian() * 0.6);
             tilted[v] = weights[v] * townBias;
-            // (the local architecture's favourite masonry, if it's an alien one, is built far more)
-            if (liked != BuildingStyle.Pattern.COURSED && wallVariants.get(v).pattern == liked) tilted[v] *= 12f;
+            if (wallVariants.get(v).pattern == liked) likedTotal += tilted[v]; else otherTotal += tilted[v];
+        }
+        // (the favourite masonry's varieties scaled up or down to their share)
+        float likedScale = likedTotal > 0 && otherTotal > 0 ? LIKED_MASONRY / (1f - LIKED_MASONRY) * otherTotal / likedTotal : 1f;
+        float total = 0;
+        for (int v = 0; v < tilted.length; v++) {
+            if (wallVariants.get(v).pattern == liked) tilted[v] *= likedScale;
             total += tilted[v];
         }
         float pick = new Random(houseSeed).nextFloat() * total;
@@ -6586,11 +6594,14 @@ public class InfrastructureManager {
     // A city counts as big from this size to fully big at this (1 the planet's largest), and the
     // biggest are this much richer than the nation's usual towns
     private static final float BIG_CITY_FROM = 0.3f, BIG_CITY_TO = 0.75f, BIG_CITY_WEALTH = 0.8f;
+    // How much poorer people right on the equator are (see SettlementManager.tropicality)
+    private static final float TROPICAL_POVERTY = 0.18f;
 
     public float areaRichness(int nationId, float urbanness, SpherePosition place) {
         RoadNetworkBuilder islands = islandWealth;
         float island = islands == null ? Float.NaN : islands.islandRichnessAt(place);
-        float base = Float.isNaN(island) ? nationRichness(nationId) : island;
+        float base = (Float.isNaN(island) ? nationRichness(nationId) : island)
+                * (1f - TROPICAL_POVERTY * SettlementManager.tropicality(place));
         // (big cities draw the money: the bigger the city, the richer its people)
         float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, settlementManager.getCitySize(SphereMath.direction(place)));
         return Math.min(1f, base * (0.55f + 0.9f * urbanness) * (1f + BIG_CITY_WEALTH * big))

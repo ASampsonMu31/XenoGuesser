@@ -26,7 +26,8 @@ import java.util.function.LongFunction;
 public final class CellStream<T> {
 
     private final GeodesicChunkGrid grid;
-    private final double reach, immediateReach;
+    private volatile double reach;
+    private final double immediateReach;
     private final LongFunction<T> builder;
     private final Map<Long, T> ready = new HashMap<>();
     private final Map<Long, Future<T>> building = new HashMap<>();
@@ -57,6 +58,12 @@ public final class CellStream<T> {
         onAdded = added;
         onRemoved = removed;
         return this;
+    }
+
+    /** How far (world units along the surface) cells are kept round the viewer from now on: changed between rounds, after clear. */
+    public void setReach(double reach) {
+        this.reach = reach;
+        wantedFor = Long.MIN_VALUE;
     }
 
     public GeodesicChunkGrid grid() {

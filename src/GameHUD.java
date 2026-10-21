@@ -40,12 +40,29 @@ public class GameHUD extends JPanel {
         return SALARY + points / 2;
     }
 
-    /** A guess's points: all of them added to productivity, and cashFor them to the cash. */
+    /** A guess's points: all of them added to productivity, and cashFor them to the cash (singleplayer only: multiplayer has no cash). */
     public void addRound(int points) {
         productivity += points;
-        cash += cashFor(points);
+        if (!Multiplayer.isActive()) {
+            cash += cashFor(points);
+            recentPay[paidRounds++ % recentPay.length] = cashFor(points);
+        }
         version++;
         repaint();
+    }
+
+    // The cash paid for the last few rounds (a quarter's worth), for the shop's prices, and how
+    // many rounds have been paid
+    private final int[] recentPay = new int[ROUNDS_PER_QUARTER];
+    private int paidRounds;
+
+    /** The average cash paid a round over the last few (the salary before any). */
+    public float recentPay() {
+        int n = Math.min(paidRounds, recentPay.length);
+        if (n == 0) return SALARY;
+        float sum = 0f;
+        for (int i = 0; i < n; i++) sum += recentPay[i];
+        return sum / n;
     }
 
     /** Takes cash spent in the shop. */
@@ -148,7 +165,7 @@ public class GameHUD extends JPanel {
             int productivityB = b == s.role ? productivity : score.productivitySoFar(b, currentRound);
             HudStyle.paintMultiplayerScorePanel(g, getQuarter(), (currentRound - 1) % ROUNDS_PER_QUARTER, deciderNumber(),
                     new String[] { a.label + " (You)", b.label }, new java.awt.Color[] { textColour(a), textColour(b) },
-                    new int[] { productivityA, productivityB }, new int[] { score.points(a), score.points(b) }, cash, body);
+                    new int[] { productivityA, productivityB }, new int[] { score.points(a), score.points(b) }, body);
             return;
         }
         HudStyle.paintScorePanel(g, getQuarter(), (currentRound - 1) % ROUNDS_PER_QUARTER, productivity, getTarget(), cash, body);

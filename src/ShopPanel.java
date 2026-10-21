@@ -20,17 +20,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The shop, between a round's results and the next round: up to three cards, each something
- * to buy (a map for the map's list, or an item to carry), shaped like playing cards and drawn
- * as the HUD's glass panels. The player picks one and buys it with their score, or buys
- * nothing; either way the next round follows, once it's ready.
+ * The shop, between a round's results and the next round: up to three cards, each a map to buy
+ * for the map's list (the gadgets are had from the start), shaped like playing cards and drawn
+ * as the HUD's glass panels. The player picks one and buys it with their cash, or buys
+ * nothing; either way the next round follows, once it's ready. In multiplayer there's no cash:
+ * everything's free and one may be taken, by the round's loser only (the winner's shop is empty).
  */
 public class ShopPanel extends JPanel {
-
-    // How many cards each item (the compass, the thermometer) has in the shop's deck, to make
-    // items likelier to come up than any one map; only one of them is dealt at a time, and once
-    // the item's bought none are
-    public static final int ITEM_COPIES = 2;
 
     /**
      * Something on offer: its name, what sort of thing it is, its picture (an image, or else a
@@ -40,21 +36,18 @@ public class ShopPanel extends JPanel {
     }
 
     // What things cost: each card's price is drawn at random from a normal distribution round a
-    // mean (to the nearest $5, never below the lowest). The mean starts at FIRST_MEAN after the
-    // first round and is multiplied by PRICE_GROWTH each round after, everything's prices rising
-    // by the same share (so after round 12, 1.25 to the 11th, about 12 times: dearer to begin
-    // with than the $100 and 1.4 it was, the same about round 6, half as dear by the year's
-    // end). The spread is set so that
-    // WITHIN_SHARE of prices fall within WITHIN_FRACTION of the mean either side (90% within
-    // 30%: a standard deviation of 0.3 / 1.645 of the mean), so it grows with the mean
-    private static final float FIRST_MEAN = 180f, PRICE_GROWTH = 1.25f;
+    // mean (to the nearest $5, never below the lowest). The mean is PAY_SHARE of what the player
+    // has been paid a round lately (see GameHUD.recentPay), so prices keep pace with their
+    // earnings however well they play: about one thing a shop affordable, two only by saving
+    // (a fixed rise each round was always too cheap or too dear for someone). The spread is set
+    // so that WITHIN_SHARE of prices fall within WITHIN_FRACTION of the mean either side (90%
+    // within 30%: a standard deviation of 0.3 / 1.645 of the mean), so it grows with the mean
+    private static final float PAY_SHARE = 0.9f;
     private static final float WITHIN_FRACTION = 0.3f;
     // (1.645 standard deviations either side of the mean hold 90% of a normal distribution)
     private static final float WITHIN_SHARE_DEVIATIONS = 1.645f;
     private static final int LOWEST_PRICE = 10;
-    // Items cost this many times what maps do (their mean and spread both), every round
-    public static final float ITEM_PRICE_FACTOR = 1.5f;
-    // ...and plant and animal heatmaps this many times what other heatmaps do
+    // Plant and animal heatmaps cost this many times what other heatmaps do
     public static final float SPECIES_PRICE_FACTOR = 0.5f;
 
     private static final Color BUY = new Color(40, 150, 90);
@@ -74,6 +67,9 @@ public class ShopPanel extends JPanel {
     private final Timer animation = new Timer(16, e -> repaint());
     // What the wait after leaving says (multiplayer: who it's waiting for); null for the usual
     private java.util.function.Supplier<String> waitingText;
+    // A line under the heading (multiplayer: whether this player, losing the round, may take
+    // one, or, winning it, gets nothing); null for none
+    private String note;
     // A message from Xenocorp scrolling along the bottom as it's spoken (null for none), and
     // whether the shop's held until it's been said or skipped (the first shop's: nothing taken nor
     // the shop left while it plays, nor before it starts)
@@ -133,6 +129,12 @@ public class ShopPanel extends JPanel {
      * drawn; multiplayer: "Waiting for Player 119-B" until the partner is ready too).
      */
     public void open(List<Card> offers, Runnable onLeave, java.util.function.Supplier<String> waitingText) {
+        open(offers, onLeave, waitingText, null);
+    }
+
+    /** As open, with a line under the heading saying why the shop is as it is (multiplayer: the round's winner and loser). */
+    public void open(List<Card> offers, Runnable onLeave, java.util.function.Supplier<String> waitingText, String note) {
+        this.note = note;
         this.waitingText = waitingText;
         this.cards = List.copyOf(offers);
         this.bought = new boolean[cards.size()];
@@ -262,12 +264,16 @@ public class ShopPanel extends JPanel {
             // The heading
             g.setFont(HudStyle.font(Font.BOLD, Math.min(46f, h * 0.052f)).deriveFont(java.util.Map.of(java.awt.font.TextAttribute.TRACKING, 0.12f)));
             FontMetrics fm = g.getFontMetrics();
-            String title = count == 0 ? "SHOP  ·  SOLD OUT" : "SHOP";
+            String title = count == 0 && note == null ? "SHOP  ·  SOLD OUT" : "SHOP";
             int titleY = Math.round(h * 0.10f);
             g.setColor(HudStyle.VALUE);
             g.drawString(title, (w - fm.stringWidth(title)) / 2, titleY);
             g.setColor(HudStyle.ACCENT);
             g.fill(new java.awt.geom.Rectangle2D.Float(w / 2f - 40, titleY + 12, 80, 2.5f));
+            if (note != null) {
+                float noteSize = Math.max(11f, Math.min(16f, h * 0.018f));
+                HudStyle.label(g, note, (w - HudStyle.labelWidth(g, note, noteSize)) / 2f, titleY + 14 + noteSize * 2.2f, noteSize, HudStyle.LABEL);
+            }
 
             // The cards, dealt in from below one after another
             cardBounds.clear();
@@ -473,14 +479,14 @@ public class ShopPanel extends JPanel {
     // ------------------------------------------------------------------ the cards' text and prices
 
     /**
-     * A card's price after this round (counting from 1), drawn at random round the round's mean
-     * (see FIRST_MEAN), the mean and spread scaled by factor (1 for maps, ITEM_PRICE_FACTOR for items, SPECIES_PRICE_FACTOR for plant and animal heatmaps).
+     * A card's price after this round (counting from 1), drawn at random round a mean of
+     * PAY_SHARE of pay (the cash paid a round lately), the mean and spread scaled by factor (1
+     * for maps, SPECIES_PRICE_FACTOR for plant and animal heatmaps).
      */
-    public static int price(int round, float factor, java.util.Random rand) {
-        // (the shop before the first round gives everything away)
-        if (round < 1) return 0;
-        int rounds = Math.max(0, round - 1);
-        float mean = factor * FIRST_MEAN * (float) Math.pow(PRICE_GROWTH, rounds), spread = mean * WITHIN_FRACTION / WITHIN_SHARE_DEVIATIONS;
+    public static int price(int round, float pay, float factor, java.util.Random rand) {
+        // (the shop before the first round gives everything away, as multiplayer's always does)
+        if (round < 1 || Multiplayer.isActive()) return 0;
+        float mean = factor * PAY_SHARE * pay, spread = mean * WITHIN_FRACTION / WITHIN_SHARE_DEVIATIONS;
         float price = mean + (float) rand.nextGaussian() * spread;
         return Math.max(LOWEST_PRICE, 5 * Math.round(price / 5f));
     }

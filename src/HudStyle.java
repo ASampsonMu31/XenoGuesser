@@ -269,11 +269,11 @@ public final class HudStyle {
     /**
      * The score panel in multiplayer (M13): no target; the quarter's months (or "Final decider
      * N" once the year's over, M17), both players' productivity this quarter and their quarter
-     * points, each named in their colour (this player first, "(You)" after their code), and
-     * this player's cash.
+     * points, each named in their colour (this player first, "(You)" after their code). No
+     * cash: multiplayer's shop is free (the round's loser takes one).
      */
     public static void paintMultiplayerScorePanel(Graphics2D g, int quarter, int month, int decider, String[] names,
-                                                  Color[] colours, int[] productivity, int[] points, int cash, Color body) {
+                                                  Color[] colours, int[] productivity, int[] points, Color body) {
         panel(g, 0, 0, SCORE_W, SCORE_H, body);
         if (decider > 0) {
             label(g, "Final decider", 20, 28, 11f, LABEL);
@@ -302,23 +302,22 @@ public final class HudStyle {
         }
         g.setColor(new Color(120, 205, 235, 70));
         g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
-        g.fill(new java.awt.geom.Rectangle2D.Float(392, 18, 1f, SCORE_H - 36));
-        // Each player: name, productivity this quarter, and quarter points
+        // Each player: name, productivity this quarter, and quarter points (spread across where
+        // the cash was)
         label(g, "Productivity", 184, 24, 10f, LABEL);
+        float pointsRight = SCORE_W - 24;
         float pointsLabelW = labelWidth(g, "Points", 10f);
-        label(g, "Points", 384 - pointsLabelW, 24, 10f, LABEL);
+        label(g, "Points", pointsRight - pointsLabelW, 24, 10f, LABEL);
         for (int p = 0; p < 2; p++) {
             float y = 46 + p * 24;
             label(g, names[p], 184, y, 11f, colours[p]);
             g.setFont(font(Font.BOLD, 17f));
             g.setColor(VALUE);
-            g.drawString(String.format("%,d", productivity[p]), 280, y + 1);
+            g.drawString(String.format("%,d", productivity[p]), 320, y + 1);
             String pts = Integer.toString(points[p]);
             g.setColor(colours[p]);
-            g.drawString(pts, 384 - g.getFontMetrics().stringWidth(pts), y + 1);
+            g.drawString(pts, pointsRight - g.getFontMetrics().stringWidth(pts), y + 1);
         }
-        label(g, "Cash", 408, 28, 11f, LABEL);
-        money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
     }
 
     /** A colour faded halfway towards grey and a little darker, for months gone by. */
@@ -356,6 +355,29 @@ public final class HudStyle {
         g.drawString(n, x, 17);
         label(g, "fps", FPS_W - 6 - labelW + 1, 18, 10f, new Color(0, 0, 0, 150));
         label(g, "fps", FPS_W - 6 - labelW, 17, 10f, new Color(225, 232, 240));
+    }
+
+    public static final int STAMINA_W = 220, STAMINA_H = 40;
+    // The stamina bar's colour: pink when full, deepening to red as it runs out (and while winded)
+    private static final Color STAMINA_FULL = new Color(250, 145, 200), STAMINA_LOW = new Color(245, 80, 95);
+
+    /** The sprint's stamina (share, 0 to 1) as a bar; winded greys its label until it's usable again. */
+    public static void paintStamina(Graphics2D g, float share, boolean winded) {
+        share = Math.max(0f, Math.min(1f, share));
+        panel(g, 0, 0, STAMINA_W, STAMINA_H, GLASS);
+        label(g, "Stamina", 14, 25, 10f, winded ? DIM : LABEL);
+        float bx = 84f, by = 15f, bw = STAMINA_W - bx - 14f, bh = 10f;
+        g.setColor(new Color(255, 255, 255, 34));
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(bx, by, bw, bh, bh, bh));
+        if (share > 0f) {
+            // (pink down to half, then towards red)
+            float t = winded ? 1f : Math.max(0f, Math.min(1f, (0.5f - share) / 0.5f));
+            Color c = new Color(Math.round(STAMINA_FULL.getRed() + (STAMINA_LOW.getRed() - STAMINA_FULL.getRed()) * t),
+                    Math.round(STAMINA_FULL.getGreen() + (STAMINA_LOW.getGreen() - STAMINA_FULL.getGreen()) * t),
+                    Math.round(STAMINA_FULL.getBlue() + (STAMINA_LOW.getBlue() - STAMINA_FULL.getBlue()) * t));
+            g.setColor(c);
+            g.fill(new java.awt.geom.RoundRectangle2D.Float(bx, by, Math.max(bh, bw * share), bh, bh, bh));
+        }
     }
 
     // ------------------------------------------------------------------ Inventory

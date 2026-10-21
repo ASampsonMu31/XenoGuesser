@@ -271,10 +271,10 @@ public class MapPanel extends JPanel {
     // moment, then turning to the answer as the line between them is drawn along the great
     // circle. How long it rests on the guess, and how long the turn takes (more the further)
     private RevealGlobe globe;
-    // The map (small and enlarged) and the results each shown on a globe (as they start) or flat,
-    // toggled by a button in the map's corner (M41); the map's own globe, wrapped in what the flat
-    // map shows (the overlay and the layers ticked: see globeTexture)
-    private boolean mapGlobe = true, revealGlobe = true;
+    // The map (small and enlarged; starts flat) and the results (start on a globe) each shown on a
+    // globe or flat, toggled by a button in the map's corner (M41); the map's own globe, wrapped in
+    // what the flat map shows (the overlay and the layers ticked: see globeTexture)
+    private boolean mapGlobe = false, revealGlobe = true;
     private RevealGlobe mapGlobeView;
     private BufferedImage globeTexture;
     private List<Object> globeTextureKey = List.of();
@@ -2454,15 +2454,28 @@ public class MapPanel extends JPanel {
         return String.format(metres < 100_000.0 ? "%,.1f km" : "%,.0f km", metres / 1000.0);
     }
 
+    /**
+     * The reckoning's last line: singleplayer, the cash the guess earned; multiplayer (no cash),
+     * who takes from the shop (the round's loser, both if it's level, the winner nothing).
+     */
+    private String paidLine(Multiplayer session, int points, int cash) {
+        if (session == null) return String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash);
+        if (partnerGuess == null) return "Shop: the round's loser takes one";
+        int theirs = partnerGuess.score();
+        return points > theirs ? "You won the round: no shop pick"
+                : points < theirs ? "You lost the round: take one from the shop"
+                : "A level round: both take one from the shop";
+    }
+
     private void drawReckoning(Graphics2D g2d, int mapX, int mapY) {
         int points = targetRoundScore, cash = GameHUD.cashFor(points);
+        Multiplayer session = Multiplayer.active();
         String[] lines = {
             "Distance: " + distanceText(roundDistance),
             String.format("Productivity: +%,d", points),
-            String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
+            paidLine(session, points, cash)
         };
         Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
-        Multiplayer session = Multiplayer.active();
         if (pin == null || (session != null && partnerGuess != null && partnerPin == null)) {
             // A round gone unguessed (this player's, the partner's or both): what was guessed, if anything
             List<String> said = new ArrayList<>();
@@ -2484,7 +2497,7 @@ public class MapPanel extends JPanel {
                     shades.add(brighter(partnerColour()));
                 }
             }
-            said.add(String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash));
+            said.add(paidLine(session, points, cash));
             shades.add(new Color(120, 230, 140));
             lines = said.toArray(new String[0]);
             colours = shades.toArray(new Color[0]);
@@ -2503,7 +2516,7 @@ public class MapPanel extends JPanel {
                 closer,
                 String.format("Employee %s (You): %s, +%,d productivity", session.localLabel(), distanceText(roundDistance), points),
                 String.format("Employee %s: %s, +%,d productivity", session.remoteLabel(), distanceText(theirDistance), partnerGuess.score()),
-                String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash)
+                paidLine(session, points, cash)
             };
             colours = new Color[] { closerColour, brighter(ownColour()), brighter(partnerColour()), new Color(120, 230, 140) };
         }
