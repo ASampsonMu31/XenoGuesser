@@ -26,7 +26,7 @@ import java.util.function.Function;
 /**
  * Beside the enlarged map: tick boxes for the markings drawn over the land and sea (contours,
  * rivers, roads; and in an Infrastructure folder, buildings, shops and a choice of at most one
- * of the maps of pictures: bollards, road lines, utility poles), and a choice of at most one
+ * of the maps of pictures: bollards, road lines, utility poles, architecture, landmarks), and a choice of at most one
  * heatmap to colour the land with under them, each row with its own icon. Nothing here takes the
  * keyboard, so walking keys keep working.
  */

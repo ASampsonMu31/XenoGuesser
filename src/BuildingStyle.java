@@ -22,6 +22,8 @@ public class BuildingStyle {
     public enum WallFinish { BRICK, STONE, PLAIN }
     public enum Bond { RUNNING, THIRD, STACK }
     public enum RoofFinish { TILES, SHINGLES, CORRUGATED, PLAIN }
+    /** How masonry is laid: courses of bricks or stones, or alien triangles, honeycomb or a square grid. */
+    public enum Pattern { COURSED, TRIANGLE, HEX, GRID }
 
     public final RoofType roofType;
     public final float width;
@@ -265,6 +267,7 @@ public class BuildingStyle {
      */
     public static final class WallVariant {
         public WallFinish finish;
+        public Pattern pattern = Pattern.COURSED;
         public Bond bond;
         public Vector3 colour;
         public Vector3 mortarColour;
@@ -322,6 +325,41 @@ public class BuildingStyle {
             }
             variants.add(variant);
         }
+        // Alien masonry: walls of triangles, honeycomb or a plain grid of panels, in local clay,
+        // a glaze or stone (their own random numbers, so the varieties above stay as they were)
+        Random alien = new Random(seed + 7575L);
+        Pattern[] patterns = { Pattern.TRIANGLE, Pattern.HEX, Pattern.GRID };
+        for (Pattern pattern : patterns) {
+            int copies = 1 + alien.nextInt(2);
+            for (int copy = 0; copy < copies; copy++) {
+                WallVariant variant = new WallVariant();
+                variant.pattern = pattern;
+                float kind = alien.nextFloat();
+                if (kind < 0.35f) {
+                    variant.finish = WallFinish.BRICK;
+                    variant.colour = hsb(fraction(clay[0] - 0.02f + (alien.nextFloat() - 0.5f) * 0.05f),
+                            Math.min(0.8f, 0.3f + clay[1] * 0.8f + alien.nextFloat() * 0.15f), 0.4f + alien.nextFloat() * 0.25f);
+                } else if (kind < 0.7f) {
+                    variant.finish = WallFinish.BRICK;
+                    variant.colour = hsb(alien.nextFloat(), 0.3f + alien.nextFloat() * 0.35f, 0.45f + alien.nextFloat() * 0.35f);
+                } else {
+                    variant.finish = WallFinish.STONE;
+                    variant.colour = hsb(alien.nextFloat(), 0.04f + alien.nextFloat() * 0.15f, 0.55f + alien.nextFloat() * 0.3f);
+                }
+                variant.bond = Bond.RUNNING;
+                variant.courseHeight = pattern == Pattern.GRID ? 4f + alien.nextFloat() * 6f : 3f + alien.nextFloat() * 3.5f;
+                variant.brickAspect = 1f;
+                variant.mortarFraction = 0.05f + alien.nextFloat() * 0.08f;
+                variant.colourVariation = 0.04f + alien.nextFloat() * 0.12f;
+                float mortarShade = alien.nextFloat() < 0.5f ? 0.75f + alien.nextFloat() * 0.2f : 0.12f + alien.nextFloat() * 0.2f;
+                variant.mortarColour = new Vector3(mortarShade, mortarShade * 0.97f, mortarShade * 0.92f);
+                // (the texture holds eight rows of units)
+                variant.tileHeight = variant.courseHeight * 8;
+                variant.tileWidth = pattern == Pattern.HEX || pattern == Pattern.TRIANGLE ? variant.tileHeight * ArchitectureTextures.patternAspect(pattern)
+                        : variant.tileHeight;
+                variants.add(variant);
+            }
+        }
         return variants;
     }
 
@@ -347,6 +385,9 @@ public class BuildingStyle {
                 // A popular variety is common but rarely universal: there's always a mix
                 weights[v] = 0.25f + 1.6f * p * p;
                 if (variants.get(v).finish == style.wallFinish) weights[v] *= 1.6f;
+                // (alien masonry is built mostly where the local architecture likes it: see
+                // InfrastructureManager.chooseWallVariant)
+                if (variants.get(v).pattern != Pattern.COURSED) weights[v] *= 0.3f;
                 total += weights[v];
             }
             for (int v = 0; v < weights.length; v++) weights[v] /= total;

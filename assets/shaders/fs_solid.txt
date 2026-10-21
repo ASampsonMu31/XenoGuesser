@@ -80,6 +80,7 @@ struct Material {
     vec3 ambient;
     vec3 diffuse;
     vec3 specular;
+    vec3 emission;   // light of its own (neon), shining whatever the light on it
     float shininess;
 };
 
@@ -173,7 +174,7 @@ void main() {
         totalSpecular += light.specular * spec * material.specular;
     }
 
-    vec3 result = ambient + totalDiffuse + totalSpecular;
+    vec3 result = ambient + totalDiffuse + totalSpecular + material.emission;
 
     // --- SEAMLESS INSIDE-SPHERE FOG COORD MAPPING ---
     float radialDistance = length(viewPos - aPos);

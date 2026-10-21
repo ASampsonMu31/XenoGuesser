@@ -28,7 +28,7 @@ public class LandingPod {
     private static final float LEG_SHOULDER = 22f, FOOT_OUT = (float) (36.0 * Math.sin(Math.PI * 0.25));
 
     // The hull: a cone from the heat shield up to a rounded top
-    static final float HULL_BASE = 14f, HULL_TOP = 58f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
+    static final float HULL_BASE = 14f, HULL_TOP = 62f, HULL_RADIUS = 26f, TOP_RADIUS = 14f;
     // The hatch platform's floor, and where the stairs leave it
     static final float PLATFORM_HEIGHT = 17f, PLATFORM_FRONT = 27f;
     private static final float STAIR_RUN = 5f, STAIR_LENGTH = 20f;

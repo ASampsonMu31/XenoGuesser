@@ -75,6 +75,7 @@ public class Renderer {
     shader.setVec3(gl, "material.ambient", material.getAmbient());
     shader.setVec3(gl, "material.diffuse", material.getDiffuse());
     shader.setVec3(gl, "material.specular", material.getSpecular());
+    shader.setVec3(gl, "material.emission", material.getEmission());
     shader.setFloat(gl, "material.shininess", material.getShininess());
     shader.setVec2(gl, "scale", scale);
   }

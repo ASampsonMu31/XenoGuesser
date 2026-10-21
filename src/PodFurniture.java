@@ -220,7 +220,7 @@ final class PodFurniture {
             int which = (side > 0f ? 0 : 2) + i;
             screen(b, x, 1.05f, 2.7f, 2.05f, which);
         }
-        for (int i = 0; i < 3; i++) dial(b, -3.3f + i * 3.3f, -2.75f, 0.15f, 1.05f);
+        for (int i = 0; i < 3; i++) dial(b, -3.3f + i * 3.3f, -2.75f, 0.15f, 1.05f, (side > 0f ? 0 : 3) + i);
         for (int i = 0; i < 8; i++) {
             float x = (i < 4 ? -1f : 1f) * (6.1f + (i % 2) * 1.1f), y = -2.1f - ((i % 4) / 2) * 1.1f;
             light(b, x, y, 0.12f, 0.3f, rand.nextInt(4), rand.nextFloat(), true);
@@ -277,8 +277,9 @@ final class PodFurniture {
         b.transform(face);
     }
 
-    /** A round dial on the current face: a white face (fs_pod swings its needle) in a dark rim. */
-    private static void dial(OrganismMesh.Builder b, float x, float y, float z, float radius) {
+    /** A round dial on the current face: a white face (fs_pod swings its needle) in a dark rim. Its texture coordinates
+     * are shifted along u by twice its index, so the shader can tell the dials apart (and keep one needle across a face). */
+    private static void dial(OrganismMesh.Builder b, float x, float y, float z, float radius, int index) {
         b.part(PodInterior.PART_DARK);
         b.lathe(20, 2, (t, out) -> {
             out[0] = x;
@@ -287,11 +288,12 @@ final class PodFurniture {
             out[3] = out[4] = radius * 1.18f;
         });
         b.part(PodInterior.PART_DIAL);
-        int centre = b.vertex(x, y, z + 0.25f, 0f, 0f, 1f, 0.5f, 0.5f), previous = -1;
+        float u0 = index * 2f;
+        int centre = b.vertex(x, y, z + 0.25f, 0f, 0f, 1f, u0 + 0.5f, 0.5f), previous = -1;
         for (int k = 0; k <= 24; k++) {
             double a = k / 24.0 * Math.PI * 2;
             float c = (float) Math.cos(a), s = (float) Math.sin(a);
-            int v = b.vertex(x + c * radius, y + s * radius, z + 0.25f, 0f, 0f, 1f, 0.5f + 0.5f * c, 0.5f + 0.5f * s);
+            int v = b.vertex(x + c * radius, y + s * radius, z + 0.25f, 0f, 0f, 1f, u0 + 0.5f + 0.5f * c, 0.5f + 0.5f * s);
             if (previous >= 0) b.triangle(centre, previous, v);
             previous = v;
         }
@@ -336,8 +338,9 @@ final class PodFurniture {
         b.box(0f, 6.4f, 0f, 3f, 0.6f, 3f);
         b.part(PodInterior.PART_FABRIC);
         b.box(0f, 7.1f, 0.2f, 6.2f, 1.1f, 6f);
+        // (the upright to the back: its front kept just behind the back's, not level with it)
         b.part(PodInterior.PART_METAL);
-        b.box(0f, 8.6f, -2.9f, 0.9f, 3.4f, 0.5f);
+        b.box(0f, 8.6f, -3.1f, 0.9f, 3.4f, 0.5f);
         b.part(PodInterior.PART_FABRIC);
         b.box(0f, 11.6f, -3.2f, 6f, 5f, 1.1f);
         // Arm rests
@@ -357,7 +360,8 @@ final class PodFurniture {
     /** The lights switch's bone: its lever turned on (up the face) or off (down it), part way between at 0..1 (1 off). */
     static float[] switchPose(float off) {
         float[] face = faceFrame(1f);
-        float angle = -0.85f + 1.7f * off;
+        // (on, it leans back up the face: not so far that it reaches the wall behind)
+        float angle = -0.62f + 1.47f * off;
         float[] turn = Affine.multiply(Affine.translation(SWITCH_AT[0], SWITCH_AT[1], SWITCH_AT[2]),
                 Affine.multiply(Affine.rotationX(angle), Affine.translation(-SWITCH_AT[0], -SWITCH_AT[1], -SWITCH_AT[2])));
         return Affine.multiply(face, Affine.multiply(turn, invertRigid(face)));

@@ -1,0 +1,266 @@
+#version 330 core
+
+// What the distance fades into: an even haze, a greyed version of the sky's colour (greyer
+// still under cloud), the same in every direction (see Shader.setFog)
+uniform vec3 fogColour;
+uniform float fogReady;
+vec3 fogHaze(vec3 fallback) {
+    return fogReady > 0.5 ? fogColour : fallback;
+}
+
+// Snow (see XenoGuesser_GLEventListener.bindSnowCover): the climate at sea level over the
+// whole sphere (its temperature, and how much rain or snow falls), a cube map read in the
+// place's direction. Snow lies where it's colder than the water's freezing point, the higher
+// the colder (so on mountain tops), wherever enough falls; and while it's snowing, fresh snow
+// settles in growing patches over everywhere near or below freezing. It settles on what faces
+// away from the planet's centre. Places are planet-centred: anything drawn on its own (about
+// the origin, not on the planet) has none.
+uniform samplerCube snowCover;
+uniform vec2 snowState;      // whether it's ready, fresh snow (0 to 1)
+uniform vec4 snowClimate;    // the freezing point, degrees below it for snow to lie thickly, degrees colder per unit up, sea level
+uniform vec3 snowColour;
+uniform float snowCleared;   // how much of the snow has been cleared off this (roads: see InfrastructureObject)
+uniform float snowToday;     // how much warmer (Celsius) today is than usual round the player
+uniform float planetRadius;
+// (an exact hash of whole-numbered cells: a sine hash loses precision far from the origin and
+// smears into stripes)
+float hash3d(ivec3 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u + uint(c.z) * 2246822519u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    h ^= h >> 16u;
+    return float(h & 16777215u) / 16777216.0;
+}
+float noise3d(vec3 p) {
+    vec3 f = fract(p);
+    ivec3 i = ivec3(floor(p));
+    f = f * f * (3.0 - 2.0 * f);
+    float a = mix(mix(hash3d(i), hash3d(i + ivec3(1, 0, 0)), f.x), mix(hash3d(i + ivec3(0, 1, 0)), hash3d(i + ivec3(1, 1, 0)), f.x), f.y);
+    float b = mix(mix(hash3d(i + ivec3(0, 0, 1)), hash3d(i + ivec3(1, 0, 1)), f.x), mix(hash3d(i + ivec3(0, 1, 1)), hash3d(i + ivec3(1, 1, 1)), f.x), f.y);
+    return mix(a, b, f.z);
+}
+// Smooth noise along a line
+float noise1d(float x) {
+    float i = floor(x), f = x - i;
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(hash3d(ivec3(int(i), 17, 29)), hash3d(ivec3(int(i) + 1, 17, 29)), f);
+}
+// How much of the surface snow covers where it faces a given way, before it's laid down as flakes
+float snowLying(vec3 world, float facing) {
+    float r = length(world);
+    if (snowState.x < 0.5 || r < planetRadius * 0.5) return 0.0;
+    vec2 climate = texture(snowCover, world / r).rg;
+    float celsius = climate.r * 100.0 - 60.0 - max(0.0, r - planetRadius - snowClimate.w) * snowClimate.z;
+    float falls = clamp((climate.g - 0.05) / 0.3, 0.0, 1.0);
+    float lying = smoothstep(0.0, 1.0, (snowClimate.x - celsius) / snowClimate.y) * falls;
+    // Fresh snow: flakes dotted about, then patches, then a full covering as it piles up
+    float snowy = clamp((snowClimate.x + 3.0 - celsius - snowToday) / 3.0, 0.0, 1.0);
+    // (never quite all: there are always gaps where the surface shows through)
+    // (none under the sea or where the waves wash up: from the water's edge to a little
+    // above the highest waves' reach)
+    float washed = smoothstep(snowClimate.w + 8.0, snowClimate.w + 18.0, r - planetRadius);
+    return min(0.8, max(lying, snowState.y * snowy)) * facing * (1.0 - snowCleared) * washed;
+}
+// Lays an amount of snow down as flakes and clumps over the surface as it is (fine dots, then
+// patches, then drifts), each either snow or not, so a light dusting is scattered flakes and a
+// heavy fall covers all but a few gaps
+float snowFlakes(vec3 world, float amount) {
+    if (amount <= 0.0) return 0.0;
+    float speckle = noise3d(world * 5.3) * 0.38 + noise3d(world * 1.1) * 0.34 + noise3d(world * 0.19) * 0.28;
+    // (spread out evenly, as the sum bunches round the middle, so the amount is the share covered)
+    speckle = smoothstep(0.22, 0.78, speckle);
+    return smoothstep(1.0 - amount, 1.0 - amount + 0.04, speckle);
+}
+float snowAt(vec3 world, vec3 n) {
+    // Less on steep faces
+    vec3 up = normalize(world);
+    return snowFlakes(world, snowLying(world, smoothstep(0.45, 0.8, dot(n, up))));
+}
+
+
+in vec3 aPos;
+in vec3 aWorldPos;   // planet-centred (aPos: the same, relative to the eyes)
+in vec3 aNormal;
+in vec2 aTexCoord;
+
+out vec4 fragColour;
+
+struct Light {
+    vec3 position;
+    vec3 diffuse;
+    vec3 specular;
+};
+
+struct Material {
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float shininess;
+};
+
+uniform sampler2D diffuse_texture;
+uniform sampler2D skyTexture;
+uniform vec3 viewPos;
+
+uniform int numLights;
+uniform Light lights[64];
+
+#include "shadows_include"
+
+uniform Material material;
+uniform vec2 scale;
+uniform vec3 ambientLight;
+uniform mat4 skyRotation;
+
+// The plants' bodies (see Flora): which part of a plant a vertex is on is in its u coordinate,
+// whole twos added (u from 0 to 1 round the part plus 2 times the part):
+//   0 bark (the bark picture in the trunk's colour, as the plain trees have)
+//   1 skin (the species' own colour, marked with its pattern)
+//   2 orbs (the balls, berries and bulbs: the plant's foliage colour, glossy and a little aglow)
+//   3 spikes (pale at the root, dark at the tip: v from 0 to 1 along them)
+//   4 flesh (a mushroom's stalk and gills: pale, finely lined)
+// and v runs along the part, as far as the way round it at its widest (so its marks come out round).
+uniform vec3 u_BodyColour;
+uniform vec3 u_PatternColour;
+uniform vec3 u_AccentColour;
+// The skin's pattern (0 none, 1 spots, 2 stripes along it, 3 pits, 4 rings round it), and how
+// many of its marks go round a part
+uniform float u_Pattern;
+uniform float u_PatternScale;
+
+const float PI = 3.14159265359;
+
+// A hash of a whole-numbered cell, exact however far from the origin
+float cellHash(ivec2 c) {
+    uvec2 q = uvec2(c) * uvec2(1664525u, 22695477u) + uvec2(1013904223u, 1u);
+    uint h = q.x ^ (q.y * 747796405u);
+    h ^= h >> 16u;
+    h *= 2246822519u;
+    h ^= h >> 13u;
+    return float(h) / 4294967295.0;
+}
+
+// Round marks scattered over the skin (p: around times the marks round it, along likewise; k the
+// marks round it, so they meet up across the seam): x how far into a mark (1 at its middle, 0
+// outside), y which side of it (for a pit's lit rim)
+vec2 marks(vec2 p, int k, float pixel) {
+    ivec2 base = ivec2(floor(p));
+    float best = 0.0, side = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 c = base + ivec2(dx, dy);
+            ivec2 w = ivec2(((c.x % k) + k) % k, c.y);
+            if (cellHash(w + ivec2(7, 3)) > 0.6) continue;
+            vec2 d = p - (vec2(c) + vec2(0.25) + 0.5 * vec2(cellHash(w), cellHash(w + ivec2(5, 11))));
+            float r = 0.16 + 0.2 * cellHash(w + ivec2(2, 9));
+            float dist = length(d) / r;
+            float edge = max(pixel / r, 0.06);
+            float here = 1.0 - smoothstep(1.0 - edge, 1.0 + edge, dist);
+            if (here > best) {
+                best = here;
+                side = clamp((d.x + d.y) / r, -1.0, 1.0);
+            }
+        }
+    }
+    return vec2(best, side);
+}
+
+void main() {
+    int part = int(floor(aTexCoord.x * 0.5));
+    vec2 uv = vec2(aTexCoord.x - 2.0 * float(part), aTexCoord.y);
+    // (how far the flesh's fine lines and the skin's marks move across a pixel, worked out here
+    // where every pixel's neighbours are there: they fade out before they're too fine to draw)
+    float lineStep = fwidth(uv.x * 32.0);
+    vec2 markP = uv * max(u_PatternScale, 2.0);
+    float pixel = length(fwidth(markP));
+    float markFade = 1.0 - smoothstep(0.25, 0.7, pixel);
+    vec3 colour;
+    vec3 tint = material.diffuse;
+    float specular = 0.02, shininess = 2.0, glow = 0.0, shadeBy = 1.0;
+    if (part == 0) {
+        colour = texture(diffuse_texture, uv * scale).rgb;
+    } else if (part == 1) {
+        tint = vec3(1.0);
+        colour = u_BodyColour;
+        specular = 0.12;
+        shininess = 12.0;
+        float k = max(u_PatternScale, 2.0);
+        vec2 p = markP;
+        int pattern = markFade > 0.0 ? int(u_Pattern + 0.5) : 0;
+        if (pattern == 1 || pattern == 3) {
+            vec2 m = marks(p, int(k + 0.5), pixel) * vec2(markFade, 1.0);
+            if (pattern == 1) {
+                colour = mix(colour, u_PatternColour, m.x);
+            } else {
+                // A hollow: darker inside, lit on one side of its rim and shadowed on the other
+                float rim = m.x * (1.0 - m.x) * 4.0;
+                shadeBy = mix(1.0, 0.45, smoothstep(0.3, 1.0, m.x)) * (1.0 + 0.45 * rim * m.y);
+                colour = mix(colour, u_PatternColour, 0.5 * smoothstep(0.5, 1.0, m.x));
+            }
+        } else if (pattern == 2) {
+            float across = abs(fract(p.x + 0.15 * sin(p.y * 1.7)) - 0.5) * 2.0;
+            float edge = max(pixel * 2.0, 0.05);
+            colour = mix(colour, u_PatternColour, smoothstep(0.62 - edge, 0.62 + edge, across) * markFade);
+        } else if (pattern == 4) {
+            float across = abs(fract(p.y * 0.5) - 0.5) * 2.0;
+            float edge = max(pixel, 0.05);
+            float ring = smoothstep(0.7 - edge, 0.7 + edge, across) * markFade;
+            colour = mix(colour, u_PatternColour, ring);
+            shadeBy = 1.0 - 0.25 * ring;
+        }
+    } else if (part == 2) {
+        tint = vec3(1.0);
+        colour = u_AccentColour;
+        specular = 0.5;
+        shininess = 28.0;
+        glow = 0.22;
+    } else if (part == 3) {
+        tint = vec3(1.0);
+        colour = mix(vec3(0.9, 0.86, 0.74), vec3(0.22, 0.18, 0.16), smoothstep(0.3, 1.0, uv.y));
+        specular = 0.2;
+        shininess = 16.0;
+    } else {
+        tint = vec3(1.0);
+        float lines = 1.0 - 0.14 * smoothstep(0.55, 1.0, sin(uv.x * 2.0 * PI * 32.0)) * (1.0 - smoothstep(0.15, 0.4, lineStep));
+        colour = mix(u_BodyColour, vec3(0.93, 0.9, 0.82), 0.62) * lines;
+    }
+
+    // Snow lying on whatever faces up (a mushroom's cap, a cactus' crown)
+    float snow = snowAt(aWorldPos, normalize(aNormal));
+    colour = mix(colour * shadeBy, min(snowColour * 1.4, vec3(1.0)), snow);
+
+    vec3 ambient = ambientLight * (part == 0 ? material.ambient : vec3(1.0)) * colour;
+
+    // (drawn from both sides: lit as the side that's seen)
+    vec3 norm = normalize(gl_FrontFacing ? aNormal : -aNormal);
+    vec3 viewDir = normalize(viewPos - aPos);
+    vec3 totalDiffuse = vec3(0.0);
+    vec3 totalSpecular = vec3(0.0);
+    for (int i = 0; i < numLights; i++) {
+        Light light = lights[i];
+        vec3 lightDir = normalize(light.position - aPos);
+        float shade = i == 0 ? sunShadow(aPos, norm) : 1.0;
+        float diff = max(dot(norm, lightDir), 0.0) * shade;
+        totalDiffuse += light.diffuse * tint * diff * colour;
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess) * shade;
+        totalSpecular += light.specular * spec * specular * (1.0 - snow);
+    }
+    vec3 result = ambient + totalDiffuse + totalSpecular + colour * glow * (1.0 - snow);
+
+    float radialDistance = length(viewPos - aPos);
+    vec3 dynamicSkyColour = fogColour;
+    if (fogReady < 0.5) {
+        vec3 worldLookDir = normalize(aPos - viewPos);
+        mat3 invSkyRot = transpose(mat3(skyRotation));
+        vec3 localSkyDir = invSkyRot * worldLookDir;
+        float theta = atan(localSkyDir.x, localSkyDir.z);
+        if (theta < 0.0) theta += 2.0 * PI;
+        float u = theta / (2.0 * PI);
+        float v = asin(clamp(localSkyDir.y, -1.0, 1.0)) / PI + 0.5;
+        dynamicSkyColour = texture(skyTexture, vec2(u, v)).rgb;
+    }
+    float fogStart = 1000.0;
+    float fogEnd = 2200.0;
+    float fogFactor = smoothstep(0.0, 1.0, clamp((fogEnd - radialDistance) / (fogEnd - fogStart), 0.0, 1.0));
+    fragColour = vec4(mix(fogHaze(dynamicSkyColour), result, fogFactor), 1.0);
+}
