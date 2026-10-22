@@ -6,3 +6,4 @@ assets/textures/generated_world/
 .loading_times.properties
 dist/
 target/
+checks/regression-breakdown.txt

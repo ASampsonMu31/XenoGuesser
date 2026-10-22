@@ -136,10 +136,10 @@ public class TerrainMesh {
     }
 
     /**
-     * Builds a triangular geodesic terrain cell as {vertices, indices}. Vertices are stored
+     * Builds a triangular geodesic terrain cell. Vertices are stored
      * in planet-centred Cartesian coordinates and transformed by the sphere-aware vertex shader.
      */
-    public static Object[] buildGeodesicCellData(GeodesicChunkGrid.Cell cell, int segments, PerlinNoise noise) {
+    public static MeshData buildGeodesicCellData(GeodesicChunkGrid.Cell cell, int segments, PerlinNoise noise) {
         if (segments < 1) throw new IllegalArgumentException("A geodesic terrain cell needs at least one segment");
         // (finer where a river's channel is cut, its edges stitched to coarser neighbours)
         segments = segmentsFor(cell, noise, segments);
@@ -196,7 +196,7 @@ public class TerrainMesh {
         }
         orientTrianglesOutward(vertices, indices);
         smoothGeodesicNormals(vertices, indices);
-        return new Object[] { vertices, indices };
+        return new MeshData(vertices, indices);
     }
 
     /** The ground as drawn: cells of this level of the geodesic grid, each cut into this many segments along an edge. */
@@ -374,8 +374,8 @@ public class TerrainMesh {
         }
     }
 
-    /** Builds one merged geodesic terrain patch as {vertices, indices}. */
-    public static Object[] buildGeodesicPatchData(GeodesicChunkGrid grid, SpherePosition centre,
+    /** Builds one merged geodesic terrain patch. */
+    public static MeshData buildGeodesicPatchData(GeodesicChunkGrid grid, SpherePosition centre,
             double angularRadius, int segments, PerlinNoise noise) {
         if (segments < 1) throw new IllegalArgumentException("A geodesic terrain patch needs at least one segment");
         List<GeodesicChunkGrid.Cell> cells = grid.cellsWithin(
@@ -383,21 +383,21 @@ public class TerrainMesh {
         if (cells.isEmpty()) throw new IllegalStateException("Geodesic terrain patch contains no cells");
 
         // (cells may be cut into different numbers of segments: see segmentsFor)
-        List<Object[]> built = new java.util.ArrayList<>(cells.size());
+        List<MeshData> built = new java.util.ArrayList<>(cells.size());
         int vertexFloats = 0, indexCount = 0;
         for (GeodesicChunkGrid.Cell cell : cells) {
-            Object[] cellData = buildGeodesicCellData(cell, segments, noise);
+            MeshData cellData = buildGeodesicCellData(cell, segments, noise);
             built.add(cellData);
-            vertexFloats += ((float[]) cellData[0]).length;
-            indexCount += ((int[]) cellData[1]).length;
+            vertexFloats += cellData.vertices().length;
+            indexCount += cellData.indices().length;
         }
         float[] vertices = new float[vertexFloats];
         int[] indices = new int[indexCount];
         int vertexOffset = 0;
         int indexOffset = 0;
-        for (Object[] cellData : built) {
-            float[] cellVertices = (float[]) cellData[0];
-            int[] cellIndices = (int[]) cellData[1];
+        for (MeshData cellData : built) {
+            float[] cellVertices = cellData.vertices();
+            int[] cellIndices = cellData.indices();
             System.arraycopy(cellVertices, 0, vertices, vertexOffset * 8, cellVertices.length);
             for (int i = 0; i < cellIndices.length; i++) {
                 indices[indexOffset + i] = cellIndices[i] + vertexOffset;
@@ -405,7 +405,7 @@ public class TerrainMesh {
             vertexOffset += cellVertices.length / 8;
             indexOffset += cellIndices.length;
         }
-        return new Object[] { vertices, indices };
+        return new MeshData(vertices, indices);
     }
 
     private static final float CONTINENT_HEIGHT = 480.0f;

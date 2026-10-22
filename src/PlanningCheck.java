@@ -539,8 +539,8 @@ public final class PlanningCheck {
      * crosses the border, with a gatepost there, and true size (short pieces at 70 degrees too).
      */
     private static void checkBorderFences(InfrastructureManager infra, float width, float sea, PerlinNoise noise) {
-        List<InfrastructureManager.Guard> booths = infra.borderGuards();
-        List<InfrastructureManager.TrafficLight> lights = infra.borderLights();
+        List<InfrastructureManager.Guard> booths = infra.borders().borderGuards();
+        List<InfrastructureManager.TrafficLight> lights = infra.borders().borderLights();
         GeodesicChunkGrid batchGrid = new GeodesicChunkGrid(InfrastructureManager.BATCH_LEVEL);
         int crossings = 0, fenced = 0, gated = 0;
         double longest = 0.0, farthest = 0.0;
@@ -713,8 +713,8 @@ public final class PlanningCheck {
      * lights either side, and a vehicle coming up the road stopping level with the booth.
      */
     private static void checkBorders(InfrastructureManager infra) {
-        List<InfrastructureManager.Guard> booths = infra.borderGuards();
-        List<InfrastructureManager.TrafficLight> lights = infra.borderLights();
+        List<InfrastructureManager.Guard> booths = infra.borders().borderGuards();
+        List<InfrastructureManager.TrafficLight> lights = infra.borders().borderLights();
         int facing = 0, offRoad = 0, lightsOffRoad = 0;
         for (InfrastructureManager.Guard b : booths) {
             // (well clear of its own road's edge; now and then another road runs close by)
@@ -740,7 +740,7 @@ public final class PlanningCheck {
             fencedLit++;
             SpherePosition from = SphereMath.move(crossing, heading + Math.PI, 100.0);
             double way = SphereMath.carryHeading(crossing, from, heading);
-            float[] stop = infra.borderStopAhead(from, way, 200f);
+            float[] stop = infra.borders().borderStopAhead(from, way, 200f);
             check(stop != null, "no stop ahead of a vehicle coming up to border check " + a.check());
             if (stop == null) continue;
             // (another check may come first: a road can cross the same border twice)
