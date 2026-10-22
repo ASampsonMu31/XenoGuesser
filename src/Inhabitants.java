@@ -690,7 +690,7 @@ public class Inhabitants {
 
     /** Puts a guard in each border booth near the viewer, and lets those far behind go. */
     private void staffBooths() {
-        if (booths == null) booths = infrastructure.borderGuards();
+        if (booths == null) booths = infrastructure.borders().borderGuards();
         for (int i = 0; i < booths.size(); i++) {
             InfrastructureManager.Guard b = booths.get(i);
             boolean near = SphereMath.distance(viewer, b.place()) < ACTIVE_RADIUS;
@@ -989,7 +989,7 @@ public class Inhabitants {
      */
     private void renderBorderLights(GL3 gl, int bonesLocation, SpherePosition eye) {
         if (lightFrameMesh == null) return;
-        if (borderLights == null) borderLights = infrastructure.borderLights();
+        if (borderLights == null) borderLights = infrastructure.borders().borderLights();
         for (InfrastructureManager.TrafficLight l : borderLights) {
             if (!near(l.foot(), eye, DRAW_DISTANCE)) continue;
             float ground = TerrainMesh.getLayeredHeight(l.foot(), terrainNoise);
@@ -1010,7 +1010,7 @@ public class Inhabitants {
                     Affine.scale(housingW, housingH, LAMP_SIZE * 1.4f))), 0, bones, 0, 16);
             gl.glUniformMatrix4fv(bonesLocation, 1, false, bones, 0);
             lightFrameMesh.render(gl);
-            int turn = infrastructure.borderTurn(l.check());
+            int turn = infrastructure.borders().borderTurn(l.check());
             for (int k = 0; k < 2; k++) {
                 float offset = (k == 0 ? -1f : 1f) * LAMP_SIZE * 0.85f;
                 float[] at = vertical ? Affine.translation(0f, top - offset, 0f) : Affine.translation(offset, top, 0f);

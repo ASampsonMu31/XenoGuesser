@@ -947,7 +947,7 @@ public final class Vehicles {
         if (Math.abs(turn) > 0.5f) limit = Math.min(limit, distance * 0.6f + 3f);
         if (final_ || approaching) limit = Math.min(limit, distance * 1.2f + 2f);
         // At a border check it draws up level with the booth and stops a while to be let through
-        float[] check = infrastructure.borderStopAhead(v.position, v.heading, BORDER_STOP_REACH);
+        float[] check = infrastructure.borders().borderStopAhead(v.position, v.heading, BORDER_STOP_REACH);
         if (check != null && (int) check[0] != v.checkedAt) {
             if (check[1] < 1.0f) {
                 v.checkedAt = (int) check[0];
@@ -964,7 +964,7 @@ public final class Vehicles {
             v.speed = 0f;
         }
         // A border's traffic light that isn't its turn: it waits at the line until it is
-        float hold = infrastructure.borderHoldAhead(v.position, v.heading, BORDER_STOP_REACH);
+        float hold = infrastructure.borders().borderHoldAhead(v.position, v.heading, BORDER_STOP_REACH);
         if (!Float.isNaN(hold)) {
             if (hold < 1.0f) {
                 limit = 0f;

@@ -1,18 +1,26 @@
 import java.awt.*;
 import java.awt.event.*;
 import javax.swing.JFrame;
-import javax.swing.JPanel;
 import javax.swing.JLayeredPane;
 import javax.swing.SwingUtilities;
 import javax.swing.text.JTextComponent;
 import java.awt.image.BufferedImage;
-import java.util.HashSet;
 import java.util.Set;
 import com.jogamp.opengl.*;
 import com.jogamp.opengl.awt.GLCanvas; 
 import com.jogamp.opengl.util.FPSAnimator;
 
+/**
+ * The game's window and the flow round the 3D view: the main menu, starting a game (the landing
+ * pod while the world is made on its own thread, see generateWorld), the controls, the map's
+ * guess and results, the shop and the quarters, Xenocorp's messages, the settings, multiplayer's
+ * waits for the partner, and the developer's test runs (runHudTest).
+ */
 public class XenoGuesser extends JFrame {
+
+  // The developer's test runs (see DevTestRun)
+  final DevTestRun devTestRun = new DevTestRun(this);
+
    
   // A fixed seed can be passed with -Dxenoguesser.seed=123 to test seed consistency; otherwise every game is a new world
   private static final Long FIXED_SEED = Dev.longValue("xenoguesser.seed");
@@ -20,7 +28,7 @@ public class XenoGuesser extends JFrame {
   private static final boolean IS_DEBUG_MODE_ACTIVE = Dev.ENABLED;
 
   private GLCanvas canvas; 
-  private XenoGuesser_GLEventListener glEventListener;
+  XenoGuesser_GLEventListener glEventListener;
   private FPSAnimator animator;
 
   private boolean isWindowLocked = false;
@@ -32,15 +40,15 @@ public class XenoGuesser extends JFrame {
   // settings give the pointer back.
   private static final float LOOK_SENSITIVITY = 0.0012f;
   private static final int RECENTRE_DISTANCE = 80;
-  private Robot robot;
+  Robot robot;
   private Cursor hiddenCursor;
   private boolean mouseCaptured;
   private Point lastMouse;
   private Camera camera;
-  private MyKeyboardInput keyboardInput;
+  MyKeyboardInput keyboardInput;
   private SettingsMenu settingsMenu;
   private boolean settingsOpen;
-  private volatile boolean inGame;
+  volatile boolean inGame;
   private final Set<Integer> keysDown = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
   // The world being played: a new one each game (the clock's time when it was chosen), unless -Dxenoguesser.seed fixes it
@@ -56,9 +64,9 @@ public class XenoGuesser extends JFrame {
   // JOGL's first profile probe takes seconds: made while the menu's up, so the pod can be shown at once
   private static final Thread GL_WARM_UP = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
   private MainMenu mainMenu;
-  private JLayeredPane layeredPane;
-  private MapPanel minimap;
-  private GameHUD gameHUD;
+  JLayeredPane layeredPane;
+  MapPanel minimap;
+  GameHUD gameHUD;
 
   public static void main(String[] args) {
     // Nothing's written to the terminal but in development (M47): what the game logs as it
@@ -298,7 +306,7 @@ public class XenoGuesser extends JFrame {
   }
 
   /** Play Singleplayer: the loading screen replaces the menu while a world is generated. */
-  private void startSingleplayer() {
+  void startSingleplayer() {
     startGame(false);
   }
 
@@ -492,7 +500,6 @@ glEventListener.setGameHUD(gameHUD);
     minimap.setOnProceedToShop(this::afterResults);
     minimap.setProceedLabel(() -> gameHUD.isQuarterEnd() ? "End of Quarter" : "Proceed to Shop");
 
-
     // The mouse wheel (and a touchpad's pinch, which comes as one) zooms the view where the game mode allows it
     canvas.addMouseWheelListener(e -> {
       if (inGame && mouseCaptured) glEventListener.zoomBy(e.getPreciseWheelRotation());
@@ -668,7 +675,7 @@ glEventListener.setGameHUD(gameHUD);
     // (multiplayer: from now on, silence from the partner counts as them gone)
     Multiplayer playing = Multiplayer.active();
     if (playing != null) playing.setPlaying(true);
-    runHudTest();
+    devTestRun.runHudTest();
     updateMouseMode();
   }
 
@@ -811,18 +818,18 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   // The shop, between a round's results and the next round
-  private ShopPanel shopPanel;
+  ShopPanel shopPanel;
 
   // A message from Xenocorp played during a round, its words along the bottom over everything
   private MessageStrip messageStrip;
 
   /** Plays a message from Xenocorp over the game, its words scrolling along the bottom (above the map) until it's said. */
-  private void showMessage(TransmissionMessage message) {
+  void showMessage(TransmissionMessage message) {
     showMessage(message, null);
   }
 
   /** As showMessage; onEnd told when it ends (true if skipped). */
-  private void showMessage(TransmissionMessage message, java.util.function.Consumer<Boolean> onEnd) {
+  void showMessage(TransmissionMessage message, java.util.function.Consumer<Boolean> onEnd) {
     SwingUtilities.invokeLater(() -> {
       if (!inGame || message == null) {
         if (onEnd != null) onEnd.accept(true);
@@ -843,7 +850,7 @@ glEventListener.setGameHUD(gameHUD);
   private volatile boolean clockHeldForInstructions;
 
   /** Enter (in the game): closes the controls, skips the message playing (in the shop or over the game), or opens the controls on offer. */
-  private void pressEnter() {
+  void pressEnter() {
     if (controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
     else if (shopPanel != null && shopPanel.isOpen() && shopPanel.messagePlaying()) shopPanel.skipMessage();
     else if (messageStrip != null && messageStrip.isPlaying()) messageStrip.skip();
@@ -906,7 +913,7 @@ glEventListener.setGameHUD(gameHUD);
   // none): October's or December's, whichever's to be played this game; and the month the
   // oxygen's downgraded, if it is
   private int seasonalMonth, oxygenMonth;
-  private static final int AUGUST = 8, OCTOBER = 10, DECEMBER = 12, OXYGEN_FROM = 7;
+  static final int AUGUST = 8, OCTOBER = 10, DECEMBER = 12, OXYGEN_FROM = 7;
   // The chance each month from July (with no other message) that it's the oxygen's
   private static final float OXYGEN_CHANCE = 0.27f;
 
@@ -915,7 +922,7 @@ glEventListener.setGameHUD(gameHUD);
    * chance of each; and in each month from July with no other message, until it's happened, a
    * OXYGEN_CHANCE of the oxygen's downgrade.
    */
-  private void planLaterMessages() {
+  void planLaterMessages() {
     java.util.Random rand = new java.util.Random(worldSeed * 6151L + 29L);
     seasonalMonth = rand.nextBoolean() ? OCTOBER : DECEMBER;
     oxygenMonth = 0;
@@ -931,7 +938,7 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   /** The message for a month as it begins (singleplayer), if it has one. */
-  private void monthMessage(int month) {
+  void monthMessage(int month) {
     String name = month == AUGUST ? TransmissionMessage.AUGUST
         : month == seasonalMonth ? (month == OCTOBER ? TransmissionMessage.OCTOBER : TransmissionMessage.DECEMBER)
         : month == oxygenMonth ? TransmissionMessage.OXYGEN : null;
@@ -969,7 +976,7 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   // Between a quarter's last results and the shop: whether its target was met
-  private QuarterPanel quarterPanel;
+  QuarterPanel quarterPanel;
   // Whether the shop open is one between rounds (closed as the next round starts), not the first
   private boolean shopBetweenRounds;
 
@@ -1037,7 +1044,7 @@ glEventListener.setGameHUD(gameHUD);
       showVerdict(session, "Final decider " + decider, HudStyle.GOLD, "Level again: another final decider", null,
           java.util.List.of(scores), java.util.List.of(HudStyle.VALUE), "On to the next decider",
           Multiplayer.STAGE_FINAL_DECIDER + decider, this::openShop);
-      verdictShot("decider" + decider);
+      devTestRun.verdictShot("decider" + decider);
       return;
     }
     if (!gameHUD.isQuarterEnd()) {
@@ -1082,7 +1089,7 @@ glEventListener.setGameHUD(gameHUD);
     // (the panel's edge green when this player won the quarter, red when the partner did)
     showVerdict(session, "Quarter " + (quarter + 1), HudStyle.QUARTER_COLOURS[quarter], headline, outcomeEdge(winner, me),
         lines, colours, button, Multiplayer.STAGE_QUARTER_END + quarter + 1, next);
-    verdictShot("quarter" + (quarter + 1));
+    devTestRun.verdictShot("quarter" + (quarter + 1));
   }
 
   /** A player as named on the verdicts: "Employee 119-A", with " (You)" after this player. */
@@ -1149,28 +1156,7 @@ glEventListener.setGameHUD(gameHUD);
           endGame(won);
         });
     layoutComponents();
-    verdictShot("gameend");
-  }
-
-  /** Developer aid: the window's Swing panels (not the 3D view) painted to a file. */
-  private void saveUiShot(java.io.File file) {
-    BufferedImage image = new BufferedImage(Math.max(1, layeredPane.getWidth()), Math.max(1, layeredPane.getHeight()), BufferedImage.TYPE_INT_RGB);
-    Graphics2D g = image.createGraphics();
-    layeredPane.paint(g);
-    g.dispose();
-    try {
-      javax.imageio.ImageIO.write(image, "png", file);
-      System.out.println("[SHOT] Panels saved to " + file);
-    } catch (java.io.IOException e) {
-      System.err.println("Couldn't save the panels: " + e.getMessage());
-    }
-  }
-
-  /** Developer aid: -Dxenoguesser.verdictshot=prefix saves each multiplayer verdict as it's shown, as prefix_name.png. */
-  private void verdictShot(String name) {
-    String prefix = Dev.property("xenoguesser.verdictshot");
-    if (prefix == null) return;
-    later(1200, () -> saveUiShot(new java.io.File(prefix + "_" + name.replaceAll("[^A-Za-z0-9]+", "_") + ".png")));
+    devTestRun.verdictShot("gameend");
   }
 
   // Multiplayer: this player's own game mode and map kind, given back after the game (the
@@ -1198,7 +1184,7 @@ glEventListener.setGameHUD(gameHUD);
           });
       layoutComponents();
       updateMouseMode();
-      verdictShot("partnergone");
+      devTestRun.verdictShot("partnergone");
       return;
     }
     leaveBeforeTheGame(who + " left. " + reason);
@@ -1347,7 +1333,7 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   /** The game's over (the year won, or a quarter's target missed): says so, and goes back to the main menu. */
-  private void endGame(boolean won) {
+  void endGame(boolean won) {
     System.out.println(won ? "You win" : "You lose");
     if (messageStrip != null) messageStrip.stop();
     glEventListener.stopSounds();
@@ -1430,7 +1416,7 @@ glEventListener.setGameHUD(gameHUD);
     updateMouseMode();
   }
 
-  private void setSettingsOpen(boolean open) {
+  void setSettingsOpen(boolean open) {
     settingsOpen = open;
     settingsMenu.setVisible(open);
     layoutComponents();
@@ -1444,219 +1430,7 @@ glEventListener.setGameHUD(gameHUD);
     layeredPane.repaint();
   }
 
-  /**
-   * Developer aid: -Dxenoguesser.hudtest=large,compass,settings,shot sets the HUD up
-   * once the game starts, and "shot" saves a picture of the whole window a moment later.
-   */
-  private void runHudTest() {
-    String test = Dev.property("xenoguesser.hudtest");
-    if (test == null) return;
-    // A test run leaves the mouse alone
-    robot = null;
-    for (String step : test.split(",")) {
-      switch (step.trim()) {
-        case "large": minimap.toggleSize(); break;
-        case "compass": {
-          javax.swing.Timer later = new javax.swing.Timer(1200, e -> glEventListener.useCompass());
-          later.setRepeats(false);
-          later.start();
-          break;
-        }
-        case "settings": setSettingsOpen(true); break;
-        // pause: the settings opened (the game paused) at -Dxenoguesser.pauseat=open,close (ms)
-        case "pause": {
-          String[] at = Dev.property("xenoguesser.pauseat", "6000,12000").split(",");
-          later(Integer.parseInt(at[0].trim()), () -> setSettingsOpen(true));
-          later(Integer.parseInt(at[1].trim()), () -> setSettingsOpen(false));
-          break;
-        }
-        case "thermometer": later(1200, () -> glEventListener.useThermometer()); break;
-        // lose: the game lost a moment in, back to the menu; restart: a new game from the menu after
-        case "lose": later(1500, () -> endGame(false)); break;
-        // month: a month's message (-Dxenoguesser.month, 8 by default), as if it had just begun
-        case "month": later(1500, () -> {
-          planLaterMessages();
-          monthMessage(Dev.integer("xenoguesser.month", AUGUST));
-        }); break;
-        // portraits: the map's pictures of the plants and animals saved, as <-Dxenoguesser.portraits>_*.png, 20 s in
-        case "portraits": later(20000, () -> glEventListener.devSavePortraits(Dev.property("xenoguesser.portraits", "portrait"))); break;
-        // oxygen: the oxygen downgraded straight away (its blur and dizziness)
-        case "oxygen": later(1500, () -> glEventListener.downgradeOxygen()); break;
-        // april: April's message, as if April had just begun
-        case "april": later(1500, () -> glEventListener.startAprilMessage(this::showMessage)); break;
-        case "restart": later(Dev.integer("xenoguesser.restartdelay", 5000), this::startSingleplayer); break;
-        // quarter: the end of a quarter's screen, as if its target were missed
-        case "quarter": later(1500, () -> {
-          quarterPanel.show(gameHUD.getQuarter(), gameHUD.getProductivity(), gameHUD.getTarget(), false, () -> quarterPanel.close());
-          layoutComponents();
-        }); break;
-        // (the third and fourth items, had from the start: the altimeter and the identification kit)
-        case "altimeter": later(1200, () -> glEventListener.useItem(2)); break;
-        case "kit": later(1200, () -> glEventListener.useItem(3)); break;
-        // Multiplayer: face the partner (level); look down at this player's own body; and
-        // frameshot: the drawn frame saved (from the GL, so another window over this one doesn't
-        // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
-        case "partner": later(1500, () -> glEventListener.lookAtPartner(0f)); break;
-        // quit: quits the game -Dxenoguesser.quitdelay ms in (default 5000), as the settings' Quit game does
-        case "quit": later(Dev.integer("xenoguesser.quitdelay", 5000), this::shutdownGame); break;
-        // autoplay: every -Dxenoguesser.autoplayms (default 4000) the next thing a player would do:
-        // press on from the quarter's verdict, else leave the shop (buying nothing), else go on
-        // from the results, else guess (see guessat)
-        case "autoplay": {
-          javax.swing.Timer play = new javax.swing.Timer(Dev.integer("xenoguesser.autoplayms", 4000), e -> {
-            if (!inGame || minimap == null) return;
-            if (quarterPanel != null && quarterPanel.isOpen()) {
-              quarterPanel.devPress();
-              return;
-            }
-            if (shopPanel.isOpen()) shopPanel.nextRound();
-            else if (minimap.isFullScreenRevealMode()) minimap.devProceedToShop();
-            else minimap.devGuess();
-          });
-          play.start();
-          break;
-        }
-        // uishot: the window's panels (the map, results, shop: Swing, not the 3D view) painted to
-        // <-Dxenoguesser.uishot>_<ms>.png at each of -Dxenoguesser.uishotat=ms,ms,... in
-        case "uishot": {
-          for (String at : Dev.property("xenoguesser.uishotat", "4000").split(",")) {
-            int ms = Integer.parseInt(at.trim());
-            later(ms, () -> saveUiShot(new java.io.File(Dev.property("xenoguesser.uishot", "ui") + "_" + ms + ".png")));
-          }
-          break;
-        }
-        // walkpartner: face the partner and walk at them for four seconds (W held), logging how far apart they end up
-        case "walkpartner": {
-          later(1500, () -> {
-            glEventListener.lookAtPartner(0f);
-            System.out.printf("[MP] Walking at the partner from %.2f units%n", glEventListener.distanceToPartner());
-            keyboardInput.w = true;
-          });
-          later(5500, () -> {
-            keyboardInput.w = false;
-            System.out.printf("[MP] Stopped %.2f units from the partner (their cylinders touch at 6)%n", glEventListener.distanceToPartner());
-          });
-          break;
-        }
-        // walk: W held from 9 s for -Dxenoguesser.walkms (default 8000), logging where it started and how far it got each second
-        case "walk": {
-          int ms = Dev.integer("xenoguesser.walkms", 8000);
-          SpherePosition[] start = new SpherePosition[1];
-          later(9000, () -> {
-            start[0] = glEventListener.devPosition();
-            keyboardInput.w = true;
-          });
-          for (int t = 1000; t <= ms; t += 1000) {
-            int at = t;
-            later(9000 + at, () -> System.out.printf(java.util.Locale.ROOT, "[WALK] %d ms: %.1f units on, eyes at %.1f%n", at,
-                SphereMath.distance(start[0], glEventListener.devPosition()), SphereMath.altitude(glEventListener.devPosition())));
-          }
-          later(9000 + ms, () -> keyboardInput.w = false);
-          break;
-        }
-        // enter: Enter pressed at each of -Dxenoguesser.enterat=ms,... (skipping a message, closing the controls)
-        case "enter": {
-          for (String at : Dev.property("xenoguesser.enterat", "8000").split(",")) later(Integer.parseInt(at.trim()), this::pressEnter);
-          break;
-        }
-        // leaveshop: Next round pressed in the shop at -Dxenoguesser.leaveshopat (ms), if it can be
-        case "leaveshop": later(Dev.integer("xenoguesser.leaveshopat", 12000), () -> {
-          if (shopPanel.isOpen() && !shopPanel.messagePlaying()) shopPanel.nextRound();
-          else System.out.println("[TEST] The shop can't be left yet (its message is playing)");
-        }); break;
-        // pin: a marker put down (not guessed) at -Dxenoguesser.pinat=u,v, -Dxenoguesser.pindelay ms in
-        case "pin": later(Dev.integer("xenoguesser.pindelay", 5000), () -> minimap.devPlacePin()); break;
-        // screen: what's really on the screen over the window (the 3D view and all), saved to
-        // <-Dxenoguesser.screen>_<ms>.png at each of -Dxenoguesser.screenat=ms,...
-        case "screen": {
-          for (String at : Dev.property("xenoguesser.screenat", "8000").split(",")) {
-            int ms = Integer.parseInt(at.trim());
-            later(ms, () -> {
-              try {
-                Point origin = getContentPane().getLocationOnScreen();
-                BufferedImage image = new java.awt.Robot().createScreenCapture(new Rectangle(origin.x, origin.y, getContentPane().getWidth(), getContentPane().getHeight()));
-                javax.imageio.ImageIO.write(image, "png", new java.io.File(Dev.property("xenoguesser.screen", "screen") + "_" + ms + ".png"));
-              } catch (Exception ex) {
-                ex.printStackTrace();
-              }
-            });
-          }
-          break;
-        }
-        case "lookdown": later(1500, () -> glEventListener.lookPitch(-70f)); break;
-        // lookup: tilts the view up (to see what's overhead: wires, roofs)
-        case "lookup": later(1500, () -> glEventListener.lookPitch(Float.parseFloat(Dev.property("xenoguesser.lookup", "25")))); break;
-        // podview: the landing pod from out in front and to one side (-Dxenoguesser.podview=distance,degrees round,height up)
-        case "podview": {
-          String[] v = Dev.property("xenoguesser.podview", "75,30,10").split(",");
-          later(1500, () -> glEventListener.viewPod(Double.parseDouble(v[0]), Double.parseDouble(v[1]), Double.parseDouble(v[2])));
-          break;
-        }
-        case "frameshot": later(Dev.integer("xenoguesser.frameshotdelay", 4000),
-            () -> glEventListener.saveNextFrame(new java.io.File(Dev.property("xenoguesser.frameshot", "frame.png")))); break;
-        // herd: faces the nearest herd (and again each time a frame is saved by frameshots)
-        case "herd": later(2000, () -> glEventListener.lookAtHerd()); break;
-        // frameshots: frames saved at each of -Dxenoguesser.frameshotsat=ms,... as <frameshot>_<ms>.png, facing the herd first
-        case "frameshots": {
-          for (String at : Dev.property("xenoguesser.frameshotsat", "4000").split(",")) {
-            int ms = Integer.parseInt(at.trim());
-            later(ms - 300, () -> glEventListener.lookAtHerd());
-            later(ms, () -> glEventListener.saveNextFrame(new java.io.File(Dev.property("xenoguesser.frameshot", "frame") + "_" + ms + ".png")));
-          }
-          break;
-        }
-        // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
-        case "zoom": {
-          String[] at = Dev.property("xenoguesser.mapzoomat", "0.5,0.5").split(",");
-          later(1500, () -> minimap.devZoom(Float.parseFloat(Dev.property("xenoguesser.mapzoom", "16")), Float.parseFloat(at[0]), Float.parseFloat(at[1])));
-          break;
-        }
-        // guess: a guess two seconds in (-Dxenoguesser.guessdelay); shop: Proceed to Shop pressed
-        // six seconds in (-Dxenoguesser.shopdelay); next: on to the next round, buying nothing,
-        // twelve seconds in (-Dxenoguesser.nextdelay)
-        case "guess": later(Dev.integer("xenoguesser.guessdelay", 2000), () -> minimap.devGuess()); break;
-        case "shop": later(Dev.integer("xenoguesser.shopdelay", 6000), () -> minimap.devProceedToShop()); break;
-        case "next": later(Dev.integer("xenoguesser.nextdelay", 12000), () -> {
-          if (quarterPanel.isOpen() || shopPanel.isOpen()) return;
-          minimap.devProceedToShop();
-          if (shopPanel.isOpen()) shopPanel.nextRound();
-        }); break;
-        default: break;
-      }
-    }
-    if (test.contains("shot")) {
-      javax.swing.Timer shot = new javax.swing.Timer(Dev.integer("xenoguesser.shotdelay", 2600), e -> {
-        try {
-          Rectangle area = new Rectangle(getLocationOnScreen(), getSize());
-          javax.imageio.ImageIO.write(new Robot().createScreenCapture(area), "png",
-              new java.io.File(RunFiles.WORLD_DIR, "window_shot.png"));
-          // The map on its own, drawn straight from the panel (whatever is on screen)
-          java.awt.image.BufferedImage map = new java.awt.image.BufferedImage(Math.max(1, minimap.getWidth()), Math.max(1, minimap.getHeight()),
-              java.awt.image.BufferedImage.TYPE_INT_ARGB);
-          java.awt.Graphics2D mg = map.createGraphics();
-          minimap.paint(mg);
-          mg.dispose();
-          javax.imageio.ImageIO.write(map, "png", new java.io.File(RunFiles.WORLD_DIR, "map_shot.png"));
-          // ...and the tick boxes beside it, if they're showing
-          MapLayersPanel layers = minimap.getLayersPanel();
-          if (layers != null && layers.isVisible() && layers.getWidth() > 0) {
-            java.awt.image.BufferedImage panel = new java.awt.image.BufferedImage(layers.getWidth(), layers.getHeight(),
-                java.awt.image.BufferedImage.TYPE_INT_RGB);
-            java.awt.Graphics2D pg = panel.createGraphics();
-            layers.paint(pg);
-            pg.dispose();
-            javax.imageio.ImageIO.write(panel, "png", new java.io.File(RunFiles.WORLD_DIR, "map_layers_shot.png"));
-          }
-        } catch (Exception ex) {
-          ex.printStackTrace();
-        }
-      });
-      shot.setRepeats(false);
-      shot.start();
-    }
-  }
-
-  private static void later(int millis, Runnable action) {
+  static void later(int millis, Runnable action) {
     javax.swing.Timer timer = new javax.swing.Timer(millis, e -> action.run());
     timer.setRepeats(false);
     timer.start();
@@ -1665,7 +1439,7 @@ glEventListener.setGameHUD(gameHUD);
   // The layer the title bar and settings go in, over the menu and the loading screen
   private static final int TOP_LAYER = JLayeredPane.DRAG_LAYER + 50;
 
-  private void layoutComponents() {
+  void layoutComponents() {
     int paneWidth = layeredPane.getWidth();
     // Below the title bar when there is one
     int top = titleBar != null && titleBar.isVisible() ? WindowTitleBar.HEIGHT : 0;
@@ -1794,7 +1568,7 @@ glEventListener.setGameHUD(gameHUD);
       this.lockedWindowPosition = null;
   }
 
-  private void shutdownGame() {
+  void shutdownGame() {
     new Thread(new Runnable() {
         @Override
         public void run() {

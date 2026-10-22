@@ -79,13 +79,13 @@ public class MapPanel extends JPanel {
     // Each layer's {overview, detail} images (transparent), once drawn, and which are ticked
     private final java.util.Map<Layer, BufferedImage[]> layerImages = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<Layer> shownLayers = java.util.Collections.synchronizedSet(java.util.EnumSet.noneOf(Layer.class));
-    // Where each nation's names go: {name written in its own script (image), u, v (0..1 across the map image), whether it's the main one}
-    private volatile List<Object[]> nationLabels = List.of();
+    // Where each nation's names go (u, v: 0..1 across the map image)
+    private volatile List<NationLabel> nationLabels = List.of();
     // Whether the nations' names are written over the map (with the nations overlay)
     private volatile boolean showNationNames;
     // Pictures stood on the plain map instead of an overlay's colours (the bollard map: each
-    // nation's bollard on its main land, no borders), each {picture, u, v}; null when none
-    private volatile List<Object[]> mapPictures;
+    // nation's bollard on its main land, no borders), each at its u, v; null when none
+    private volatile List<MapPicture> mapPictures;
     // (and that map's name, shown with the heatmap's)
     private volatile String picturesName;
     private MapLayersPanel layersPanel;
@@ -754,22 +754,26 @@ public class MapPanel extends JPanel {
      */
     private int globeTilesLogged = -1;
 
+    /** Where some of the globe's detail tiles come from: the name they're kept under, and what draws them. */
+    private record TileSource(String name, MapTiles.Renderer renderer) {
+    }
+
     private void prepareGlobeDetail(RevealGlobe shown, boolean plain, int textureWidth) {
         int w = currentMapSize, h = mapHeight();
         int level = shown.detailLevel(w, h, textureWidth);
         // What the tiles show: the base's (or overlay's) tiles, then each marking's
-        List<Object[]> sources = new ArrayList<>();
+        List<TileSource> sources = new ArrayList<>();
         BufferedImage gradient = plain ? null : gradientImage;
-        if (gradient == null) sources.add(new Object[] { "base", baseTiles });
-        else sources.add(new Object[] { "overlay-" + overlayTileName, overlayTiles });
+        if (gradient == null) sources.add(new TileSource("base", baseTiles));
+        else sources.add(new TileSource("overlay-" + overlayTileName, overlayTiles));
         if (!plain) {
             for (Layer layer : Layer.values()) {
-                if (layerImages.get(layer) != null && shownLayers.contains(layer)) sources.add(new Object[] { layer.name(), layerTiles.get(layer) });
+                if (layerImages.get(layer) != null && shownLayers.contains(layer)) sources.add(new TileSource(layer.name(), layerTiles.get(layer)));
             }
         }
         StringBuilder sourceKey = new StringBuilder();
-        for (Object[] s : sources) sourceKey.append(s[0]).append('+');
-        if (level == 0 || sources.get(0)[1] == null) {
+        for (TileSource s : sources) sourceKey.append(s.name()).append('+');
+        if (level == 0 || sources.get(0).renderer() == null) {
             shown.setDetail(0, java.util.Map.of(), sourceKey.toString());
             return;
         }
@@ -788,8 +792,8 @@ public class MapPanel extends JPanel {
                 BufferedImage[] parts = new BufferedImage[sources.size()];
                 boolean all = true;
                 for (int k = 0; k < parts.length; k++) {
-                    MapTiles.Renderer renderer = (MapTiles.Renderer) sources.get(k)[1];
-                    parts[k] = renderer == null ? null : tiles.get((String) sources.get(k)[0], renderer, at, tx, ty);
+                    MapTiles.Renderer renderer = sources.get(k).renderer();
+                    parts[k] = renderer == null ? null : tiles.get(sources.get(k).name(), renderer, at, tx, ty);
                     if (parts[k] == null && renderer != null) all = false;
                 }
                 if (!all) continue;
@@ -1019,17 +1023,14 @@ public class MapPanel extends JPanel {
 
     /**
      * Pictures stood on the map, named (as an overlay is), over whatever heatmap there is (M47):
-     * each {picture, worldX, worldZ} where its foot stands; null for none.
+     * each at its world x, z where its foot stands; null for none.
      */
-    public void setPictureOverlay(String name, List<Object[]> pictures) {
-        List<Object[]> placed = null;
+    public void setPictureOverlay(String name, List<MapPicture> pictures) {
+        List<MapPicture> placed = null;
         if (pictures != null) {
             placed = new ArrayList<>();
-            for (Object[] p : pictures) {
-                Object[] at = p.clone();
-                at[1] = ((Float) p[1] + halfRegion) / totalRegionWidth;
-                at[2] = ((Float) p[2] + halfRegion) / totalRegionWidth;
-                placed.add(at);
+            for (MapPicture p : pictures) {
+                placed.add(p.at((p.x() + halfRegion) / totalRegionWidth, (p.z() + halfRegion) / totalRegionWidth));
             }
         }
         this.picturesName = placed != null ? name : null;
@@ -1039,20 +1040,24 @@ public class MapPanel extends JPanel {
         repaint();
     }
 
-    // The landmarks' markers where they were last drawn, each {centre x, centre y, radius, its
-    // picture's entry}, and the one the mouse is over (its popup shown), if any
-    private volatile List<Object[]> landmarkMarks = List.of();
-    private volatile Object[] hoveredLandmark;
+    // The landmarks' markers where they were last drawn, and the one the mouse is over (its popup
+    // shown), if any
+    private volatile List<LandmarkMark> landmarkMarks = List.of();
+    private volatile MapPicture hoveredLandmark;
+
+    /** A landmark's marker as drawn: its thumbnail's centre and radius on screen, and its picture. */
+    private record LandmarkMark(float x, float y, float r, MapPicture picture) {
+    }
     // Each landmark picture's round thumbnail, for its marker
     private final java.util.Map<BufferedImage, BufferedImage> landmarkThumbs = new java.util.IdentityHashMap<>();
 
     /** Which landmark's marker (if any) is under the mouse: its popup is shown while it is. */
     private void hoverLandmark(int x, int y) {
-        Object[] over = null;
+        MapPicture over = null;
         if (isLarge && !isFullScreenReveal) {
-            for (Object[] mark : landmarkMarks) {
-                float dx = x - (Float) mark[0], dy = y - (Float) mark[1], r = (Float) mark[2] + 3f;
-                if (dx * dx + dy * dy <= r * r) over = (Object[]) mark[3];
+            for (LandmarkMark mark : landmarkMarks) {
+                float dx = x - mark.x(), dy = y - mark.y(), r = mark.r() + 3f;
+                if (dx * dx + dy * dy <= r * r) over = mark.picture();
             }
         }
         if (over != hoveredLandmark) {
@@ -1086,18 +1091,18 @@ public class MapPanel extends JPanel {
      * The landmarks' markers (a picture with a name: see setPictureOverlay): each a round
      * thumbnail of it on a pin over its place; and over the one the mouse is on, its popup.
      */
-    private void drawLandmarks(Graphics2D g2d, int mapX, int mapY, List<Object[]> pictures) {
+    private void drawLandmarks(Graphics2D g2d, int mapX, int mapY, List<MapPicture> pictures) {
         boolean small = currentMapSize < 300;
         float radius = small ? 9f : Math.min(22f, 15f + zoom * 1.2f);
-        List<Object[]> marks = new ArrayList<>();
+        List<LandmarkMark> marks = new ArrayList<>();
         Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        Object[] hovered = hoveredLandmark;
+        MapPicture hovered = hoveredLandmark;
         float[] hoveredAt = null;
-        for (Object[] p : pictures) {
+        for (MapPicture p : pictures) {
             for (int copy = -1; copy <= 1; copy++) {
-                float[] at = uvScreen((Float) p[1], (Float) p[2], copy, mapX, mapY);
+                float[] at = uvScreen(p.x(), p.z(), copy, mapX, mapY);
                 if (at == null) continue;
                 if (at[0] < mapX || at[0] >= mapX + currentMapSize || at[1] < mapY || at[1] >= mapY + mapHeight()) continue;
                 // (the pin's foot on its place, the thumbnail above it)
@@ -1113,17 +1118,17 @@ public class MapPanel extends JPanel {
                 g2d.setColor(over ? LANDMARK_GOLD : new Color(250, 248, 240));
                 g2d.fill(pin);
                 g2d.fill(new java.awt.geom.Ellipse2D.Float(cx - r - 2.5f, cy - r - 2.5f, r * 2f + 5f, r * 2f + 5f));
-                g2d.drawImage(landmarkThumb((BufferedImage) p[0]), Math.round(cx - r), Math.round(cy - r), Math.round(r * 2f), Math.round(r * 2f), null);
-                marks.add(new Object[] { cx, cy, r, p });
+                g2d.drawImage(landmarkThumb(p.picture()), Math.round(cx - r), Math.round(cy - r), Math.round(r * 2f), Math.round(r * 2f), null);
+                marks.add(new LandmarkMark(cx, cy, r, p));
                 if (over) hoveredAt = new float[] { cx, cy, r };
             }
         }
         landmarkMarks = marks;
         // Developer aid: -Dxenoguesser.landmarkpopup=n shows the nth landmark's popup, as if hovered over
         if (hovered == null && !marks.isEmpty() && Dev.property("xenoguesser.landmarkpopup") != null) {
-            Object[] first = marks.get(Math.min(marks.size() - 1, Dev.integer("xenoguesser.landmarkpopup", 0)));
-            hovered = (Object[]) first[3];
-            hoveredAt = new float[] { (Float) first[0], (Float) first[1], (Float) first[2] };
+            LandmarkMark first = marks.get(Math.min(marks.size() - 1, Dev.integer("xenoguesser.landmarkpopup", 0)));
+            hovered = first.picture();
+            hoveredAt = new float[] { first.x(), first.y(), first.r() };
         }
         if (hovered != null && hoveredAt != null && !small) drawLandmarkPopup(g2d, mapX, mapY, hovered, hoveredAt);
         if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
@@ -1132,9 +1137,9 @@ public class MapPanel extends JPanel {
     private static final Color LANDMARK_GOLD = new Color(240, 196, 92);
 
     /** A landmark's popup beside its marker: its picture, its kind, its name and a line about it. */
-    private void drawLandmarkPopup(Graphics2D g2d, int mapX, int mapY, Object[] p, float[] mark) {
-        BufferedImage picture = (BufferedImage) p[0];
-        String name = (String) p[3], caption = p.length > 4 ? (String) p[4] : "", kind = p.length > 5 ? ((String) p[5]).toUpperCase(java.util.Locale.ROOT) : "";
+    private void drawLandmarkPopup(Graphics2D g2d, int mapX, int mapY, MapPicture p, float[] mark) {
+        BufferedImage picture = p.picture();
+        String name = p.name(), caption = p.described() ? p.caption() : "", kind = p.described() ? p.kind().toUpperCase(java.util.Locale.ROOT) : "";
         int pad = 10;
         int pictureH = Math.min(picture.getHeight(), Math.max(120, mapHeight() / 3));
         int pictureW = Math.round(picture.getWidth() * pictureH / (float) picture.getHeight());
@@ -1192,8 +1197,8 @@ public class MapPanel extends JPanel {
     }
 
     /** The map's pictures (see setPictureOverlay), each standing on its place, at a size readable on the map (they don't grow with zooming). */
-    private void drawMapPictures(Graphics2D g2d, int mapX, int mapY, List<Object[]> pictures) {
-        if (!pictures.isEmpty() && pictures.get(0).length > 3) {
+    private void drawMapPictures(Graphics2D g2d, int mapX, int mapY, List<MapPicture> pictures) {
+        if (!pictures.isEmpty() && pictures.get(0).described()) {
             drawLandmarks(g2d, mapX, mapY, pictures);
             return;
         }
@@ -1202,11 +1207,11 @@ public class MapPanel extends JPanel {
         int tall = currentMapSize < 300 ? 30 : Math.round(Math.min(80f, 50f + zoom * 4f));
         Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
-        for (Object[] p : pictures) {
-            BufferedImage picture = (BufferedImage) p[0];
+        for (MapPicture p : pictures) {
+            BufferedImage picture = p.picture();
             int w = Math.round(picture.getWidth() * tall / (float) picture.getHeight());
             for (int copy = -1; copy <= 1; copy++) {
-                float[] at = uvScreen((Float) p[1], (Float) p[2], copy, mapX, mapY);
+                float[] at = uvScreen(p.x(), p.z(), copy, mapX, mapY);
                 if (at == null) continue;
                 int footX = Math.round(at[0]), footY = Math.round(at[1]);
                 if (footX < mapX || footX >= mapX + currentMapSize || footY < mapY || footY >= mapY + mapHeight()) continue;
@@ -1294,13 +1299,13 @@ public class MapPanel extends JPanel {
         return shownLayers.contains(layer);
     }
 
-    /** Where the nations' names are written: each {name as an image, worldX, worldZ, area, whether it's the main one, flag (or null)}. */
-    public void setNationLabels(List<Object[]> labels) {
-        List<Object[]> placed = new ArrayList<>();
-        for (Object[] label : labels) {
-            float u = ((Float) label[1] + halfRegion) / totalRegionWidth;
-            float v = ((Float) label[2] + halfRegion) / totalRegionWidth;
-            placed.add(new Object[] { label[0], u, v, label[4], label.length > 5 ? label[5] : null });
+    /** Where the nations' names are written, each at its world x, z. */
+    public void setNationLabels(List<NationLabel> labels) {
+        List<NationLabel> placed = new ArrayList<>();
+        for (NationLabel label : labels) {
+            float u = (label.x() + halfRegion) / totalRegionWidth;
+            float v = (label.z() + halfRegion) / totalRegionWidth;
+            placed.add(label.at(u, v));
         }
         this.nationLabels = placed;
         repaint();
@@ -1721,7 +1726,7 @@ public class MapPanel extends JPanel {
                 prepareGlobeDetail(shown, plain, wrap.getWidth());
                 shown.paint(g2d, mapX, mapY, currentMapSize, mapHeight());
                 if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
-                List<Object[]> pictures = mapPictures;
+                List<MapPicture> pictures = mapPictures;
                 if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
                 g2d.setClip(frameClip);
             } else {
@@ -1744,7 +1749,7 @@ public class MapPanel extends JPanel {
             if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
             drawGraticule(g2d, mapX, mapY);
             if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
-            List<Object[]> pictures = mapPictures;
+            List<MapPicture> pictures = mapPictures;
             if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
             g2d.setClip(frameClip);
             }
@@ -2379,18 +2384,18 @@ public class MapPanel extends JPanel {
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
         // Main names first; a small one is left out where it would overlap another name
         List<Rectangle> taken = new ArrayList<>();
-        List<Object[]> ordered = new ArrayList<>(nationLabels);
-        ordered.sort((a, b) -> Boolean.compare((Boolean) b[3], (Boolean) a[3]));
-        for (Object[] label : ordered) {
-            boolean main = (Boolean) label[3];
+        List<NationLabel> ordered = new ArrayList<>(nationLabels);
+        ordered.sort((a, b) -> Boolean.compare(b.main(), a.main()));
+        for (NationLabel label : ordered) {
+            boolean main = label.main();
             if (!main && !islands) continue;
-            BufferedImage name = (BufferedImage) label[0];
+            BufferedImage name = label.name();
             // The glyphs' height on screen
             float glyph = main ? (currentMapSize < 300 ? 11f : 17f) : Math.min(14f, 6f + zoom * 1.5f);
             float scale = glyph / NATION_NAME_GLYPH;
             int w = Math.round(name.getWidth() * scale), h = Math.round(name.getHeight() * scale);
             for (int copy = -1; copy <= 1; copy++) {
-                float[] at = uvScreen((Float) label[1], (Float) label[2], copy, mapX, mapY);
+                float[] at = uvScreen(label.x(), label.z(), copy, mapX, mapY);
                 if (at == null) continue;
                 int x = Math.round(at[0] - w * 0.5f);
                 int y = Math.round(at[1] - h * 0.5f);
@@ -2404,7 +2409,7 @@ public class MapPanel extends JPanel {
                 int pad = Math.max(3, Math.round(glyph * 0.3f));
                 // The nation's flag over its main name (under it, should it not fit above); beside
                 // it instead where the name's written downwards (taller than it's wide)
-                BufferedImage flag = main ? (BufferedImage) label[4] : null;
+                BufferedImage flag = main ? label.flag() : null;
                 int flagH = Math.round(glyph * 1.7f), flagW = flag == null ? 0 : Math.round(flagH * flag.getWidth() / (float) flag.getHeight());
                 int flagX, flagY;
                 if (h > w) {
