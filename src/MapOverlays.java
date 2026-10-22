@@ -318,10 +318,12 @@ final class MapOverlays extends GamePart {
                 if (ownedOverlays.contains(o)) continue;
                 String name = overlayLabel(o);
                 boolean plant = o.factor() == FactorName.FLORA, animal = o.factor() == FactorName.ANIMAL_POPULATION;
+                // (the rocks' maps are priced as a plant's or animal's are)
+                boolean rock = o.factor() == FactorName.ROCKS || o.factor() == FactorName.ROCK_SIZE;
                 String key = plant ? "Flora" : animal ? "Fauna" : name;
                 String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : PICTURE_MAPS.contains(o.factor()) ? "Map" : "Heatmap";
                 deck.add(new ShopPanel.Card(name, kind, choiceIcon(name), null, describe(descriptions, key, name),
-                        ShopPanel.price(round, pay, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR
+                        ShopPanel.price(round, pay, plant || animal || rock ? ShopPanel.SPECIES_PRICE_FACTOR
                                 : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.NATIONS || PICTURE_MAPS.contains(o.factor())), rand), () -> {
                     ownedOverlays.add(o);
                     refreshMapChoices();
@@ -507,6 +509,12 @@ final class MapOverlays extends GamePart {
     /** Shows one of the maps of pictures over the map (and whatever heatmap's on it), or none. */
     public void choosePictureMap(FactorName factor) {
         currentPictureMap = factor;
+        // (the maps of pictures and the nations' names would crowd each other in the middle of
+        // each country, as in chooseGradient: so choosing one of them puts the nations away)
+        if (factor != null && currentDebugFactor != null && currentDebugFactor.factor() == FactorName.NATIONS) {
+            chooseGradient(null);
+            refreshMapChoices();
+        }
         game.minimap.setPictureOverlay(factor == null ? null : factor.label(), factor == null ? null : picturesOf(factor));
     }
 

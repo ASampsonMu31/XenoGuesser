@@ -35,13 +35,18 @@ public class RegionalGenerationManager {
         this.temperatureNoise = new PerlinNoise(seed * 977L + 31L);
         // This planet's own climate (M47): warmer or colder overall, falling off towards the
         // poles more gently or more sharply, its poles milder or harsher, one hemisphere a
-        // little warmer than the other, and more or less varied from region to region
+        // little warmer than the other, and more or less varied from region to region. The
+        // overall warmth and the equator-to-pole contrast each take the middle of two draws,
+        // so most worlds are temperate but a few are frozen nearly to the tropics (an equator
+        // under 10 Celsius, snow over most of the land) or baking (40 at the equator, the
+        // poles barely freezing)
         java.util.Random climate = new java.util.Random(seed * 7919L + 4242L);
-        this.warmthShift = (float) climate.nextGaussian() * 0.045f;
+        this.warmthShift = -0.45f + 0.55f * (climate.nextFloat() + climate.nextFloat()) * 0.5f;
         this.falloffPower = 1.1f + climate.nextFloat() * 1.2f;
         this.polarMildness = 0.1f + climate.nextFloat() * 0.2f;
-        this.hemisphereShift = (climate.nextFloat() * 2f - 1f) * 0.05f;
+        this.hemisphereShift = (climate.nextFloat() * 2f - 1f) * 0.07f;
         this.regionalVariety = 0.7f + climate.nextFloat() * 0.7f;
+        this.contrast = 0.6f + 0.75f * (climate.nextFloat() + climate.nextFloat()) * 0.5f;
         this.temperatureMap = new RegionalFactor(1.0f, this::temperatureAt);
         this.rainfallNoise = new PerlinNoise(seed * 613L + 97L);
         this.rainfallMap = new RegionalFactor(1.0f, this::rainfallAt);
@@ -56,11 +61,13 @@ public class RegionalGenerationManager {
     private final PerlinNoise temperatureNoise;
 
     // This planet's climate (drawn from its seed: see the constructor). How much warmer (on the
-    // 0 to 1 scale) it is overall; how sharply it cools away from the equator (the power of the
-    // cosine of the latitude); how much warmer the poles are kept than that fall-off alone gives;
-    // how much warmer the north is than the south (the south as much colder); and how much the
-    // regions vary
-    private final float warmthShift, falloffPower, polarMildness, hemisphereShift, regionalVariety;
+    // 0 to 1 scale, 70 Celsius to the whole) it is overall, from about 30 Celsius colder than a
+    // baking world to a little hotter; how sharply it cools away from the equator (the power of
+    // the cosine of the latitude); how much warmer the poles are kept than that fall-off alone
+    // gives; how much warmer the north is than the south (the south as much colder); how much
+    // the regions vary; and how much of the usual drop from the equator to the poles it has
+    // (0.6, about 30 Celsius, to 1.35, the poles bitter however warm the tropics)
+    private final float warmthShift, falloffPower, polarMildness, hemisphereShift, regionalVariety, contrast;
 
     // How far inland (world units) the climate is fully continental (see temperatureAt)
     private static final float FULLY_INLAND = 8000f;
@@ -87,6 +94,8 @@ public class RegionalGenerationManager {
         // (the far north and south kept milder than that alone, so the frozen polar regions
         // aren't vast: the poles a few tenths of the scale warmer, the equator no different)
         temp += polarMildness * (1f - warmth);
+        // (this world's own contrast: the equator as warm, the drop to the poles stretched or squeezed)
+        temp = 1f - contrast * (1f - temp);
         temp += warmthShift + hemisphereShift * (float) d.y();
         if (waterDistance != null) {
             float distance = field.sample(waterDistance, d);

@@ -64,7 +64,7 @@ public class MapPanel extends JPanel {
 
     /** What can be drawn over the land and sea, in the order they're drawn. */
     public enum Layer {
-        CONTOURS("Contours", false), RIVERS("Rivers", false), ROADS("Roads", false), BUILDINGS("Buildings", true), SHOPS("Shops", true);
+        CONTOURS("Contours", false), RIVERS("Rivers", false), ROADS("Roads", true), BUILDINGS("Buildings", true), SHOPS("Shops", true);
 
         public final String label;
         // Listed in the markings' Infrastructure folder (M47), with the maps of pictures
@@ -2270,8 +2270,12 @@ public class MapPanel extends JPanel {
         this.nextRoundRequested = false;
     }
 
+    /** The equator's line on the maps: pale gold, half opaque, and twice the other lines' width (the results' globe draws it alike). */
+    static final Color EQUATOR_COLOUR = new Color(255, 236, 170, 150);
+    static final float EQUATOR_WIDTH = 2f;
+
     /**
-     * Lines of latitude and longitude every 30 degrees (the equator a little stronger): the
+     * Lines of latitude and longitude every 30 degrees (the equator much stronger): the
      * map is a Mercator chart of the planet, so the parallels spread out towards the poles.
      */
     private void drawGraticule(Graphics2D g2d, int mapX, int mapY) {
@@ -2289,7 +2293,9 @@ public class MapPanel extends JPanel {
         for (int lat = -60; lat <= 60; lat += 30) {
             float fy = (float) ((MapProjection.z(Math.toRadians(lat)) + halfRegion) / totalRegionWidth);
             int py = Math.round(originY + fy * span);
-            g2d.setColor(new Color(255, 255, 255, lat == 0 ? 70 : 38));
+            // (the equator thicker, brighter and a little warm, so it reads at a glance)
+            g2d.setStroke(new BasicStroke(lat == 0 ? EQUATOR_WIDTH : 1f));
+            g2d.setColor(lat == 0 ? EQUATOR_COLOUR : new Color(255, 255, 255, 38));
             g2d.drawLine(mapX, py, mapX + currentMapSize, py);
         }
         g2d.setStroke(old);

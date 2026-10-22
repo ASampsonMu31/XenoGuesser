@@ -352,7 +352,7 @@ public final class RevealGlobe {
         return (int) Math.max(0, Math.min(255, Math.round(c)));
     }
 
-    /** Faint lines of latitude and longitude every 30 degrees, on the side facing the viewer. */
+    /** Faint lines of latitude and longitude every 30 degrees (the equator strong), on the side facing the viewer. */
     private void drawGraticule(Graphics2D g, int x, int y, int w, int h) {
         Stroke old = g.getStroke();
         g.setStroke(new BasicStroke(1f));
@@ -371,7 +371,8 @@ public final class RevealGlobe {
             for (int lon = -180; lon <= 180; lon += 3) {
                 drawing = addPoint(path, project(direction(lat, lon), x, y, w, h), drawing);
             }
-            g.setColor(new Color(255, 255, 255, lat == 0 ? 70 : 40));
+            g.setStroke(new BasicStroke(lat == 0 ? MapPanel.EQUATOR_WIDTH : 1f));
+            g.setColor(lat == 0 ? MapPanel.EQUATOR_COLOUR : new Color(255, 255, 255, 40));
             g.draw(path);
         }
         g.setStroke(old);
