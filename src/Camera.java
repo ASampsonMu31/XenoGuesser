@@ -165,12 +165,17 @@ public class Camera {
   }
 
   public void updatePosition(boolean w, boolean a, boolean s, boolean d, float deltaTime) {
+    updatePosition(w, a, s, d, deltaTime, 1f);
+  }
+
+  /** Walks as the keys go, at speedScale times the walking speed (1.5 while sprinting). */
+  public void updatePosition(boolean w, boolean a, boolean s, boolean d, float deltaTime, float speedScale) {
     if (w || a || s || d) {
       // The way the keys go, as a heading from the way the view faces
       double forward = (w ? 1 : 0) - (s ? 1 : 0), aside = (d ? 1 : 0) - (a ? 1 : 0);
       if (forward == 0 && aside == 0) return;
       double heading = Math.toRadians(yaw) + Math.atan2(aside, forward);
-      float currentSpeed = KEYBOARD_SPEED * deltaTime;
+      float currentSpeed = KEYBOARD_SPEED * speedScale * deltaTime;
       // DYNAMIC WATER SLOWDOWN
       float groundClearance = getAltitude() - 20f;
       if (groundClearance < seaLevelHeight) {

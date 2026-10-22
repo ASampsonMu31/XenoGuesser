@@ -83,6 +83,17 @@ public class SettlementManager {
     private static final float DESERT_PENALTY = 0.6f;
     private static final float HIGHLAND_PENALTY = 0.85f;
     private static final float RUGGED_PENALTY = 0.95f;
+    // ...and how much being near the equator does (see tropicality), whatever the local climate
+    private static final float TROPICAL_PENALTY = 0.15f;
+    // How sharply tropicality falls off away from the equator (the power of the cosine of the
+    // latitude: about half by 27 degrees, a tenth by 47)
+    private static final double TROPICAL_SHARPNESS = 6.0;
+    // Dry land near the equator (savanna and scrub) is settled far less still: how much of the
+    // habitability it takes away at its worst, the band it covers (as TROPICAL_SHARPNESS, but
+    // broader: about half by 37 degrees), and the rainfall it's fully dry below and not at all above
+    private static final float DRY_TROPICS_PENALTY = 0.75f;
+    private static final double DRY_TROPICS_SHARPNESS = 3.0;
+    private static final float DRY_RAIN_FULL = 0.15f, DRY_RAIN_NONE = 0.45f;
     // Where the terrain turns to ridged mountains (see TerrainMesh)
     private static final float MOUNTAIN_START = 140.0f;
     private static final float MOUNTAIN_FULL = 450.0f;
@@ -220,7 +231,21 @@ public class SettlementManager {
                 * (1.0f - HEAT_PENALTY * heat)
                 * (1.0f - DESERT_PENALTY * desert)
                 * (1.0f - HIGHLAND_PENALTY * highland)
-                * (1.0f - RUGGED_PENALTY * rugged) * (1.0f - RUGGED_PENALTY * rugged);
+                * (1.0f - RUGGED_PENALTY * rugged) * (1.0f - RUGGED_PENALTY * rugged)
+                * (1.0f - TROPICAL_PENALTY * tropicality(place))
+                * (1.0f - DRY_TROPICS_PENALTY * dryTropics(place));
+    }
+
+    /** 1 where it's both near the equator and dry, fading to 0 with rain or latitude. */
+    private float dryTropics(SpherePosition place) {
+        float band = (float) Math.pow(Math.cos(Planet.latitude(place)), DRY_TROPICS_SHARPNESS);
+        float dry = 1.0f - smoothstep(DRY_RAIN_FULL, DRY_RAIN_NONE, regionalManager.rainfallMap.evaluateAt(place));
+        return band * dry;
+    }
+
+    /** How near the equator a place is: 1 on it, fading to nothing by the mid latitudes. */
+    public static float tropicality(SpherePosition place) {
+        return (float) Math.pow(Math.cos(Planet.latitude(place)), TROPICAL_SHARPNESS);
     }
 
     /** The ground's slope (rise over run) at a frame's origin, from heights step either way east and south. */

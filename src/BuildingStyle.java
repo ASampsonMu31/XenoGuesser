@@ -559,11 +559,12 @@ public class BuildingStyle {
         for (Map.Entry<Integer, BuildingStyle> entry : styles.entrySet()) {
             int n = entry.getKey();
             float[] weights = new float[forms.size() + 1];
-            weights[0] = 1.6f;
+            // (the traditional house about two in three, so it's what the map shows and what's seen)
+            weights[0] = 4.5f;
             float total = weights[0];
             for (int f = 0; f < forms.size(); f++) {
                 float p = popularity[f][n];
-                weights[f + 1] = 0.06f + 0.8f * p * p;
+                weights[f + 1] = 0.04f + 0.6f * p * p;
                 total += weights[f + 1];
             }
             for (int f = 0; f < weights.length; f++) weights[f] /= total;

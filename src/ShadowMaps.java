@@ -20,7 +20,8 @@ public class ShadowMaps {
 
     // Each map's size (texels), how far it reaches either side of the eyes, and how far towards
     // and away from the sun it takes things in (so tall things and hills off to the sun's side cast)
-    private static final int SIZE = 2048;
+    // (as the graphics chosen when the maps are made: see GameSettings.Quality)
+    private final int SIZE = GameSettings.quality().shadowMapSize;
     static final float NEAR_REACH = 260f, FAR_REACH = 1500f;
     private static final float NEAR_DEPTH = 1200f, FAR_DEPTH = 3000f;
     // How far (units) a surface is pushed out from itself before it's looked up, against shading itself
@@ -56,6 +57,11 @@ public class ShadowMaps {
         }
         gl.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0);
         gl.glBindTexture(GL.GL_TEXTURE_2D, 0);
+    }
+
+    /** The maps' size (texels each way). */
+    int size() {
+        return SIZE;
     }
 
     public void dispose(GL3 gl) {

@@ -50,7 +50,8 @@ public final class Achievements {
         }
     }
 
-    private static final Preferences STORE = Preferences.userRoot().node("xenoguesser");
+    // (alongside the settings: see GameSettings.STORE)
+    private static final Preferences STORE = GameSettings.STORE;
     private static final String KEY = "progress";
     private static final Set<Achievement> unlocked = EnumSet.noneOf(Achievement.class);
     private static boolean loaded;

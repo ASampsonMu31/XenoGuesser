@@ -56,7 +56,6 @@ public class XenoGuesser extends JFrame {
   // JOGL's first profile probe takes seconds: made while the menu's up, so the pod can be shown at once
   private static final Thread GL_WARM_UP = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
   private MainMenu mainMenu;
-  private KeyAdapter escapeQuitListener;
   private JLayeredPane layeredPane;
   private MapPanel minimap;
   private GameHUD gameHUD;
@@ -69,11 +68,20 @@ public class XenoGuesser extends JFrame {
       System.setOut(nowhere);
       System.setErr(nowhere);
     }
+    // (what goes wrong is written down where it can be found and sent on: see CrashLog)
+    CrashLog.install();
     RunFiles.prepare();
     // Keep the loading screen smooth: GL work runs on the animator's own thread rather than
-    // the UI thread that draws the screen, and the background generators leave a core free
+    // the UI thread that draws the screen, and the background generators leave two cores free
+    // (the parallel streams' shared pool among them, its threads below the usual priority:
+    // set before it's first used), so on a PC with few cores the landing pod's frames still come
     com.jogamp.opengl.Threading.disableSingleThreading();
-    int spare = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+    int cores = Runtime.getRuntime().availableProcessors();
+    System.setProperty("java.util.concurrent.ForkJoinPool.common.parallelism", Integer.toString(Math.max(1, cores - 2)));
+    System.setProperty("java.util.concurrent.ForkJoinPool.common.threadFactory", BackgroundWorkers.class.getName());
+    // The heap held to what this PC can spare (see MemoryBudget)
+    MemoryBudget.apply();
+    int spare = Math.max(1, cores / 2);
     System.setProperty("ai.djl.pytorch.num_threads", Integer.toString(spare));
     System.setProperty("ai.djl.pytorch.num_interop_threads", "1");
     SwingUtilities.invokeLater(new Runnable() {
@@ -206,17 +214,8 @@ public class XenoGuesser extends JFrame {
       }
     });
 
-    KeyAdapter escapeQuitListener = new KeyAdapter() {
-        @Override
-        public void keyPressed(KeyEvent e) {
-            // Before the game starts (the menu, the cockpit) Esc opens or closes the settings too
-            if (e.getKeyCode() == KeyEvent.VK_ESCAPE && !inGame) {
-                setSettingsOpen(!settingsOpen);
-            }
-        }
-    };
-    this.addKeyListener(escapeQuitListener);
-    this.escapeQuitListener = escapeQuitListener;
+    // Esc opens and closes the settings wherever the focus is (see escapePressed)
+    KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(this::escapePressed);
 
     // Developer aid: -Dxenoguesser.skipmenu (or taking the menu's picture) goes straight to loading
     if (Dev.property("xenoguesser.skipmenu") != null || Dev.property("xenoguesser.menushot") != null) {
@@ -309,6 +308,8 @@ public class XenoGuesser extends JFrame {
   private void startGame(boolean multiplayer) {
     if (loadingScreen != null) return;
     planetGlobe = null;
+    // (the memory free now, for the world about to be made: other programs may have closed since startup)
+    MemoryBudget.apply();
     loadingScreen = new LoadingScreen(worldSeed, multiplayer);
     loadingScreen.setBounds(0, 0, layeredPane.getWidth(), layeredPane.getHeight());
     layeredPane.add(loadingScreen, JLayeredPane.DRAG_LAYER);
@@ -350,7 +351,7 @@ public class XenoGuesser extends JFrame {
         Thread.currentThread().interrupt();
         return;
       }
-      generateWorld(escapeQuitListener, run);
+      generateWorld(run);
     }, "world-generation");
     worldGeneration.setDaemon(true);
     worldGeneration.setPriority(Thread.NORM_PRIORITY - 2);
@@ -362,7 +363,7 @@ public class XenoGuesser extends JFrame {
   private Thread worldGeneration;
   private volatile int generationRun;
 
-  private void generateWorld(KeyAdapter escapeQuitListener, int run) {
+  private void generateWorld(int run) {
     // JOGL's first profile probe takes seconds; doing it here, alongside the writing systems,
     // keeps it off the UI thread where it would freeze the loading screen
     // In multiplayer the joiner's writing systems come from the host (M18): it never makes its
@@ -449,18 +450,21 @@ public class XenoGuesser extends JFrame {
       MapPanel map = new MapPanel(750, 750, totalRegionWidth, seaLevelHeight, worldNoise, physicalChunkSize, listener);
       SwingUtilities.invokeLater(() -> {
         if (run == generationRun) buildGameWindow(listener, camera, keyboardInput, worldNoise,
-          seaLevelHeight, totalRegionWidth, physicalChunkSize, escapeQuitListener, map);
+          seaLevelHeight, totalRegionWidth, physicalChunkSize, map);
       });
-    } catch (Exception e) {
+    } catch (Throwable e) {
+      // (running out of memory too: the loading screen says so, rather than waiting for ever)
       System.err.println("CRITICAL ERROR: World generation failed.");
-      loadingProgress.fail(e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+      CrashLog.write("World generation failed", e);
+      loadingProgress.fail(e instanceof OutOfMemoryError ? "Out of memory: close other programs and try again"
+          : e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
       e.printStackTrace();
     }
   }
 
   private void buildGameWindow(XenoGuesser_GLEventListener listener, Camera camera, MyKeyboardInput keyboardInput,
                                PerlinNoise worldNoise, float seaLevelHeight, float totalRegionWidth,
-                               float physicalChunkSize, KeyAdapter escapeQuitListener, MapPanel map) {
+                               float physicalChunkSize, MapPanel map) {
     glEventListener = listener;
     // (the 3D view is the pod's already, unless it's not been opened yet)
     if (canvas == null) openPod(Multiplayer.isActive());
@@ -557,7 +561,7 @@ glEventListener.setGameHUD(gameHUD);
   // Whether the pod's keys (and the mouse look, for the pod and the game) are listened for yet
   private boolean podControlsInstalled, mouseLookInstalled;
 
-  /** In the pod: WASD walk, Space jumps, E uses what's faced, R says ready (multiplayer), Esc opens the settings. */
+  /** In the pod: WASD walk, Space jumps, E uses what's faced, R says ready (multiplayer); Esc opens the settings (see escapePressed). */
   private void installPodControls() {
     if (podControlsInstalled) return;
     podControlsInstalled = true;
@@ -570,10 +574,6 @@ glEventListener.setGameHUD(gameHUD);
       if (code == KeyEvent.VK_ENTER || e.getID() == KeyEvent.KEY_TYPED) return false;
       if (e.getID() == KeyEvent.KEY_PRESSED) {
         boolean firstPress = keysDown.add(code);
-        if (code == KeyEvent.VK_ESCAPE) {
-          if (firstPress) setSettingsOpen(!settingsOpen);
-          return true;
-        }
         if (!settingsOpen && firstPress && code == KeyEvent.VK_SPACE) pod.jump();
         if (!settingsOpen && firstPress && code == KeyEvent.VK_E) pod.use();
         if (!settingsOpen && firstPress && code == KeyEvent.VK_R) pod.ready();
@@ -629,6 +629,7 @@ glEventListener.setGameHUD(gameHUD);
       @Override
       public void windowLostFocus(WindowEvent e) {
         keysDown.clear();
+        escapeDown = false;
         if (keyboardInput != null) keyboardInput.releaseAll();
         if (podSequence != null) podSequence.setKeys(false, false, false, false);
         updateMouseMode();
@@ -671,6 +672,38 @@ glEventListener.setGameHUD(gameHUD);
     updateMouseMode();
   }
 
+  // Whether Esc is held (so holding it, its repeats, open and close nothing more), and when it last said so
+  private boolean escapeDown;
+  private long escapeAt;
+  // Esc's repeats come many times a second while it's held: a gap longer than this is a new press
+  // (should its letting go have gone unheard), so the settings can never stop answering Esc
+  private static final long ESCAPE_REPEAT_GAP_MS = 1100L;
+
+  /**
+   * Esc, wherever the focus is and at any point (the menu, the loading screen, the pod, the game):
+   * closes the controls if they're up, otherwise opens or closes the settings. Not while a note's
+   * being typed (Esc is the note's), nor over the multiplayer panel (Esc is its Back).
+   */
+  private boolean escapePressed(KeyEvent e) {
+    if (e.getKeyCode() != KeyEvent.VK_ESCAPE) return false;
+    if (e.getID() == KeyEvent.KEY_RELEASED) {
+      escapeDown = false;
+      keysDown.remove(KeyEvent.VK_ESCAPE);
+      return false;
+    }
+    if (e.getID() != KeyEvent.KEY_PRESSED) return false;
+    boolean firstPress = !escapeDown || e.getWhen() - escapeAt > ESCAPE_REPEAT_GAP_MS;
+    escapeDown = true;
+    escapeAt = e.getWhen();
+    if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof JTextComponent) return false;
+    if (multiplayerPanel != null && !settingsOpen) return false;
+    if (firstPress) {
+      if (controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
+      else setSettingsOpen(!settingsOpen);
+    }
+    return true;
+  }
+
   /**
    * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, M enlarges
    * or shrinks the map, C uses the compass and Esc opens the settings. Mouse
@@ -684,12 +717,6 @@ glEventListener.setGameHUD(gameHUD);
       int code = e.getKeyCode();
       if (e.getID() == KeyEvent.KEY_PRESSED) {
         boolean firstPress = keysDown.add(code);   // ignore key repeat
-        if (code == KeyEvent.VK_ESCAPE) {
-          // (the controls, if they're up, closed first)
-          if (firstPress && controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
-          else if (firstPress) setSettingsOpen(!settingsOpen);
-          return true;
-        }
         if (code == KeyEvent.VK_ENTER && settingsOpen && controlsPanel != null && controlsPanel.isOpen()) {
           if (firstPress) controlsPanel.close();
           return true;
@@ -1231,10 +1258,20 @@ glEventListener.setGameHUD(gameHUD);
       shopPanel.open(glEventListener.shopOffers(round), minimap::requestNextRound);
     } else {
       // Multiplayer (M16): the next round is asked for once both have left their shops, and it
-      // starts once both PCs have built it (see the GL listener); until then the shop says so
-      shopPanel.open(glEventListener.shopOffers(round), () -> leaveShopTogether(session, round, minimap::requestNextRound),
+      // starts once both PCs have built it (see the GL listener); until then the shop says so.
+      // There's no cash: the round's loser takes one of three for free, the winner nothing (a
+      // level round, both take one)
+      Multiplayer.Role me = session.role, them = me.other();
+      int mine = multiplayerScore != null ? multiplayerScore.roundScore(me, round) : -1;
+      int theirs = multiplayerScore != null ? multiplayerScore.roundScore(them, round) : -1;
+      boolean won = mine > theirs;
+      String note = won ? "You won the round: no pick this time"
+          : mine < theirs ? "You lost the round: take one, free"
+          : "A level round: take one, free";
+      shopPanel.open(won ? java.util.List.of() : glEventListener.shopOffers(round),
+          () -> leaveShopTogether(session, round, minimap::requestNextRound),
           () -> session.remoteShopDone(round) && session.remoteRoundBuilt(round + 1) ? null
-              : "Waiting for Player " + session.remoteLabel());
+              : "Waiting for Player " + session.remoteLabel(), note);
     }
     layoutComponents();
   }
@@ -1299,9 +1336,12 @@ glEventListener.setGameHUD(gameHUD);
           }),
           () -> session.remoteShopDone(0) ? null : "Waiting for Player " + session.remoteLabel());
     }
-    // (nothing taken, nor the shop left, until the message has been said or skipped)
-    shopPanel.holdForMessage();
-    message.start();
+    // (nothing taken, nor the shop left, until the message has been said or skipped; singleplayer
+    // only, as its word that all else must be bought from earnings doesn't hold in multiplayer)
+    if (session == null) {
+      shopPanel.holdForMessage();
+      message.start();
+    }
     layoutComponents();
     updateMouseMode();
   }
@@ -1450,7 +1490,7 @@ glEventListener.setGameHUD(gameHUD);
           quarterPanel.show(gameHUD.getQuarter(), gameHUD.getProductivity(), gameHUD.getTarget(), false, () -> quarterPanel.close());
           layoutComponents();
         }); break;
-        // (with -Dxenoguesser.unlockall, the third and fourth items: the altimeter and the identification kit)
+        // (the third and fourth items, had from the start: the altimeter and the identification kit)
         case "altimeter": later(1200, () -> glEventListener.useItem(2)); break;
         case "kit": later(1200, () -> glEventListener.useItem(3)); break;
         // Multiplayer: face the partner (level); look down at this player's own body; and
@@ -1675,7 +1715,10 @@ glEventListener.setGameHUD(gameHUD);
         // (and behind the shop before the first round)
         || (shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen())
         // (and behind the controls: the system draws the 3D view over anything in its way)
-        || (controlsPanel != null && controlsPanel.isOpen());
+        || (controlsPanel != null && controlsPanel.isOpen())
+        // (and behind the settings, so whatever the graphics driver they're always seen and
+        // clicked: only in a multiplayer game, which isn't paused, is the world kept in view behind them)
+        || (settingsOpen && !(inGame && Multiplayer.isActive()));
     // (far off, so however quickly the window is pulled wider it's never seen)
     canvas.setBounds(cockpit ? paneWidth + 20000 : 0, top, paneWidth - 2, paneHeight - 2);
     // Nothing of the game's over the pod

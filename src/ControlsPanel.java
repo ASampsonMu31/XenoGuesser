@@ -17,16 +17,17 @@ public class ControlsPanel extends JComponent {
     // Each row: its keys (shown as key caps; "" for none) and what they do
     private static final String[][] ROWS = {
         { "W A S D", "Move" },
+        { "Shift", "Sprint (uses stamina)" },
         { "Mouse", "Look" },
         { "Space", "Jump" },
         { "M", "Expand / contract the map" },
         { "Scroll", "Zoom the map" },
         { "Click", "Place your marker on the enlarged map" },
-        { "1 2 3 4", "Use gadgets (once you have them)" },
+        { "1 2 3 4", "Use gadgets" },
         { "Esc", "Settings" },
         { "Enter", "Skip a message" },
     };
-    public static final int W = 560, H = 470;
+    public static final int W = 560, H = 506;
 
     private final Rectangle button = new Rectangle();
     private boolean hovered;

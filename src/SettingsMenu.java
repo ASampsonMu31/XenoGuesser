@@ -12,21 +12,38 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
 import javax.swing.JPanel;
 
-/** The settings, opened with Esc during the game: the FPS counter, fullscreen or windowed, and the sun's shadows. */
+/** The settings, opened with Esc during the game: the graphics (Low, Medium or High), the FPS counter, fullscreen or windowed, and the sun's shadows. */
 public class SettingsMenu extends JPanel {
 
-    public static final int W = 440, H = 486;
+    public static final int W = 440, H = 566;
 
     private final Runnable onResume;
     private final Runnable onQuit, onDisplayChanged;
     // Opens the controls (M48), as enclosed with January's message
     private Runnable onControls;
-    private final Rectangle fpsRow = new Rectangle(30, 96, W - 60, 52);
-    private final Rectangle fullscreenRow = new Rectangle(30, 158, W - 60, 52);
-    private final Rectangle shadowsRow = new Rectangle(30, 220, W - 60, 52);
-    private final Rectangle controlsRow = new Rectangle(30, 282, W - 60, 52);
-    private final Rectangle resumeButton = new Rectangle(30, 382, (W - 72) / 2, 44);
-    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 382, (W - 72) / 2, 44);
+    // The graphics: a button for each of Low, Medium and High, along the right of their row
+    private final Rectangle qualityRow = new Rectangle(30, 96, W - 60, 72);
+    private final Rectangle[] qualityButtons = new Rectangle[GameSettings.Quality.values().length];
+    // (the shadows straight under the graphics, as they go together)
+    private final Rectangle shadowsRow = new Rectangle(30, 178, W - 60, 52);
+    private final Rectangle fpsRow = new Rectangle(30, 240, W - 60, 52);
+    private final Rectangle fullscreenRow = new Rectangle(30, 302, W - 60, 52);
+    private final Rectangle controlsRow = new Rectangle(30, 364, W - 60, 52);
+    private final Rectangle resumeButton = new Rectangle(30, 462, (W - 72) / 2, 44);
+    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 462, (W - 72) / 2, 44);
+    {
+        int bw = 74, gap = 6, right = qualityRow.x + qualityRow.width - 14;
+        for (int k = 0; k < qualityButtons.length; k++) {
+            int x = right - (qualityButtons.length - k) * bw - (qualityButtons.length - 1 - k) * gap;
+            qualityButtons[k] = new Rectangle(x, qualityRow.y + 12, bw, 30);
+        }
+    }
+
+    /** The graphics' button at a point, or null. */
+    private Rectangle qualityButtonAt(java.awt.Point p) {
+        for (Rectangle button : qualityButtons) if (button.contains(p)) return button;
+        return null;
+    }
     private Rectangle hovered;
 
     /** What the Controls row opens. */
@@ -45,7 +62,8 @@ public class SettingsMenu extends JPanel {
         MouseAdapter mouse = new MouseAdapter() {
             @Override
             public void mouseMoved(MouseEvent e) {
-                Rectangle over = fpsRow.contains(e.getPoint()) ? fpsRow
+                Rectangle over = qualityButtonAt(e.getPoint()) != null ? qualityButtonAt(e.getPoint())
+                        : fpsRow.contains(e.getPoint()) ? fpsRow
                         : fullscreenRow.contains(e.getPoint()) ? fullscreenRow
                         : shadowsRow.contains(e.getPoint()) ? shadowsRow
                         : controlsRow.contains(e.getPoint()) ? controlsRow
@@ -67,7 +85,11 @@ public class SettingsMenu extends JPanel {
             @Override
             public void mousePressed(MouseEvent e) {
                 if (e.getButton() != MouseEvent.BUTTON1) return;
-                if (fpsRow.contains(e.getPoint())) {
+                Rectangle quality = qualityButtonAt(e.getPoint());
+                if (quality != null) {
+                    GameSettings.setQuality(GameSettings.Quality.values()[java.util.Arrays.asList(qualityButtons).indexOf(quality)]);
+                    repaint();
+                } else if (fpsRow.contains(e.getPoint())) {
                     GameSettings.setShowFps(!GameSettings.showFps());
                     repaint();
                 } else if (fullscreenRow.contains(e.getPoint())) {
@@ -106,9 +128,10 @@ public class SettingsMenu extends JPanel {
             g.setColor(new Color(120, 205, 235, 70));
             g.fillRect(30, 70, W - 60, 1);
 
+            paintQuality(g);
+            paintToggle(g, shadowsRow, "Shadows", GameSettings.shadows(), "On", "Off");
             paintToggle(g, fpsRow, "Show FPS counter", GameSettings.showFps(), "On", "Off");
             paintToggle(g, fullscreenRow, "Fullscreen", GameSettings.fullscreen(), "Fullscreen", "Windowed");
-            paintToggle(g, shadowsRow, "Shadows", GameSettings.shadows(), "On", "Off");
             // Controls: opens them, an arrow at its right
             paintRowBackground(g, controlsRow);
             g.setFont(HudStyle.font(Font.PLAIN, 16f));
@@ -125,6 +148,30 @@ public class SettingsMenu extends JPanel {
         } finally {
             g.dispose();
         }
+    }
+
+    /** The graphics' row: its name, a button for each choice (the one chosen lit), and what changes when. */
+    private void paintQuality(Graphics2D g) {
+        paintRowBackground(g, qualityRow);
+        g.setFont(HudStyle.font(Font.PLAIN, 16f));
+        g.setColor(HudStyle.VALUE);
+        g.drawString("Graphics", qualityRow.x + 16, qualityRow.y + 32);
+        GameSettings.Quality chosen = GameSettings.quality();
+        for (int k = 0; k < qualityButtons.length; k++) {
+            Rectangle b = qualityButtons[k];
+            boolean on = GameSettings.Quality.values()[k] == chosen;
+            g.setColor(on ? new Color(40, 150, 185) : hovered == b ? new Color(80, 88, 100) : new Color(55, 62, 72));
+            g.fill(new RoundRectangle2D.Float(b.x, b.y, b.width, b.height, 8, 8));
+            g.setColor(on ? HudStyle.ACCENT : new Color(110, 120, 132));
+            g.setStroke(new BasicStroke(1.2f));
+            g.draw(new RoundRectangle2D.Float(b.x, b.y, b.width, b.height, 8, 8));
+            String word = GameSettings.Quality.values()[k].label;
+            g.setFont(HudStyle.font(on ? Font.BOLD : Font.PLAIN, 13f));
+            FontMetrics fm = g.getFontMetrics();
+            g.setColor(on ? Color.WHITE : new Color(185, 192, 200));
+            g.drawString(word, b.x + (b.width - fm.stringWidth(word)) / 2, b.y + (b.height + fm.getAscent() - fm.getDescent()) / 2);
+        }
+        HudStyle.label(g, "View distance changes next round", qualityRow.x + 16, qualityRow.y + 60, 10f, HudStyle.DIM);
     }
 
     /** A setting's row: its name, and a switch showing whether it's on (with a word for each). */

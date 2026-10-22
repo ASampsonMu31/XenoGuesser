@@ -160,10 +160,19 @@ public class RegionalGenerationManager {
     public static final float ALTITUDE_CHILL = 0.00057f;
 
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation) {
+        return createTemperaturePreference(optimalTemp, standardDeviation, 1.0f);
+    }
+
+    /**
+     * A preference for a temperature, its tolerance of places hotter than it likes stretched by
+     * hotStretch (1 the same either side; more for a species that copes with the heat).
+     */
+    public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation, float hotStretch) {
         return new RegionalFactor(1.0f, d -> {
             float currentTemp = this.temperatureMap.evaluate(d);
             float diff = currentTemp - optimalTemp;
-            double exponent = -(diff * diff) / (2.0 * standardDeviation * standardDeviation);
+            float spread = diff > 0f ? standardDeviation * hotStretch : standardDeviation;
+            double exponent = -(diff * diff) / (2.0 * spread * spread);
             return (float) Math.exp(exponent);
         });
     }
@@ -283,7 +292,7 @@ public class RegionalGenerationManager {
     /**
      * A heatmap of a factor over the whole map, a pixel every pixelSize map units (square, as
      * the map's images are), each the factor in that pixel's middle's direction; in the given
-     * four colours from lowest to highest (null for the usual red to green).
+     * four colours from lowest to highest (null for the usual blue to red).
      */
     public BufferedImage generateHeatmap(float totalRegionWidth, float pixelSize, RegionalFactor factorToVisualize, String label,
                                          float[][] colours) {
@@ -294,10 +303,10 @@ public class RegionalGenerationManager {
         BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
 
         float[][] spectrum = colours != null ? colours : new float[][] {
-            {0.85f, 0.00f, 0.00f}, // Red
-            {1.00f, 0.50f, 0.00f}, // Orange
-            {1.00f, 0.90f, 0.00f}, // Yellow
-            {0.00f, 0.70f, 0.10f}  // Green
+            {0.10f, 0.20f, 0.85f}, // Blue
+            {0.40f, 0.80f, 0.95f}, // Light blue
+            {1.00f, 0.75f, 0.20f}, // Amber
+            {0.85f, 0.00f, 0.00f}  // Red
         };
 
         float[] lows = new float[size], highs = new float[size];

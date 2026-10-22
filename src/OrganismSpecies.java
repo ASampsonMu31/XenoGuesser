@@ -397,8 +397,10 @@ public class OrganismSpecies {
         nativeWaterPreference = rand.nextInt(40) * 100f;
         nativeWaterDeviation = (25.0f + rand.nextFloat() * 70.0f) * 100f;
         nativePatchScale = 2.0e-5f + rand.nextFloat() * 3.0e-5f;
+        // (from a Random of its own, so nothing else about the species changes with it)
+        heatHardiness = heatHardiness(new Random(seed * 5501L + index * 7919L));
         RegionalFactor climate = regions.createTemperaturePreference(nativeOptimalTemperature,
-                nativeTemperatureDeviation);
+                nativeTemperatureDeviation, heatHardiness);
         RegionalFactor water = regions.createWaterPreference(nativeWaterPreference, nativeWaterDeviation);
         RegionalFactor patches = regions.createNoiseMap(nativePatchScale);
         // Its home region: broad noise (each feature a large part of a continent across), only its
@@ -427,6 +429,8 @@ public class OrganismSpecies {
     // where on that noise it starts and is fully at home
     // How much this species keeps to its home region: 1 only there, 0 anywhere it suits
     private float homeStrength;
+    // How much further its tolerance reaches into the heat than the cold (see heatHardiness)
+    private float heatHardiness = 1f;
 
     /**
      * How strongly a species keeps to its home region: some only there, most mainly there but
@@ -435,6 +439,15 @@ public class OrganismSpecies {
     public static float homeStrength(Random rand) {
         float roll = rand.nextFloat();
         return roll < 0.35f ? 1f : roll < 0.75f ? 0.4f + 0.3f * rand.nextFloat() : 0.1f * rand.nextFloat();
+    }
+
+    /**
+     * How far a species' tolerance of heat is stretched beyond its tolerance of cold (see
+     * RegionalGenerationManager.createTemperaturePreference): most not at all, some a fair way,
+     * so the hot lands near the equator aren't left so bare.
+     */
+    public static float heatHardiness(Random rand) {
+        return rand.nextFloat() < 0.4f ? 1.35f + 0.35f * rand.nextFloat() : 1f;
     }
 
     public static final float HOME_SCALE_LOW = 6.0e-6f, HOME_SCALE_RANGE = 4.0e-6f, HOME_FROM = 0.5f, HOME_TO = 0.64f;
@@ -475,7 +488,7 @@ public class OrganismSpecies {
         nativePatchScale = 2.0e-5f + r.nextFloat() * 3.0e-5f;
         nativeHomeScale = HOME_SCALE_LOW + r.nextFloat() * HOME_SCALE_RANGE;
         long salt = (seed * 31L + index) * 64L + attempt;
-        habitat = habitat(regions.createTemperaturePreference(nativeOptimalTemperature, nativeTemperatureDeviation),
+        habitat = habitat(regions.createTemperaturePreference(nativeOptimalTemperature, nativeTemperatureDeviation, heatHardiness),
                 regions.createWaterPreference(nativeWaterPreference, nativeWaterDeviation),
                 regions.createNoiseMap(nativePatchScale, salt * 2L), regions.createNoiseMap(nativeHomeScale, salt * 2L + 1L), homeStrength);
     }

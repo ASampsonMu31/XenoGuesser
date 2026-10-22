@@ -72,6 +72,8 @@ private static class SpeciesConfig {
         
         // Climate niche constraints
         float tempMean, tempStdDev;
+        // How much further its tolerance reaches into the heat than the cold (1 for trees; see OrganismSpecies.heatHardiness)
+        float tempHotStretch = 1f;
         float patchNoiseScale;
         
         RegionalFactor tempFactor;
@@ -175,7 +177,9 @@ private static class SpeciesConfig {
     private Shader depthPrePassShader;
 
     private final float PHYSICAL_CHUNK_SIZE; 
-    private final int VIEW_DISTANCE = 22; 
+    // (how far out the plants, roads and buildings are made: as the graphics chosen, taken up as
+    // each round starts being built: see applyQuality)
+    private int VIEW_DISTANCE = GameSettings.quality().viewDistance;
 
     private final float TOTAL_REGION_WIDTH;
 
@@ -212,7 +216,11 @@ private static class SpeciesConfig {
     // How many grass blades are in the instance buffer (thinned with distance), as drawn
     private int drawnGrassInstances = 0;
     
-    private final int GRASS_VIEW_DISTANCE = 21;
+    private int GRASS_VIEW_DISTANCE = GameSettings.quality().grassViewDistance;
+    // (thinned for lesser graphics: the same everywhere, so where it's thicker still shows)
+    private volatile float GRASS_DENSITY = GameSettings.quality().grassDensity;
+    // The graphics the distances and grass above were last set from
+    private GameSettings.Quality builtQuality = GameSettings.quality();
         private final int MAX_GRASS_LIMIT = 1200;
     private final float GRASS_BASE_ABUNDANCE;
 
@@ -222,7 +230,7 @@ private static class SpeciesConfig {
 
     // The HUD drawn over the 3D view, and what each picture last showed
     private final HudOverlay hud = new HudOverlay();
-    private int hudScoreVersion = -1, hudFps = -1, hudItemsVersion = -1;
+    private int hudScoreVersion = -1, hudFps = -1, hudItemsVersion = -1, hudStaminaStep = -1;
     private long hudClockTenth = -1L;
     private Achievements.Achievement hudToast;
     // Under this long left on the round's clock, the screen's edges pulse red (M45)
@@ -614,7 +622,9 @@ private static class SpeciesConfig {
 
             // Compile Ecosystem Pipeline Rules for this dynamic configuration
             SpeciesConfig sc = speciesConfigs[s];
-            sc.tempFactor = this.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev);
+            // Some shrubs cope with the heat better than the cold (from a Random of their own, so the rest is as it was)
+            if (!isTree) sc.tempHotStretch = OrganismSpecies.heatHardiness(new Random(worldSeed * 3301L + s));
+            sc.tempFactor = this.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev, sc.tempHotStretch);
             sc.patchNoiseFactor = this.regionalManager.createNoiseMap(sc.patchNoiseScale);
             // ...and only in its home region, as the animals (see OrganismSpecies): a plant suited
             // to the cold north needn't grow in the cold south too
@@ -989,11 +999,19 @@ private static class SpeciesConfig {
         if (height <= 0) height = 1;
         if (width <= 0) width = 1;
         
-        // The world is drawn at most at full HD (as many pixels), then scaled up to fill a larger
-        // screen; the HUD over it is drawn at the screen's own size, so it stays sharp
+        resize(gl, width, height);
+    }
+
+    /**
+     * The world is drawn at most at as many pixels as the graphics chosen allow (full HD on
+     * High), then scaled up to fill a larger screen; the HUD over it is drawn at the screen's own
+     * size, so it stays sharp.
+     */
+    private void resize(GL3 gl, int width, int height) {
         this.screenWidth = width;
         this.screenHeight = height;
-        float shrink = (float) Math.min(1.0, Math.sqrt(MAX_RENDER_PIXELS / ((double) width * height)));
+        renderPixels = GameSettings.quality().renderPixels;
+        float shrink = (float) Math.min(1.0, Math.sqrt(renderPixels / ((double) width * height)));
         this.currentWidth = Math.max(1, Math.round(width * shrink));
         this.currentHeight = Math.max(1, Math.round(height * shrink));
         gl.glViewport(0, 0, width, height);
@@ -1004,8 +1022,9 @@ private static class SpeciesConfig {
         createSceneFramebuffer(gl);
     }
 
-    // The most pixels the world is drawn at (full HD), and the size of the screen it's shown on
-    private static final double MAX_RENDER_PIXELS = 1920.0 * 1080.0;
+    // The most pixels the world is drawn at (changed in the settings while playing, it's drawn
+    // at the new size from the next frame), and the size of the screen it's shown on
+    private double renderPixels = GameSettings.quality().renderPixels;
     private int screenWidth = 1024, screenHeight = 768;
     // Where the world is drawn when it's smaller than the screen (0 when it's drawn straight there)
     private int sceneFbo, sceneColour, sceneDepth;
@@ -1204,6 +1223,21 @@ private static class SpeciesConfig {
 
         if (minimap != null && minimap.isFullScreenRevealMode()) {
             gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+            return;
+        }
+
+        if (renderPixels != GameSettings.quality().renderPixels) resize(gl, screenWidth, screenHeight);
+        // (the sun's shadow maps made again at the size the graphics now chosen ask for)
+        if (shadowMapsMade && shadowMaps.size() != GameSettings.quality().shadowMapSize) {
+            shadowMaps.dispose(gl);
+            shadowMaps = new ShadowMaps();
+            shadowMaps.initialise(gl);
+        }
+        // While the game's paused under the settings the view's greyed out altogether (PAUSED_DIM):
+        // there's nothing of the world to be seen, so none's drawn, keeping a slow PC's settings quick
+        if (menuOpen && GameClock.isPaused() && PAUSED_DIM >= 1f && loading.isFinished()) {
+            gl.glClear(GL3.GL_COLOR_BUFFER_BIT | GL3.GL_DEPTH_BUFFER_BIT);
+            if (!hideFirstPerson) drawHud(drawable);
             return;
         }
 
@@ -1757,6 +1791,7 @@ private static class SpeciesConfig {
 
     private void initialiseCoreShaders() {
         shadowMaps.initialise(gl);
+        shadowMapsMade = true;
         shadowCutoutShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_shadow_cutout.txt");
         terrainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_standard_d.txt");
         floraShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_standard.txt", GamePaths.HOME + "assets/shaders/fs_flora.txt");
@@ -2858,6 +2893,27 @@ private static class SpeciesConfig {
     private boolean nextRoundBuilt, nextRoundWanted;
     private long nextRoundWantedAt;
 
+    /**
+     * Takes up graphics changed in the settings since the last round (how far out the plants,
+     * grass, roads and buildings are made, and how thick the grass is), as a round's surroundings
+     * are about to be built afresh anyway. What was worked out ahead for the next round is dropped
+     * then, as it was made for the old.
+     */
+    private void applyQuality() {
+        GameSettings.Quality quality = GameSettings.quality();
+        if (quality == builtQuality) return;
+        builtQuality = quality;
+        VIEW_DISTANCE = quality.viewDistance;
+        GRASS_VIEW_DISTANCE = quality.grassViewDistance;
+        GRASS_DENSITY = quality.grassDensity;
+        floraStream.clearPrefetch();
+        grassStream.clearPrefetch();
+        floraStream.setReach((VIEW_DISTANCE + PREFETCH_RINGS) * PHYSICAL_CHUNK_SIZE);
+        grassStream.setReach(GRASS_VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE);
+        System.out.printf("[GRAPHICS] %s from this round: view %d chunks, grass %d chunks at %.0f%%%n",
+                quality.label, VIEW_DISTANCE, GRASS_VIEW_DISTANCE, GRASS_DENSITY * 100f);
+    }
+
     private void startBuildingNextRound(GL3 gl) {
         roundLoading = true;
         setBuilderThreads(true);
@@ -2880,6 +2936,7 @@ private static class SpeciesConfig {
         grassGather = null;
         floraStream.clear();
         grassStream.clear();
+        applyQuality();
 
         infraWantedFor = Long.MIN_VALUE;
         infraWantedFrom = null;
@@ -3017,7 +3074,7 @@ private static class SpeciesConfig {
         // (a little more tolerant each time, so a fussy species finds somewhere)
         sc.tempStdDev = (tree ? 0.2f + r.nextFloat() * 0.2f : 0.15f + r.nextFloat() * 0.2f) + attempt * 0.01f;
         long salt = (worldSeed * 17L + s) * 64L + attempt;
-        sc.tempFactor = regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev);
+        sc.tempFactor = regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev, sc.tempHotStretch);
         sc.patchNoiseFactor = regionalManager.createNoiseMap(sc.patchNoiseScale, salt * 2L);
         RegionalFactor home = regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW + r.nextFloat() * OrganismSpecies.HOME_SCALE_RANGE, salt * 2L + 1L);
         sc.abundanceFactor = plantAbundance(sc, home, OrganismSpecies.homeStrength(r));
@@ -3115,7 +3172,7 @@ private static class SpeciesConfig {
         GeodesicChunkGrid.Cell cell = grassStream.grid().cell(id);
         SpherePosition middle = SphereMath.atAltitude(cell.centre(), 0.0);
         float perChunk = Math.min(MAX_GRASS_LIMIT, Math.round(grassAbundanceFactor.evaluateAt(middle) * GRASS_BASE_ABUNDANCE));
-        int attempts = Math.round(perChunk * areaInChunks(cell));
+        int attempts = Math.round(perChunk * GRASS_DENSITY * areaInChunks(cell));
         if (attempts <= 0) return new float[0];
 
         // The ground's steepness over the cell, on a fine lattice of little triangles
@@ -3813,13 +3870,16 @@ private static class SpeciesConfig {
         // (in the game modes where the player stays where they landed, they can't walk)
         if (!GameMode.current().moving) { moveW = false; moveA = false; moveS = false; moveD = false; }
         if (moveA && moveD) { moveA = false; moveD = false; }
-        updateOxygen(deltaTime, moveW || moveA || moveS || moveD, elapsedTime);
+        boolean walking = moveW || moveA || moveS || moveD;
+        boolean revealing = minimap != null && minimap.isFullScreenRevealMode();
+        boolean sprinting = updateStamina(deltaTime, walking && !revealing && keyboard.shift);
+        updateOxygen(deltaTime, sprinting, elapsedTime);
 
         SpherePosition sphereBeforeMove = camera.getSpherePosition();
-        if (minimap != null && minimap.isFullScreenRevealMode()) {
+        if (revealing) {
             camera.updatePosition(false, false, false, false, (float)deltaTime);
         } else {
-            camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime);
+            camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime, sprinting ? SPRINT_SPEED : 1f);
         }
 
         if (!menuShotHold) {
@@ -3827,7 +3887,8 @@ private static class SpeciesConfig {
         }
         settleClear();
         easeZoom(deltaTime);
-        float currentAltitude = camera.getAltitude();
+        // (the eyes' height less last frame's step bob, so the easing after the ground never sees it)
+        float currentAltitude = camera.getAltitude() - headBob;
         // What's underfoot: the ground, a road's deck (if they're up on it) or the pod's stairs
         // Where the feet are: in the air, under the jump; on foot, on what they stood on last frame
         // (not under the eyes' eased height, which lags on a steep bridge or ramp far enough for
@@ -3865,10 +3926,14 @@ private static class SpeciesConfig {
                 airborneEyeY = currentAltitude;
             }
         }
+        updateHeadBob(deltaTime, walking && !revealing && !menuShotHold && !airborne && !swimming, sprinting);
         if (airborne) {
             // A ballistic arc through the air, whatever the ground does beneath: it lands when
             // it comes down to the ground (going up a slope, sooner; off a drop, later)
             float dt = (float) deltaTime;
+            // (no stepping in the air: the bob starts again from nothing on landing)
+            headBob = 0f;
+            bobWeight = 0f;
             airborneEyeY += (jumpVelocity - GRAVITY * dt * 0.5f) * dt;
             jumpVelocity -= GRAVITY * dt;
             jumpHeight = Math.max(0f, airborneEyeY - targetCameraHeight);
@@ -3882,7 +3947,7 @@ private static class SpeciesConfig {
             }
         } else {
             float smoothedHeight = currentAltitude + (targetCameraHeight - currentAltitude) * dynamicSmoothingFactor;
-            camera.setAltitude(smoothedHeight);
+            camera.setAltitude(smoothedHeight + headBob);
         }
 
         SpherePosition eye = camera.getSpherePosition();
@@ -4141,7 +4206,8 @@ private static class SpeciesConfig {
     private static final int FRAME_SEQUENCE = Dev.integer("xenoguesser.framesequence", 0);
 
     // The sun's shadows (see ShadowMaps), and the sun's height (degrees) at which they're at full strength
-    private final ShadowMaps shadowMaps = new ShadowMaps();
+    private ShadowMaps shadowMaps = new ShadowMaps();
+    private boolean shadowMapsMade;
     // Leafy things drawn into the shadows (only where their picture's solid)
     private Shader shadowCutoutShader;
     private static final float SHADOWS_FULL_ABOVE = 8f;
@@ -4274,6 +4340,22 @@ private static class SpeciesConfig {
             hud.setVisible("fps", false);
             hudFps = -1;
         }
+
+        // The sprint's stamina, in the top right (under the FPS, when that's shown), wherever the player can walk
+        boolean staminaShown = GameMode.current().moving;
+        if (staminaShown) {
+            int step = Math.round(stamina * 200f) * 2 + (winded ? 1 : 0);
+            if (rescaled || step != hudStaminaStep || !hud.has("stamina")) {
+                hudStaminaStep = step;
+                BufferedImage image = HudStyle.canvas(HudStyle.STAMINA_W, HudStyle.STAMINA_H, scale, g);
+                HudStyle.paintStamina(g[0], stamina, winded);
+                g[0].dispose();
+                hud.put("stamina", image, 0, 0);
+            }
+            int below = GameSettings.showFps() ? Math.round((6 + HudStyle.FPS_H) * scale) : margin;
+            hud.move("stamina", screenWidth - hud.width("stamina") - margin, below);
+        }
+        hud.setVisible("stamina", staminaShown);
 
         // The round's clock (M41), at the top in the middle, while it's running
         long[] clock = minimap != null ? minimap.guessClock() : null;
@@ -4553,9 +4635,8 @@ private static class SpeciesConfig {
 
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
-        // Developer aid: -Dxenoguesser.unlockall starts with every map and item
+        // Developer aid: -Dxenoguesser.unlockall starts with every map (the items are had from the start anyway)
         if (Dev.flag("xenoguesser.unlockall")) {
-            ownedItems.addAll(List.of(ITEMS));
             ownedLayers.addAll(List.of(MapPanel.Layer.values()));
             ownedOverlays.addAll(allOverlays());
         }
@@ -4569,8 +4650,9 @@ private static class SpeciesConfig {
 
     // ------------------------------------------------------------------ what the player has bought
 
-    // The things the player can carry, in the order offered; and what they have (bought in the
-    // shop, nothing to begin with): items in the order bought, the map's layers and overlays
+    // The things the player can carry, every one had from the start (in this order, so 1 is the
+    // compass and 4 the kit); and the maps bought in the shop, nothing to begin with: the map's
+    // layers and overlays
     private static final String COMPASS = "Compass", THERMOMETER = "Thermometer", ALTIMETER = "Altimeter", KIT = "Identification kit";
     private static final String[] ITEMS = { COMPASS, THERMOMETER, ALTIMETER, KIT };
 
@@ -4583,20 +4665,20 @@ private static class SpeciesConfig {
             default -> HudStyle::paintKitIcon;
         };
     }
-    private final List<String> ownedItems = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private final List<String> ownedItems = new java.util.concurrent.CopyOnWriteArrayList<>(List.of(ITEMS));
     private final java.util.Set<MapPanel.Layer> ownedLayers = java.util.Collections.synchronizedSet(java.util.EnumSet.noneOf(MapPanel.Layer.class));
     private final java.util.Set<Overlay> ownedOverlays = java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
     // Bumped when an item is bought, so the inventory is drawn again
     private volatile int itemsVersion;
 
     /**
-     * The collections' achievements (M53), for what's been got this game: every gadget, every
-     * infrastructure map (the buildings, shops and the maps of pictures), every plant's and every
-     * animal's heatmap. (Not with the developer's everything unlocked.)
+     * The collections' achievements (M53), for what's been got this game: every infrastructure
+     * map (the buildings, shops and the maps of pictures), every plant's and every animal's
+     * heatmap. (Not with the developer's everything unlocked. Every gadget, Technician, is had
+     * from the start now, so is never earned by collecting.)
      */
     private void checkCollections() {
         if (Dev.flag("xenoguesser.unlockall")) return;
-        if (ownedItems.containsAll(List.of(ITEMS))) Achievements.unlock(Achievements.Achievement.TECHNICIAN);
         boolean infrastructure = ownedLayers.contains(MapPanel.Layer.BUILDINGS) && ownedLayers.contains(MapPanel.Layer.SHOPS);
         for (FactorName f : PICTURE_MAPS) infrastructure &= ownedOverlays.contains(Overlay.of(f));
         if (infrastructure) Achievements.unlock(Achievements.Achievement.INFRASTRUCTURE_EXPERT);
@@ -4642,29 +4724,20 @@ private static class SpeciesConfig {
     }
 
     /**
-     * Three things for the shop after this round (counting from 1), shuffled from everything
-     * not yet bought (each item there ShopPanel.ITEM_COPIES times, though never dealt twice at
-     * once), each with its price (drawn at random, see ShopPanel.price) and what buying it does.
+     * Three maps for the shop after this round (counting from 1), shuffled from everything not
+     * yet bought (the gadgets are had from the start, so never offered), each with its price
+     * (drawn at random round what the player earns a round, see ShopPanel.price; nothing in multiplayer) and what buying it does.
      */
     public List<ShopPanel.Card> shopOffers(int round) {
         java.util.Map<String, String> descriptions = ShopPanel.loadDescriptions();
         java.util.Random rand = new java.util.Random();
+        // (prices keep pace with what the player's been paid lately)
+        float pay = gameHUD != null ? gameHUD.recentPay() : GameHUD.SALARY;
         List<ShopPanel.Card> deck = new ArrayList<>();
-        for (String item : ITEMS) {
-            if (ownedItems.contains(item)) continue;
-            HudStyle.IconPainter painter = itemIcon(item);
-            ShopPanel.Card card = new ShopPanel.Card(item, "Gadget", null, painter, describe(descriptions, item, item),
-                    ShopPanel.price(round, ShopPanel.ITEM_PRICE_FACTOR, rand), () -> {
-                ownedItems.add(item);
-                itemsVersion++;
-                checkCollections();
-            });
-            for (int copy = 0; copy < ShopPanel.ITEM_COPIES; copy++) deck.add(card);
-        }
         for (MapPanel.Layer layer : MapPanel.Layer.values()) {
             if (ownedLayers.contains(layer)) continue;
             deck.add(new ShopPanel.Card(layer.label, "Map marking", choiceIcon(layer.label), null, describe(descriptions, layer.label, layer.label),
-                    ShopPanel.price(round, builtPriceFactor(layer == MapPanel.Layer.ROADS || layer == MapPanel.Layer.BUILDINGS
+                    ShopPanel.price(round, pay, builtPriceFactor(layer == MapPanel.Layer.ROADS || layer == MapPanel.Layer.BUILDINGS
                             || layer == MapPanel.Layer.SHOPS), rand), () -> {
                 ownedLayers.add(layer);
                 // (shown straight away)
@@ -4680,7 +4753,7 @@ private static class SpeciesConfig {
                 String key = plant ? "Flora" : animal ? "Fauna" : name;
                 String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : PICTURE_MAPS.contains(o.factor()) ? "Map" : "Heatmap";
                 deck.add(new ShopPanel.Card(name, kind, choiceIcon(name), null, describe(descriptions, key, name),
-                        ShopPanel.price(round, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR
+                        ShopPanel.price(round, pay, plant || animal ? ShopPanel.SPECIES_PRICE_FACTOR
                                 : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.NATIONS || PICTURE_MAPS.contains(o.factor())), rand), () -> {
                     ownedOverlays.add(o);
                     refreshMapChoices();
@@ -4691,21 +4764,6 @@ private static class SpeciesConfig {
         List<ShopPanel.Card> dealt = new ArrayList<>();
         for (ShopPanel.Card card : deck) {
             if (dealt.size() < 3 && !dealt.contains(card)) dealt.add(card);
-        }
-        // The shop before the first round always has an item among its three (a thermometer,
-        // altimeter or identification kit, else any not yet had), in place of its last card
-        if (round < 1 && dealt.stream().noneMatch(c -> "Gadget".equals(c.kind()))) {
-            ShopPanel.Card item = null;
-            for (ShopPanel.Card card : deck) {
-                if (!"Gadget".equals(card.kind())) continue;
-                boolean named = card.name().equals(THERMOMETER) || card.name().equals(ALTIMETER) || card.name().equals(KIT);
-                if (item == null || named) item = card;
-                if (named) break;
-            }
-            if (item != null) {
-                if (dealt.size() >= 3) dealt.remove(dealt.size() - 1);
-                dealt.add(rand.nextInt(dealt.size() + 1), item);
-            }
         }
         return dealt;
     }
@@ -5893,17 +5951,75 @@ private static class SpeciesConfig {
         return 100.0 * sea / n;
     }
 
+    // ------------------------------------------------------------------ sprinting and stamina
+
+    // Holding Shift while walking sprints at SPRINT_SPEED times the walk, while there's stamina (0
+    // to 1): a full bar lasts STAMINA_DRAIN_SECONDS of sprinting and refills from nothing in
+    // STAMINA_REFILL_SECONDS, starting STAMINA_REFILL_DELAY after the last sprint. Run it dry and
+    // the player's winded: no sprinting until it's back up to STAMINA_WINDED_UNTIL
+    private static final float SPRINT_SPEED = 1.5f;
+    private static final float STAMINA_DRAIN_SECONDS = 6f, STAMINA_REFILL_SECONDS = 8f, STAMINA_REFILL_DELAY = 1f, STAMINA_WINDED_UNTIL = 0.3f;
+    // With the oxygen downgraded, sprinting this long takes exertion from nothing to the most
+    private static final float SPRINT_EXERTION_SECONDS = 3f;
+    private volatile float stamina = 1f;
+    private float sinceSprint;
+    private boolean winded;
+
+    /** Uses up or refills stamina this frame; whether the player's sprinting (wanting to, with stamina to do it). */
+    private boolean updateStamina(double deltaTime, boolean wantsToSprint) {
+        float dt = (float) deltaTime;
+        boolean sprinting = wantsToSprint && !winded && stamina > 0f;
+        if (sprinting) {
+            stamina = Math.max(0f, stamina - dt / STAMINA_DRAIN_SECONDS);
+            sinceSprint = 0f;
+            if (stamina == 0f) winded = true;
+        } else {
+            sinceSprint += dt;
+            if (sinceSprint >= STAMINA_REFILL_DELAY) stamina = Math.min(1f, stamina + dt / STAMINA_REFILL_SECONDS);
+            if (winded && stamina >= STAMINA_WINDED_UNTIL) winded = false;
+        }
+        return sprinting;
+    }
+
+    // ------------------------------------------------------------------ the step bob
+
+    // The eyes dip at each footfall and rise between: a step every STEP_LENGTH world units walked
+    // (a 0.8 m pace walking, 1 m running: some 2.5 steps a second walking, 3 sprinting),
+    // BOB_WALK high walking and BOB_RUN sprinting. It eases in over a step or so when the player
+    // sets off and out when they stop, so neither jolts
+    private static final float STEP_LENGTH_WALK = 16f, STEP_LENGTH_RUN = 20f;
+    private static final float BOB_WALK = 0.35f, BOB_RUN = 1.1f, BOB_EASE = 6f;
+    // How far the eyes are off their height this frame for the step; how far through the steps
+    // (radians, a step each pi); and how much of the bob shows, 0 standing to 1 walking, eased
+    private float headBob, stepPhase, bobWeight, bobHeight = BOB_WALK;
+
+    /** Moves the step bob on this frame: walking (on foot, on the ground), and whether at a sprint. */
+    private void updateHeadBob(double deltaTime, boolean walking, boolean sprinting) {
+        float dt = (float) deltaTime;
+        float ease = Math.min(1f, BOB_EASE * dt);
+        bobWeight += ((walking ? 1f : 0f) - bobWeight) * ease;
+        bobHeight += ((sprinting ? BOB_RUN : BOB_WALK) - bobHeight) * ease;
+        if (walking) {
+            float speed = camera.KEYBOARD_SPEED * (sprinting ? SPRINT_SPEED : 1f);
+            stepPhase = (stepPhase + (float) Math.PI * speed * dt / (sprinting ? STEP_LENGTH_RUN : STEP_LENGTH_WALK)) % (float) (2.0 * Math.PI);
+        }
+        // |sin| peaks between footfalls and dips sharply on each; less its average (2/pi), so the
+        // eyes ride as high as ever on the whole
+        float step = (float) Math.abs(Math.sin(stepPhase)) - (float) (2.0 / Math.PI);
+        headBob = bobWeight < 0.001f ? 0f : bobHeight * bobWeight * step;
+    }
+
     // ------------------------------------------------------------------ the oxygen's downgrade (M52)
 
     private final OxygenBlur oxygenBlur = new OxygenBlur();
     // Whether the oxygen's been downgraded (it stays so for the rest of the game); how out of
-    // breath the player is, 0 to 1 (up while walking, down while standing still); and how
+    // breath the player is, 0 to 1 (up while sprinting, down while walking or standing); and how
     // light-headed that makes them, 0 to 1, and the time it sways by
     private volatile boolean oxygenDowngraded;
     private float exertion, oxygenStrength, oxygenTime;
-    // Walking this many seconds without a stop takes exertion from nothing to the most; standing
-    // this long brings it back to nothing. It shows from EXERTION_SHOWS on, at its worst at the most
-    private static final float EXERTION_BUILD_SECONDS = 45f, EXERTION_CLEAR_SECONDS = 30f, EXERTION_SHOWS = 0.3f;
+    // Not sprinting, this many seconds brings exertion back from the most to nothing. It shows
+    // from EXERTION_SHOWS on, at its worst at the most
+    private static final float EXERTION_CLEAR_SECONDS = 30f, EXERTION_SHOWS = 0.3f;
     // Where the player can't walk (GameMode.NO_MOVE...), it's always this bad
     private static final float STILL_STRENGTH = 0.45f;
 
@@ -5913,8 +6029,12 @@ private static class SpeciesConfig {
         System.out.println("[OXYGEN] Downgraded");
     }
 
-    /** How light-headed the player is this frame, from how long they've been walking (or always, where they can't). */
-    private void updateOxygen(double deltaTime, boolean walking, double time) {
+    /**
+     * How light-headed the player is this frame (or always, where they can't walk). Walking
+     * leaves them be; sprinting with the oxygen downgraded makes them dizzy within moments, and
+     * running out of stamina leaves them as dizzy as they get.
+     */
+    private void updateOxygen(double deltaTime, boolean sprinting, double time) {
         if (!oxygenDowngraded) {
             oxygenStrength = 0f;
             return;
@@ -5925,7 +6045,9 @@ private static class SpeciesConfig {
             return;
         }
         float dt = (float) deltaTime;
-        exertion = Math.max(0f, Math.min(1f, exertion + (walking ? dt / EXERTION_BUILD_SECONDS : -dt / EXERTION_CLEAR_SECONDS)));
+        float change = sprinting ? dt / SPRINT_EXERTION_SECONDS : -dt / EXERTION_CLEAR_SECONDS;
+        exertion = Math.max(0f, Math.min(1f, exertion + change));
+        if (winded) exertion = 1f;
         float t = Math.max(0f, Math.min(1f, (exertion - EXERTION_SHOWS) / (1f - EXERTION_SHOWS)));
         oxygenStrength = 0.9f * t * t * (3f - 2f * t);
     }
@@ -6137,7 +6259,7 @@ private static class SpeciesConfig {
 
     // The plant and animal maps' colours, none to the most
     private static final float[][] RANGE_SPECTRUM = {
-        { 0.85f, 0.00f, 0.00f }, { 1.00f, 0.50f, 0.00f }, { 1.00f, 0.90f, 0.00f }, { 0.00f, 0.70f, 0.10f }
+        { 0.10f, 0.20f, 0.85f }, { 0.40f, 0.80f, 0.95f }, { 1.00f, 0.75f, 0.20f }, { 0.85f, 0.00f, 0.00f }
     };
 
     /** A count for the map's key, rounded sensibly (thousands as k). */

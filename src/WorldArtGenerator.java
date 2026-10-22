@@ -84,8 +84,8 @@ public final class WorldArtGenerator {
             jobs.add(job.getValue());
         }
 
-        // One core is left for the loading screen
-        int threads = Math.max(1, Math.min(jobs.size(), Runtime.getRuntime().availableProcessors() - 1));
+        // Two cores are left for the landing pod's frames (and the window), which a PC with few would otherwise stutter without
+        int threads = Math.max(1, Math.min(jobs.size(), Runtime.getRuntime().availableProcessors() - 2));
         ExecutorService pool = Executors.newFixedThreadPool(threads, r -> {
             Thread t = new Thread(r, "world-art");
             t.setDaemon(true);
