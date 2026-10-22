@@ -47,7 +47,7 @@ public class ShopPanel extends JPanel {
     // (1.645 standard deviations either side of the mean hold 90% of a normal distribution)
     private static final float WITHIN_SHARE_DEVIATIONS = 1.645f;
     private static final int LOWEST_PRICE = 10;
-    // Plant and animal heatmaps cost this many times what other heatmaps do
+    // Plant, animal and rock heatmaps cost this many times what other heatmaps do
     public static final float SPECIES_PRICE_FACTOR = 0.5f;
 
     private static final Color BUY = new Color(40, 150, 90);
@@ -481,7 +481,7 @@ public class ShopPanel extends JPanel {
     /**
      * A card's price after this round (counting from 1), drawn at random round a mean of
      * PAY_SHARE of pay (the cash paid a round lately), the mean and spread scaled by factor (1
-     * for maps, SPECIES_PRICE_FACTOR for plant and animal heatmaps).
+     * for maps, SPECIES_PRICE_FACTOR for plant, animal and rock heatmaps).
      */
     public static int price(int round, float pay, float factor, java.util.Random rand) {
         // (the shop before the first round gives everything away, as multiplayer's always does)

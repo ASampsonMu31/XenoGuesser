@@ -4,35 +4,35 @@
 # In the Flora and Fauna lines, {name} is replaced by the plant's or animal's name.
 
 # Gadgets
-Compass = A brass pocket compass. Its needle swings to the planet's north, pulling harder near the equator.
-Thermometer = A glass thermometer. Read the air's warmth wherever you stand.
-Altimeter = A blue pocket altimeter. Its needle shows how high above the sea you stand, in metres.
+Compass = A brass pocket compass. Its needle swings to the planet's north. Line up the sun to find your hemisphere or coastlines and roads to help pinpoint your location.
+Thermometer = A glass thermometer. Read the air's current temperature wherever you stand.
+Altimeter = A blue pocket altimeter. Its needle shows how high above sea level you stand, in metres.
 Identification kit = A magnifying glass and a naturalist's handbook. Hold the glass up to name the plants and animals seen through it.
 
 # Map markings (drawn over the map)
-Contours = Lines of equal height across the land, showing hills, valleys and mountains.
+Contours = Lines marking ten metre increments in altitude, showing hills, valleys and mountains, match up with what you see and use in combination with your altimeter.
 Rivers = Every river and stream, from mountain springs down to the sea, and the lakes along them.
 Roads = Every road on the planet, from highways to dirt tracks.
-Buildings = Where the planet's buildings stand, from lone farms to the hearts of cities.
-Shops = Where the inhabitants go shopping.
+Buildings = Where the planet's buildings stand, from lone farms to the hearts of cities, shows where urban areas are found but also helps pinpoint the exact location.
+Shops = Where the inhabitants go shopping, line up to help pinpoint your exact location.
 
 # Heatmaps (colouring the land, under the markings)
-Temperature = How warm each region is, from frozen wastes to sweltering tropics.
-Rainfall = How much rain falls on each region in a year.
+Temperature = The yearly average temperature in each region, from frozen wastes to sweltering deserts  (disclaimer: daily weather conditions may vary).
+Rainfall = The yearly average rainfall (disclaimer: daily weather conditions may vary).
 Soil colour = The colour of the bare ground in each region.
-Wealth = How rich or poor each region's people are.
-Nations = The borders of the planet's nations, with their names written in their own scripts.
-Bollards = The roadside bollards each nation builds, one standing in each nation, so you can tell whose road you are on.
+Wealth = How rich or poor each region's people are, houses in poorer areas may by dirty and worn.
+Nations = The borders of the planet's nations, with their national flags and names written in their own scripts (hint: compare with writing found on billboards!).
+Bollards = Different nations use different roadside bollards, don't ask why, you would think they would just agree on one design. Compare with what you see to find which regions you may be in.
 Road lines = How each nation paints the lines on its roads: their colour, where they run, single or double, dashed or solid.
-Utility poles = The poles each nation strings its wires on, one standing in each nation: their colour, shape, height, steps and crossarms.
-Architecture = How each region dresses its buildings: wall shapes and masonry, horned or crested roofs, spikes, aerials and weather vanes, and the high-tech towers of the rich cities. Neighbours build alike, provinces have their own take, and the rich build most ornately.
-Landmarks = The planet's famous sights: towering spires, standing stones and grand ruins, its highest peak, its finest bay and beach, and its most famous groves. Hover over one to see it.
-Rock frequency = How many rocks lie about each region.
-Rock size = How big the rocks are in each region.
+Utility poles = The poles each nation strings its power and telephone wires on, shows how designs vary between nations.
+Architecture = How each region dresses its buildings: shows wall shapes and designs, roof decoration and attachments, and tower designs. (disclaimer: nobody wants a house that looks exactly like their neighbour's, not all houses will match these designs exactly)
+Landmarks = The planet's famous sights: from towering spires, to standing stones and grand ruins, its highest peak, and its finest bay and beach.
+Rock frequency = Rocks... How interesting. See how many rocks lie about each region.
+Rock size = Rocks... How interesting. See how big the rocks are in each region.
 Grass abundance = How thickly the grass grows in each region.
 Grass height = How tall the grass grows in each region.
-Grass colour = The colour of the grass in each region.
+Grass colour = The colour of the grass in each region (grass health and colour is also indicitive of land fertility and temperature).
 
 # Each plant and animal species' heatmap
-Flora = Where the {name} grows, and how thickly.
-Fauna = Where the {name} roams, and how many there are.
+Flora = Where the {name} grows, and in what abundance.
+Fauna = Where the {name} can be found, and how many there are.

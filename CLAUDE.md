@@ -55,8 +55,10 @@ the startup order, the per-frame render order and the two big classes' parts.
   A refactor must change none. A deliberate change will: check the DIFFERS lines are the ones
   you meant (`java ... RegressionCheck breakdown` writes per-field hashes to
   `checks/regression-breakdown.txt` to find which), then `tools/run-checks.sh write`.
-- `PlanningCheck` has 4 failures that predate the refactor (a sea-distance sample, one sign
-  board, "0 of 0 buildings" at 67 N, a vehicle briefly off the road); only new ones matter.
+- `PlanningCheck` has 6 known failures, mostly because its two hard-coded town spots no longer
+  hold the towns they did (a sea-distance sample, one sign board at 4.8 N, and at 67 N "0 of 0
+  buildings", "no signs" and "vertices outside their batch's bounds"; "few vehicles parked");
+  only new ones matter.
 - Rendering (shaders, `render*`, GL set-up): `tools/frame-shots.sh <dir>` saves a frame per
   developer view; compare with frames from before the change (`CLASSES=<old classes dir>`).
   Frames vary slightly run to run (clouds, people), so compare by eye.
