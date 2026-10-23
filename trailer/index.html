@@ -73,6 +73,10 @@ p.note { color: var(--dim); max-width: 75ch; margin: 0; }
 <script>
 "use strict";
 const W = 1920, H = 1080;
+// Opened straight from disk (dragged into the browser): every file is its own origin there, so
+// the clips load without asking for cross-origin access and the voice plays through plain
+// audio elements; only Export needs the page served (tools/trailer/serve.bat)
+const LOCAL = location.protocol === "file:";
 const canvas = document.getElementById("screen"), g = canvas.getContext("2d");
 const statusEl = document.getElementById("status"), timeEl = document.getElementById("time");
 
@@ -85,7 +89,8 @@ const videos = {}, missing = new Set();
 function videoFor(src) {
   if (!videos[src]) {
     const v = document.createElement("video");
-    v.src = src; v.muted = true; v.preload = "auto"; v.playsInline = true; v.crossOrigin = "anonymous";
+    v.src = src; v.muted = true; v.preload = "auto"; v.playsInline = true;
+    if (!LOCAL) v.crossOrigin = "anonymous";
     v.addEventListener("error", () => { missing.add(src); renderList(); });
     videos[src] = v;
   }
@@ -135,6 +140,12 @@ async function audioReady() {
   const names = new Set(TRAILER.scenes.flatMap(s => (s.vo ? [s.vo.line] : [])));
   await Promise.all([...names].map(async n => {
     try {
+      if (LOCAL) {
+        const el = new Audio("audio/" + n + ".wav"); el.preload = "auto";
+        await new Promise((ok, fail) => { el.addEventListener("loadedmetadata", ok, { once: true }); el.addEventListener("error", fail, { once: true }); });
+        voices[n] = el;
+        return;
+      }
       const r = await fetch("audio/" + n + ".wav");
       voices[n] = await ac.decodeAudioData(await r.arrayBuffer());
     } catch (e) { statusEl.textContent = "Voice line " + n + " couldn't load: serve this folder over http (see README)."; }
@@ -210,15 +221,22 @@ function scheduleMusic(t0, tl) {
   drone.gain.setTargetAtTime(0, t0 + tl.length - 0.5, 1.2);
 }
 
+const voiceTimers = [];
 function scheduleVoices(t0, tl) {
   for (const s of tl.scenes) {
     if (!s.vo || !voices[s.vo.line]) continue;
+    const at = t0 + s.start + (s.vo.at || 0);
+    musicBus.gain.setTargetAtTime(0.32, at - 0.1, 0.15);
+    musicBus.gain.setTargetAtTime(0.55, at + voices[s.vo.line].duration, 0.4);
+    if (LOCAL) {
+      const el = voices[s.vo.line];
+      voiceTimers.push(setTimeout(() => { el.currentTime = 0; el.play().catch(() => {}); }, (at - ac.currentTime) * 1000));
+      continue;
+    }
     const src = keep(ac.createBufferSource()); src.buffer = voices[s.vo.line];
     const bp = ac.createBiquadFilter(); bp.type = "highpass"; bp.frequency.value = 120;
-    src.connect(bp); bp.connect(voiceBus); src.start(t0 + s.start + (s.vo.at || 0));
-    // (the music dips under the voice)
-    musicBus.gain.setTargetAtTime(0.32, t0 + s.start + (s.vo.at || 0) - 0.1, 0.15);
-    musicBus.gain.setTargetAtTime(0.55, t0 + s.start + (s.vo.at || 0) + src.buffer.duration, 0.4);
+    // (the music dips under the voice, above)
+    src.connect(bp); bp.connect(voiceBus); src.start(at);
   }
 }
 
@@ -387,6 +405,8 @@ function stop() {
   for (const n of scheduled.splice(0)) { try { n.stop(); } catch (e) {} }
   if (musicBus) { musicBus.gain.cancelScheduledValues(0); musicBus.gain.value = 0.55; }
   for (const v of Object.values(videos)) v.pause();
+  for (const id of voiceTimers.splice(0)) clearTimeout(id);
+  if (LOCAL) for (const el of Object.values(voices)) el.pause();
 }
 
 function updateTime(t) {
@@ -400,6 +420,7 @@ function updateTime(t) {
 async function exportVideo() {
   await audioReady();
   let stream;
+  if (LOCAL) { statusEl.textContent = "Export needs the page served: run tools/trailer/serve.bat and export from there."; return; }
   try { stream = canvas.captureStream(30); } catch (e) { statusEl.textContent = "Export needs the page served over http (see README)."; return; }
   stream.addTrack(recordDest.stream.getAudioTracks()[0]);
   const types = ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm"];
@@ -429,7 +450,7 @@ renderList();
 updateTime(0);
 for (const s of TRAILER.scenes) if (s.clip) videoFor(clipSrc(s));
 document.fonts.ready.then(() => frameAt(0.01, timeline()));
-if (location.protocol === "file:") statusEl.textContent = "Opened as a file: the voice and Export need it served over http (tools/trailer/serve.bat).";
+if (LOCAL) statusEl.textContent = "Opened from disk: it plays, but Export needs it served (tools/trailer/serve.bat).";
 </script>
 </body>
 </html>
