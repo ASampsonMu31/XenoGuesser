@@ -1,0 +1,39 @@
+# Multiplayer for the trailer (record.py): this PC hosts as 119-A and a second window joins as
+# 119-B (developer transport, -Dxenoguesser.mpfake); the joiner's window comes up in front, so 119-B is the one played and recorded. Run with
+#   -- -Dxenoguesser.mpfake=host -Dxenoguesser.mpauto=host -Dxenoguesser.mpautobegin=true -Dxenoguesser.hudtest=guess -Dxenoguesser.guessdelay=45000 -Dxenoguesser.guessat=0.45,0.50 -Dxenoguesser.quality=low -XX:MaxRAMPercentage=40
+#   ++ -Dxenoguesser.mpfake=join -Dxenoguesser.mpauto=join -Dxenoguesser.mpautobegin=true -Dxenoguesser.hudtest=partner -XX:MaxRAMPercentage=40
+sleep 8
+partner
+waitlog [MP] Local partner connected
+sleep 3
+# (the joiner's window, 119-B, comes up in front: it's the one played and recorded)
+waitlog [LOADING] World ready
+# (the joiner's window, 119-B, comes up in front: it's the one played and recorded)
+rec mp-pod
+sleep 16
+stop
+shot m1
+rec mp-partner
+sleep 7
+stop
+rec mp-guess
+key m
+cursor on
+sleep 1.4
+move 0.60 0.55 0.8
+sleep 0.5
+movegoal 0.06 0.04 1.0
+sleep 0.4
+movegoal 0.01 -0.008 0.5
+sleep 0.3
+click
+sleep 0.8
+move 0.82 0.963 0.8
+sleep 0.3
+click
+sleep 4
+stop
+rec mp-results
+sleep 30
+stop
+shot m2

@@ -1,0 +1,46 @@
+# The trailer's filmed shots (TrailerDirector; film with tools/trailer/film.sh). One per line:
+#   name  subject=...  move=cine|play  seconds=  hour= (local, by the sun)  wet= (-3 clear .. 3 wet)
+# cine: from=/to= angle,distance,height round the subject (angle in degrees from the way it faces,
+#   distance and height in world units, 10 to the metre); look=subject (aim=height[,height]),
+#   look=herd, or look=ahead (yaw=a,b pitch=a,b)
+# play: the player's own controls, cues in do=seconds:action;... (w+ w- shift+ shift- jump item:n look:yaw:pitch)
+# The scene list (trailer/scenes.js) uses each by its name; film one again on its own with
+#   tools/trailer/film.sh tools/trailer/shots.txt <out> 123 name
+
+# ---- the landing
+pod-reveal    subject=pod hour=17.6 wet=-2 seconds=7 from=70,420,160 to=25,190,40 aim=40,25
+pod-orbit     subject=pod hour=17.6 wet=-2 seconds=6 from=-40,150,22 to=40,150,30 aim=28
+
+# ---- the planet's sights
+summit        subject=landmark:SUMMIT hour=17 wet=-2 seconds=6 from=200,1100,150 to=175,800,420 aim=200,350
+bay           subject=landmark:BAY hour=9 wet=-2 seconds=6 from=150,700,260 to=210,600,200 aim=0
+spit          subject=landmark:SPIT hour=16 wet=-2 seconds=5 from=-60,500,150 to=-20,420,110 aim=0
+spire         subject=landmark:SPIRE hour=18 wet=-1 seconds=6 from=5,900,25 to=0,520,40 aim=250,380
+stones        subject=landmark:STONES hour=8 wet=-2 seconds=5 from=-35,220,20 to=35,200,30 aim=25
+ruin          subject=landmark:RUIN hour=16.5 wet=-1 seconds=5 from=30,320,60 to=-20,260,40 aim=40
+grove         subject=landmark:GROVE hour=10 wet=-1 seconds=5 from=180,260,18 to=180,120,18 aim=30
+mountain      subject=view:mountain hour=16 wet=-2 seconds=6 from=180,200,30 to=180,0,120 look=ahead pitch=6,10
+shore         subject=view:shore hour=18 wet=-1 seconds=5 from=180,80,18 to=180,0,14 look=ahead pitch=-3,-2
+lake          subject=view:lake hour=8.5 wet=-2 seconds=5 from=200,60,20 to=160,60,24 look=ahead yaw=-15,15 pitch=-2,-2
+river         subject=view:river hour=15 wet=-1 seconds=5 from=180,40,20 to=170,0,22 look=ahead yaw=0,10 pitch=-3,-3
+
+# ---- life and the people who built things
+herd          subject=view:herd hour=10 wet=-2 seconds=6 from=200,220,30 to=160,170,22 look=herd aim=12
+zoo           subject=view:zoo hour=11 wet=-2 seconds=6 from=180,20,20 to=180,0,20 look=ahead yaw=-32,32 pitch=-2,-2
+bug           subject=view:bug hour=14 wet=-1 seconds=4 from=180,10,18 to=180,0,16 look=ahead pitch=-6,-6
+street        subject=view:street hour=11 wet=-1 seconds=6 from=180,60,19 to=180,0,19 look=ahead pitch=-1,-1
+tower         subject=view:tower hour=17 wet=-2 seconds=5 from=180,40,18 to=180,0,60 look=ahead pitch=8,22
+ornate        subject=view:ornate hour=9.5 wet=-2 seconds=5 from=180,40,19 to=180,0,19 look=ahead pitch=3,5
+shopfront     subject=view:shop hour=12 wet=-1 seconds=5 from=180,30,19 to=180,0,19 look=ahead pitch=2,2
+bridge        subject=view:bridge hour=16 wet=-2 seconds=5 from=180,40,20 to=180,-40,20 look=ahead pitch=-2,-2
+bollards      subject=view:bollard hour=13 wet=-1 seconds=4 from=180,30,12 to=180,-30,12 look=ahead pitch=-4,-4
+poles         subject=view:pole hour=15 wet=-1 seconds=4 from=180,40,19 to=180,-30,19 look=ahead pitch=6,6
+
+# ---- playing (the HUD, the hands, the gadgets)
+play-walk     subject=site move=play hour=11 wet=-1 seconds=7 clock=88 yaw0=-30 do=0.4:look:20:-3;0.8:w+;3.2:look:-25:-1;5.5:look:5:-4
+play-sprint   subject=site move=play pick=1 hour=15 wet=-1 seconds=5 clock=71 do=0.2:w+;0.6:shift+;2.4:jump;4.5:shift-
+play-compass  subject=site move=play pick=2 hour=16 wet=-2 seconds=6 clock=63 yaw0=40 do=0.3:item:0;1.2:look:-20:-10;3.6:look:-60:-6
+play-thermo   subject=site move=play pick=3 hour=13 wet=-1 seconds=5 clock=57 do=0.3:item:1;2.0:look:15:-4
+play-altimeter subject=view:mountain move=play hour=16 wet=-2 seconds=5 clock=49 do=0.3:item:2;2.2:look:15:2
+play-kit      subject=view:bug move=play hour=14 wet=-1 seconds=6 clock=42 pitch0=-6 do=0.3:item:3;1.5:look:8:-8;4.0:look:-6:-6
+play-street   subject=view:street move=play hour=11 wet=-1 seconds=6 clock=35 yaw0=-10 do=0.3:w+;2.5:look:25:-2;4.5:look:-15:-2

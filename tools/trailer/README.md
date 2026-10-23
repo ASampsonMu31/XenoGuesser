@@ -1,0 +1,42 @@
+# The Steam trailer
+
+`trailer/index.html` plays the trailer: game footage cut together with on-screen words, Xenocorp's
+voice lines (from the game's own messages) and a score made as it plays. Every picture in it is
+the game itself, filmed or recorded by the tools here. The edit is `trailer/scenes.js`: one entry
+per scene, each a module that can be cut, reordered or re-timed on its own.
+
+To watch it, run `tools/trailer/serve.bat` (the page needs a web server for its sound and Export),
+then press Play. Untick a scene on the page to try the trailer without it. **Export video** plays
+it through once and saves it as a video file (MP4 where the browser can, otherwise WebM) to upload
+to Steam.
+
+## When the game changes
+
+Each clip comes from one of three sources. Re-make only the clips a change affects, then reload
+the page.
+
+| Clips | Made by | Remake with |
+|---|---|---|
+| Landscapes, landmarks, towns, creatures, gameplay with the HUD and gadgets (`pod-*`, `spire`, `play-*`...) | `shots.txt`, filmed a frame at a time by `TrailerDirector` | `tools/trailer/film.sh tools/trailer/shots.txt <frames dir> 123 [shot,shot]` |
+| The other planets (`world-1`..`world-4`) | `worlds.txt`, one shot per seed | `tools/trailer/film.sh tools/trailer/worlds.txt <frames dir> <seed>`, then name the clip `world-N` |
+| The shop, the map, guessing and results (`shop-*`, `map-guess`) | `gameplay.txt`, played in real time with the mouse and keys | `python tools/trailer/record.py tools/trailer/gameplay.txt <frames dir> -- -Dxenoguesser.hudtest=firstshop` |
+| Multiplayer (`mp-*`) | `multiplayer.txt`, two game windows on this PC | see the switches at the top of `multiplayer.txt` |
+
+Then `python tools/trailer/encode.py <frames dir> trailer/clips [shot ...]` makes the clips
+(ffmpeg with `h264_mf`, found on the PATH or in Anaconda). The voice lines are re-cut with
+`python tools/trailer/voice.py` if the messages change.
+
+While filming or recording, the game's window opens; leave the PC alone until it closes (the
+recordings drive the real mouse and keyboard).
+
+## How the filming works
+
+`-Dxenoguesser.trailer=<shot list>` (developer switches only) hands the game to `TrailerDirector`.
+For each shot it finds the place (a landmark, a developer view, a landing site), sets the sun and
+weather, loads everything along the camera's path, then films. The world's clock steps exactly
+1/30 s per frame (`GameClock.filmStep`), so however slowly the PC draws, the people, animals,
+clouds and water move at their true speed and every camera move is smooth. A `move=play` shot
+uses the player's own controls instead (keys held, items taken out, the view turned by a damped
+spring with a slight hand tremor), so the walking, head bob and HUD are the game's own.
+
+A shot's settings are described at the top of `shots.txt`.

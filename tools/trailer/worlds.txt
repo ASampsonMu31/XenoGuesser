@@ -1,0 +1,3 @@
+# One shot per world for the "no two worlds alike" montage: film it with other seeds
+# (tools/trailer/film.sh tools/trailer/worlds.txt <out> <seed>) and name each clip world-1, world-2...
+world   subject=pod hour=16.8 wet=-2 seconds=3 from=40,260,70 to=20,200,45 aim=30

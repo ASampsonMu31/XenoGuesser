@@ -1,0 +1,64 @@
+# The trailer's real-time gameplay (record.py): the gift shop, the big map and a guess, the
+# results, and the shop after. The walking, looking and gadgets are filmed instead (shots.txt).
+# Run with -- -Dxenoguesser.hudtest=firstshop
+waitlog [LOADING] World ready
+sleep 2
+cursor on
+rec shop-gift
+move 0.30 0.45 1.2
+sleep 1.5
+move 0.70 0.45 1.4
+sleep 1.5
+move 0.50 0.40 1.0
+sleep 1.0
+stop
+key enter
+sleep 1.5
+rec shop-take
+move 0.50 0.62 0.9
+sleep 0.6
+move 0.50 0.687 0.4
+sleep 0.4
+click
+sleep 1.2
+move 0.50 0.826 0.9
+sleep 0.4
+click
+sleep 3
+stop
+cursor off
+sleep 4
+rec map-guess
+key m
+sleep 0.6
+cursor on
+sleep 0.8
+move 0.60 0.55 0.7
+sleep 0.4
+movegoal 0.08 -0.05 0.8
+sleep 0.5
+movegoal 0.012 0.006 0.4
+sleep 0.3
+click
+sleep 0.8
+move 0.82 0.963 0.7
+sleep 0.3
+click
+sleep 16
+stop
+shot c1
+rec shop-after
+move 0.50 0.889 0.9
+sleep 0.3
+click
+sleep 2.5
+move 0.32 0.45 1.0
+sleep 1.2
+move 0.50 0.45 0.8
+sleep 1.0
+move 0.50 0.687 0.5
+sleep 0.4
+click
+sleep 2
+stop
+shot c2

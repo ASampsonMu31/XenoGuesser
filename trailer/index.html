@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>XenoGuesser Trailer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* One dark screening room: the film fills the stage, the edit's controls sit quietly beneath it. */
+:root {
+  --bg: #07090c;
+  --panel: #0e1217;
+  --line: #1f2731;
+  --fg: #d9e2ea;
+  --dim: #7d8a97;
+  --accent: #6ff0c8;   /* the alien-sea green of the planets' water */
+  --warn: #ffb35c;
+  --display: "Chakra Petch", "Bahnschrift", "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", "Consolas", monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--mono);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px; box-sizing: border-box;
+}
+main { max-width: 1280px; margin: 0 auto; display: grid; gap: 14px; }
+.stage { position: relative; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; background: #000; cursor: pointer; }
+canvas { width: 100%; height: 100%; display: block; }
+.stage.fullscreen { max-width: none; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button {
+  font: 600 13px var(--display); letter-spacing: .08em; text-transform: uppercase;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--line); padding: 8px 14px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.primary { background: var(--accent); color: #031410; border-color: var(--accent); }
+.time { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
+.status { color: var(--warn); min-height: 1.5em; }
+h2 { font: 600 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 8px 0 0; }
+.scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
+.scene { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; background: var(--panel);
+  border: 1px solid var(--line); padding: 6px 10px; min-width: 0; }
+.scene span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.scene small { color: var(--dim); font-variant-numeric: tabular-nums; }
+.scene.off { opacity: .45; }
+.scene.missing span::after { content: " (no clip)"; color: var(--warn); }
+.scene.now { border-color: var(--accent); }
+.act { grid-column: 1 / -1; color: var(--accent); font: 600 12px var(--display); letter-spacing: .14em; text-transform: uppercase; margin-top: 6px; }
+p.note { color: var(--dim); max-width: 75ch; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <div class="stage" id="stage"><canvas id="screen" width="1920" height="1080"></canvas></div>
+  <div class="bar">
+    <button class="primary" id="play">Play</button>
+    <button id="stop">Stop</button>
+    <button id="full">Fullscreen</button>
+    <button id="export">Export video</button>
+    <button id="reset">Restore all scenes</button>
+    <span class="time" id="time">0:00 / 0:00</span>
+  </div>
+  <div class="status" id="status"></div>
+  <h2>Scenes</h2>
+  <p class="note">Untick a scene to cut it from the trailer (remembered in this browser). Scenes, words and timings live in scenes.js; each clip is filmed from the game by tools/trailer (see tools/trailer/README.md), so a shot can be filmed again on its own after the game changes.</p>
+  <div class="scenes" id="scenes"></div>
+</main>
+<script src="scenes.js"></script>
+<script>
+"use strict";
+const W = 1920, H = 1080;
+const canvas = document.getElementById("screen"), g = canvas.getContext("2d");
+const statusEl = document.getElementById("status"), timeEl = document.getElementById("time");
+
+// ---------------------------------------------------------------- the edit
+let cut = {};
+try { cut = JSON.parse(localStorage.getItem("xg-trailer-cut") || "{}"); } catch (e) { cut = {}; }
+function saveCut() { try { localStorage.setItem("xg-trailer-cut", JSON.stringify(cut)); } catch (e) {} }
+
+const videos = {}, missing = new Set();
+function videoFor(src) {
+  if (!videos[src]) {
+    const v = document.createElement("video");
+    v.src = src; v.muted = true; v.preload = "auto"; v.playsInline = true; v.crossOrigin = "anonymous";
+    v.addEventListener("error", () => { missing.add(src); renderList(); });
+    videos[src] = v;
+  }
+  return videos[src];
+}
+
+/** The scenes left in, each given its start on the timeline (a crossfade overlaps the one before). */
+function timeline() {
+  let t = 0; const out = [];
+  for (const s of TRAILER.scenes) {
+    if (s.act || cut[s.id] === false || (s.enabled === false && cut[s.id] !== true)) continue;
+    const xf = out.length ? (s.xfade || 0) : 0;
+    t -= xf;
+    out.push({ ...s, start: t, xf });
+    t += s.dur;
+  }
+  return { scenes: out, length: t };
+}
+
+function renderList() {
+  const box = document.getElementById("scenes"); box.textContent = "";
+  for (const s of TRAILER.scenes) {
+    if (s.act) { const a = document.createElement("div"); a.className = "act"; a.textContent = s.act; box.append(a); continue; }
+    const on = cut[s.id] !== undefined ? cut[s.id] : s.enabled !== false;
+    const row = document.createElement("label");
+    row.className = "scene" + (on ? "" : " off") + (s.clip && missing.has(clipSrc(s)) ? " missing" : "");
+    row.dataset.id = s.id;
+    const box2 = document.createElement("input"); box2.type = "checkbox"; box2.checked = on; box2.id = "scene-" + s.id;
+    box2.onchange = () => { cut[s.id] = box2.checked; saveCut(); renderList(); updateTime(0); };
+    const name = document.createElement("span"); name.textContent = s.id;
+    const len = document.createElement("small"); len.textContent = s.dur.toFixed(1) + " s";
+    row.append(box2, name, len); box.append(row);
+  }
+}
+const clipSrc = s => "clips/" + s.clip + ".mp4";
+
+// ---------------------------------------------------------------- sound
+let ac, master, musicBus, voiceBus, recordDest, voices = {};
+async function audioReady() {
+  if (ac) return;
+  ac = new AudioContext();
+  master = ac.createDynamicsCompressor(); master.threshold.value = -10; master.ratio.value = 4;
+  master.connect(ac.destination);
+  recordDest = ac.createMediaStreamDestination(); master.connect(recordDest);
+  musicBus = ac.createGain(); musicBus.gain.value = 0.55; musicBus.connect(master);
+  voiceBus = ac.createGain(); voiceBus.gain.value = 1.0; voiceBus.connect(master);
+  const names = new Set(TRAILER.scenes.flatMap(s => (s.vo ? [s.vo.line] : [])));
+  await Promise.all([...names].map(async n => {
+    try {
+      const r = await fetch("audio/" + n + ".wav");
+      voices[n] = await ac.decodeAudioData(await r.arrayBuffer());
+    } catch (e) { statusEl.textContent = "Voice line " + n + " couldn't load: serve this folder over http (see README)."; }
+  }));
+}
+
+const scheduled = [];
+function keep(node) { scheduled.push(node); return node; }
+
+function noiseBuffer(seconds) {
+  const b = ac.createBuffer(1, ac.sampleRate * seconds, ac.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+}
+
+/** A trailer "braam": a low brassy chord swelling in fast and dying slowly, a thud of sub under it. */
+function hit(at, size) {
+  const out = ac.createGain(); out.connect(musicBus);
+  const lp = ac.createBiquadFilter(); lp.type = "lowpass"; lp.connect(out);
+  lp.frequency.setValueAtTime(180, at); lp.frequency.linearRampToValueAtTime(1400 * size, at + 0.12); lp.frequency.exponentialRampToValueAtTime(160, at + 3.5);
+  out.gain.setValueAtTime(0, at); out.gain.linearRampToValueAtTime(0.5 * size, at + 0.05); out.gain.exponentialRampToValueAtTime(0.001, at + 4.5);
+  for (const f of [55, 55.4, 82.4, 110, 109.6]) {
+    const o = keep(ac.createOscillator()); o.type = "sawtooth"; o.frequency.value = f; o.connect(lp); o.start(at); o.stop(at + 4.6);
+  }
+  const sub = keep(ac.createOscillator()), sg = ac.createGain();
+  sub.frequency.setValueAtTime(90, at); sub.frequency.exponentialRampToValueAtTime(32, at + 0.6);
+  sg.gain.setValueAtTime(0.9 * size, at); sg.gain.exponentialRampToValueAtTime(0.001, at + 1.4);
+  sub.connect(sg); sg.connect(musicBus); sub.start(at); sub.stop(at + 1.5);
+  const n = keep(ac.createBufferSource()), ng = ac.createGain(), nf = ac.createBiquadFilter();
+  n.buffer = noiseBuffer(1); nf.type = "lowpass"; nf.frequency.value = 2500;
+  ng.gain.setValueAtTime(0.35 * size, at); ng.gain.exponentialRampToValueAtTime(0.001, at + 0.5);
+  n.connect(nf); nf.connect(ng); ng.connect(musicBus); n.start(at);
+}
+
+/** A rising whoosh of filtered noise ending exactly at a cut. */
+function riser(end, seconds) {
+  const n = keep(ac.createBufferSource()), f = ac.createBiquadFilter(), gn = ac.createGain();
+  n.buffer = noiseBuffer(seconds + 0.1); f.type = "bandpass"; f.Q.value = 6;
+  f.frequency.setValueAtTime(300, end - seconds); f.frequency.exponentialRampToValueAtTime(6000, end);
+  gn.gain.setValueAtTime(0.0001, end - seconds); gn.gain.exponentialRampToValueAtTime(0.35, end - 0.02); gn.gain.linearRampToValueAtTime(0, end);
+  n.connect(f); f.connect(gn); gn.connect(musicBus); n.start(end - seconds); n.stop(end + 0.05);
+}
+
+/**
+ * The score under the whole cut: a drone in A whose brightness follows each scene's energy, a
+ * ticking pulse once things get going, hits on the scenes that ask for one and risers into them.
+ */
+function scheduleMusic(t0, tl) {
+  const drone = ac.createGain(), lp = ac.createBiquadFilter();
+  lp.type = "lowpass"; lp.Q.value = 3; drone.connect(musicBus); lp.connect(drone);
+  drone.gain.setValueAtTime(0, t0); drone.gain.linearRampToValueAtTime(0.22, t0 + 3);
+  for (const [f, type] of [[55, "sawtooth"], [55.3, "sawtooth"], [82.6, "triangle"], [164.8, "sine"], [220.5, "sine"]]) {
+    const o = keep(ac.createOscillator()); o.type = type; o.frequency.value = f; o.connect(lp); o.start(t0); o.stop(t0 + tl.length + 6);
+  }
+  const pulse = ac.createGain(); pulse.gain.value = 0; pulse.connect(musicBus);
+  const beat = 60 / (TRAILER.bpm || 100) / 2;
+  for (const s of tl.scenes) {
+    const at = t0 + s.start, e = s.energy ?? 0.3;
+    lp.frequency.setTargetAtTime(150 + 1800 * e * e, at, 0.6);
+    if (s.hit) hit(at, s.hit === true ? 1 : s.hit);
+    if (s.riser) riser(at, s.riser);
+    if (s.silence) drone.gain.setTargetAtTime(0.02, at, 0.1), drone.gain.setTargetAtTime(0.22, at + s.silence, 0.8);
+    // (the pulse: eighth notes on a muted bass pluck, from energy 0.5 up)
+    const notes = [110, 110, 130.8, 110, 98, 110, 146.8, 130.8];
+    for (let k = 0, t = at; t < at + s.dur && e >= 0.5; k++, t += beat) {
+      const o = keep(ac.createOscillator()), env = ac.createGain(), f = ac.createBiquadFilter();
+      o.type = "square"; o.frequency.value = notes[k % 8] / (k % 2 ? 1 : 2);
+      f.type = "lowpass"; f.frequency.value = 500 + 1500 * e;
+      env.gain.setValueAtTime(0.0001, t); env.gain.exponentialRampToValueAtTime(0.11 * e, t + 0.01); env.gain.exponentialRampToValueAtTime(0.0001, t + beat * 0.9);
+      o.connect(f); f.connect(env); env.connect(musicBus); o.start(t); o.stop(t + beat);
+    }
+  }
+  drone.gain.setTargetAtTime(0, t0 + tl.length - 0.5, 1.2);
+}
+
+function scheduleVoices(t0, tl) {
+  for (const s of tl.scenes) {
+    if (!s.vo || !voices[s.vo.line]) continue;
+    const src = keep(ac.createBufferSource()); src.buffer = voices[s.vo.line];
+    const bp = ac.createBiquadFilter(); bp.type = "highpass"; bp.frequency.value = 120;
+    src.connect(bp); bp.connect(voiceBus); src.start(t0 + s.start + (s.vo.at || 0));
+    // (the music dips under the voice)
+    musicBus.gain.setTargetAtTime(0.32, t0 + s.start + (s.vo.at || 0) - 0.1, 0.15);
+    musicBus.gain.setTargetAtTime(0.55, t0 + s.start + (s.vo.at || 0) + src.buffer.duration, 0.4);
+  }
+}
+
+// ---------------------------------------------------------------- pictures
+function ease(t) { return t < 0 ? 0 : t > 1 ? 1 : t * t * (3 - 2 * t); }
+
+function drawClip(s, local, alpha) {
+  if (!s.clip) return;
+  const v = videoFor(clipSrc(s));
+  if (v.readyState < 2) return;
+  const p = s.dur > 0 ? local / s.dur : 0;
+  const [z0, z1] = s.zoom || [1.0, 1.05];
+  const z = z0 + (z1 - z0) * p;
+  const w = W * z, h = H * z;
+  const [px, py] = s.pan || [0, 0];
+  g.globalAlpha = alpha;
+  g.filter = s.grade || "none";
+  g.drawImage(v, (W - w) / 2 + px * (z - 1) * W / 2, (H - h) / 2 + py * (z - 1) * H / 2, w, h);
+  g.filter = "none";
+  g.globalAlpha = 1;
+}
+
+/** Text on the picture: title (the big statement), sub (smaller line under it), caption (subtitles for the voice). */
+function drawText(item, local) {
+  const t = local - (item.at || 0), dur = item.dur ?? 3;
+  if (t < 0 || t > dur) return;
+  const fadeIn = Math.min(0.5, dur / 4), a = Math.min(ease(t / fadeIn), ease((dur - t) / 0.4));
+  g.save(); g.globalAlpha = a; g.textAlign = "center"; g.textBaseline = "middle";
+  const style = item.style || "title";
+  const y = item.y ?? (style === "caption" ? H - 120 : H / 2);
+  if (style === "caption") {
+    g.font = "500 38px 'IBM Plex Mono', Consolas, monospace";
+    const lines = wrap(item.text, 1500);
+    lines.forEach((ln, i) => {
+      const yy = y - (lines.length - 1 - i) * 52;
+      const m = g.measureText(ln).width;
+      g.fillStyle = "rgba(0,0,0,0.55)"; g.fillRect(W / 2 - m / 2 - 18, yy - 28, m + 36, 56);
+      g.fillStyle = "#c9fbe9"; g.fillText(ln, W / 2, yy);
+    });
+    if (item.who) { g.font = "600 24px 'Chakra Petch', sans-serif"; g.fillStyle = "#6ff0c8"; g.fillText(item.who.toUpperCase(), W / 2, y - lines.length * 52 - 6); }
+  } else {
+    const size = item.size || (style === "sub" ? 46 : 104);
+    const spread = (1 - ease(t / 1.2)) * 24 + (style === "sub" ? 8 : 14);
+    if (style === "sub") {
+      // (a dark band behind the smaller words, so they read over bright screens like the results)
+      const band = g.createLinearGradient(0, y - size, 0, y + size);
+      band.addColorStop(0, "rgba(0,0,0,0)"); band.addColorStop(0.5, "rgba(0,0,0,0.55)"); band.addColorStop(1, "rgba(0,0,0,0)");
+      g.fillStyle = band; g.fillRect(0, y - size, W, size * 2);
+    }
+    g.font = (style === "sub" ? "600 " : "700 ") + size + "px 'Chakra Petch', Bahnschrift, sans-serif";
+    g.letterSpacing = spread + "px";
+    g.shadowColor = "rgba(111,240,200,0.55)"; g.shadowBlur = style === "sub" ? 12 : 30;
+    g.fillStyle = item.colour || (style === "sub" ? "#d9fff2" : "#ffffff");
+    (item.text.split("\n")).forEach((ln, i, all) => g.fillText(ln, W / 2, y + (i - (all.length - 1) / 2) * size * 1.15));
+  }
+  g.restore();
+}
+
+function wrap(text, width) {
+  const words = text.split(" "), lines = []; let line = "";
+  for (const w of words) { const next = line ? line + " " + w : w; if (g.measureText(next).width > width && line) { lines.push(line); line = w; } else line = next; }
+  if (line) lines.push(line); return lines;
+}
+
+/** The logo card: the name, built from its letters, with the scan line Xenocorp's screens have. */
+function drawLogo(local, s) {
+  const a = ease(local / 0.8) * ease((s.dur - local) / 0.6);
+  g.save(); g.globalAlpha = a; g.textAlign = "center"; g.textBaseline = "middle";
+  g.font = "700 168px 'Chakra Petch', Bahnschrift, sans-serif";
+  g.letterSpacing = (40 - 26 * ease(local / 2.5)) + "px";
+  g.shadowColor = "rgba(111,240,200,0.8)"; g.shadowBlur = 40;
+  g.fillStyle = "#ffffff"; g.fillText("XENOGUESSER", W / 2, H / 2 - 20);
+  g.shadowBlur = 0; g.letterSpacing = "10px";
+  g.font = "600 34px 'Chakra Petch', sans-serif"; g.fillStyle = "#6ff0c8";
+  if (s.tagline) g.fillText(s.tagline.toUpperCase(), W / 2, H / 2 + 110);
+  if (s.cta) { g.font = "600 40px 'Chakra Petch', sans-serif"; g.fillStyle = "#ffffff"; g.fillText(s.cta.toUpperCase(), W / 2, H / 2 + 200); }
+  g.restore();
+  const sweep = (local * 0.6) % 1.4 - 0.2;
+  const grad = g.createLinearGradient(0, H * sweep - 80, 0, H * sweep + 80);
+  grad.addColorStop(0, "rgba(111,240,200,0)"); grad.addColorStop(0.5, "rgba(111,240,200,0.06)"); grad.addColorStop(1, "rgba(111,240,200,0)");
+  g.fillStyle = grad; g.fillRect(0, 0, W, H);
+}
+
+function letterbox() {
+  const bar = TRAILER.letterbox || 0;
+  if (!bar) return;
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, bar); g.fillRect(0, H - bar, W, bar);
+}
+
+function frameAt(t, tl) {
+  g.fillStyle = "#000"; g.fillRect(0, 0, W, H);
+  const live = tl.scenes.filter(s => t >= s.start && t < s.start + s.dur + (nextXf(tl, s)));
+  for (const s of live) {
+    const local = t - s.start;
+    let alpha = s.xf ? ease(local / s.xf) : 1;
+    const out = s.fadeOut ? ease((s.dur - local) / s.fadeOut) : 1;
+    alpha *= out;
+    if (s.logo) { g.globalAlpha = 1; drawClip(s, local, 0.35 * alpha); drawLogo(local, s); }
+    else drawClip(s, local, alpha);
+  }
+  letterbox();
+  // (words may run on over the cuts after their scene, so every scene's are looked at)
+  for (const s of tl.scenes) for (const item of s.text || []) drawText(item, t - s.start);
+  for (const s of live) {
+    const local = t - s.start;
+    if (s.vo && s.vo.caption) drawText({ style: "caption", text: s.vo.caption, who: s.vo.who ?? "Xenocorp", at: s.vo.at || 0, dur: s.vo.show || (voices[s.vo.line] ? voices[s.vo.line].duration + 0.6 : 3) }, local);
+    if (s.flash) { const f = 1 - local / 0.35; if (f > 0) { g.fillStyle = "rgba(255,255,255," + f + ")"; g.fillRect(0, 0, W, H); } }
+  }
+}
+function nextXf(tl, s) { const i = tl.scenes.indexOf(s); return i + 1 < tl.scenes.length ? tl.scenes[i + 1].xf : 0; }
+
+// ---------------------------------------------------------------- playing
+let playing = null;
+
+/** Keeps each live scene's video playing from the right moment (seeking only when it has drifted). */
+function steerVideos(t, tl) {
+  for (const s of tl.scenes) {
+    if (!s.clip) continue;
+    const v = videoFor(clipSrc(s));
+    const lead = 0.6, inScene = t >= s.start - lead && t < s.start + s.dur + nextXf(tl, s);
+    if (!inScene) { if (!v.paused) v.pause(); continue; }
+    const want = (s.from || 0) + Math.max(0, t - s.start) * (s.rate || 1);
+    v.playbackRate = s.rate || 1;
+    if (t < s.start) { if (Math.abs(v.currentTime - (s.from || 0)) > 0.05) v.currentTime = s.from || 0; continue; }
+    if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
+    if (v.paused) v.play().catch(() => {});
+  }
+}
+
+async function play(recording) {
+  stop();
+  await audioReady();
+  await ac.resume();
+  await document.fonts.ready;
+  const tl = timeline();
+  statusEl.textContent = recording ? statusEl.textContent : "Loading the clips...";
+  // (every clip ready to show its first frame before the clock starts)
+  await Promise.all(tl.scenes.filter(s => s.clip).map(s => new Promise(res => {
+    const v = videoFor(clipSrc(s)); v.currentTime = s.from || 0;
+    if (v.readyState >= 2 || missing.has(clipSrc(s))) res(); else { v.addEventListener("loadeddata", res, { once: true }); v.addEventListener("error", res, { once: true }); setTimeout(res, 8000); }
+  })));
+  if (!recording) statusEl.textContent = "";
+  const t0 = ac.currentTime + 0.3;
+  scheduleMusic(t0, tl); scheduleVoices(t0, tl);
+  playing = { t0, tl, recording };
+  const step = () => {
+    if (!playing) return;
+    const t = ac.currentTime - playing.t0;
+    steerVideos(t, tl);
+    frameAt(Math.max(0, t), tl);
+    updateTime(t);
+    if (t > tl.length + 1) { finishPlay(); return; }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+function finishPlay() {
+  const rec = playing && playing.recording;
+  stop();
+  if (rec) rec.stop();
+}
+
+function stop() {
+  playing = null;
+  for (const n of scheduled.splice(0)) { try { n.stop(); } catch (e) {} }
+  if (musicBus) { musicBus.gain.cancelScheduledValues(0); musicBus.gain.value = 0.55; }
+  for (const v of Object.values(videos)) v.pause();
+}
+
+function updateTime(t) {
+  const tl = timeline(), f = s => Math.floor(s / 60) + ":" + String(Math.floor(s % 60)).padStart(2, "0");
+  timeEl.textContent = f(Math.max(0, Math.min(t, tl.length))) + " / " + f(tl.length);
+  const now = tl.scenes.find(s => t >= s.start && t < s.start + s.dur);
+  document.querySelectorAll(".scene").forEach(r => r.classList.toggle("now", !!now && r.dataset.id === now.id));
+}
+
+/** Records the trailer as it plays (picture and sound) and saves it as a video file. */
+async function exportVideo() {
+  await audioReady();
+  let stream;
+  try { stream = canvas.captureStream(30); } catch (e) { statusEl.textContent = "Export needs the page served over http (see README)."; return; }
+  stream.addTrack(recordDest.stream.getAudioTracks()[0]);
+  const types = ["video/mp4;codecs=avc1.640028,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm"];
+  const type = types.find(t => MediaRecorder.isTypeSupported(t));
+  const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 16e6 });
+  const parts = [];
+  rec.ondataavailable = e => e.data.size && parts.push(e.data);
+  rec.onstop = () => {
+    const blob = new Blob(parts, { type });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = "xenoguesser-trailer." + (type.startsWith("video/mp4") ? "mp4" : "webm"); a.click();
+    statusEl.textContent = "Exported " + a.download + " (" + (blob.size / 1e6).toFixed(1) + " MB).";
+  };
+  statusEl.textContent = "Recording: let it play to the end.";
+  rec.start(1000);
+  play(rec);
+}
+
+document.getElementById("play").onclick = () => play(null);
+document.getElementById("stage").onclick = () => (playing ? stop() : play(null));
+document.getElementById("stop").onclick = stop;
+document.getElementById("export").onclick = exportVideo;
+document.getElementById("reset").onclick = () => { cut = {}; saveCut(); renderList(); updateTime(0); };
+document.getElementById("full").onclick = () => { const st = document.getElementById("stage"); (st.requestFullscreen ? st.requestFullscreen() : Promise.reject()).catch(() => {}); };
+
+renderList();
+updateTime(0);
+for (const s of TRAILER.scenes) if (s.clip) videoFor(clipSrc(s));
+document.fonts.ready.then(() => frameAt(0.01, timeline()));
+if (location.protocol === "file:") statusEl.textContent = "Opened as a file: the voice and Export need it served over http (tools/trailer/serve.bat).";
+</script>
+</body>
+</html>

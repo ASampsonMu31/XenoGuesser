@@ -212,6 +212,10 @@ public class MapPanel extends JPanel {
     private boolean missedGuess;
 
     /** The round's clock as shown: {ms left, ms it started with, 1 if the partner's guessed already}; null when none is running. */
+    // Developer aid (filming the trailer): the round's clock held at this many ms, not counting down
+    static volatile boolean devClockHeld;
+    static volatile long devClockFrom = -1L;
+
     public long[] guessClock() {
         if (guessMsLeft < 0L || isGuessed) return null;
         return new long[] { Math.max(0L, guessMsLeft), guessMsTotal, partnerGuessedFirst ? 1L : 0L };
@@ -219,9 +223,15 @@ public class MapPanel extends JPanel {
 
     /** A tenth of a second of the round's clock: started, run down, and run out into an unguessed round. */
     private void tickClock() {
-        long now = System.nanoTime();
-        long dt = clockTicked == 0L ? 0L : (now - clockTicked) / 1_000_000L;
+        // (by the world's time, so a trailer filmed a frame at a time counts the clock down as it's seen)
+        long now = GameClock.millis();
+        long dt = clockTicked == 0L ? 0L : now - clockTicked;
         clockTicked = now;
+        if (devClockHeld) {
+            guessMsLeft = devClockFrom;
+            guessMsTotal = SINGLE_GUESS_MS;
+            return;
+        }
         if (isGuessed || mainApp == null || gameHUD == null || !mainApp.roundInPlay()) return;
         Multiplayer session = Multiplayer.active();
         if (guessMsLeft < 0L) {
@@ -644,6 +654,8 @@ public class MapPanel extends JPanel {
         float[] p = directionPixel(d);
         goalX = p[0];
         goalY = p[1];
+        // (developer aid: where the answer is, as shares of the chart's width and height, for scripted play)
+        if (Dev.ENABLED) System.out.printf(java.util.Locale.ROOT, "[MAPGOAL] %.4f %.4f%n", goalX / mapImage.getWidth(), goalY / mapImage.getHeight());
     }
 
     /** Whether what's shown now is on a globe (the results' or the map's own), rather than the flat chart. */
