@@ -5,10 +5,17 @@ voice lines (from the game's own messages) and a score made as it plays. Every p
 the game itself, filmed or recorded by the tools here. The edit is `trailer/scenes.js`: one entry
 per scene, each a module that can be cut, reordered or re-timed on its own.
 
-To watch it, run `tools/trailer/serve.bat` (the page needs a web server for its sound and Export),
-then press Play. Untick a scene on the page to try the trailer without it. **Export video** plays
-it through once and saves it as a video file (MP4 where the browser can, otherwise WebM) to upload
-to Steam.
+To watch it, run `tools/trailer/serve.bat` (the page needs a web server for Export), then press
+play. The bar under the picture can be dragged through the cut; Space plays and pauses.
+
+Below it is the sequencer: a library of every picture, title and voice line, and three tracks
+the cut is built on. Drag from the library onto a track; pictures play one after another and
+can be dragged along their track to reorder them, titles and voice lines play at the time
+they're dropped and can be dragged sideways. The cut is saved in the browser as it's edited
+(**Back to the original cut** returns to `scenes.js`'s). **Export video** plays the cut through
+once and saves it as a video file (MP4 where the browser can, otherwise WebM) to upload to
+Steam. The page's code: `engine.js` draws and scores a cut, `editor.js` is the sequence, the
+transport and the sequencer.
 
 ## When the game changes
 
