@@ -85,16 +85,19 @@ let cut = {};
 try { cut = JSON.parse(localStorage.getItem("xg-trailer-cut") || "{}"); } catch (e) { cut = {}; }
 function saveCut() { try { localStorage.setItem("xg-trailer-cut", JSON.stringify(cut)); } catch (e) {} }
 
+// Each scene has a video of its own, even where two scenes cut from the same clip: sharing one,
+// a scene about to start would seek it away from under the scene still showing it
 const videos = {}, missing = new Set();
-function videoFor(src) {
-  if (!videos[src]) {
+function videoFor(s) {
+  const src = clipSrc(s);
+  if (!videos[s.id]) {
     const v = document.createElement("video");
     v.src = src; v.muted = true; v.preload = "auto"; v.playsInline = true;
     if (!LOCAL) v.crossOrigin = "anonymous";
     v.addEventListener("error", () => { missing.add(src); renderList(); });
-    videos[src] = v;
+    videos[s.id] = v;
   }
-  return videos[src];
+  return videos[s.id];
 }
 
 /** The scenes left in, each given its start on the timeline (a crossfade overlaps the one before). */
@@ -243,10 +246,18 @@ function scheduleVoices(t0, tl) {
 // ---------------------------------------------------------------- pictures
 function ease(t) { return t < 0 ? 0 : t > 1 ? 1 : t * t * (3 - 2 * t); }
 
+const held = {};
 function drawClip(s, local, alpha) {
   if (!s.clip) return;
-  const v = videoFor(clipSrc(s));
-  if (v.readyState < 2) return;
+  const v = videoFor(s);
+  // (while a clip seeks or catches up, its last frame stays up rather than a black one)
+  const fresh = v.readyState >= 2 && !v.seeking;
+  if (fresh) {
+    if (!held[s.id]) { held[s.id] = document.createElement("canvas"); held[s.id].width = W / 2; held[s.id].height = H / 2; }
+    held[s.id].getContext("2d").drawImage(v, 0, 0, W / 2, H / 2);
+  }
+  const picture = fresh ? v : held[s.id];
+  if (!picture) return;
   const p = s.dur > 0 ? local / s.dur : 0;
   const [z0, z1] = s.zoom || [1.0, 1.05];
   const z = z0 + (z1 - z0) * p;
@@ -254,7 +265,7 @@ function drawClip(s, local, alpha) {
   const [px, py] = s.pan || [0, 0];
   g.globalAlpha = alpha;
   g.filter = s.grade || "none";
-  g.drawImage(v, (W - w) / 2 + px * (z - 1) * W / 2, (H - h) / 2 + py * (z - 1) * H / 2, w, h);
+  g.drawImage(picture, (W - w) / 2 + px * (z - 1) * W / 2, (H - h) / 2 + py * (z - 1) * H / 2, w, h);
   g.filter = "none";
   g.globalAlpha = 1;
 }
@@ -355,13 +366,14 @@ let playing = null;
 function steerVideos(t, tl) {
   for (const s of tl.scenes) {
     if (!s.clip) continue;
-    const v = videoFor(clipSrc(s));
+    const v = videoFor(s);
     const lead = 0.6, inScene = t >= s.start - lead && t < s.start + s.dur + nextXf(tl, s);
     if (!inScene) { if (!v.paused) v.pause(); continue; }
     const want = (s.from || 0) + Math.max(0, t - s.start) * (s.rate || 1);
     v.playbackRate = s.rate || 1;
+    if (v.seeking) continue;
     if (t < s.start) { if (Math.abs(v.currentTime - (s.from || 0)) > 0.05) v.currentTime = s.from || 0; continue; }
-    if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
+    if (Math.abs(v.currentTime - want) > 0.4) v.currentTime = want;
     if (v.paused) v.play().catch(() => {});
   }
 }
@@ -375,7 +387,7 @@ async function play(recording) {
   statusEl.textContent = recording ? statusEl.textContent : "Loading the clips...";
   // (every clip ready to show its first frame before the clock starts)
   await Promise.all(tl.scenes.filter(s => s.clip).map(s => new Promise(res => {
-    const v = videoFor(clipSrc(s)); v.currentTime = s.from || 0;
+    const v = videoFor(s); v.currentTime = s.from || 0;
     if (v.readyState >= 2 || missing.has(clipSrc(s))) res(); else { v.addEventListener("loadeddata", res, { once: true }); v.addEventListener("error", res, { once: true }); setTimeout(res, 8000); }
   })));
   if (!recording) statusEl.textContent = "";
@@ -448,7 +460,7 @@ document.getElementById("full").onclick = () => { const st = document.getElement
 
 renderList();
 updateTime(0);
-for (const s of TRAILER.scenes) if (s.clip) videoFor(clipSrc(s));
+for (const s of TRAILER.scenes) if (s.clip) videoFor(s);
 document.fonts.ready.then(() => frameAt(0.01, timeline()));
 if (LOCAL) statusEl.textContent = "Opened from disk: it plays, but Export needs it served (tools/trailer/serve.bat).";
 </script>

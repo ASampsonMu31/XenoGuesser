@@ -39,10 +39,9 @@ const TRAILER = {
       text: [{ text: "AN ENDLESS SUPPLY OF ALIEN PLANETS", style: "sub", at: 0.0, dur: 1.6, y: 900 }] },
 
     { act: "Read the clues" },
-    { id: "street", clip: "play-street", from: 2.6, dur: 3.4, energy: 0.6, hit: 0.7,
-      text: [{ text: "READ THE CLUES", at: 0.3, dur: 3.0 }] },
-    { id: "signs", clip: "poles", from: 1.5, dur: 2.2, xfade: 0.3, energy: 0.6,
-      text: [{ text: "ALIEN SCRIPTS", style: "sub", at: 0.2, dur: 1.9, y: 900 }] },
+    { id: "signs", clip: "poles", from: 0.6, dur: 3.4, energy: 0.6, hit: 0.7,
+      text: [{ text: "READ THE CLUES", at: 0.3, dur: 3.0 },
+             { text: "ALIEN SCRIPTS", style: "sub", at: 1.2, dur: 2.0, y: 900 }] },
     { id: "ornate", clip: "ornate", from: 2.6, dur: 2.0, xfade: 0.3, energy: 0.6,
       text: [{ text: "ARCHITECTURE", style: "sub", at: 0.2, dur: 1.7, y: 900 }] },
     { id: "bollards", clip: "bollards", from: 0.5, dur: 1.8, xfade: 0.3, energy: 0.6,

@@ -43,4 +43,3 @@ play-compass  subject=site move=play pick=2 hour=16 wet=-2 seconds=6 clock=63 ya
 play-thermo   subject=site move=play pick=3 hour=13 wet=-1 seconds=5 clock=57 do=0.3:item:1;2.0:look:15:-4
 play-altimeter subject=view:mountain move=play hour=16 wet=-2 seconds=5 clock=49 do=0.3:item:2;2.2:look:15:2
 play-kit      subject=view:bug move=play hour=14 wet=-1 seconds=6 clock=42 pitch0=-6 do=0.3:item:3;1.5:look:8:-8;4.0:look:-6:-6
-play-street   subject=view:street move=play hour=11 wet=-1 seconds=6 clock=35 yaw0=-10 do=0.3:w+;2.5:look:25:-2;4.5:look:-15:-2
