@@ -159,6 +159,8 @@ final class TrailerDirector extends GamePart {
         }
         anchor = SphereMath.atAltitude(place.place(), 0.0);
         anchorHeading = place.heading();
+        // (ahead= moves the subject on along the way it faces: onto the creature a showcase puts there)
+        if (s.settings().containsKey("ahead")) anchor = SphereMath.move(anchor, anchorHeading, s.number("ahead", 0));
         anchorGround = Math.max(game.seaLevelHeight, game.groundHeightAt(anchor));
         frames = (int) Math.round(s.number("seconds", 5) * FPS);
         game.hideFirstPerson = !"play".equals(s.get("move", "cine"));
@@ -178,8 +180,10 @@ final class TrailerDirector extends GamePart {
     /**
      * The shot's place: subject=landmark:SUMMIT (or SPIRE, STONES, RUIN, BAY, SPIT, GROVE; pick=n
      * for another of them), subject=pod (a picturesque landing site, the pod put down there),
-     * subject=site (an ordinary round's landing site, pod and all) or subject=view:herd (any of
-     * the developer views, see RoundSpawner.devViewpoint).
+     * subject=site (an ordinary round's landing site, pod and all), subject=view:herd (any of
+     * the developer views, see RoundSpawner.devViewpoint), subject=rugged (a peak standing
+     * highest over the land round it), subject=atoll (open sea scattered with steep islands) or
+     * subject=plant:3 (where that plant species grows thickest).
      */
     private Viewpoint find(Shot s, Random rand) {
         String subject = s.get("subject", "site");
@@ -196,7 +200,16 @@ final class TrailerDirector extends GamePart {
             SpherePosition ahead = SphereMath.atAltitude(new SpherePosition(at.x() + front[0], at.y() + front[1], at.z() + front[2]), SphereMath.altitude(at));
             return new Viewpoint(at, SphereMath.heading(at, ahead));
         }
+        if ("view:bug".equals(subject)) {
+            // (set on the creature the showcase puts down, facing the way the viewer would)
+            Viewpoint view = game.roundSpawner.devViewpoint("bug", rand);
+            SpherePosition creature = game.organismManager.devShowcasePlace();
+            return view == null || creature == null ? view : new Viewpoint(creature, view.heading());
+        }
         if (subject.startsWith("view:")) return game.roundSpawner.devViewpoint(subject.substring(5), rand);
+        if (subject.startsWith("plant:")) return game.devShots.plantViewpoint(rand, Integer.parseInt(subject.substring(6)));
+        if ("rugged".equals(subject)) return rugged(rand, (int) s.number("pick", 0));
+        if ("atoll".equals(subject)) return atoll(rand);
         Viewpoint site = "pod".equals(subject) ? game.devShots.picturesqueSite(rand) : game.roundSpawner.landingSite(rand);
         if (site == null) return null;
         game.landingPod.place(site.place(), site.heading(), p -> TerrainMesh.getLayeredHeight(p, game.worldNoise));
@@ -205,6 +218,85 @@ final class TrailerDirector extends GamePart {
         if ("site".equals(subject)) return site;
         SpherePosition pod = game.landingPod.frame().origin();
         return new Viewpoint(pod, SphereMath.heading(pod, site.place()));
+    }
+
+    private float heightAt(SpherePosition p) {
+        return TerrainMesh.getLayeredHeight(p, game.worldNoise);
+    }
+
+    /**
+     * A peak standing highest over the land round it (900 units out, eight ways), the pick'th
+     * best of many tried, facing the way the land falls furthest.
+     */
+    private Viewpoint rugged(Random rand, int pick) {
+        List<double[]> found = new ArrayList<>();
+        List<Viewpoint> places = new ArrayList<>();
+        for (int attempt = 0; attempt < 30000; attempt++) {
+            SpherePosition p = SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE);
+            float h = heightAt(p);
+            if (h <= game.seaLevelHeight + 50f) continue;
+            float lowest = h;
+            double down = 0;
+            for (int k = 0; k < 8; k++) {
+                float around = Math.max(game.seaLevelHeight, heightAt(SphereMath.move(p, k * Math.PI / 4, 900)));
+                if (around < lowest) {
+                    lowest = around;
+                    down = k * Math.PI / 4;
+                }
+            }
+            found.add(new double[] { h - lowest, places.size() });
+            places.add(new Viewpoint(p, down));
+        }
+        found.sort((a, b) -> Double.compare(b[0], a[0]));
+        // (picks far apart, not the same peak again)
+        List<Viewpoint> chosen = new ArrayList<>();
+        for (double[] f : found) {
+            Viewpoint v = places.get((int) f[1]);
+            boolean near = false;
+            for (Viewpoint c : chosen) near |= SphereMath.distance(c.place(), v.place()) < 5000;
+            if (!near) chosen.add(v);
+            if (chosen.size() > pick) break;
+        }
+        return chosen.isEmpty() ? null : chosen.get(Math.min(pick, chosen.size() - 1));
+    }
+
+    /**
+     * Steep little islands scattered over open sea: of many small islands tried (well above the
+     * water, with sea all round them 120 m out), the one with most others like it within 720 m,
+     * facing them, so they stand behind it in the shot.
+     */
+    private Viewpoint atoll(Random rand) {
+        List<SpherePosition> isles = new ArrayList<>();
+        for (int attempt = 0; attempt < 80000; attempt++) {
+            SpherePosition p = SphereMath.randomPlace(rand, MapProjection.CLIP_LATITUDE);
+            if (heightAt(p) < game.seaLevelHeight + 100f) continue;
+            boolean alone = true;
+            for (int k = 0; k < 12 && alone; k++) alone = heightAt(SphereMath.move(p, k * Math.PI / 6, 1200)) <= game.seaLevelHeight;
+            if (alone) isles.add(p);
+        }
+        SpherePosition best = null;
+        double bestHeading = 0;
+        int most = 0;
+        for (SpherePosition p : isles) {
+            int near = 0;
+            double ex = 0, ez = 0;
+            for (SpherePosition q : isles) {
+                double d = SphereMath.distance(p, q);
+                if (d > 2400 && d < 7200) {
+                    near++;
+                    double h = SphereMath.heading(p, q);
+                    ex += Math.cos(h);
+                    ez += Math.sin(h);
+                }
+            }
+            if (near > most) {
+                most = near;
+                best = p;
+                bestHeading = Math.atan2(ez, ex);
+            }
+        }
+        System.out.printf("[TRAILER] Atoll: %d steep islets found, %d round the best%n", isles.size(), most);
+        return best == null ? null : new Viewpoint(best, bestHeading);
     }
 
     /** The shot's day: hour=17.5 (the local hour by the sun), wet=-3 (a clear day) to 3 (a wet one). */
@@ -217,7 +309,9 @@ final class TrailerDirector extends GamePart {
         game.noonLongitude = Planet.longitude(anchor) - hourAngle;
         game.timeOfDay = (float) (0.5 + hourAngle / (2 * Math.PI));
         game.roundClockStart = game.getSeconds();
-        if (game.organismManager != null) game.organismManager.respawn();
+        // (the creatures placed afresh for the day, but for a showcase's, which that would clear)
+        boolean showcase = s.get("subject", "").equals("view:bug") || s.get("subject", "").equals("view:zoo");
+        if (game.organismManager != null && !showcase) game.organismManager.respawn();
     }
 
     // ------------------------------------------------------------------ cine shots
@@ -255,6 +349,10 @@ final class TrailerDirector extends GamePart {
         if ("herd".equals(shot().get("look", "subject")) && game.organismManager != null) {
             SpherePosition herd = game.organismManager.nearestHerd(eye);
             if (herd != null) target = herd;
+        }
+        // (look=creature follows the showcase's creature as it wanders)
+        if ("creature".equals(shot().get("look", "subject")) && game.organismManager.devShowcasePlace() != null) {
+            target = game.organismManager.devShowcasePlace();
         }
         target = SphereMath.atAltitude(target, Math.max(game.seaLevelHeight, game.groundHeightAt(target)) + lift);
         game.camera.setSphereView(eye, 0f, 0f);

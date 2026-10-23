@@ -1,0 +1,18 @@
+# More of the trailer's shots (see shots.txt for the settings): mountains, an atoll, plants and creatures.
+peaks-1       subject=rugged pick=0 hour=16.5 wet=-3 seconds=6 from=-20,1500,-250 to=25,1300,-150 aim=-150,-100
+peaks-2       subject=rugged pick=1 hour=8 wet=-3 seconds=6 from=0,700,-350 to=0,350,60 aim=-120,-60
+peaks-3       subject=rugged pick=2 hour=17.5 wet=-3 seconds=6 from=150,1600,-100 to=110,1400,0 aim=-200,-150
+# (looks at the ground too much)
+# peak-top    subject=rugged pick=0 move=play hour=16.5 wet=-3 seconds=6 clock=66 pitch0=-8 do=0.5:look:-50:-6;3.2:look:30:-10
+atoll-high    subject=atoll hour=16.5 wet=-3 seconds=7 from=195,3200,600 to=165,2600,380 aim=0
+atoll-low     subject=atoll hour=17 wet=-3 seconds=6 from=190,2200,40 to=165,1800,30 aim=60
+plant-0       subject=plant:0 hour=10 wet=-2 seconds=4 from=180,40,14 to=180,10,18 look=ahead pitch=2,4
+plant-1       subject=plant:1 hour=10 wet=-2 seconds=4 from=180,40,14 to=180,10,18 look=ahead pitch=2,4
+plant-2       subject=plant:2 hour=10 wet=-2 seconds=4 from=180,40,14 to=180,10,18 look=ahead pitch=2,4
+plant-3       subject=plant:3 hour=10 wet=-2 seconds=4 from=180,40,14 to=180,10,18 look=ahead pitch=2,4
+plant-4       subject=plant:4 hour=10 wet=-2 seconds=4 from=180,40,14 to=180,10,18 look=ahead pitch=2,4
+plant-5       subject=plant:5 hour=10 wet=-2 seconds=4 from=180,40,14 to=180,10,18 look=ahead pitch=2,4
+beast-0       subject=view:bug pick=0 look=creature hour=11 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8
+beast-1       subject=view:bug pick=1 look=creature hour=15 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8
+beast-2       subject=view:bug pick=2 look=creature hour=9 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8
+beast-3       subject=view:bug pick=3 look=creature hour=16 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8

@@ -18,6 +18,8 @@ the page.
 | Clips | Made by | Remake with |
 |---|---|---|
 | Landscapes, landmarks, towns, creatures, gameplay with the HUD and gadgets (`pod-*`, `spire`, `play-*`...) | `shots.txt`, filmed a frame at a time by `TrailerDirector` | `tools/trailer/film.sh tools/trailer/shots.txt <frames dir> 123 [shot,shot]` |
+| Mountains, the island, flora, creatures (`peaks-*`, `atoll-*`, `plant-*`, `beast-*`) | `shots-more.txt`, filmed the same way | `tools/trailer/film.sh tools/trailer/shots-more.txt <frames dir> 123 [shot,shot]` |
+| The spinning planets (`trailer/globes/globes.js`) | `TrailerGlobes`: each seed's globe as its landing pod sees it, and its name | `java -cp "target/classes;$(cat target/classpath.txt)" TrailerGlobes trailer/globes 123 7 42 ...` |
 | The other planets (`world-1`..`world-4`) | `worlds.txt`, one shot per seed | `tools/trailer/film.sh tools/trailer/worlds.txt <frames dir> <seed>`, then name the clip `world-N` |
 | The shop, the map, guessing and results (`shop-*`, `map-guess`) | `gameplay.txt`, played in real time with the mouse and keys | `python tools/trailer/record.py tools/trailer/gameplay.txt <frames dir> -- -Dxenoguesser.hudtest=firstshop` |
 | Multiplayer (`mp-*`) | `multiplayer.txt`, two game windows on this PC | see the switches at the top of `multiplayer.txt` |
@@ -27,7 +29,9 @@ Then `python tools/trailer/encode.py <frames dir> trailer/clips [shot ...]` make
 `python tools/trailer/voice.py` if the messages change.
 
 While filming or recording, the game's window opens; leave the PC alone until it closes (the
-recordings drive the real mouse and keyboard).
+recordings drive the real mouse and keyboard, and type into whatever window is in front if the
+game's isn't). Don't compile while a film runs: the running game loads classes as it goes, and
+finds them half rebuilt.
 
 ## How the filming works
 

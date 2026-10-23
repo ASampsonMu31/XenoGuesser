@@ -69,6 +69,7 @@ p.note { color: var(--dim); max-width: 75ch; margin: 0; }
   <p class="note">Untick a scene to cut it from the trailer (remembered in this browser). Scenes, words and timings live in scenes.js; each clip is filmed from the game by tools/trailer (see tools/trailer/README.md), so a shot can be filmed again on its own after the game changes.</p>
   <div class="scenes" id="scenes"></div>
 </main>
+<script src="globes/globes.js"></script>
 <script src="scenes.js"></script>
 <script>
 "use strict";
@@ -331,6 +332,86 @@ function drawLogo(local, s) {
   g.fillStyle = grad; g.fillRect(0, 0, W, H);
 }
 
+// ---------------------------------------------------------------- the planets
+// Each world's globe as its landing pod sees it (globes/globes.js, made from the game by
+// TrailerGlobes), spun here: its pixels, read once
+const planets = [];
+if (typeof GLOBES !== "undefined") {
+  for (const gl of GLOBES) {
+    const img = new Image();
+    const planet = { ...gl, pixels: null, w: 0, h: 0 };
+    img.onload = () => {
+      const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+      const x = c.getContext("2d"); x.drawImage(img, 0, 0);
+      planet.pixels = new Uint32Array(x.getImageData(0, 0, img.width, img.height).data.buffer);
+      planet.w = img.width; planet.h = img.height;
+    };
+    img.src = gl.picture;
+    planets.push(planet);
+  }
+}
+const GLOBE_PX = 200;
+const globeCanvas = document.createElement("canvas"); globeCanvas.width = globeCanvas.height = GLOBE_PX;
+const globeG = globeCanvas.getContext("2d"), globeImage = globeG.createImageData(GLOBE_PX, GLOBE_PX);
+const globePixels = new Uint32Array(globeImage.data.buffer);
+
+/** One planet drawn as a lit sphere turned by spin (radians), its axis tipped by tilt. */
+function paintGlobe(planet, spin, tilt) {
+  const n = GLOBE_PX, ct = Math.cos(tilt), st = Math.sin(tilt);
+  const lx = -0.55, ly = 0.45, lz = 0.7;
+  for (let j = 0; j < n; j++) {
+    const y = 1 - (j + 0.5) / n * 2;
+    for (let i = 0; i < n; i++) {
+      const x = (i + 0.5) / n * 2 - 1, rr = x * x + y * y, k = j * n + i;
+      if (rr > 1) { globePixels[k] = 0; continue; }
+      const z = Math.sqrt(1 - rr);
+      const yy = y * ct - z * st, zz = y * st + z * ct;
+      const lat = Math.asin(yy), lon = Math.atan2(x, zz) + spin;
+      let u = ((lon / (2 * Math.PI)) % 1 + 1) % 1;
+      const px = Math.min(planet.w - 1, (u * planet.w) | 0), py = Math.min(planet.h - 1, ((0.5 - lat / Math.PI) * planet.h) | 0);
+      const c = planet.pixels[py * planet.w + px];
+      const light = 0.22 + 0.9 * Math.max(0, x * lx + y * ly + z * lz) + 0.25 * Math.pow(1 - z, 3);
+      const rch = Math.min(255, (c & 255) * light), gch = Math.min(255, ((c >> 8) & 255) * light), bch = Math.min(255, ((c >> 16) & 255) * light);
+      globePixels[k] = 0xff000000 | (bch << 16) | (gch << 8) | rch;
+    }
+  }
+  globeG.putImageData(globeImage, 0, 0);
+  return globeCanvas;
+}
+
+// A fixed field of stars behind the planets
+const stars = Array.from({ length: 260 }, (_, i) => [((i * 7919) % 1920), ((i * 104729) % 1080), ((i * 31) % 7) / 6]);
+
+/** The planets scene: the worlds appear one after another, each turning, named under it. */
+function drawGlobes(local, s) {
+  g.fillStyle = "#03050a"; g.fillRect(0, 0, W, H);
+  for (const [x, y, b] of stars) { g.fillStyle = "rgba(220,235,255," + (0.25 + 0.6 * b) + ")"; g.fillRect(x, y, 1 + b * 1.5, 1 + b * 1.5); }
+  const shown = planets.filter(p => p.pixels).slice(0, s.globes);
+  const cols = Math.ceil(shown.length / 2), size = 220, gapX = (W - 260) / cols;
+  shown.forEach((planet, i) => {
+    const appear = (local - 0.25 - i * 0.16) / 0.45;
+    if (appear <= 0) return;
+    const a = Math.min(1, appear), pop = a < 1 ? 1 + 0.12 * Math.sin(a * Math.PI) : 1;
+    const row = i % 2, col = (i / 2) | 0;
+    // (two rows, the lower one offset half a step, with a band between them for the words)
+    const cx = 130 + gapX * (col + 0.5) + (row ? gapX * 0.15 : -gapX * 0.15), cy = row ? 790 : 260;
+    const r = size / 2 * a * pop;
+    const spin = local * (0.35 + (i % 5) * 0.09) + i * 1.7, tilt = 0.2 + (i % 4) * 0.12;
+    // (a thin haze round each, in its sea's colour)
+    const sea = planet.pixels[0], sr = sea & 255, sg = (sea >> 8) & 255, sb = (sea >> 16) & 255;
+    const halo = g.createRadialGradient(cx, cy, r * 0.95, cx, cy, r * 1.25);
+    halo.addColorStop(0, `rgba(${sr},${sg},${sb},0.45)`); halo.addColorStop(1, `rgba(${sr},${sg},${sb},0)`);
+    g.fillStyle = halo; g.fillRect(cx - r * 1.3, cy - r * 1.3, r * 2.6, r * 2.6);
+    g.drawImage(paintGlobe(planet, spin, tilt), cx - r, cy - r, r * 2, r * 2);
+    g.save(); g.globalAlpha = Math.min(1, appear * 1.5); g.textAlign = "center";
+    g.font = "600 30px 'Chakra Petch', sans-serif"; g.letterSpacing = "6px"; g.fillStyle = "#e9fff7";
+    g.fillText(planet.name.toUpperCase(), cx, cy + size / 2 + 46);
+    g.font = "400 18px 'IBM Plex Mono', monospace"; g.letterSpacing = "2px"; g.fillStyle = "#6ff0c8";
+    g.fillText("SEED " + planet.seed, cx, cy + size / 2 + 72);
+    g.restore();
+  });
+}
+
 function letterbox() {
   const bar = TRAILER.letterbox || 0;
   if (!bar) return;
@@ -345,7 +426,8 @@ function frameAt(t, tl) {
     let alpha = s.xf ? ease(local / s.xf) : 1;
     const out = s.fadeOut ? ease((s.dur - local) / s.fadeOut) : 1;
     alpha *= out;
-    if (s.logo) { g.globalAlpha = 1; drawClip(s, local, 0.35 * alpha); drawLogo(local, s); }
+    if (s.globes) { g.save(); g.globalAlpha = alpha; drawGlobes(local, s); g.restore(); }
+    else if (s.logo) { g.globalAlpha = 1; drawClip(s, local, 0.35 * alpha); drawLogo(local, s); }
     else drawClip(s, local, alpha);
   }
   letterbox();
