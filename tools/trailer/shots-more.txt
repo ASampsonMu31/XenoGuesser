@@ -16,3 +16,4 @@ beast-0       subject=view:bug pick=0 look=creature hour=11 wet=-2 seconds=5 fro
 beast-1       subject=view:bug pick=1 look=creature hour=15 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8
 beast-2       subject=view:bug pick=2 look=creature hour=9 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8
 beast-3       subject=view:bug pick=3 look=creature hour=16 wet=-2 seconds=5 from=200,75,16 to=150,55,13 aim=8
+identify      subject=view:bug ahead=-45 move=play hour=11 wet=-2 seconds=6 clock=78 pitch0=-10 do=0.4:item:3;3.0:look:6:-12

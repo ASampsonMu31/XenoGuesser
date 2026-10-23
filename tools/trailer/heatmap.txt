@@ -1,0 +1,33 @@
+# The trailer's "line it up with the map" (record.py): the identification kit names a creature,
+# then the map's heatmap of where that species lives is shown. The species' row in the list is
+# chosen by hand from the screenshot "list" (write "x y" into <out dir>/row.txt). Run with
+#   -- -Dxenoguesser.hudtest=film -Dxenoguesser.view=bug -Dxenoguesser.unlockall=true
+waitlog [LOADING] World ready
+sleep 4
+front
+rec heat-identify
+sleep 1.2
+key 4
+sleep 4.0
+key 4
+sleep 0.5
+key m
+sleep 1.2
+cursor on
+move 0.534 0.906 0.7
+sleep 0.2
+click
+sleep 0.8
+move 0.53 0.75 0.4
+wheel -8
+sleep 0.8
+stop
+shot list
+front
+rec heat-show
+waitclick row.txt
+sleep 2.5
+movegoal 0.03 -0.02 1.2
+sleep 2.5
+stop
+shot after

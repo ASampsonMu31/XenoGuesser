@@ -19,7 +19,9 @@ Script lines (# comments):
   wheel <notches>
   partner               start a second game (multiplayer's other player) with the switches after ++
   cursor on|off          draw the mouse pointer into the recording (when it's free, over the map or shop)
-  front                 bring the recorded game's window to the front again
+  front                 bring the recorded game's window to the front (stops if it can't)
+  waitclick <file>      wait for a file holding "x y" (shares of the screen, written by hand
+                        while looking at a shot), then move there and click
   maprect <x0> <y0> <x1> <y1>   where the big map's chart is on screen (shares), for movegoal
   movegoal <du> <dv> [s]        the mouse to the round's answer on the chart (as the game's log
                                 gives it), off by du, dv shares of the chart
@@ -183,6 +185,12 @@ def front(pid):
         user32.keybd_event(0x12, 0, 0, 0)
         user32.SetForegroundWindow(max(found)[1])
         user32.keybd_event(0x12, 0, 2, 0)
+    time.sleep(0.5)
+    # (never type or click into some other window: stop if the game's still not in front)
+    owner = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(owner))
+    if owner.value != pid:
+        raise SystemExit("The game's window couldn't be brought to the front; stopped before any input")
 
 
 def launch(out, extra, name="log.txt"):
@@ -254,6 +262,15 @@ def main():
                 key_up(args[0])
             elif op == "partner":
                 partner, _ = launch(out, partner_extra, "partner_log.txt")
+            elif op == "waitclick":
+                while not os.path.exists(os.path.join(out, args[0])):
+                    if game.poll() is not None:
+                        raise SystemExit("The game ended while waiting for " + args[0])
+                    time.sleep(0.5)
+                x, y = (float(v) for v in open(os.path.join(out, args[0])).read().split())
+                move(x, y, 0.7)
+                time.sleep(0.25)
+                click()
             elif op == "cursor":
                 rec.cursor = args[0] == "on"
             elif op == "front":

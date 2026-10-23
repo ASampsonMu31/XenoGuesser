@@ -58,6 +58,11 @@ const TRAILER = {
       text: [{ text: "ALIEN FLORA", style: "sub", at: 0.2, dur: 2.3, y: 900 }] },
     { id: "wildlife", clip: "beast-2", from: 1.2, dur: 3.0, xfade: 0.3, energy: 0.6,
       text: [{ text: "AND THE WILDLIFE", style: "sub", at: 0.2, dur: 2.6, y: 900 }] },
+    { id: "identify", clip: "identify", from: 1.0, dur: 2.8, xfade: 0.3, energy: 0.62,
+      text: [{ text: "IDENTIFY WHAT YOU FIND", style: "sub", at: 0.3, dur: 2.4, y: 140 }] },
+    // (the map's heatmap of where one species lives, picked from the list: tools/trailer/heatmap.txt)
+    { id: "heatmap", clip: "heat-show", from: 14.2, dur: 5.6, energy: 0.62, zoom: [1.5, 1.56], pan: [-1, -0.35],
+      text: [{ text: "THEN LINE IT UP WITH YOUR MAPS", style: "sub", at: 0.6, dur: 4.6, y: 110 }] },
     { id: "guess", clip: "map-guess", from: 0.6, dur: 5.8, energy: 0.65, hit: 0.7,
       text: [{ text: "PIN YOUR GUESS ON THE MAP", style: "sub", at: 0.2, dur: 3.0, y: 140 }] },
     { id: "results", clip: "map-guess", from: 7.4, dur: 4.4, xfade: 0.3, energy: 0.65, zoom: [1.3, 1.36], pan: [0, -0.5],
