@@ -8,9 +8,10 @@
 //   zoom    [start, end] slow push on the picture; pan: [x, y] drift while zoomed (-1..1)
 //   energy  0..1, how hard the score drives under it; hit: a "braam" as it starts (or its size)
 //   riser   seconds of rising whoosh into its start; flash: a white flash on the cut
-//   text    words on screen: { text, style: title|sub, at, dur, y, size }
-//   vo      a Xenocorp line (trailer/audio, cut by tools/trailer/voice.py) with its subtitle:
-//           { line, at, caption }
+//   text    words on screen: { text, style: title|sub, at, dur, y, size }, in the middle of the
+//           screen unless y says otherwise (only where the game's own words fill the middle)
+//   vo      a Xenocorp line (trailer/audio, cut by tools/trailer/voice.py) and its subtitle,
+//           shown only with the page's Subtitles on: { line, at, caption }
 //   logo    the XenoGuesser title card over the clip, with tagline and cta
 const TRAILER = {
   bpm: 100,
@@ -26,16 +27,16 @@ const TRAILER = {
 
     { act: "Endless worlds" },
     { id: "vista", clip: "spit", from: 0.5, dur: 3.2, energy: 0.45, riser: 1.2, hit: 0.8,
-      text: [{ text: "EVERY PLANET IS BUILT FROM NOTHING", style: "sub", at: 0.3, dur: 2.8, y: 900 }] },
-    { id: "peaks", clip: "peaks-1", from: 0.6, dur: 3.4, xfade: 0.4, energy: 0.5,
-      text: [{ text: "SOARING MOUNTAINS", style: "sub", at: 0.4, dur: 2.6, y: 960 }] },
-    { id: "stones", clip: "stones", from: 1, dur: 2.4, xfade: 0.4, energy: 0.5 },
-    { id: "spire", clip: "spire", from: 1, dur: 2.4, xfade: 0.4, energy: 0.5,
-      text: [{ text: "ITS OWN LANDS. ITS OWN NATIONS. ITS OWN LIFE.", style: "sub", at: 0.2, dur: 4.4, y: 900 }] },
-    { id: "ruin", clip: "ruin", from: 1, dur: 2.4, xfade: 0.4, energy: 0.5 },
-    { id: "crest", clip: "peaks-2", from: 2.2, dur: 3.2, xfade: 0.4, energy: 0.5 },
+      text: [{ text: "EVERY PLANET IS BUILT FROM NOTHING", style: "sub", at: 0.3, dur: 2.8 }] },
+    { id: "peaks", clip: "peaks-1", from: 0.6, dur: 3.0, xfade: 0.4, energy: 0.5,
+      text: [{ text: "SOARING MOUNTAINS", style: "sub", at: 0.4, dur: 5.2 }] },
+    { id: "crest", clip: "peaks-2", from: 2.2, dur: 3.0, xfade: 0.4, energy: 0.5 },
     { id: "island", clip: "atoll-low", from: 2.6, dur: 3.0, xfade: 0.4, energy: 0.5,
-      text: [{ text: "LONELY ISLANDS", style: "sub", at: 0.3, dur: 2.4, y: 960 }] },
+      text: [{ text: "LONELY ISLANDS", style: "sub", at: 0.3, dur: 2.4 }] },
+    { id: "spire", clip: "spire", from: 1, dur: 2.4, xfade: 0.4, energy: 0.5,
+      text: [{ text: "ITS OWN LANDS. ITS OWN NATIONS. ITS OWN LIFE.", style: "sub", at: 0.2, dur: 6.0 }] },
+    { id: "stones", clip: "stones", from: 1, dur: 2.4, xfade: 0.4, energy: 0.5 },
+    { id: "ruin", clip: "ruin", from: 1, dur: 2.4, xfade: 0.4, energy: 0.5 },
     // (the planets as their landing pods see them, from globes/globes.js: one per seed)
     { id: "planets", globes: 12, dur: 6.4, xfade: 0.4, energy: 0.55, hit: 0.6,
       text: [{ text: "NO TWO WORLDS ALIKE", at: 1.6, dur: 2.4, y: 530, size: 80 },
@@ -47,24 +48,24 @@ const TRAILER = {
     { act: "Read the clues" },
     { id: "signs", clip: "poles", from: 0.6, dur: 3.4, energy: 0.6, hit: 0.7,
       text: [{ text: "READ THE CLUES", at: 0.3, dur: 3.0 },
-             { text: "ALIEN SCRIPTS", style: "sub", at: 1.2, dur: 2.0, y: 900 }] },
-    { id: "ornate", clip: "ornate", from: 2.6, dur: 2.0, xfade: 0.3, energy: 0.6,
-      text: [{ text: "ARCHITECTURE", style: "sub", at: 0.2, dur: 1.7, y: 900 }] },
+             { text: "ALIEN SCRIPTS", style: "sub", at: 1.2, dur: 2.0, y: 650 }] },
+    { id: "ornate", clip: "ornate", from: 0.8, dur: 2.4, xfade: 0.3, energy: 0.6,
+      text: [{ text: "ARCHITECTURE", style: "sub", at: 0.2, dur: 1.7 }] },
     { id: "bollards", clip: "bollards", from: 0.5, dur: 1.8, xfade: 0.3, energy: 0.6,
-      text: [{ text: "ROADSIDE DETAILS", style: "sub", at: 0.2, dur: 1.5, y: 900 }] },
-    { id: "shopfront", clip: "shopfront", from: 0.3, dur: 2.0, xfade: 0.3, energy: 0.6,
-      text: [{ text: "LOCAL GOODS", style: "sub", at: 0.2, dur: 1.7, y: 900 }] },
+      text: [{ text: "ROADSIDE DETAILS", style: "sub", at: 0.2, dur: 1.5 }] },
+    { id: "shopfront", clip: "shopfront", from: 1.6, dur: 2.4, xfade: 0.3, energy: 0.6,
+      text: [{ text: "LOCAL GOODS", style: "sub", at: 0.2, dur: 1.7 }] },
     { id: "flora", clip: "plant-1", from: 0.3, dur: 2.6, xfade: 0.3, energy: 0.6,
-      text: [{ text: "ALIEN FLORA", style: "sub", at: 0.2, dur: 2.3, y: 900 }] },
+      text: [{ text: "ALIEN FLORA", style: "sub", at: 0.2, dur: 2.3 }] },
     { id: "wildlife", clip: "beast-2", from: 1.2, dur: 3.0, xfade: 0.3, energy: 0.6,
-      text: [{ text: "AND THE WILDLIFE", style: "sub", at: 0.2, dur: 2.6, y: 900 }] },
+      text: [{ text: "AND THE WILDLIFE", style: "sub", at: 0.2, dur: 2.6 }] },
     { id: "identify", clip: "identify", from: 1.0, dur: 2.8, xfade: 0.3, energy: 0.62,
-      text: [{ text: "IDENTIFY WHAT YOU FIND", style: "sub", at: 0.3, dur: 2.4, y: 140 }] },
+      text: [{ text: "IDENTIFY WHAT YOU FIND", style: "sub", at: 0.3, dur: 2.4 }] },
     // (the map's heatmap of where one species lives, picked from the list: tools/trailer/heatmap.txt)
     { id: "heatmap", clip: "heat-show", from: 14.2, dur: 5.6, energy: 0.62, zoom: [1.5, 1.56], pan: [-1, -0.35],
-      text: [{ text: "THEN LINE IT UP WITH YOUR MAPS", style: "sub", at: 0.6, dur: 4.6, y: 110 }] },
+      text: [{ text: "THEN LINE IT UP WITH YOUR MAPS", style: "sub", at: 0.6, dur: 4.6 }] },
     { id: "guess", clip: "map-guess", from: 0.6, dur: 5.8, energy: 0.65, hit: 0.7,
-      text: [{ text: "PIN YOUR GUESS ON THE MAP", style: "sub", at: 0.2, dur: 3.0, y: 140 }] },
+      text: [{ text: "PIN YOUR GUESS ON THE MAP", style: "sub", at: 0.2, dur: 3.0 }] },
     { id: "results", clip: "map-guess", from: 7.4, dur: 4.4, xfade: 0.3, energy: 0.65, zoom: [1.3, 1.36], pan: [0, -0.5],
       text: [{ text: "THE CLOSER YOU ARE, THE MORE YOU EARN", style: "sub", at: 0.3, dur: 3.6, y: 1010 }] },
 
@@ -75,13 +76,13 @@ const TRAILER = {
     { id: "thermometer", clip: "play-thermo", from: 0.6, dur: 2.0, xfade: 0.3, energy: 0.65 },
     { id: "altimeter", clip: "play-altimeter", enabled: false, from: 0.6, dur: 1.9, xfade: 0.3, energy: 0.65 },
     { id: "shop", clip: "shop-after", from: 5.4, dur: 4.2, energy: 0.6, hit: 0.6,
-      text: [{ text: "UNLOCK NEW MAPS", at: 0.2, dur: 2.0, y: 140, size: 84 },
-             { text: "SPEND YOUR EARNINGS", style: "sub", at: 0.4, dur: 3.4, y: 1010 }],
+      text: [{ text: "UNLOCK NEW MAPS", at: 0.2, dur: 2.0 },
+             { text: "SPEND YOUR EARNINGS", style: "sub", at: 0.6, dur: 3.2, y: 650 }],
       vo: { line: "vo-equipment", at: 0.1, caption: "All further equipment must be purchased from your own earnings." } },
 
     { act: "Xenocorp" },
     { id: "targets", clip: "tower", dur: 4.6, energy: 0.3, silence: 0.8, hit: 0.9,
-      text: [{ text: "MEET YOUR TARGETS", at: 0.3, dur: 4.0, y: 160 }],
+      text: [{ text: "MEET YOUR TARGETS", at: 0.3, dur: 4.0 }],
       vo: { line: "vo-targets", at: 0.2, caption: "Only employees that successfully meet their assigned productivity targets will be retained." } },
     { id: "airlock", clip: "shore", dur: 3.4, xfade: 0.5, energy: 0.3,
       vo: { line: "vo-airlock", at: 0.1, caption: "Departing employees will instead be released via the airlock." } },

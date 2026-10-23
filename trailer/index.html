@@ -38,6 +38,7 @@ button {
 button:hover { border-color: var(--accent); }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button.primary { background: var(--accent); color: #031410; border-color: var(--accent); }
+.toggle { display: flex; gap: 6px; align-items: center; color: var(--dim); font: 600 13px var(--display); letter-spacing: .08em; text-transform: uppercase; cursor: pointer; }
 .time { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
 .status { color: var(--warn); min-height: 1.5em; }
 h2 { font: 600 13px var(--display); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 8px 0 0; }
@@ -62,6 +63,7 @@ p.note { color: var(--dim); max-width: 75ch; margin: 0; }
     <button id="full">Fullscreen</button>
     <button id="export">Export video</button>
     <button id="reset">Restore all scenes</button>
+    <label class="toggle"><input type="checkbox" id="subtitles"> Subtitles</label>
     <span class="time" id="time">0:00 / 0:00</span>
   </div>
   <div class="status" id="status"></div>
@@ -82,6 +84,9 @@ const canvas = document.getElementById("screen"), g = canvas.getContext("2d");
 const statusEl = document.getElementById("status"), timeEl = document.getElementById("time");
 
 // ---------------------------------------------------------------- the edit
+// The voice's subtitles: off unless chosen (for viewers who need them; Steam has its own)
+let subtitles = false;
+try { subtitles = localStorage.getItem("xg-trailer-subtitles") === "1"; } catch (e) {}
 let cut = {};
 try { cut = JSON.parse(localStorage.getItem("xg-trailer-cut") || "{}"); } catch (e) { cut = {}; }
 function saveCut() { try { localStorage.setItem("xg-trailer-cut", JSON.stringify(cut)); } catch (e) {} }
@@ -435,7 +440,7 @@ function frameAt(t, tl) {
   for (const s of tl.scenes) for (const item of s.text || []) drawText(item, t - s.start);
   for (const s of live) {
     const local = t - s.start;
-    if (s.vo && s.vo.caption) drawText({ style: "caption", text: s.vo.caption, who: s.vo.who ?? "Xenocorp", at: s.vo.at || 0, dur: s.vo.show || (voices[s.vo.line] ? voices[s.vo.line].duration + 0.6 : 3) }, local);
+    if (subtitles && s.vo && s.vo.caption) drawText({ style: "caption", text: s.vo.caption, who: s.vo.who ?? "Xenocorp", at: s.vo.at || 0, dur: s.vo.show || (voices[s.vo.line] ? voices[s.vo.line].duration + 0.6 : 3) }, local);
     if (s.flash) { const f = 1 - local / 0.35; if (f > 0) { g.fillStyle = "rgba(255,255,255," + f + ")"; g.fillRect(0, 0, W, H); } }
   }
 }
@@ -540,6 +545,9 @@ document.getElementById("export").onclick = exportVideo;
 document.getElementById("reset").onclick = () => { cut = {}; saveCut(); renderList(); updateTime(0); };
 document.getElementById("full").onclick = () => { const st = document.getElementById("stage"); (st.requestFullscreen ? st.requestFullscreen() : Promise.reject()).catch(() => {}); };
 
+const subtitlesBox = document.getElementById("subtitles");
+subtitlesBox.checked = subtitles;
+subtitlesBox.onchange = () => { subtitles = subtitlesBox.checked; try { localStorage.setItem("xg-trailer-subtitles", subtitles ? "1" : "0"); } catch (e) {} };
 renderList();
 updateTime(0);
 for (const s of TRAILER.scenes) if (s.clip) videoFor(s);

@@ -152,16 +152,24 @@ final class TrailerDirector extends GamePart {
         Shot s = shot();
         folder = new File(Dev.property("xenoguesser.trailerout", "trailer_frames"), s.name());
         Random rand = new Random(game.worldSeed * 31 + (long) s.number("pick", 0) * 7919 + s.name().hashCode());
-        Viewpoint place = find(s, rand);
-        if (place == null) {
-            System.out.println("[TRAILER] Nothing found for " + s.name() + ", skipped");
-            return;
+        // (another place found while the camera's path would run through a building, as the
+        // buildings map has them: a camera inside a wall looks broken, not alien)
+        for (int attempt = 0; ; attempt++) {
+            Viewpoint place = find(s, rand);
+            if (place == null) {
+                System.out.println("[TRAILER] Nothing found for " + s.name() + ", skipped");
+                return;
+            }
+            anchor = SphereMath.atAltitude(place.place(), 0.0);
+            anchorHeading = place.heading();
+            // (ahead= moves the subject on along the way it faces: onto the creature a showcase puts there)
+            if (s.settings().containsKey("ahead")) anchor = SphereMath.move(anchor, anchorHeading, s.number("ahead", 0));
+            anchorGround = Math.max(game.seaLevelHeight, game.groundHeightAt(anchor));
+            if (pathClear(s) || attempt >= 40) {
+                if (attempt > 0) System.out.printf("[TRAILER] %s: %d places tried for a path clear of buildings%n", s.name(), attempt + 1);
+                break;
+            }
         }
-        anchor = SphereMath.atAltitude(place.place(), 0.0);
-        anchorHeading = place.heading();
-        // (ahead= moves the subject on along the way it faces: onto the creature a showcase puts there)
-        if (s.settings().containsKey("ahead")) anchor = SphereMath.move(anchor, anchorHeading, s.number("ahead", 0));
-        anchorGround = Math.max(game.seaLevelHeight, game.groundHeightAt(anchor));
         frames = (int) Math.round(s.number("seconds", 5) * FPS);
         game.hideFirstPerson = !"play".equals(s.get("move", "cine"));
         setDay(s, rand);
@@ -297,6 +305,15 @@ final class TrailerDirector extends GamePart {
         }
         System.out.printf("[TRAILER] Atoll: %d steep islets found, %d round the best%n", isles.size(), most);
         return best == null ? null : new Viewpoint(best, bestHeading);
+    }
+
+    /** Whether the camera's path (or a play shot's standing place) keeps 1.5 m clear of every building. */
+    private boolean pathClear(Shot s) {
+        if ("play".equals(s.get("move", "cine"))) return !game.infraManager.isBuildingLocation(anchor, 15f);
+        for (int i = 0; i <= 10; i++) {
+            if (game.infraManager.isBuildingLocation(eyeAt(i / 10.0), 15f)) return false;
+        }
+        return true;
     }
 
     /** The shot's day: hour=17.5 (the local hour by the sun), wet=-3 (a clear day) to 3 (a wet one). */
