@@ -37,7 +37,7 @@ try {
   if (saved && saved.pictures) {
     sequence = {
       pictures: saved.pictures.filter(p => LIB.pictures[p.id]),
-      titles: saved.titles.filter(p => LIB.titles[p.key]),
+      titles: saved.titles.filter(p => LIB.titles[p.key] || p.key === "custom"),
       voices: saved.voices.filter(p => LIB.voices[p.key]),
     };
   }
@@ -62,6 +62,18 @@ function videoFor(s) {
   return videos[key];
 }
 
+// A title written in the editor, before it's been given its own words
+const NEW_TITLE = { text: "YOUR WORDS HERE", style: "title", dur: 2.5 };
+// What a title's entry in the cut may change of the one it came from
+const TITLE_FIELDS = ["text", "style", "dur", "y"];
+/** A title as it plays: the library's (or a new one's), with whatever's been changed in the editor. */
+function titleOf(p, index) {
+  const title = { ...(LIB.titles[p.key] || NEW_TITLE), at: 0, t: p.t, index };
+  for (const f of TITLE_FIELDS) if (p[f] !== undefined) title[f] = p[f];
+  if (p.y === null) delete title.y;
+  return title;
+}
+
 const voiceLength = line => (voices[line] ? voices[line].duration : 3);
 
 /** The cut laid out: the pictures with their starts (a crossfade overlaps the one before), and the titles and voice lines. */
@@ -74,7 +86,7 @@ function timeline() {
     scenes.push({ ...s, uid: p.uid, start: t, xf });
     t += s.dur;
   }
-  const titles = sequence.titles.map((p, i) => ({ ...LIB.titles[p.key], t: p.t, index: i }));
+  const titles = sequence.titles.map((p, i) => titleOf(p, i));
   const lines = sequence.voices.map((p, i) => ({ ...LIB.voices[p.key], t: p.t, index: i }));
   let length = t;
   for (const x of titles) length = Math.max(length, x.t + (x.dur ?? 3));
@@ -257,7 +269,7 @@ function renderLibrary() {
     }
   };
   group("Pictures", "pic", Object.values(LIB.pictures).map(p => [p.id, p.id + "  " + p.dur.toFixed(1) + " s"]));
-  group("Titles", "title", Object.values(LIB.titles).map(t => [t.key, t.text]));
+  group("Titles", "title", [["custom", "+ New title (write your own)"], ...Object.values(LIB.titles).map(t => [t.key, t.text])]);
   group("Voice", "voice", Object.values(LIB.voices).map(v => [v.key, v.caption || v.line]));
 }
 
@@ -287,8 +299,9 @@ function renderTracks() {
   const titles = track("title", "Titles");
   laneOut(tl.titles.map(x => ({ x, dur: x.dur ?? 3 }))).forEach(({ x, lane, dur }) => {
     const b = block("title", x.text, x.t, dur, 26, lane);
-    movable(b, sequence.titles[x.index]);
-    b.querySelector(".x").onclick = e => { e.stopPropagation(); sequence.titles.splice(x.index, 1); changed(); };
+    movable(b, sequence.titles[x.index], () => selectTitle(x.index));
+    if (x.index === selected) b.classList.add("now");
+    b.querySelector(".x").onclick = e => { e.stopPropagation(); sequence.titles.splice(x.index, 1); selected = -1; titlePanel.hidden = true; changed(); };
     titles.append(b);
   });
   dropAtTime(titles, "title");
@@ -336,17 +349,23 @@ function laneOut(items) {
 }
 
 /** A title or voice line moved along its track by dragging it sideways. */
-function movable(b, entry) {
+function movable(b, entry, onClick) {
   b.draggable = false;
   b.addEventListener("pointerdown", e => {
     if (e.target.classList.contains("x")) return;
     b.setPointerCapture(e.pointerId);
     const startX = e.clientX, startT = entry.t;
+    let moved = false;
     const move = ev => {
+      if (Math.abs(ev.clientX - startX) > 3) moved = true;
       entry.t = Math.max(0, round(startT + (ev.clientX - startX) / PPS));
       b.style.left = (entry.t * PPS) + "px";
     };
-    const up = () => { b.removeEventListener("pointermove", move); b.removeEventListener("pointerup", up); changed(); };
+    // (a click without dragging opens a title in the title panel)
+    const up = () => {
+      b.removeEventListener("pointermove", move); b.removeEventListener("pointerup", up);
+      if (!moved && onClick) { entry.t = startT; onClick(); } else changed();
+    };
     b.addEventListener("pointermove", move);
     b.addEventListener("pointerup", up);
   });
@@ -396,8 +415,66 @@ function dropAtTime(el, kind) {
     const t = Math.max(0, round((e.clientX - el.getBoundingClientRect().left) / PPS));
     (kind === "title" ? sequence.titles : sequence.voices).push({ key: d.key, t });
     changed();
+    // (a title dropped in opens straight away, ready for its words)
+    if (kind === "title") selectTitle(sequence.titles.length - 1);
   });
 }
+
+// ---------------------------------------------------------------- the title panel
+// The title chosen on its track (its place in sequence.titles), or -1
+let selected = -1;
+const titlePanel = document.getElementById("titlePanel");
+const field = id => document.getElementById(id);
+// Where on screen a title can sit (y, in the 1080 high picture; empty for the middle)
+const PLACES = { "": "Middle", "650": "Under the middle", "140": "Top", "1010": "Bottom" };
+
+/** Opens a title in the panel, and moves to it so it's on screen while it's edited. */
+function selectTitle(index) {
+  selected = index;
+  const entry = sequence.titles[index];
+  if (!entry) { titlePanel.hidden = true; return; }
+  const title = titleOf(entry, index);
+  field("titleText").value = title.text;
+  field("titleStyle").value = title.style || "title";
+  field("titleDur").value = (title.dur ?? 3).toFixed(1);
+  field("titleTime").value = entry.t.toFixed(1);
+  const place = field("titlePlace"), y = title.y === undefined ? "" : String(title.y);
+  if (![...place.options].some(o => o.value === y)) {
+    const o = document.createElement("option"); o.value = y; o.textContent = "Where it was (" + y + ")"; place.append(o);
+  }
+  place.value = y;
+  titlePanel.hidden = false;
+  renderTracks();
+  seek(entry.t + Math.min(1, (title.dur ?? 3) / 2));
+}
+
+/** A change in the panel: kept on the title's entry in the cut, saved, and shown straight away. */
+function editTitle() {
+  const entry = sequence.titles[selected];
+  if (!entry) return;
+  entry.text = field("titleText").value;
+  entry.style = field("titleStyle").value;
+  entry.dur = Math.max(0.3, Math.min(30, parseFloat(field("titleDur").value) || 2));
+  entry.t = Math.max(0, round(parseFloat(field("titleTime").value) || 0));
+  const y = field("titlePlace").value;
+  entry.y = y === "" ? null : Number(y);
+  saveSequence();
+  renderTracks();
+  showStill(position);
+}
+
+for (const [value, label] of Object.entries(PLACES)) {
+  const o = document.createElement("option"); o.value = value; o.textContent = label; field("titlePlace").append(o);
+}
+for (const id of ["titleText", "titleStyle", "titleDur", "titleTime", "titlePlace"]) field(id).addEventListener("input", editTitle);
+field("titleClose").onclick = () => { selected = -1; titlePanel.hidden = true; renderTracks(); };
+field("titleRevert").onclick = () => {
+  const entry = sequence.titles[selected];
+  if (!entry) return;
+  for (const f of TITLE_FIELDS) delete entry[f];
+  saveSequence();
+  selectTitle(selected);
+};
 
 /** After every edit: saved, laid out again, and the still at the position redrawn. */
 function changed() {

@@ -89,6 +89,14 @@ p.note { color: var(--dim); max-width: 75ch; margin: 0; }
 .block:hover .x, .block:focus-within .x { opacity: 1; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--warn); pointer-events: none; z-index: 4; }
 .insert { position: absolute; width: 3px; background: var(--accent); z-index: 5; pointer-events: none; }
+
+/* The title panel: the chosen title's words, look, place and timing */
+.title-panel { background: var(--panel); border: 1px solid var(--accent); padding: 12px; display: grid; gap: 10px; }
+.title-panel .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.title-panel label { display: grid; gap: 4px; font: 600 11px var(--display); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); min-width: 0; }
+.title-panel textarea, .title-panel input, .title-panel select { font: 15px var(--mono); background: var(--bg); color: var(--fg); border: 1px solid var(--line); padding: 6px 8px; min-width: 0; }
+.title-panel textarea { resize: vertical; min-height: 54px; }
+.title-panel .bar { justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -110,7 +118,21 @@ p.note { color: var(--dim); max-width: 75ch; margin: 0; }
   </div>
   <div class="status" id="status"></div>
   <h2>Sequence</h2>
-  <p class="note">Drag pictures, titles and voice lines from the library onto their tracks. Pictures play one after another: drag one along its track to move it. Titles and voice lines play at the time they're dropped: drag them sideways to retime them. &times; removes one; click the ruler to jump there. Your cut is saved in this browser as you go.</p>
+  <p class="note">Drag pictures, titles and voice lines from the library onto their tracks. Pictures play one after another: drag one along its track to move it. Titles and voice lines play at the time they're dropped: drag them sideways to retime them, and click a title to change its words. &times; removes one; click the ruler to jump there. Your cut is saved in this browser as you go.</p>
+  <div class="title-panel" id="titlePanel" hidden>
+    <label for="titleText">Words on screen (a new line starts a second line)</label>
+    <textarea id="titleText" rows="2"></textarea>
+    <div class="fields">
+      <label>Look<select id="titleStyle"><option value="title">Big title</option><option value="sub">Smaller line</option></select></label>
+      <label>Where on screen<select id="titlePlace"></select></label>
+      <label>Starts at (s)<input id="titleTime" type="number" step="0.1" min="0"></label>
+      <label>On screen for (s)<input id="titleDur" type="number" step="0.1" min="0.3" max="30"></label>
+    </div>
+    <div class="bar">
+      <button id="titleRevert">Undo my changes to it</button>
+      <button id="titleClose">Done</button>
+    </div>
+  </div>
   <div class="editor">
     <div class="library" id="library"></div>
     <div class="tracks-wrap"><div class="tracks" id="tracks"></div></div>
