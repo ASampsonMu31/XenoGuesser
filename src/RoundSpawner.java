@@ -108,40 +108,10 @@ final class RoundSpawner extends GamePart {
         }
         // Developer aid: the main menu's picture (-Dxenoguesser.menushot) is taken somewhere picturesque
         if (XenoGuesser_GLEventListener.MENU_SHOT && devView == null) spawn = orElse(game.devShots.picturesqueSite(dynamicRand), spawn);
-        // Developer aids: on a town pavement among the inhabitants; across the street from a
-        // shop, looking at its front; on a dirt track, looking along it; looking at a raised
-        // road's retaining wall from below
-        if ("street".equals(devView)) spawn = orElse(game.inhabitants.streetViewpoint(dynamicRand), spawn);
-        if ("shop".equals(devView)) spawn = orElse(game.infraManager.viewpoints().shopViewpoint(dynamicRand), spawn);
-        if ("track".equals(devView)) spawn = orElse(game.infraManager.viewpoints().trackViewpoint(dynamicRand), spawn);
-        if ("raisedroad".equals(devView)) spawn = orElse(game.infraManager.viewpoints().raisedRoadViewpoint(dynamicRand), spawn);
-        // One of every animal side by side; some species' range with one of them just ahead
-        if ("zoo".equals(devView)) spawn = orElse(game.organismManager.zooViewpoint(dynamicRand), spawn);
-        if ("bug".equals(devView)) spawn = orElse(game.organismManager.showcaseViewpoint(dynamicRand), spawn);
-        // Deep in the heartland of a species that lives in herds
-        if ("herd".equals(devView)) spawn = orElse(game.organismManager.herdViewpoint(dynamicRand), spawn);
-        // On a river's bank (-Dxenoguesser.riverwidth=20: one at least that wide), looking across and up it
-        if ("river".equals(devView)) spawn = orElse(game.devShots.riverViewpoint(dynamicRand), spawn);
-        // Where plant species -Dxenoguesser.plant (random by default) grows thickest
-        if ("plant".equals(devView)) spawn = orElse(game.devShots.plantViewpoint(dynamicRand), spawn);
-        // On a side road looking at where it meets (at a step it would have had) a greater one
-        if ("junction".equals(devView)) spawn = orElse(game.infraManager.viewpoints().junctionViewpoint(dynamicRand), spawn);
-        // Across from one of the richest houses, dressed in all its architecture; or back from a
-        // big city's tower, looking up at it
-        if ("ornate".equals(devView)) spawn = orElse(game.infraManager.viewpoints().ornateHouseViewpoint(dynamicRand), spawn);
-        if ("tower".equals(devView)) spawn = orElse(game.infraManager.viewpoints().towerViewpoint(dynamicRand), spawn);
-        // In front of one of the famous landmarks (-Dxenoguesser.landmark=spire, stones or ruin for one kind)
-        if ("landmark".equals(devView)) spawn = orElse(game.infraManager.viewpoints().landmarkViewpoint(dynamicRand), spawn);
-        // At a road's edge looking along its bollards
-        if ("bollard".equals(devView)) spawn = orElse(game.infraManager.viewpoints().bollardViewpoint(dynamicRand), spawn);
-        // In town between two utility poles, looking along the road
-        if ("pole".equals(devView)) spawn = orElse(game.infraManager.viewpoints().poleViewpoint(dynamicRand), spawn);
-        // Side on to a pole's wire down to a house
-        if ("drop".equals(devView)) spawn = orElse(game.infraManager.viewpoints().poleDropViewpoint(dynamicRand), spawn);
-        // A little before a bridge, looking over it (a plank one with plankbridge)
-        if ("bridge".equals(devView) || "plankbridge".equals(devView)) spawn = orElse(game.infraManager.viewpoints().bridgeViewpoint(dynamicRand, "plankbridge".equals(devView)), spawn);
-        // Beside one of the bigger lakes, looking out over it
-        if ("lake".equals(devView)) spawn = orElse(game.devShots.lakeViewpoint(dynamicRand), spawn);
+        // Developer aids: the named views (see devViewpoint); the mountain and the shore are chosen
+        // after spawnat, and so win over it
+        boolean lateView = "mountain".equals(devView) || "shore".equals(devView) || "swim".equals(devView);
+        if (devView != null && !lateView) spawn = orElse(devViewpoint(devView, dynamicRand), spawn);
 
         // Developer aid: -Dxenoguesser.spawnat=latitude,longitude (degrees, north and east
         // positive) starts the round there
@@ -156,53 +126,7 @@ final class RoundSpawner extends GamePart {
                     spawn != null ? spawn.heading() : -Math.PI * 0.5);
         }
 
-        if ("mountain".equals(devView)) {
-            // Developer aid: some way off from the highest ground found, looking at it
-            SpherePosition best = null;
-            float highest = -Float.MAX_VALUE;
-            for (int attempt = 0; attempt < 6000; attempt++) {
-                SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
-                float h = TerrainMesh.getLayeredHeight(p, game.worldNoise);
-                if (h > highest) { highest = h; best = p; }
-            }
-            // From the lowest dry spot on a ring round it, for a clear view up
-            float lowest = Float.MAX_VALUE;
-            for (int attempt = 0; attempt < 96; attempt++) {
-                SpherePosition p = SphereMath.move(best, attempt * Math.PI * 2 / 96, 1250.0);
-                float h = TerrainMesh.getLayeredHeight(p, game.worldNoise);
-                if (h > game.seaLevelHeight + 2f && h < lowest) {
-                    lowest = h;
-                    spawn = new Viewpoint(p, SphereMath.heading(p, best));
-                }
-            }
-        }
-        if ("shore".equals(devView) || "swim".equals(devView)) {
-            // Developer aid: stand on a coast facing the open sea, to watch the waves: dry land a
-            // couple of hundred units from the sea, looking out where it's sea all the way out
-            for (int attempt = 0; attempt < 200000; attempt++) {
-                SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
-                if (TerrainMesh.getLayeredHeight(p, game.worldNoise) <= game.seaLevelHeight + 2.0f) continue;
-                float shore = game.regionalManager.distanceToWater(p);
-                if (shore < 150f || shore > 250f) continue;
-                double look = Double.NaN;
-                for (int a = 0; a < 16 && Double.isNaN(look); a++) {
-                    boolean open = true;
-                    for (double out = 600.0; out <= 3000.0 && open; out += 600.0) {
-                        open = TerrainMesh.getLayeredHeight(SphereMath.move(p, a * Math.PI / 8, out), game.worldNoise) <= game.seaLevelHeight;
-                    }
-                    if (open) look = a * Math.PI / 8;
-                }
-                if (!Double.isNaN(look)) {
-                    spawn = new Viewpoint(p, look);
-                    if ("swim".equals(devView)) {
-                        // Out in the water, looking back at the waves rolling in
-                        SpherePosition out = SphereMath.move(p, look, 600.0);
-                        spawn = new Viewpoint(out, SphereMath.carryHeading(p, out, look) + Math.PI);
-                    }
-                    break;
-                }
-            }
-        }
+        if (lateView) spawn = orElse(devViewpoint(devView, dynamicRand), spawn);
 
         while (spawn == null) {
             SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
@@ -320,6 +244,99 @@ final class RoundSpawner extends GamePart {
         if (SphereMath.distance(at, pod) <= LandingPod.SPAWN_DISTANCE) return;
         SpherePosition back = SphereMath.move(at, SphereMath.heading(at, pod), SETTLE_STEP);
         game.camera.setSpherePosition(SphereMath.atAltitude(back, SphereMath.altitude(at)));
+    }
+
+    /**
+     * Developer aid: where the named developer view (-Dxenoguesser.view: street, shop, herd,
+     * river, mountain, shore...) stands the player, or null if it's not one of them or the world
+     * has nothing of the kind. The trailer's shots (TrailerDirector) are found here too.
+     */
+    Viewpoint devViewpoint(String devView, java.util.Random dynamicRand) {
+        // Developer aids: on a town pavement among the inhabitants; across the street from a
+        // shop, looking at its front; on a dirt track, looking along it; looking at a raised
+        // road's retaining wall from below
+        if ("street".equals(devView)) return game.inhabitants.streetViewpoint(dynamicRand);
+        if ("shop".equals(devView)) return game.infraManager.viewpoints().shopViewpoint(dynamicRand);
+        if ("track".equals(devView)) return game.infraManager.viewpoints().trackViewpoint(dynamicRand);
+        if ("raisedroad".equals(devView)) return game.infraManager.viewpoints().raisedRoadViewpoint(dynamicRand);
+        // One of every animal side by side; some species' range with one of them just ahead
+        if ("zoo".equals(devView)) return game.organismManager.zooViewpoint(dynamicRand);
+        if ("bug".equals(devView)) return game.organismManager.showcaseViewpoint(dynamicRand);
+        // Deep in the heartland of a species that lives in herds
+        if ("herd".equals(devView)) return game.organismManager.herdViewpoint(dynamicRand);
+        // On a river's bank (-Dxenoguesser.riverwidth=20: one at least that wide), looking across and up it
+        if ("river".equals(devView)) return game.devShots.riverViewpoint(dynamicRand);
+        // Where plant species -Dxenoguesser.plant (random by default) grows thickest
+        if ("plant".equals(devView)) return game.devShots.plantViewpoint(dynamicRand);
+        // On a side road looking at where it meets (at a step it would have had) a greater one
+        if ("junction".equals(devView)) return game.infraManager.viewpoints().junctionViewpoint(dynamicRand);
+        // Across from one of the richest houses, dressed in all its architecture; or back from a
+        // big city's tower, looking up at it
+        if ("ornate".equals(devView)) return game.infraManager.viewpoints().ornateHouseViewpoint(dynamicRand);
+        if ("tower".equals(devView)) return game.infraManager.viewpoints().towerViewpoint(dynamicRand);
+        // In front of one of the famous landmarks (-Dxenoguesser.landmark=spire, stones or ruin for one kind)
+        if ("landmark".equals(devView)) return game.infraManager.viewpoints().landmarkViewpoint(dynamicRand);
+        // At a road's edge looking along its bollards
+        if ("bollard".equals(devView)) return game.infraManager.viewpoints().bollardViewpoint(dynamicRand);
+        // In town between two utility poles, looking along the road
+        if ("pole".equals(devView)) return game.infraManager.viewpoints().poleViewpoint(dynamicRand);
+        // Side on to a pole's wire down to a house
+        if ("drop".equals(devView)) return game.infraManager.viewpoints().poleDropViewpoint(dynamicRand);
+        // A little before a bridge, looking over it (a plank one with plankbridge)
+        if ("bridge".equals(devView) || "plankbridge".equals(devView)) return game.infraManager.viewpoints().bridgeViewpoint(dynamicRand, "plankbridge".equals(devView));
+        // Beside one of the bigger lakes, looking out over it
+        if ("lake".equals(devView)) return game.devShots.lakeViewpoint(dynamicRand);
+
+        Viewpoint found = null;
+        if ("mountain".equals(devView)) {
+            // Developer aid: some way off from the highest ground found, looking at it
+            SpherePosition best = null;
+            float highest = -Float.MAX_VALUE;
+            for (int attempt = 0; attempt < 6000; attempt++) {
+                SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
+                float h = TerrainMesh.getLayeredHeight(p, game.worldNoise);
+                if (h > highest) { highest = h; best = p; }
+            }
+            // From the lowest dry spot on a ring round it, for a clear view up
+            float lowest = Float.MAX_VALUE;
+            for (int attempt = 0; attempt < 96; attempt++) {
+                SpherePosition p = SphereMath.move(best, attempt * Math.PI * 2 / 96, 1250.0);
+                float h = TerrainMesh.getLayeredHeight(p, game.worldNoise);
+                if (h > game.seaLevelHeight + 2f && h < lowest) {
+                    lowest = h;
+                    found = new Viewpoint(p, SphereMath.heading(p, best));
+                }
+            }
+        }
+        if ("shore".equals(devView) || "swim".equals(devView)) {
+            // Developer aid: stand on a coast facing the open sea, to watch the waves: dry land a
+            // couple of hundred units from the sea, looking out where it's sea all the way out
+            for (int attempt = 0; attempt < 200000; attempt++) {
+                SpherePosition p = SphereMath.randomPlace(dynamicRand, MapProjection.CLIP_LATITUDE);
+                if (TerrainMesh.getLayeredHeight(p, game.worldNoise) <= game.seaLevelHeight + 2.0f) continue;
+                float shore = game.regionalManager.distanceToWater(p);
+                if (shore < 150f || shore > 250f) continue;
+                double look = Double.NaN;
+                for (int a = 0; a < 16 && Double.isNaN(look); a++) {
+                    boolean open = true;
+                    for (double out = 600.0; out <= 3000.0 && open; out += 600.0) {
+                        open = TerrainMesh.getLayeredHeight(SphereMath.move(p, a * Math.PI / 8, out), game.worldNoise) <= game.seaLevelHeight;
+                    }
+                    if (open) look = a * Math.PI / 8;
+                }
+                if (!Double.isNaN(look)) {
+                    found = new Viewpoint(p, look);
+                    if ("swim".equals(devView)) {
+                        // Out in the water, looking back at the waves rolling in
+                        SpherePosition out = SphereMath.move(p, look, 600.0);
+                        found = new Viewpoint(out, SphereMath.carryHeading(p, out, look) + Math.PI);
+                    }
+                    break;
+                }
+            }
+        }
+
+        return found;
     }
 
     private static Viewpoint orElse(Viewpoint view, Viewpoint otherwise) {

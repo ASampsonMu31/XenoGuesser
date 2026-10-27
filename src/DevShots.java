@@ -242,7 +242,11 @@ final class DevShots extends GamePart {
 
     /** Developer aid: where a plant species (-Dxenoguesser.plant, or any) grows thickest of a few thousand places tried. */
     Viewpoint plantViewpoint(java.util.Random rand) {
-        int s = Dev.integer("xenoguesser.plant", rand.nextInt(game.NUM_SPECIES));
+        return plantViewpoint(rand, Dev.integer("xenoguesser.plant", rand.nextInt(game.NUM_SPECIES)));
+    }
+
+    /** Developer aid: where plant species s grows thickest of a few thousand places tried. */
+    Viewpoint plantViewpoint(java.util.Random rand, int s) {
         SpherePosition best = null;
         float most = 0f;
         for (int attempt = 0; attempt < 4000; attempt++) {

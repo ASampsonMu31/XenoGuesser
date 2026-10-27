@@ -5,12 +5,16 @@
  */
 public final class GameClock {
     private static long pausedAt = -1L, pausedFor;
+    // Developer aid (filming the trailer, see TrailerDirector): the time as filmed, moved on by a
+    // fixed step each frame however long the frame took to draw; -1 while the wall clock rules
+    private static long filmedAt = -1L;
 
     private GameClock() {
     }
 
     /** The world's time in milliseconds (only differences between readings mean anything). */
     public static synchronized long millis() {
+        if (filmedAt >= 0L) return filmedAt;
         return (pausedAt >= 0L ? pausedAt : System.currentTimeMillis()) - pausedFor;
     }
 
@@ -22,6 +26,12 @@ public final class GameClock {
             pausedFor += System.currentTimeMillis() - pausedAt;
             pausedAt = -1L;
         }
+    }
+
+    /** Developer aid: moves the filmed time on by one frame's step (the first call takes over from the wall clock). */
+    public static synchronized void filmStep(long stepMillis) {
+        if (filmedAt < 0L) filmedAt = millis();
+        filmedAt += stepMillis;
     }
 
     public static synchronized boolean isPaused() {

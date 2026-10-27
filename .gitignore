@@ -7,3 +7,5 @@ assets/textures/generated_world/
 dist/
 target/
 checks/regression-breakdown.txt
+# The trailer's clips: large, and made again from tools/trailer
+trailer/clips/

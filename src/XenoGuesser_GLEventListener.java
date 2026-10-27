@@ -28,6 +28,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     final SpeciesPictures speciesPictures = new SpeciesPictures(this);
     final IdentificationLens identificationLens = new IdentificationLens(this);
     final DevShots devShots = new DevShots(this);
+    // (only when the trailer's being filmed: see TrailerDirector)
+    final TrailerDirector trailerDirector = TrailerDirector.LIST != null ? new TrailerDirector(this) : null;
     final HudRenderer hudRenderer = new HudRenderer(this);
     final PlayerMotion playerMotion = new PlayerMotion(this);
     final SnowCover snowCover = new SnowCover(this);
@@ -746,6 +748,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 if (minimap != null) minimap.finishRoundLoading();
             });
         }
+        // Developer aid: the trailer's shots filmed, one after another (see TrailerDirector)
+        if (trailerDirector != null && trailerDirector.active() && loading.isFinished() && framesRenderedSinceReady > 30) trailerDirector.beforeFrame();
         if (IS_DEBUG_MODE_ACTIVE && isToTeleport && !roundLoading) {
             isToTeleport = false;
             moveToLocation(new Viewpoint(SphereMath.atAltitude(teleportTo, 0.0), -Math.PI * 0.5));
@@ -834,6 +838,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         if (!hideFirstPerson) playerMotion.oxygenBlur.apply(gl, screenWidth, screenHeight, playerMotion.oxygenStrength, playerMotion.oxygenTime);
         if (!hideFirstPerson) hudRenderer.drawHud(drawable);
         speciesPictures.advancePreviews(gl);
+        if (trailerDirector != null) trailerDirector.afterFrame(gl, screenWidth, screenHeight);
 
         // Hand over from the loading screen only once a real frame of the round exists
         if (!loading.isFinished() && ++framesRenderedSinceReady >= 2) {
@@ -2590,6 +2595,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
         playerMotion.movePlayer(deltaTime, elapsedTime);
+        if (trailerDirector != null) trailerDirector.placeCamera();
 
         SpherePosition eye = camera.getSpherePosition();
         // The sun's direction in the local frame here, and in the world
@@ -3416,6 +3422,20 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     public int getTotalNationsCount() {
         return this.totalNationsCount;
+    }
+
+    /** Developer aid (the trailer's shots): moves there now and waits, drawing nothing, until what's round it is built. */
+    void devTeleport(Viewpoint view) {
+        moveToLocation(view);
+        teleportTo = SphereMath.direction(view.place());
+        teleportLoading = true;
+        teleportStarted = System.currentTimeMillis();
+        setBuilderThreads(true);
+    }
+
+    /** Developer aid: whether a teleport's still waiting for its surroundings. */
+    boolean devTeleporting() {
+        return teleportLoading;
     }
 
     /** Developer mode: sends the player to a place (picked on the map), once the frame comes round. */

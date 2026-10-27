@@ -95,6 +95,7 @@ Parts extend `GamePart` (field `game`).
 | `SnowCover` | Snow on the ground |
 | `FloraSpecies` | Plant species generation and ranges (`SpeciesConfig`, `SphereFlora`) |
 | `DevShots` | Saved frames, menu picture, sign/vehicle shots, dev viewpoints |
+| `TrailerDirector` | Films the Steam trailer's shots (`-Dxenoguesser.trailer`): finds each place, sets the day, steps the clock a frame at a time and saves frames; made only when filming (see `tools/trailer/README.md`) |
 | Data | `FactorName` (map overlays' factors), `MapOverlay`, `MapPicture`, `NationLabel` |
 
 ## Everything else, by area

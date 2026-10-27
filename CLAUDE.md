@@ -12,6 +12,8 @@ the startup order, the per-frame render order and the two big classes' parts.
   `assets/text`; `models/` — the glyph model (PyTorch) and voice (ONNX).
 - `checks/regression-fingerprints.txt` — the golden output of `RegressionCheck`.
 - `tools/` — `run-checks.sh`, `frame-shots.sh` (see below), `record_message.py`.
+- `trailer/` — the Steam trailer (an HTML page and its clips); `tools/trailer/` films, records and
+  encodes the clips (see its README).
 - `GEODESIC_MIGRATION_PLAN.txt` (decisions `D1`–`D14`) and `MULTIPLAYER_INTEGRATION_PLAN.txt`
   (`M1`–`M56`): the codes comments cite. Read a decision there rather than guessing.
 

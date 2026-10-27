@@ -505,6 +505,11 @@ public class OrganismManager {
 
     private volatile boolean respawnWanted;
 
+    /** Developer aid: where the creature the last showcase put down is just now, or null. */
+    public SpherePosition devShowcasePlace() {
+        return showcase.isEmpty() ? null : showcase.get(showcase.size() - 1).position;
+    }
+
     /**
      * Developer aid: a spot in the heart of some species' range, and a creature of that species
      * placed just in front of it.
@@ -520,6 +525,7 @@ public class OrganismManager {
             Creature creature = create(s, at, new Random(rand.nextLong()));
             creature.heading = SphereMath.carryHeading(p, at, heading) - Math.PI * 0.6;
             showcase.add(creature);
+            System.out.println("[DEV] Showcase creature: " + speciesName(attempt % species.size()));
             return new Viewpoint(p, heading);
         }
         return null;

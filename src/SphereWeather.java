@@ -138,6 +138,12 @@ public final class SphereWeather {
         java.util.Arrays.fill(dropLive, false);
     }
 
+    /** Developer aid (the trailer's shots): today's cloud cover set, -3 a clear day to 3 a wet one. */
+    void devWetness(float wetness) {
+        dayWetness = wetness * DAY_TO_DAY;
+        coverage = -1f;
+    }
+
     // ------------------------------------------------------------------ the wind circle
 
     /** A place's cloud coordinates {u, v}: along the wind circle and off it, along the ground. */

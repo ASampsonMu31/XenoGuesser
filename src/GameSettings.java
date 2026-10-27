@@ -99,6 +99,11 @@ public final class GameSettings {
         return showFps;
     }
 
+    /** Developer aid (filming the trailer): the frame rate hidden for this run only, the setting kept as it was. */
+    static void devHideFps() {
+        showFps = false;
+    }
+
     public static void setShowFps(boolean show) {
         showFps = show;
         try {
