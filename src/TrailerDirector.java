@@ -84,7 +84,7 @@ final class TrailerDirector extends GamePart {
     void beforeFrame() {
         if (shots == null) {
             shots = readShots();
-            GameSettings.devHideFps();
+            GameSettings.devHideDiagnostics();
             MapPanel.devClockHeld = true;
             GameClock.filmStep(0);
         }

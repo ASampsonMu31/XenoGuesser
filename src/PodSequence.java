@@ -372,6 +372,7 @@ public class PodSequence implements GLEventListener {
      */
     @Override
     public void display(GLAutoDrawable drawable) {
+        FreezeWatch.frame();
         try {
             frame(drawable);
         } catch (RuntimeException | OutOfMemoryError e) {
@@ -482,6 +483,7 @@ public class PodSequence implements GLEventListener {
         updateReady();
         updateHatch();
         updateTargets();
+        updateDiagnostics();
         sounds.set(timeline.engine, timeline.roar, timeline.rumble, chair.y == 0f ? (float) Math.hypot(chair.vx, chair.vz) / PodChair.PUSH_SPEED : 0f);
         devTests();
 
@@ -567,6 +569,28 @@ public class PodSequence implements GLEventListener {
     private static float smoothStep(float x) {
         x = Math.max(0f, Math.min(1f, x));
         return x * x * (3f - 2f * x);
+    }
+
+    // The diagnostics (as in the game), the frame rate counted over half a second at a time, and the
+    // scale they were last drawn at
+    private final DiagnosticsPanel diagnostics = new DiagnosticsPanel();
+    private long fpsWindowStart;
+    private int fpsFrames, fps;
+    private float diagnosticsScale;
+
+    /** The frame rate and the memory at the top right, from the start of the descent (see DiagnosticsPanel). */
+    private void updateDiagnostics() {
+        long now = System.nanoTime();
+        fpsFrames++;
+        if (fpsWindowStart == 0L) fpsWindowStart = now;
+        if (now - fpsWindowStart >= 500_000_000L) {
+            fps = Math.round(fpsFrames * 1e9f / (now - fpsWindowStart));
+            fpsFrames = 0;
+            fpsWindowStart = now;
+        }
+        boolean rescaled = pixelScale != diagnosticsScale;
+        diagnosticsScale = pixelScale;
+        diagnostics.show(hud, true, fps, pixelScale, rescaled, width);
     }
 
     // The targets' picture, and when it was last drawn (it bobs, so it's drawn again a few times a second)

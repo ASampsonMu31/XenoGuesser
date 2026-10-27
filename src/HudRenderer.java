@@ -16,7 +16,8 @@ final class HudRenderer extends GamePart {
     // The HUD drawn over the 3D view, and what each picture last showed
     final HudOverlay hud = new HudOverlay();
 
-    private int hudScoreVersion = -1, hudFps = -1, hudItemsVersion = -1, hudStaminaStep = -1;
+    private final DiagnosticsPanel diagnostics = new DiagnosticsPanel();
+    private int hudScoreVersion = -1, hudItemsVersion = -1, hudStaminaStep = -1;
 
     private long hudClockTenth = -1L;
 
@@ -30,8 +31,8 @@ final class HudRenderer extends GamePart {
     private MapPanel.MapSize hudMapSize;
 
     /**
-     * The HUD over the finished frame: the round and score at the top left, the FPS in the
-     * top right corner, the inventory at the bottom left and the map's keys above the map.
+     * The HUD over the finished frame: the round and score at the top left, the diagnostics
+     * (frame rate and memory) in the top right corner, the inventory at the bottom left and the map's keys above the map.
      * Each picture is repainted only when what it shows changes.
      */
     void drawHud(GLAutoDrawable drawable) {
@@ -51,21 +52,11 @@ final class HudRenderer extends GamePart {
             hud.put("score", image, margin, margin);
         }
 
-        if (GameSettings.showFps() && game.gameHUD != null) {
-            int fps = game.gameHUD.getGameFps();
-            if (rescaled || fps != hudFps || !hud.has("fps")) {
-                hudFps = fps;
-                BufferedImage image = HudStyle.canvas(HudStyle.FPS_W, HudStyle.FPS_H, scale, g);
-                HudStyle.paintFps(g[0], fps);
-                g[0].dispose();
-                hud.put("fps", image, game.screenWidth - image.getWidth() - Math.round(8 * scale), Math.round(6 * scale));
-            }
-        } else {
-            hud.setVisible("fps", false);
-            hudFps = -1;
-        }
+        // The diagnostics: the frame rate, and the PC's memory as it's shared out
+        int fps = game.gameHUD != null ? game.gameHUD.getGameFps() : 0;
+        diagnostics.show(hud, game.gameHUD != null, fps, scale, rescaled, game.screenWidth);
 
-        // The sprint's stamina, in the top right (under the FPS, when that's shown), wherever the player can walk
+        // The sprint's stamina, in the top right (under the diagnostics, when they're shown), wherever the player can walk
         boolean staminaShown = GameMode.current().moving;
         if (staminaShown) {
             int step = Math.round(game.playerMotion.stamina * 200f) * 2 + (game.playerMotion.winded ? 1 : 0);
@@ -76,7 +67,7 @@ final class HudRenderer extends GamePart {
                 g[0].dispose();
                 hud.put("stamina", image, 0, 0);
             }
-            int below = GameSettings.showFps() ? Math.round((6 + HudStyle.FPS_H) * scale) : margin;
+            int below = GameSettings.showDiagnostics() ? margin + Math.round((HudStyle.DIAGNOSTICS_H + 6) * scale) : margin;
             hud.move("stamina", game.screenWidth - hud.width("stamina") - margin, below);
         }
         hud.setVisible("stamina", staminaShown);

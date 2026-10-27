@@ -89,6 +89,10 @@ public class XenoGuesser extends JFrame {
     System.setProperty("java.util.concurrent.ForkJoinPool.common.threadFactory", BackgroundWorkers.class.getName());
     // The heap held to what this PC can spare (see MemoryBudget)
     MemoryBudget.apply();
+    // (and what a crash in native code left behind last time, which nothing here could write)
+    Thread natives = new Thread(CrashLog::collectNativeCrashes, "native-crash-logs");
+    natives.setDaemon(true);
+    natives.start();
     int spare = Math.max(1, cores / 2);
     System.setProperty("ai.djl.pytorch.num_threads", Integer.toString(spare));
     System.setProperty("ai.djl.pytorch.num_interop_threads", "1");
@@ -562,7 +566,16 @@ glEventListener.setGameHUD(gameHUD);
     installPodControls();
     layoutComponents();
     animator = new FPSAnimator(canvas, 60);
+    // The GL context kept current on the animator's thread, rather than taken and given back each
+    // frame. Discord's capture hook (sharing the game's window) seemed to take each as something
+    // new to capture, building it a copy each time, until the PC ran out of memory
+    animator.setExclusiveContext(true);
     animator.start();
+    // (a freeze, which throws nothing, written down all the same)
+    FreezeWatch.start(() -> {
+      FPSAnimator running = animator;
+      return running != null && running.isStarted() && !running.isPaused() && (getExtendedState() & ICONIFIED) == 0;
+    });
   }
 
   // Whether the pod's keys (and the mouse look, for the pod and the game) are listened for yet
@@ -646,6 +659,8 @@ glEventListener.setGameHUD(gameHUD);
 
   /** Called on the UI thread once the first frame of the round has been drawn; the player then chooses when to start. */
   private void onWorldReady() {
+    // (the heap held from now to what the game holds, not all the PC could spare for making it)
+    MemoryBudget.worldMade();
     // Multiplayer: the partner hears this PC is loaded (their Begin waits for it, M16)
     Multiplayer session = Multiplayer.active();
     if (session != null) session.sendWorldReady();

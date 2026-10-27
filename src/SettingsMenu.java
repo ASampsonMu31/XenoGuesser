@@ -26,7 +26,7 @@ public class SettingsMenu extends JPanel {
     private final Rectangle[] qualityButtons = new Rectangle[GameSettings.Quality.values().length];
     // (the shadows straight under the graphics, as they go together)
     private final Rectangle shadowsRow = new Rectangle(30, 178, W - 60, 52);
-    private final Rectangle fpsRow = new Rectangle(30, 240, W - 60, 52);
+    private final Rectangle diagnosticsRow = new Rectangle(30, 240, W - 60, 52);
     private final Rectangle fullscreenRow = new Rectangle(30, 302, W - 60, 52);
     private final Rectangle controlsRow = new Rectangle(30, 364, W - 60, 52);
     private final Rectangle resumeButton = new Rectangle(30, 462, (W - 72) / 2, 44);
@@ -63,7 +63,7 @@ public class SettingsMenu extends JPanel {
             @Override
             public void mouseMoved(MouseEvent e) {
                 Rectangle over = qualityButtonAt(e.getPoint()) != null ? qualityButtonAt(e.getPoint())
-                        : fpsRow.contains(e.getPoint()) ? fpsRow
+                        : diagnosticsRow.contains(e.getPoint()) ? diagnosticsRow
                         : fullscreenRow.contains(e.getPoint()) ? fullscreenRow
                         : shadowsRow.contains(e.getPoint()) ? shadowsRow
                         : controlsRow.contains(e.getPoint()) ? controlsRow
@@ -89,8 +89,8 @@ public class SettingsMenu extends JPanel {
                 if (quality != null) {
                     GameSettings.setQuality(GameSettings.Quality.values()[java.util.Arrays.asList(qualityButtons).indexOf(quality)]);
                     repaint();
-                } else if (fpsRow.contains(e.getPoint())) {
-                    GameSettings.setShowFps(!GameSettings.showFps());
+                } else if (diagnosticsRow.contains(e.getPoint())) {
+                    GameSettings.setShowDiagnostics(!GameSettings.showDiagnostics());
                     repaint();
                 } else if (fullscreenRow.contains(e.getPoint())) {
                     GameSettings.setFullscreen(!GameSettings.fullscreen());
@@ -130,7 +130,7 @@ public class SettingsMenu extends JPanel {
 
             paintQuality(g);
             paintToggle(g, shadowsRow, "Shadows", GameSettings.shadows(), "On", "Off");
-            paintToggle(g, fpsRow, "Show FPS counter", GameSettings.showFps(), "On", "Off");
+            paintToggle(g, diagnosticsRow, "Show diagnostics", GameSettings.showDiagnostics(), "On", "Off");
             paintToggle(g, fullscreenRow, "Fullscreen", GameSettings.fullscreen(), "Fullscreen", "Windowed");
             // Controls: opens them, an arrow at its right
             paintRowBackground(g, controlsRow);

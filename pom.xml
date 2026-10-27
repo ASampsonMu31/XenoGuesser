@@ -168,11 +168,16 @@
                         <!-- Garbage collection without long pauses keeps the loading screen smooth -->
                         <argument>-XX:+UseZGC</argument>
                         <argument>-XX:+ZGenerational</argument>
-                        <!-- As the packaged game has it (see build-exe.bat): with less, making the world stalls on memory.
-                             Only the ceiling: MemoryBudget holds the heap to what the PC can spare, and what's
-                             freed once the world's made goes back to Windows after half a minute -->
+                        <!-- As the packaged game has it (see build-exe.bat). The ceiling the heap may never pass: 70% of
+                             the RAM, but never more than 70% of 8 GB (5.6 GB). Making the world churns through memory so fast
+                             the collector spreads the heap out to whatever ceiling it's given, MemoryBudget's soft limit or no:
+                             at 70% of 16 GB (10.9 GB) a laptop had 0.5 GB free and its page file filling as it loaded, and with
+                             a screenshare on top it froze; held to 5 GB it kept 3.4 GB free and loaded only 7% slower. Under
+                             the ceiling MemoryBudget holds the heap to what the PC can spare, and what's freed goes back to
+                             Windows after ten seconds -->
                         <argument>-XX:MaxRAMPercentage=70</argument>
-                        <argument>-XX:ZUncommitDelay=30</argument>
+                        <argument>-XX:MaxRAM=8g</argument>
+                        <argument>-XX:ZUncommitDelay=10</argument>
                         <argument>--add-exports</argument>
                         <argument>java.base/java.lang=ALL-UNNAMED</argument>
                         <argument>--add-exports</argument>

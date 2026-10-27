@@ -336,25 +336,98 @@ public final class HudStyle {
         g.drawString(text, x, 64);
     }
 
-    // ------------------------------------------------------------------ FPS
+    // ------------------------------------------------------------------ Diagnostics
 
-    public static final int FPS_W = 92, FPS_H = 24;
+    public static final int DIAGNOSTICS_W = 300, DIAGNOSTICS_H = 86;
+    private static final float GB = 1024f * 1024f * 1024f;
+    // The memory bar's parts: the game's heap in use, the rest of what the game holds, everything
+    // else's, and the page file holding what's committed past the RAM (red once it's half full)
+    private static final Color HEAP_USED = new Color(110, 215, 245), GAME_REST = new Color(50, 125, 158),
+            OTHERS = new Color(150, 168, 185, 190), PAGED = GOLD, PAGED_HIGH = new Color(245, 105, 90);
 
-    public static void paintFps(Graphics2D g, int fps) {
+    /**
+     * The frame rate, and a bar of the PC's memory across: its RAM (the game's, the heap's in use
+     * at the start of it, then everything else's, then what's free) and, after a gap, its page
+     * file (to scale), filling as more is committed than the RAM can hold. Under the bar what
+     * each part comes to, and the heap in use of its budget (see MemoryBudget).
+     */
+    public static void paintDiagnostics(Graphics2D g, int fps, MemoryBudget.Reading memory) {
+        int w = DIAGNOSTICS_W;
+        panel(g, 0, 0, w, DIAGNOSTICS_H, GLASS);
+
+        // The frame rate, at the right as it always was
         String n = Integer.toString(fps);
         Font big = font(Font.BOLD, 16f);
         FontMetrics fm = g.getFontMetrics(big);
         float labelW = labelWidth(g, "fps", 10f);
-        float x = FPS_W - 6 - labelW - 5 - fm.stringWidth(n);
-        // A soft shadow keeps it legible over bright sky
+        float x = w - 14 - labelW - 5 - fm.stringWidth(n);
         g.setFont(big);
-        g.setColor(new Color(0, 0, 0, 150));
-        g.drawString(n, x + 1, 18);
-        Color c = fps >= 45 ? new Color(120, 235, 140) : fps >= 25 ? GOLD : new Color(245, 105, 90);
-        g.setColor(c);
-        g.drawString(n, x, 17);
-        label(g, "fps", FPS_W - 6 - labelW + 1, 18, 10f, new Color(0, 0, 0, 150));
-        label(g, "fps", FPS_W - 6 - labelW, 17, 10f, new Color(225, 232, 240));
+        g.setColor(fps >= 45 ? new Color(120, 235, 140) : fps >= 25 ? GOLD : new Color(245, 105, 90));
+        g.drawString(n, x, 22);
+        label(g, "fps", w - 14 - labelW, 22, 10f, VALUE);
+
+        // (gold when the PC's short and the heap's held tight: see MemoryBudget)
+        boolean squeezed = memory != null && memory.squeezed();
+        label(g, squeezed ? "Memory short" : "Memory", 14, 22, 10f, squeezed ? GOLD : LABEL);
+        boolean known = memory != null && memory.total() > 0L;
+
+        float bx = 14f, by = 32f, bw = w - 28f, bh = 12f, gap = 3f;
+        long pageFile = known ? memory.pageFile() : 0L;
+        float ramW = known && pageFile > 0L ? (bw - gap) * memory.total() / (float) (memory.total() + pageFile) : bw;
+        java.awt.Shape clip = g.getClip();
+        java.awt.geom.RoundRectangle2D ram = new java.awt.geom.RoundRectangle2D.Float(bx, by, ramW, bh, 6f, 6f);
+        g.setColor(new Color(255, 255, 255, 34));
+        g.fill(ram);
+        if (known) {
+            g.clip(ram);
+            float perByte = ramW / memory.total();
+            float heapW = memory.heapUsed() * perByte, gameW = Math.min(ramW, memory.game() * perByte);
+            float inUse = Math.min(ramW, Math.max(0L, memory.total() - memory.free()) * perByte);
+            g.setColor(GAME_REST);
+            g.fill(new java.awt.geom.Rectangle2D.Float(bx, by, gameW, bh));
+            g.setColor(HEAP_USED);
+            g.fill(new java.awt.geom.Rectangle2D.Float(bx, by, Math.min(heapW, gameW), bh));
+            if (inUse > gameW) {
+                g.setColor(OTHERS);
+                g.fill(new java.awt.geom.Rectangle2D.Float(bx + gameW, by, inUse - gameW, bh));
+            }
+            g.setClip(clip);
+        }
+        float pageShare = 0f;
+        if (pageFile > 0L) {
+            java.awt.geom.RoundRectangle2D page = new java.awt.geom.RoundRectangle2D.Float(bx + ramW + gap, by, bw - ramW - gap, bh, 6f, 6f);
+            g.setColor(new Color(255, 255, 255, 18));
+            g.fill(page);
+            pageShare = Math.min(1f, memory.pastRam() / (float) pageFile);
+            if (pageShare > 0f) {
+                g.clip(page);
+                g.setColor(pageShare > 0.5f ? PAGED_HIGH : PAGED);
+                g.fill(new java.awt.geom.Rectangle2D.Float(bx + ramW + gap, by, (bw - ramW - gap) * pageShare, bh));
+                g.setClip(clip);
+            }
+        }
+
+        if (!known) {
+            label(g, "The PC's memory can't be read", 14, 62, 9.5f, DIM);
+            return;
+        }
+        float lx = key(g, 14f, 62f, HEAP_USED, String.format(java.util.Locale.ROOT, "Game %.1f GB", memory.game() / GB));
+        lx = key(g, lx + 10f, 62f, OTHERS, String.format(java.util.Locale.ROOT, "Other %.1f",
+                Math.max(0L, memory.total() - memory.free() - memory.game()) / GB));
+        key(g, lx + 10f, 62f, new Color(255, 255, 255, 60), String.format(java.util.Locale.ROOT, "Free %.1f", memory.free() / GB));
+        key(g, 14f, 78f, pageShare > 0.5f ? PAGED_HIGH : PAGED, pageFile > 0L
+                ? String.format(java.util.Locale.ROOT, "Page file %.1f of %.1f", memory.pastRam() / GB, pageFile / GB)
+                : "No page file");
+        String heap = String.format(java.util.Locale.ROOT, "Heap %.1f of %.1f", memory.heapUsed() / GB, MemoryBudget.budget() / GB);
+        label(g, heap, w - 14 - labelWidth(g, heap, 9.5f), 78f, 9.5f, DIM);
+    }
+
+    /** A small square of the colour and what it stands for, from x; where the text ends. */
+    private static float key(Graphics2D g, float x, float baseline, Color colour, String text) {
+        g.setColor(colour);
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(x, baseline - 8f, 8f, 8f, 3f, 3f));
+        label(g, text, x + 12f, baseline, 9.5f, VALUE);
+        return x + 12f + labelWidth(g, text, 9.5f);
     }
 
     public static final int STAMINA_W = 220, STAMINA_H = 40;

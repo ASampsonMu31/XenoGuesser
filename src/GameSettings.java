@@ -36,7 +36,10 @@ public final class GameSettings {
     // own (-Dxenoguesser.store=release, see build-exe.bat), so it starts at the defaults, with no
     // achievements, however the game's been played from the project
     static final Preferences STORE = Preferences.userRoot().node(System.getProperty("xenoguesser.store", "xenoguesser"));
-    private static volatile boolean showFps = STORE.getBoolean("showFps", true);
+    // The frame rate and the memory in the top right, in the landing pod and the game: on unless
+    // turned off (under a key of its own, not the old frame-rate-only "showFps", so it's on for
+    // everyone at first, whatever they'd chosen for that)
+    private static volatile boolean showDiagnostics = STORE.getBoolean("showDiagnostics", true);
     // The graphics, Low unless chosen otherwise
     // (developer aid: -Dxenoguesser.quality=low, medium or high overrides it for this run)
     private static volatile Quality quality = parseQuality(Dev.property("xenoguesser.quality") != null
@@ -95,19 +98,19 @@ public final class GameSettings {
         }
     }
 
-    public static boolean showFps() {
-        return showFps;
+    public static boolean showDiagnostics() {
+        return showDiagnostics;
     }
 
-    /** Developer aid (filming the trailer): the frame rate hidden for this run only, the setting kept as it was. */
-    static void devHideFps() {
-        showFps = false;
+    /** Developer aid (filming the trailer): the diagnostics hidden for this run only, the setting kept as it was. */
+    static void devHideDiagnostics() {
+        showDiagnostics = false;
     }
 
-    public static void setShowFps(boolean show) {
-        showFps = show;
+    public static void setShowDiagnostics(boolean show) {
+        showDiagnostics = show;
         try {
-            STORE.putBoolean("showFps", show);
+            STORE.putBoolean("showDiagnostics", show);
         } catch (Exception e) {
             // Settings that can't be saved still apply for this game
         }
