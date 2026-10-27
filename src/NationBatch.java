@@ -57,7 +57,7 @@ final class NationBatch {
                     || part.equals("borderfence") || part.equals("barbed") || part.startsWith(BorderCrossings.BOOTH_PART)
                     || part.startsWith("curtain") || part.equals("flag") || part.equals("goods") || part.startsWith("bollard") || part.startsWith("reflector")
                     || part.startsWith("pole") || part.startsWith("insulator") || part.equals("wire");
-                            boolean paint = part.equals("line") || part.equals("driveway");
+                            boolean paint = part.equals("line") || part.equals(RoadGeometry.OUTER_LINE_PART) || part.equals("driveway");
             int wornAt = part.indexOf(HouseBuilder.WORN);
             Material material = infra.infraMaterials.material(wornAt < 0 ? part : part.substring(0, wornAt), nationId);
             InfrastructureObject.BatchPart batchPart = new InfrastructureObject.BatchPart(entry.getValue().vertexArray(), entry.getValue().indexArray(),

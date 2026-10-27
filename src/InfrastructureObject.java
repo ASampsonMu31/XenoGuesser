@@ -341,7 +341,7 @@ public class InfrastructureObject {
                 part.model.shader.use(gl);
                 part.model.shader.setFloat(gl, "weathering", part.weathering);
             }
-            boolean cleared = part.name.equals("asphalt") || part.name.equals("line")
+            boolean cleared = part.name.equals("asphalt") || part.name.equals("line") || part.name.equals(RoadGeometry.OUTER_LINE_PART)
                     || part.name.equals("dirt") || part.name.equals("driveway");
             if (cleared) {
                 part.model.shader.use(gl);

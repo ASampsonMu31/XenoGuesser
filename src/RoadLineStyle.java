@@ -1,17 +1,19 @@
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import com.xenoguesser.math.Vector3;
 
 /**
- * Per-nation road marking style: where the lines sit, whether they are single or
- * double, dashed or solid, and what colour they are painted.
+ * Per-nation road marking style: an inner line down the middle of the road and outer lines
+ * along its edges, either, both or neither, each single or double, dashed or solid and painted
+ * its own colour. The map's road lines pictures are drawn from the same stripes as the roads.
  */
 public class RoadLineStyle {
-    public enum Placement { CENTRE, EDGES }
 
     private static final float[][] LINE_COLOURS = {
         {0.95f, 0.95f, 0.92f}, // White
@@ -24,47 +26,63 @@ public class RoadLineStyle {
         {0.45f, 0.55f, 0.95f}  // Periwinkle
     };
 
-    public final Placement placement;
-    public final boolean doubleLine;
-    public final boolean dashed;
-    public final float dashLength;
-    public final float gapLength;
+    /** The paint an unmarked style still uses for its give-way lines and crossovers. */
+    private static final Vector3 PLAIN_PAINT = new Vector3(0.95f, 0.95f, 0.92f);
+
+    /** One set of lines (the inner or the outer): its paint and how it is laid. */
+    public record Line(int colourIndex, boolean doubled, boolean dashed, float dashLength, float gapLength) {
+        public Vector3 colour() {
+            float[] rgb = LINE_COLOURS[colourIndex];
+            return new Vector3(rgb[0], rgb[1], rgb[2]);
+        }
+
+        public float dashPeriod() {
+            return dashLength + gapLength;
+        }
+
+        /** Whether paint is present at the given distance along the road. */
+        public boolean isPaintedAt(float distanceAlongRoad) {
+            if (!dashed) {
+                return true;
+            }
+            float period = dashPeriod();
+            float phase = distanceAlongRoad % period;
+            if (phase < 0.0f) {
+                phase += period;
+            }
+            return phase < dashLength;
+        }
+
+        /** What a player sees of it: its paint, doubling and dashing. */
+        String look() {
+            return colourIndex + (doubled ? "d" : "s") + (dashed ? "-" : "|");
+        }
+    }
+
+    /** The line down the middle, or null for none. */
+    public final Line inner;
+    /** The lines along both edges, or null for none. */
+    public final Line outer;
     public final float lineWidth;
     public final float doubleSpacing;
     public final float edgeInset;
-    public final Vector3 colour;
 
-    private RoadLineStyle(Placement placement, boolean doubleLine, boolean dashed, float dashLength,
-                          float gapLength, float lineWidth, float doubleSpacing, float edgeInset,
-                          Vector3 colour) {
-        this.placement = placement;
-        this.doubleLine = doubleLine;
-        this.dashed = dashed;
-        this.dashLength = dashLength;
-        this.gapLength = gapLength;
+    private RoadLineStyle(Line inner, Line outer, float lineWidth, float doubleSpacing, float edgeInset) {
+        this.inner = inner;
+        this.outer = outer;
         this.lineWidth = lineWidth;
         this.doubleSpacing = doubleSpacing;
         this.edgeInset = edgeInset;
-        this.colour = colour;
     }
 
     /**
-     * The whole world paints its roads in just two or three colours, and both the colour
-     * and the line layout spread in geographic blocs, so neighbouring nations usually
-     * share conventions while distant ones may differ. Dash proportions drift gradually.
+     * The whole world marks its roads in only about four ways (three to five), each a complete
+     * look, and the looks spread in blocs of kindred nations, so neighbours usually share their
+     * markings while distant nations may not; a few nations go their own way. The paint comes
+     * from the two or three colours the world favours.
      */
     public static Map<Integer, RoadLineStyle> generateForNations(long seed, int numNations, NationKinship kinship) {
         Random rand = new Random(seed + 3131L);
-
-        List<int[]> layouts = new ArrayList<>();
-        for (Placement placement : Placement.values()) {
-            for (int doubleLine = 0; doubleLine <= 1; doubleLine++) {
-                for (int dashed = 0; dashed <= 1; dashed++) {
-                    layouts.add(new int[] { placement.ordinal(), doubleLine, dashed });
-                }
-            }
-        }
-        Collections.shuffle(layouts, rand);
 
         List<Integer> colourOrder = new ArrayList<>();
         for (int i = 0; i < LINE_COLOURS.length; i++) {
@@ -73,54 +91,85 @@ public class RoadLineStyle {
         Collections.shuffle(colourOrder, rand);
         int worldColourCount = rand.nextFloat() < 0.4f ? 3 : 2;
 
-        // (M54: fewer designs about the map, so they're less of a give-away: usually two layouts
-        // rather than three, fewer nations going their own way, and a layout's spacing and
-        // inset shared by all who use it; dashes and widths in two steps, not a smooth drift)
-        int layoutCount = rand.nextFloat() < 0.3f ? 3 : 2;
-        int[] colourBloc = kinship.clusters(rand, worldColourCount, 0.05f);
-        int[] layoutBloc = kinship.clusters(rand, layoutCount, 0.07f);
-        float[] dashDrift = kinship.gradient(rand, 0.1f);
-        float[] widthDrift = kinship.gradient(rand, 0.1f);
-        float[] blocSpacing = new float[layoutCount], blocInset = new float[layoutCount];
-        for (int b = 0; b < layoutCount; b++) {
-            blocSpacing[b] = 0.8f + rand.nextFloat() * 0.7f;
-            blocInset[b] = 1.5f + rand.nextFloat() * 2.0f;
+        int variantCount = Math.max(1, Math.min(numNations, 3 + rand.nextInt(3)));
+        List<RoadLineStyle> variants = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        boolean unmarkedTaken = false;
+        for (int attempt = 0; variants.size() < variantCount && attempt < 200; attempt++) {
+            RoadLineStyle style = randomStyle(rand, colourOrder, worldColourCount);
+            // (no two looks alike, and at most one bloc leaves its roads bare)
+            boolean unmarked = style.inner == null && style.outer == null;
+            if ((unmarked && unmarkedTaken) || !seen.add(style.look())) continue;
+            unmarkedTaken |= unmarked;
+            variants.add(style);
         }
 
+        int[] bloc = kinship.clusters(rand, variants.size(), 0.05f);
         Map<Integer, RoadLineStyle> styles = new HashMap<>();
         for (int n = 1; n <= numNations; n++) {
-            int[] layout = layouts.get(layoutBloc[n]);
-            float[] rgb = LINE_COLOURS[colourOrder.get(colourBloc[n])];
-
-            float dash = dashDrift[n] < 0.5f ? 0.25f : 0.75f, width = widthDrift[n] < 0.5f ? 0.25f : 0.75f;
-            float dashLength = 8.0f + dash * 18.0f;
-            float gapLength = 6.0f + (1.0f - dash) * 18.0f;
-            float lineWidth = 0.9f + width * 0.7f;
-            float doubleSpacing = blocSpacing[layoutBloc[n]];
-            float edgeInset = blocInset[layoutBloc[n]];
-
-            styles.put(n, new RoadLineStyle(
-                Placement.values()[layout[0]], layout[1] == 1, layout[2] == 1,
-                dashLength, gapLength, lineWidth, doubleSpacing, edgeInset,
-                new Vector3(rgb[0], rgb[1], rgb[2])
-            ));
+            styles.put(n, variants.get(bloc[n]));
         }
         return styles;
     }
 
-    /** Lateral offsets of each painted stripe's centre from the road centreline. */
-    public float[] stripeOffsets(float roadWidth) {
-        float pairOffset = lineWidth + doubleSpacing;
-        if (placement == Placement.CENTRE) {
-            if (doubleLine) {
-                float half = pairOffset * 0.5f;
-                return new float[] { -half, half };
-            }
-            return new float[] { 0.0f };
-        }
+    /** One look: which lines it has, and each one's paint, doubling and dashes. */
+    private static RoadLineStyle randomStyle(Random rand, List<Integer> colourOrder, int worldColourCount) {
+        float lineWidth = 0.9f + (rand.nextBoolean() ? 0.25f : 0.75f) * 0.7f;
+        float doubleSpacing = 0.8f + rand.nextFloat() * 0.7f;
+        float edgeInset = 1.5f + rand.nextFloat() * 2.0f;
+        float presence = rand.nextFloat();
+        boolean hasInner = presence < 0.75f, hasOuter = presence >= 0.4f && presence < 0.95f;
+        Line inner = hasInner ? randomLine(rand, colourOrder.get(rand.nextInt(worldColourCount)), 0.4f, 0.6f) : null;
+        // (the edges often, but not always, in the middle's paint)
+        int outerColour = inner != null && rand.nextFloat() < 0.5f
+                ? inner.colourIndex() : colourOrder.get(rand.nextInt(worldColourCount));
+        Line outer = hasOuter ? randomLine(rand, outerColour, 0.15f, 0.3f) : null;
+        return new RoadLineStyle(inner, outer, lineWidth, doubleSpacing, edgeInset);
+    }
 
+    private static Line randomLine(Random rand, int colour, float doubledChance, float dashedChance) {
+        boolean doubled = rand.nextFloat() < doubledChance, dashed = rand.nextFloat() < dashedChance;
+        float dash = rand.nextBoolean() ? 0.25f : 0.75f;
+        return new Line(colour, doubled, dashed, 8.0f + dash * 18.0f, 6.0f + (1.0f - dash) * 18.0f);
+    }
+
+    /** What a player would see of this style: which lines, their paint, doubling and dashing. */
+    private String look() {
+        return (inner == null ? "-" : inner.look()) + "/" + (outer == null ? "-" : outer.look());
+    }
+
+    /** The inner line's paint, else the outer's: what give-way lines and crossovers are painted in. */
+    public Vector3 mainColour() {
+        return inner != null ? inner.colour() : outer != null ? outer.colour() : PLAIN_PAINT;
+    }
+
+    /** The outer lines' paint (the main paint when there are none). */
+    public Vector3 outerColour() {
+        return outer != null ? outer.colour() : mainColour();
+    }
+
+    /** Whether give-way lines are dashed: as the inner line is, else the outer. */
+    public boolean dashedGiveWay() {
+        Line line = inner != null ? inner : outer;
+        return line != null && line.dashed();
+    }
+
+    /** Lateral offsets of the inner line's stripes from the road centreline (none without one). */
+    public float[] innerOffsets() {
+        if (inner == null) return new float[0];
+        if (inner.doubled()) {
+            float half = (lineWidth + doubleSpacing) * 0.5f;
+            return new float[] { -half, half };
+        }
+        return new float[] { 0.0f };
+    }
+
+    /** Lateral offsets of the outer lines' stripes from the road centreline (none without them). */
+    public float[] outerOffsets(float roadWidth) {
+        if (outer == null) return new float[0];
         float edge = roadWidth * 0.5f - edgeInset - lineWidth * 0.5f;
-        if (doubleLine) {
+        if (outer.doubled()) {
+            float pairOffset = lineWidth + doubleSpacing;
             return new float[] { -edge, -(edge - pairOffset), edge - pairOffset, edge };
         }
         return new float[] { -edge, edge };
@@ -140,39 +189,31 @@ public class RoadLineStyle {
         float cx = width * 0.5f, half = roadWidth * 0.5f * scale;
         g.setColor(new java.awt.Color(48, 48, 52));
         g.fill(new java.awt.geom.RoundRectangle2D.Float(cx - half, 0, half * 2f, heightPx, 6, 6));
-        g.setColor(new java.awt.Color(Math.min(1f, colour.x), Math.min(1f, colour.y), Math.min(1f, colour.z)));
         float lw = Math.max(1.2f, lineWidth * scale);
-        for (float offset : stripeOffsets(roadWidth)) {
-            float x = cx + offset * scale - lw * 0.5f;
-            if (!dashed) {
-                g.fill(new java.awt.geom.Rectangle2D.Float(x, 0, lw, heightPx));
-                continue;
-            }
-            for (float along = 0f; along < shown; along += dashPeriod()) {
-                float y0 = heightPx - along * scale, y1 = heightPx - Math.min(shown, along + dashLength) * scale;
-                g.fill(new java.awt.geom.Rectangle2D.Float(x, y1, lw, y0 - y1));
-            }
-        }
+        drawStripes(g, inner, innerOffsets(), cx, scale, lw, shown, heightPx);
+        drawStripes(g, outer, outerOffsets(roadWidth), cx, scale, lw, shown, heightPx);
         g.setColor(new java.awt.Color(20, 20, 22, 200));
         g.draw(new java.awt.geom.RoundRectangle2D.Float(cx - half, 0, half * 2f, heightPx - 1, 6, 6));
         g.dispose();
         return image;
     }
 
-    public float dashPeriod() {
-        return dashLength + gapLength;
-    }
-
-    /** Whether paint is present at the given distance along the road. */
-    public boolean isPaintedAt(float distanceAlongRoad) {
-        if (!dashed) {
-            return true;
+    /** One line's stripes in the picture, each at its offset from the middle. */
+    private static void drawStripes(java.awt.Graphics2D g, Line line, float[] offsets, float cx, float scale, float lw,
+                                    float shown, int heightPx) {
+        if (line == null) return;
+        Vector3 c = line.colour();
+        g.setColor(new java.awt.Color(Math.min(1f, c.x), Math.min(1f, c.y), Math.min(1f, c.z)));
+        for (float offset : offsets) {
+            float x = cx + offset * scale - lw * 0.5f;
+            if (!line.dashed()) {
+                g.fill(new java.awt.geom.Rectangle2D.Float(x, 0, lw, heightPx));
+                continue;
+            }
+            for (float along = 0f; along < shown; along += line.dashPeriod()) {
+                float y0 = heightPx - along * scale, y1 = heightPx - Math.min(shown, along + line.dashLength()) * scale;
+                g.fill(new java.awt.geom.Rectangle2D.Float(x, y1, lw, y0 - y1));
+            }
         }
-        float period = dashPeriod();
-        float phase = distanceAlongRoad % period;
-        if (phase < 0.0f) {
-            phase += period;
-        }
-        return phase < dashLength;
     }
 }

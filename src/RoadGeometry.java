@@ -401,7 +401,7 @@ final class RoadGeometry extends InfraPart {
             }
         }
 
-        appendRoadLines(batch.builder("line"), segment, leftEdge, rightEdge, crossing);
+        appendRoadLines(batch, segment, leftEdge, rightEdge, crossing);
         if (segment.railed) {
             GuardRailStyle style = infra.guardRailStyles.get(segment.nationId);
             appendGuardRail(batch, segment, style, -1.0f, crossing);
@@ -551,47 +551,42 @@ final class RoadGeometry extends InfraPart {
     }
 
     /**
-     * Paints the nation's line style and any lane dividers, leaving junctions
-     * clear the way real roads do: minor roads stop their paint at the edge of
-     * a bigger road and get a give-way line, while the bigger road only breaks
-     * its edge lines across the mouth of the junction.
+     * Paints the nation's line style, the inner line and the outer lines each in its own paint,
+     * leaving junctions clear the way real roads do: minor roads stop their paint at the edge of
+     * a bigger road and get a give-way line, while the bigger road only breaks its edge lines
+     * across the mouth of the junction.
      */
-    private void appendRoadLines(MeshBuilder builder, RoadSegment segment, float[][] leftEdge, float[][] rightEdge,
+    private void appendRoadLines(NationBatch batch, RoadSegment segment, float[][] leftEdge, float[][] rightEdge,
                                  List<Crossing> crossing) {
         RoadLineStyle style = infra.roadLineStyles.get(segment.nationId);
         if (style == null || segment.length <= 0.0f) {
             return;
         }
+        if (style.inner != null) {
+            appendStripes(batch.builder("line"), segment, style, style.inner, style.innerOffsets(), false, leftEdge, rightEdge, crossing);
+        }
+        if (style.outer != null) {
+            appendStripes(batch.builder(OUTER_LINE_PART), segment, style, style.outer, style.outerOffsets(segment.width), true,
+                    leftEdge, rightEdge, crossing);
+        }
+        appendGiveWayLines(batch.builder("line"), segment, style, leftEdge, rightEdge, crossing);
+    }
 
+    /** One line's stripes along the segment, dashed as it is, broken where other roads cover it. */
+    private void appendStripes(MeshBuilder builder, RoadSegment segment, RoadLineStyle style, RoadLineStyle.Line line,
+                               float[] offsets, boolean edgeStripe, float[][] leftEdge, float[][] rightEdge, List<Crossing> crossing) {
         List<Float> breakpoints = new ArrayList<>();
         for (int i = 0; i <= LINE_SAMPLES_PER_SEGMENT; i++) {
             breakpoints.add((float) i / LINE_SAMPLES_PER_SEGMENT);
         }
-        float segmentEnd = segment.startDistance + segment.length;
-        if (style.dashed) {
-            addDashBreakpoints(breakpoints, segment, style.dashLength, style.dashPeriod(), segmentEnd);
-        }
-        boolean laneDividers = segment.width >= LANE_DIVIDER_MIN_WIDTH;
-        if (laneDividers) {
-            addDashBreakpoints(breakpoints, segment, LANE_DIVIDER_DASH, LANE_DIVIDER_DASH + LANE_DIVIDER_GAP, segmentEnd);
+        if (line.dashed()) {
+            addDashBreakpoints(breakpoints, segment, line.dashLength(), line.dashPeriod(), segment.startDistance + segment.length);
         }
         Collections.sort(breakpoints);
 
         int ownRank = segment.rank();
         float halfLine = style.lineWidth * 0.5f;
-        List<float[]> stripes = new ArrayList<>();
-        for (float offset : style.stripeOffsets(segment.width)) {
-            stripes.add(new float[] { offset, 0.0f });
-        }
-        if (laneDividers) {
-            stripes.add(new float[] { -segment.width * 0.25f, 1.0f });
-            stripes.add(new float[] { segment.width * 0.25f, 1.0f });
-        }
-
-        for (float[] stripe : stripes) {
-            float offset = stripe[0];
-            boolean divider = stripe[1] > 0.0f;
-            boolean edgeStripe = Math.abs(offset) > segment.width * 0.3f;
+        for (float offset : offsets) {
             float innerAcross = 0.5f + (offset - halfLine) / segment.width;
             float outerAcross = 0.5f + (offset + halfLine) / segment.width;
 
@@ -602,9 +597,7 @@ final class RoadGeometry extends InfraPart {
                     continue;
                 }
                 float tMid = (t0 + t1) * 0.5f;
-                float midDistance = segment.startDistance + tMid * segment.length;
-                boolean painted = divider ? isDividerPainted(midDistance) : style.isPaintedAt(midDistance);
-                if (!painted) {
+                if (!line.isPaintedAt(segment.startDistance + tMid * segment.length)) {
                     continue;
                 }
                 float[] point = surfacePoint(leftEdge, rightEdge, tMid, 0.5f + offset / segment.width);
@@ -615,8 +608,6 @@ final class RoadGeometry extends InfraPart {
                 addPaintQuad(builder, leftEdge, rightEdge, t0, t1, innerAcross, outerAcross);
             }
         }
-
-        appendGiveWayLines(builder, segment, style, leftEdge, rightEdge, crossing);
     }
 
     private void addDashBreakpoints(List<Float> breakpoints, RoadSegment segment, float dashLength, float period, float segmentEnd) {
@@ -625,15 +616,6 @@ final class RoadGeometry extends InfraPart {
             addBreakpoint(breakpoints, (dashStart - segment.startDistance) / segment.length);
             addBreakpoint(breakpoints, (dashStart + dashLength - segment.startDistance) / segment.length);
         }
-    }
-
-    private static boolean isDividerPainted(float distance) {
-        float period = LANE_DIVIDER_DASH + LANE_DIVIDER_GAP;
-        float phase = distance % period;
-        if (phase < 0.0f) {
-            phase += period;
-        }
-        return phase < LANE_DIVIDER_DASH;
     }
 
     /** A line across the carriageway wherever this road meets a road it must give way to. */
@@ -666,7 +648,7 @@ final class RoadGeometry extends InfraPart {
                 if (outsideT >= 0.0f && outsideT <= 1.0f) {
                     float t0 = Math.max(0.0f, outsideT - halfSpan);
                     float t1 = Math.min(1.0f, outsideT + halfSpan);
-                    if (style.dashed) {
+                    if (style.dashedGiveWay()) {
                         for (int dash = 0; dash < 5; dash++) {
                             float a = 0.08f + dash * 0.18f;
                             addPaintQuad(builder, leftEdge, rightEdge, t0, t1, a, a + 0.1f);
@@ -855,12 +837,8 @@ final class RoadGeometry extends InfraPart {
 
     static final float GIVE_WAY_LINE_LENGTH = 2.4f;
 
-    static final float LANE_DIVIDER_DASH = 12.0f;
-
-    static final float LANE_DIVIDER_GAP = 18.0f;
-
-    // Wide roads get dashed lane dividers between the nation's own markings
-    static final float LANE_DIVIDER_MIN_WIDTH = 40.0f;
+    /** The batch part the outer lines are painted in, so they can take a different paint from the inner line. */
+    static final String OUTER_LINE_PART = "lineouter";
 
     static final int LINE_SAMPLES_PER_SEGMENT = 24;
 

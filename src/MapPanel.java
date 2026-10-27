@@ -596,7 +596,7 @@ public class MapPanel extends JPanel {
                     repaint();
                     return;
                 }
-                if (zoom <= 1.0f) return;
+                if (zoom <= minZoom()) return;
                 // The point grabbed stays under the pointer, at the same zoom
                 setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
                 float across = currentMapSize * zoom;
@@ -880,18 +880,18 @@ public class MapPanel extends JPanel {
         }
 
         float cursorU= viewLeft() + fractionX / zoom;
-        float cursorV = viewTop() + fractionY * MapProjection.aspect() / zoom;
+        float cursorV = viewTop() + fractionY * boxAspect() / zoom;
         float newZoom = zoom * (float) Math.pow(ZOOM_STEP, -e.getPreciseWheelRotation());
-        zoom = Math.max(1.0f, Math.min(MAX_ZOOM, newZoom));
+        zoom = Math.max(minZoom(), Math.min(MAX_ZOOM, newZoom));
 
         float halfView = 0.5f / zoom;
         viewCentreU = clampCentre(cursorU - fractionX / zoom + halfView);
-        viewCentreV = clampCentreV(cursorV - fractionY * MapProjection.aspect() / zoom + halfView * MapProjection.aspect());
+        viewCentreV = clampCentreV(cursorV - fractionY * boxAspect() / zoom + halfView * boxAspect());
         repaint();
     }
 
     private void resetZoom() {
-        zoom = 1.0f;
+        zoom = minZoom();
         viewCentreU = 0.5f;
         viewCentreV = 0.5f;
     }
@@ -908,14 +908,16 @@ public class MapPanel extends JPanel {
             repaint();
             return;
         }
-        zoom = Math.max(1.0f, Math.min(MAX_ZOOM, magnification));
+        zoom = Math.max(minZoom(), Math.min(MAX_ZOOM, magnification));
         viewCentreU = clampCentre(u);
         viewCentreV = clampCentreV(v);
         repaint();
     }
 
+    /** The view's centre across, kept so the view stays on the chart (or the chart centred, when it's all in view). */
     private float clampCentre(float centre) {
         float halfView = 0.5f / zoom;
+        if (halfView >= 0.5f) return 0.5f;
         return Math.max(halfView, Math.min(1.0f - halfView, centre));
     }
 
@@ -929,8 +931,33 @@ public class MapPanel extends JPanel {
         return Math.round(currentMapSize * MapProjection.aspect());
     }
 
+    /** The map's box's height over its width: the chart's own, but squarer for the results (see REVEAL_ASPECT). */
+    private float boxAspect() {
+        return isFullScreenReveal ? REVEAL_ASPECT : MapProjection.aspect();
+    }
+
+    /**
+     * The flat chart's least zoom: 1 fits its width to the box, and where the box is relatively
+     * shorter than the chart (the results') it's zoomed out further so its height fits too,
+     * the chart centred in the box with bars beside it.
+     */
+    private float minZoom() {
+        return Math.min(1.0f, boxAspect() / MapProjection.aspect());
+    }
+
+    /** Where the flat chart is on screen, cut to the map's box (all of the box once it's zoomed in past the bars). */
+    private Rectangle chartBounds(int mapX, int mapY) {
+        float span = zoom * currentMapSize;
+        float top = 0.5f - 0.5f * MapProjection.aspect();
+        int left = Math.round(mapX - viewLeft() * span), upper = Math.round(mapY + (top - viewTop()) * span);
+        Rectangle chart = new Rectangle(left, upper, Math.round(span), Math.round(MapProjection.aspect() * span));
+        return chart.intersection(new Rectangle(mapX, mapY, currentMapSize, mapHeight()));
+    }
+
+    /** The view's centre down, kept so the view stays on the chart (or the chart centred, when it's all in view). */
     private float clampCentreV(float centre) {
-        float halfView = 0.5f * MapProjection.aspect() / zoom;
+        float halfView = 0.5f * boxAspect() / zoom;
+        if (halfView >= 0.5f * MapProjection.aspect()) return 0.5f;
         float top = 0.5f - 0.5f * MapProjection.aspect(), bottom = 0.5f + 0.5f * MapProjection.aspect();
         return Math.max(top + halfView, Math.min(bottom - halfView, centre));
     }
@@ -940,7 +967,7 @@ public class MapPanel extends JPanel {
     }
 
     private float viewTop() {
-        return viewCentreV - 0.5f * MapProjection.aspect() / zoom;
+        return viewCentreV - 0.5f * boxAspect() / zoom;
     }
 
     // Conversions between core map pixels (the mapImage grid) and screen pixels, respecting the zoom
@@ -1742,6 +1769,10 @@ public class MapPanel extends JPanel {
                 if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
                 g2d.setClip(frameClip);
             } else {
+            // (the bars beside the chart, where it's zoomed out to fit the box's height)
+            g2d.setColor(baseDarkGrey);
+            g2d.fillRect(mapX, mapY, currentMapSize, mapHeight());
+            g2d.clip(chartBounds(mapX, mapY));
             Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             drawWholeMap(g2d, mapSource, mapX, mapY);
@@ -1766,7 +1797,7 @@ public class MapPanel extends JPanel {
             g2d.setClip(frameClip);
             }
 
-            float shownZoom = globeShown() ? (float) activeGlobe().zoom() : zoom;
+            float shownZoom = globeShown() ? (float) activeGlobe().zoom() : zoom / minZoom();
             if (isLarge || isFullScreenReveal) drawToggle(g2d);
             if (shownZoom > 1.01f) {
                 String zoomLabel = String.format("%.1fx", shownZoom);
@@ -2359,7 +2390,7 @@ public class MapPanel extends JPanel {
         if (renderer == null || across <= wholeDetail * 1.1f) return false;
         int level = Math.max(1, Math.min(8, (int) Math.ceil(Math.log(across / MapTiles.SIZE) / Math.log(2))));
         int n = 1 << level;
-        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + MapProjection.aspect() / zoom;
+        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + boxAspect() / zoom;
         int tx0 = Math.max(0, (int) Math.floor(u0 * n)), tx1 = Math.min(n - 1, (int) Math.floor(u1 * n));
         int ty0 = Math.max(0, (int) Math.floor(v0 * n)), ty1 = Math.min(n - 1, (int) Math.floor(v1 * n));
         for (int ty = ty0; ty <= ty1; ty++) {

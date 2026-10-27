@@ -107,8 +107,9 @@ final class InfraMaterials extends InfraPart {
                 };
             }
             switch (part) {
-                case "line": {
-                    Vector3 colour = infra.roadLineStyles.get(nationId).colour;
+                case "line": case RoadGeometry.OUTER_LINE_PART: {
+                    RoadLineStyle lines = infra.roadLineStyles.get(nationId);
+                    Vector3 colour = part.equals("line") ? lines.mainColour() : lines.outerColour();
                     return new Material(Vector3.multiply(colour, 0.9f), colour, new Vector3(0.05f, 0.05f, 0.05f), 8.0f);
                 }
                 case "rail":
