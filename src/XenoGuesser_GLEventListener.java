@@ -129,9 +129,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     static final float NEAR_PLANE = 2.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
     float currentNearPlane = NEAR_PLANE;
 
-    // Grass dies back from this many degrees above the water's freezing point, and is gone by
-    // this many below it
-    private static final float GRASS_FROST_START = 6f, GRASS_FROST_DEATH = 6f;
     // The temperature (Celsius) the planet's water freezes at, so below which it snows
     float freezingPoint;
 
@@ -207,12 +204,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // --- ECOSYSTEM SPAWNING MANAGER DATA ---
     RegionalGenerationManager regionalManager;
 
-    private RegionalFactor grassTemperateFactor;
     private RegionalFactor leafTemperateFactor;
     RegionalFactor grassMoistureFactor;
-    private RegionalFactor grassPatchNoiseFactor;
-    private RegionalFactor grassHeightNoiseFactor;
-    private RegionalFactor grassColourNoiseFactor;
     private RegionalFactor leafColourNoiseFactor;
 
         // Regional soil colour: where the ground drifts toward each of the palette's soil variants
@@ -341,30 +334,17 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
         this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
 
-        float GRASS_TEMP_MEAN = 0.4f;
-        float GRASS_TEMP_STD_DEV = 0.5f;
         // (world units from the sea)
         float GRASS_WATER_MEAN = 0f;
         float GRASS_WATER_STD_DEV = 8000.0f;
-        float GRASS_DENSITY_SCALE = 2e-5f;
-        float GRASS_VARIATION_SCALE = 1e-5f;
                 this.GRASS_BASE_ABUNDANCE = 1050f;
 
-        // Grass likes it mild, and dies back where it's cold enough for snow: from a few degrees
-        // above the water's freezing point down to several below, it thins out to almost nothing
-        // (and what's left is dry and dead, see grassColourFactor)
-        RegionalFactor mildness = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
-        this.grassTemperateFactor = new RegionalFactor(1.0f, d -> {
-            float celsius = -30f + 70f * regionalManager.temperatureMap.evaluate(d);
-            float t = Math.max(0f, Math.min(1f, (celsius - (freezingPoint - GRASS_FROST_DEATH)) / (GRASS_FROST_DEATH + GRASS_FROST_START)));
-            return mildness.evaluate(d) * t * t * (3f - 2f * t);
-        });
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
-        this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
         // The rainfall follows the moisture (with the temperature)
         this.regionalManager.setMoistureMap(this.grassMoistureFactor);
-        this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
-        this.grassColourNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
+        // The grass's old noise tracks, too broad to vary across the planet: still drawn, so the
+        // maps drawn after them (the leaves', the soil's, the species') keep theirs
+        for (float scale : new float[] { 2e-5f, 1e-5f, 1e-5f }) this.regionalManager.createNoiseMap(scale);
 
         float LEAF_VARIATION_SCALE = 1e-5f;
         float LEAF_TEMP_MEAN = 0.2f;
@@ -373,29 +353,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.leafColourNoiseFactor = this.regionalManager.createNoiseMap(LEAF_VARIATION_SCALE);
         this.leafTemperateFactor = this.regionalManager.createTemperaturePreference(LEAF_TEMP_MEAN, LEAF_TEMP_STD_DEV);
 
-        this.grassAbundanceFactor = new RegionalFactor.Builder()
-            .setWeight(3f)
-            .setPowerCurve(5.0f)
-            .addFactor(this.grassTemperateFactor, 0.4f)
-            .addFactor(this.grassMoistureFactor, 0.4f)
-            .addFactor(this.grassPatchNoiseFactor, 0.2f)
-            .build();
-
-        this.grassHeightFactor = new RegionalFactor.Builder()
-            .setWeight(1.5f)
-            .setPowerCurve(3.0f)
-            .addFactor(this.grassTemperateFactor, 0.2f)
-            .addFactor(this.grassMoistureFactor, 0.2f)
-            .addFactor(this.grassHeightNoiseFactor, 0.6f)
-            .build();
-
-        this.grassColourFactor = new RegionalFactor.Builder()
-            .setWeight(1.5f)
-            .setPowerCurve(3.0f)
-            .addFactor(this.grassTemperateFactor, 0.35f)
-            .addFactor(this.grassMoistureFactor, 0.35f)
-            .addFactor(this.grassColourNoiseFactor, 0.3f)
-            .build();
+        GrassClimate grass = GrassClimate.of(this.regionalManager, this.freezingPoint, this.grassMoistureFactor);
+        this.grassAbundanceFactor = grass.abundance();
+        this.grassHeightFactor = grass.height();
+        this.grassColourFactor = grass.colour();
 
         this.leafColourFactor = new RegionalFactor.Builder()
             .setWeight(1.5f)
