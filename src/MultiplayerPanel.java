@@ -20,11 +20,15 @@ import javax.swing.JComponent;
 import javax.swing.Timer;
 
 /**
- * Play Multiplayer's panel, over the main menu (which stays behind it, dimmed): host a game
- * and share its 5-letter room code, or join a partner's game by typing theirs. It's the
- * game's standard panel (HudStyle.panel) with the main menu's buttons (HudStyle.button), and
- * goes through these states:
- *   CHOOSE    - Host game, Join game, Back.
+ * Play Multiplayer's panel, over the main menu (which stays behind it, dimmed): play with a
+ * friend (host a game and share its 5-letter room code, or join theirs by typing it), or find
+ * a match against whoever else is looking (M59), casual or ranked. It's the game's standard
+ * panel (HudStyle.panel) with the main menu's buttons (HudStyle.button), and goes through
+ * these states:
+ *   CHOOSE    - Play with a friend, Find a match, Back.
+ *   FRIEND    - Host game, Join game, Back.
+ *   MATCH     - the Casual / Ranked switch (remembered), this player's rating, Find match, Back.
+ *   SEARCHING - "Finding an opponent..." and how long it's been; Cancel.
  *   HOSTING   - "Starting room...", then the code in large letters, waiting for the partner; Cancel.
  *   JOIN      - five boxes for the code (typed: letters, Backspace, Enter joins, Esc goes back,
  *               Ctrl+V pastes); Join (once all five are in) and Back.
@@ -37,7 +41,7 @@ import javax.swing.Timer;
  */
 public class MultiplayerPanel extends JComponent {
 
-    private enum State { CHOOSE, HOSTING, JOIN, JOINING, CONNECTED, ERROR }
+    private enum State { CHOOSE, FRIEND, MATCH, SEARCHING, HOSTING, JOIN, JOINING, CONNECTED, ERROR }
 
     // How long "connected" shows before the loading screen (longer with a warning to read)
     private static final int CONNECTED_MS = 1500, CONNECTED_WARNING_MS = 4000;
@@ -49,6 +53,11 @@ public class MultiplayerPanel extends JComponent {
     private final Multiplayer.Listener sessionListener = new SessionEvents();
     private Multiplayer session;
     private State state = State.CHOOSE;
+    // Where Cancel and an error's Back go: the friend's choices or matchmaking's
+    private State home = State.CHOOSE;
+    // Matchmaking's queue (remembered between games), and when the search began
+    private boolean ranked = GameSettings.STORE.getBoolean("rankedQueue", false);
+    private long searchStartedAt;
     private String typed = "";
     private String errorTitle = "", errorText = "";
     private final long openedAt = System.currentTimeMillis();
@@ -124,13 +133,22 @@ public class MultiplayerPanel extends JComponent {
         requestFocusInWindow();
     }
 
-    /** Developer aid (-Dxenoguesser.mpauto): presses Host game, or Join game with any code (LocalTransport doesn't check it). */
-    public void autoStart(boolean host) {
-        if (host) {
-            hostGame();
-        } else {
+    /**
+     * Developer aid (-Dxenoguesser.mpauto): =host presses Host game, =join Join game with any
+     * code (LocalTransport doesn't check it), =match and =ranked Find match in that queue.
+     */
+    public void autoStart(String how) {
+        if (how.equalsIgnoreCase("join")) {
+            home = State.FRIEND;
             typed = "AAAAA";
             joinGame();
+        } else if (how.equalsIgnoreCase("match") || how.equalsIgnoreCase("ranked")) {
+            home = State.MATCH;
+            ranked = how.equalsIgnoreCase("ranked");
+            findMatch();
+        } else {
+            home = State.FRIEND;
+            hostGame();
         }
     }
 
@@ -142,6 +160,30 @@ public class MultiplayerPanel extends JComponent {
         session = Multiplayer.host(seed, GameMode.current(), MapKind.current(), sessionListener);
         // The writing systems are made now, while the partner joins, and sent once they have (M18)
         WritingSystems.shareWhenReady(session, seed);
+        repaint();
+    }
+
+    private void show(State shown) {
+        state = shown;
+        if (shown == State.FRIEND || shown == State.MATCH) home = shown;
+        repaint();
+    }
+
+    /** Matchmaking: looks for an opponent in the chosen queue; should this player host, it's their world and settings. */
+    private void findMatch() {
+        state = State.SEARCHING;
+        searchStartedAt = System.currentTimeMillis();
+        session = Multiplayer.matchmake(ranked, hostSeed.getAsLong(), GameMode.current(), MapKind.current(), sessionListener);
+        repaint();
+    }
+
+    private void toggleRanked() {
+        ranked = !ranked;
+        try {
+            GameSettings.STORE.putBoolean("rankedQueue", ranked);
+        } catch (Exception e) {
+            // Remembered for this run only
+        }
         repaint();
     }
 
@@ -158,10 +200,10 @@ public class MultiplayerPanel extends JComponent {
         repaint();
     }
 
-    /** Leaves any room being made or joined and goes back to the first choice. */
+    /** Leaves any room being made, joined or searched for, and goes back to the choices it came from. */
     private void cancel() {
         leaveSession();
-        state = State.CHOOSE;
+        state = home;
         repaint();
     }
 
@@ -189,9 +231,13 @@ public class MultiplayerPanel extends JComponent {
             case CHOOSE -> {
                 if (code == KeyEvent.VK_ESCAPE) back();
             }
+            case FRIEND, MATCH -> {
+                if (code == KeyEvent.VK_ESCAPE) show(State.CHOOSE);
+                else if (state == State.MATCH && code == KeyEvent.VK_ENTER) findMatch();
+            }
             case JOIN -> {
                 if (code == KeyEvent.VK_ESCAPE) {
-                    state = State.CHOOSE;
+                    state = State.FRIEND;
                 } else if (code == KeyEvent.VK_BACK_SPACE && !typed.isEmpty()) {
                     typed = typed.substring(0, typed.length() - 1);
                 } else if (code == KeyEvent.VK_ENTER) {
@@ -201,7 +247,7 @@ public class MultiplayerPanel extends JComponent {
                 }
                 repaint();
             }
-            case HOSTING, JOINING -> {
+            case HOSTING, JOINING, SEARCHING -> {
                 if (code == KeyEvent.VK_ESCAPE) cancel();
             }
             case ERROR -> {
@@ -235,6 +281,13 @@ public class MultiplayerPanel extends JComponent {
         }
 
         @Override
+        public void matched(Multiplayer.Role role) {
+            // The host's writing systems are made now, while the opponent links up, and sent once they have (M18)
+            if (session != null && role == Multiplayer.Role.HOST) WritingSystems.shareWhenReady(session, session.worldSeed());
+            repaint();
+        }
+
+        @Override
         public void ready() {
             if (finished || session == null) return;
             state = State.CONNECTED;
@@ -254,7 +307,8 @@ public class MultiplayerPanel extends JComponent {
 
         @Override
         public void failed(String reason) {
-            showError(session != null && session.role == Multiplayer.Role.JOIN ? "Couldn't join" : "Couldn't connect", reason);
+            showError(state == State.SEARCHING ? "Couldn't find a match"
+                    : session != null && session.role == Multiplayer.Role.JOIN ? "Couldn't join" : "Couldn't connect", reason);
         }
 
         @Override
@@ -328,15 +382,54 @@ public class MultiplayerPanel extends JComponent {
 
         switch (state) {
             case CHOOSE -> {
-                y = heading(g, "Play with a partner", x, y, unit);
+                y = heading(g, "Play multiplayer", x, y, unit);
+                y = paragraph(g, "Play with a friend by sharing a room code, or find a match against whoever else is looking.",
+                        x, y, inner, unit);
+                y += 26 * unit;
+                y = button(g, "Play with a friend", true, true, () -> show(State.FRIEND), x, y, inner, unit);
+                y = button(g, "Find a match", true, false, () -> show(State.MATCH), x, y, inner, unit);
+                y = backButton(g, "Back", this::back, x, y + 10 * unit, unit);
+            }
+            case FRIEND -> {
+                y = heading(g, "Play with a friend", x, y, unit);
                 y = paragraph(g, "Host a game and share its room code with your partner, or join theirs with the code they give you.",
                         x, y, inner, unit);
                 y = paragraph(g, "The host's expedition settings are used: " + GameMode.current().label + ", "
-                        + MapKind.current().label + " map.", x, y + 4 * unit, inner, unit, HudStyle.LABEL);
+                        + MapKind.current().label + " map. Games with a friend are never ranked.", x, y + 4 * unit, inner, unit, HudStyle.LABEL);
                 y += 26 * unit;
                 y = button(g, "Host game", true, true, this::hostGame, x, y, inner, unit);
                 y = button(g, "Join game", true, false, this::showJoin, x, y, inner, unit);
-                y = backButton(g, "Back", this::back, x, y + 10 * unit, unit);
+                y = backButton(g, "Back", () -> show(State.CHOOSE), x, y + 10 * unit, unit);
+            }
+            case MATCH -> {
+                y = heading(g, "Find a match", x, y, unit);
+                y = queueSwitch(g, x, y - 20 * unit, inner, unit);
+                y += 40 * unit;
+                if (ranked) {
+                    y = paragraph(g, "Ranked games change your rating: up when you win and down when you lose, by more the less "
+                            + "expected the result. You're only matched with players also looking for a ranked game.", x, y, inner, unit);
+                    y = paragraph(g, "Your rating: " + Rating.rating() + "   (" + Rating.wins() + " won, " + Rating.losses() + " lost)",
+                            x, y + 4 * unit, inner, unit, HudStyle.GOLD);
+                } else {
+                    y = paragraph(g, "A casual game against whoever else is looking: your rating isn't changed. You're only "
+                            + "matched with players also looking for a casual game.", x, y, inner, unit);
+                }
+                y = paragraph(g, "Whoever's matched as host chooses the expedition: their game mode and map are played.",
+                        x, y + 4 * unit, inner, unit, HudStyle.LABEL);
+                y += 26 * unit;
+                y = button(g, ranked ? "Find ranked match" : "Find casual match", true, true, this::findMatch, x, y, inner, unit);
+                y = backButton(g, "Back", () -> show(State.CHOOSE), x, y + 10 * unit, unit);
+            }
+            case SEARCHING -> {
+                boolean found = session != null && (session.role != null || session.isInRoom());
+                y = heading(g, (found ? "Opponent found" : "Finding an opponent") + dots(), x, y, unit);
+                long seconds = (System.currentTimeMillis() - searchStartedAt) / 1000;
+                y = paragraph(g, found ? "Linking up with your opponent."
+                        : "Looking for another player in the " + (ranked ? "ranked" : "casual") + " queue.", x, y, inner, unit);
+                y = paragraph(g, String.format(java.util.Locale.ROOT, "Searching for %d:%02d", seconds / 60, seconds % 60),
+                        x, y + 4 * unit, inner, unit, HudStyle.ACCENT);
+                if (ranked) y = paragraph(g, "Your rating: " + Rating.rating(), x, y, inner, unit, HudStyle.GOLD);
+                y = backButton(g, "Cancel", this::cancel, x, y + 26 * unit, unit);
             }
             case HOSTING -> {
                 String code = session != null ? session.roomCode() : null;
@@ -359,10 +452,7 @@ public class MultiplayerPanel extends JComponent {
                 y = codeBoxes(g, x, y + 20 * unit, inner, unit);
                 y += 30 * unit;
                 y = button(g, "Join", typed.length() == Multiplayer.ROOM_CODE_LENGTH, true, this::joinGame, x, y, inner, unit);
-                y = backButton(g, "Back", () -> {
-                    state = State.CHOOSE;
-                    repaint();
-                }, x, y + 10 * unit, unit);
+                y = backButton(g, "Back", () -> show(State.FRIEND), x, y + 10 * unit, unit);
             }
             case JOINING -> {
                 String code = session != null ? session.roomCode() : typed;
@@ -375,7 +465,17 @@ public class MultiplayerPanel extends JComponent {
             case CONNECTED -> {
                 boolean host = session == null || session.role == Multiplayer.Role.HOST;
                 String partner = session != null ? session.remoteName() : "your partner";
-                y = heading(g, host ? partner + " connected" : "Connected to " + partner, x, y, unit);
+                if (session != null && session.isMatchmade()) {
+                    y = heading(g, "Matched with " + partner, x, y, unit);
+                    if (session.isRanked()) {
+                        int mine = session.localRating(), theirs = session.remoteRating();
+                        y = paragraph(g, "Ranked: you " + mine + ", " + partner + " " + theirs + ". A win takes you to "
+                                + Rating.after(mine, theirs, true) + ", a loss to " + Rating.after(mine, theirs, false) + ".",
+                                x, y, inner, unit, HudStyle.GOLD);
+                    }
+                } else {
+                    y = heading(g, host ? partner + " connected" : "Connected to " + partner, x, y, unit);
+                }
                 y = paragraph(g, "Preparing for planetfall" + dots(), x, y, inner, unit, HudStyle.ACCENT);
                 String warning = javaWarning();
                 if (warning != null) y = paragraph(g, warning, x, y + 8 * unit, inner, unit, HudStyle.GOLD);
@@ -446,6 +546,35 @@ public class MultiplayerPanel extends JComponent {
         enabled.add(on);
         actions.add(action);
         return buttons.size() - 1 == hovered;
+    }
+
+    /**
+     * Matchmaking's queue: Casual and Ranked either side of a switch, the chosen one lit; a
+     * click anywhere on it changes queue. Its top at y; returns its bottom.
+     */
+    private float queueSwitch(Graphics2D g, float x, float y, float width, float unit) {
+        float h = 40 * unit, trackW = 84 * unit, gap = 18 * unit;
+        g.setFont(HudStyle.font(Font.BOLD, 22 * unit));
+        FontMetrics fm = g.getFontMetrics();
+        float trackX = x + fm.stringWidth("Casual") + gap, labelY = y + (h + fm.getAscent() - fm.getDescent()) / 2f;
+        float total = trackX - x + trackW + gap + fm.stringWidth("Ranked");
+        Rectangle r = new Rectangle(Math.round(x), Math.round(y), Math.round(Math.min(width, total)), Math.round(h));
+        boolean over = addButton(r, true, this::toggleRanked);
+
+        g.setColor(ranked ? HudStyle.DIM : Color.WHITE);
+        g.drawString("Casual", x, labelY);
+        g.setColor(ranked ? HudStyle.GOLD : HudStyle.DIM);
+        g.drawString("Ranked", trackX + trackW + gap, labelY);
+        java.awt.geom.RoundRectangle2D track = new java.awt.geom.RoundRectangle2D.Float(trackX, y, trackW, h, h, h);
+        g.setColor(ranked ? new Color(84, 62, 18, 235) : new Color(10, 14, 22, 230));
+        g.fill(track);
+        g.setColor(over ? HudStyle.ACCENT : HudStyle.EDGE);
+        g.setStroke(new java.awt.BasicStroke(1.6f * Math.max(1f, unit)));
+        g.draw(track);
+        float knob = h - 8 * unit, knobX = ranked ? trackX + trackW - 4 * unit - knob : trackX + 4 * unit;
+        g.setColor(ranked ? HudStyle.GOLD : HudStyle.ACCENT);
+        g.fill(new java.awt.geom.Ellipse2D.Float(knobX, y + 4 * unit, knob, knob));
+        return y + h;
     }
 
     /** The host's room code in large spaced letters, its top at y; returns the baseline below it. */

@@ -1620,3 +1620,22 @@ LOG
             from it. Each player wears their own suit colour in the trim (pod, game, map pin and
             line, HUD, verdicts); a joiner who chose the host's colour wears the next one round.
             PROTOCOL_VERSION 4. Developer aid: -Dxenoguesser.username and -Dxenoguesser.suit.
+2026-10-28  M59 (user). Matchmaking and ranked play. Play Multiplayer first offers "Play with a
+            friend" (the room codes, as before; never ranked) or "Find a match", with a Casual /
+            Ranked switch (remembered) and two queues kept apart: a casual and a ranked player are
+            never matched. Over Steam a matchmaking lobby has no code but carries the queue (and,
+            ranked, the owner's rating, which the search sorts by nearness to; it only sorts, so
+            nobody is left unmatched). A player joins the first waiting lobby found, or makes one
+            and waits as the host; a waiting player looks again every 3 s and moves to any older
+            (lower id) lobby waiting, so two who look at once still meet. The session's role is
+            unset until then (Listener.matched, on the networking thread so it's in place before
+            HELLO). LocalTransport has a port per queue (28000 casual, 28001 ranked). The host's
+            seed, mode and map are played, as with a friend. HELLO and START carry ranked and the
+            rating; a game is ranked only if both came through the ranked queue.
+            Ratings (Rating, kept with the settings, no leaderboard): chess's Elo, everyone starting
+            at 1000, K = 32; E = 1 / (1 + 10^((O - R) / 400)), R' = R + K (S - E). A ranked game is
+            counted as lost the moment the game begins and put right if won, so quitting or closing
+            the game part way still loses it. A partner who says LEAVE has lost (the one left wins);
+            a connection lost or gone quiet can't say whose doing it was (each PC sees the other
+            go), so it counts for neither. The game's end shows the rating's move.
+            PROTOCOL_VERSION 5. MultiplayerCheck match | ranked; -Dxenoguesser.mpauto=match | ranked.

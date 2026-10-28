@@ -26,12 +26,25 @@ import javax.swing.SwingUtilities;
  * then check again that only one room has it (two hosts could pick the same code at once); a
  * clash means a new code, up to 20 times. Joining: look the code up, join the one lobby found,
  * and its owner is the partner. Reliable messages go on channel 0, unreliable on channel 1.
+ *
+ * Matchmaking: lobbies with no code but a queue ("casual" or "ranked", and for ranked the
+ * owner's rating, which Steam sorts the list by nearness to). Look for one waiting in the queue
+ * and join it (the joiner), or else make one and wait in it (the host). Two players who look at
+ * the same moment each make one, so a waiting player looks again every few seconds and, should
+ * there be an older lobby (a lower id) waiting, leaves theirs and joins it; only the newer of
+ * any two moves, so they meet. A lobby that can't be joined (just filled, or its owner gone)
+ * only means looking again.
  */
 public final class SteamTransport implements MultiplayerTransport {
 
     private static final String ROOM_CODE_KEY = "room_code";
     // Only rooms of this game and protocol version are found, not other Spacewar (480) users'
     private static final String GAME_KEY = "game";
+    // Matchmaking lobbies: which queue, and the owner's rating in the ranked one
+    private static final String QUEUE_KEY = "queue";
+    private static final String RATING_KEY = "rating";
+    // How often a player waiting in their own matchmaking lobby looks for an older one to join (ms)
+    private static final long MATCH_RECHECK_MS = 3000;
     private static final int MAX_CODE_COLLISION_RETRIES = 20;
     private static final int LOBBY_MEMBER_LIMIT = 2;
     private static final int RELIABLE_CHANNEL = 0;
@@ -51,6 +64,10 @@ public final class SteamTransport implements MultiplayerTransport {
         HOSTING,
         LOOKING_UP_ROOM,
         JOINING_ROOM,
+        MATCH_SEARCHING,
+        MATCH_CREATING,
+        MATCH_WAITING,
+        MATCH_JOINING,
         IN_ROOM
     }
 
@@ -59,7 +76,9 @@ public final class SteamTransport implements MultiplayerTransport {
         NONE,
         CHECK_HOST_CODE,
         VERIFY_HOST_CODE,
-        LOOK_UP_ROOM
+        LOOK_UP_ROOM,
+        MATCH_SEARCH,
+        MATCH_RECHECK
     }
 
     private final BlockingQueue<Runnable> tasks = new LinkedBlockingQueue<>();
@@ -78,6 +97,10 @@ public final class SteamTransport implements MultiplayerTransport {
     private Phase phase = Phase.IDLE;
     private MatchAction matchAction = MatchAction.NONE;
     private int collisionRetries;
+    // Matchmaking: the queue, this player's rating, and when a waiting player next looks again
+    private boolean rankedQueue;
+    private int matchRating;
+    private long nextRecheckMs;
     private ByteBuffer sendBuffer = ByteBuffer.allocateDirect(64 * 1024);
     private ByteBuffer readBuffer = ByteBuffer.allocateDirect(64 * 1024);
 
@@ -103,6 +126,11 @@ public final class SteamTransport implements MultiplayerTransport {
     @Override
     public void join(String code) {
         tasks.offer(() -> beginRoomLookup(code));
+    }
+
+    @Override
+    public void matchmake(boolean ranked, int rating) {
+        tasks.offer(() -> beginMatchmaking(ranked, rating));
     }
 
     @Override
@@ -165,6 +193,10 @@ public final class SteamTransport implements MultiplayerTransport {
                 }
 
                 SteamAPI.runCallbacks();
+                if (phase == Phase.MATCH_WAITING && matchAction == MatchAction.NONE
+                        && System.currentTimeMillis() >= nextRecheckMs) {
+                    requestMatchSearch(MatchAction.MATCH_RECHECK);
+                }
                 receive(RELIABLE_CHANNEL, packetSize);
                 receive(UNRELIABLE_CHANNEL, packetSize);
                 listener.tick(System.currentTimeMillis());
@@ -269,11 +301,127 @@ public final class SteamTransport implements MultiplayerTransport {
         matchmaking.requestLobbyList();
     }
 
+    private void beginMatchmaking(boolean ranked, int rating) {
+        if (phase != Phase.IDLE) resetRoom();
+        rankedQueue = ranked;
+        matchRating = rating;
+        System.out.println("[MP] Matchmaking in the " + queueName() + " queue" + (ranked ? " at rating " + rating : ""));
+        searchForMatch();
+    }
+
+    private String queueName() {
+        return rankedQueue ? "ranked" : "casual";
+    }
+
+    /** Looks for a player waiting in the queue, having left any lobby this player was in. */
+    private void searchForMatch() {
+        leaveLobbyOnly();
+        phase = Phase.MATCH_SEARCHING;
+        requestMatchSearch(MatchAction.MATCH_SEARCH);
+    }
+
+    private void requestMatchSearch(MatchAction action) {
+        matchAction = action;
+        matchmaking.addRequestLobbyListStringFilter(QUEUE_KEY, queueName(), SteamMatchmaking.LobbyComparison.Equal);
+        matchmaking.addRequestLobbyListStringFilter(GAME_KEY, Multiplayer.BUILD_ID, SteamMatchmaking.LobbyComparison.Equal);
+        matchmaking.addRequestLobbyListDistanceFilter(SteamMatchmaking.LobbyDistanceFilter.Worldwide);
+        matchmaking.addRequestLobbyListFilterSlotsAvailable(1);
+        // (nearest rating first; it only sorts, so a lone player far from everyone is still matched)
+        if (rankedQueue) matchmaking.addRequestLobbyListNearValueFilter(RATING_KEY, matchRating);
+        matchmaking.addRequestLobbyListResultCountFilter(20);
+        matchmaking.requestLobbyList();
+    }
+
+    /** The answer to a matchmaking search: join the first waiting player found, or wait for one. */
+    private void handleMatchSearch(int lobbyCount) {
+        if (phase != Phase.MATCH_SEARCHING) return;
+        if (lobbyCount > 0) {
+            joinMatchLobby(matchmaking.getLobbyByIndex(0));
+        } else {
+            phase = Phase.MATCH_CREATING;
+            matchmaking.createLobby(SteamMatchmaking.LobbyType.Public, LOBBY_MEMBER_LIMIT);
+        }
+    }
+
+    /** Waiting: should an older lobby than this player's own be waiting too, leave this one and join it. */
+    private void handleMatchRecheck(int lobbyCount) {
+        if (phase != Phase.MATCH_WAITING) return;
+        long mine = SteamNativeHandle.getNativeHandle(lobbyID);
+        for (int i = 0; i < lobbyCount; i++) {
+            SteamID other = matchmaking.getLobbyByIndex(i);
+            if (other != null && SteamNativeHandle.getNativeHandle(other) < mine) {
+                System.out.println("[MP] An older lobby is waiting in the queue: moving to it");
+                leaveLobbyOnly();
+                joinMatchLobby(other);
+                return;
+            }
+        }
+        nextRecheckMs = System.currentTimeMillis() + MATCH_RECHECK_MS;
+    }
+
+    private void joinMatchLobby(SteamID found) {
+        lobbyID = new SteamID(found);
+        phase = Phase.MATCH_JOINING;
+        matchmaking.joinLobby(lobbyID);
+    }
+
+    private void handleMatchLobbyCreated(SteamResult result, SteamID createdLobbyID) {
+        if (result != SteamResult.OK) {
+            endRoom("Steam couldn't open a matchmaking room (" + result + ").");
+            return;
+        }
+        lobbyID = new SteamID(createdLobbyID);
+        if (!matchmaking.setLobbyData(lobbyID, QUEUE_KEY, queueName())
+                || !matchmaking.setLobbyData(lobbyID, GAME_KEY, Multiplayer.BUILD_ID)
+                || (rankedQueue && !matchmaking.setLobbyData(lobbyID, RATING_KEY, Integer.toString(matchRating)))
+                || !matchmaking.setLobbyMemberLimit(lobbyID, LOBBY_MEMBER_LIMIT)
+                || !matchmaking.setLobbyJoinable(lobbyID, true)) {
+            endRoom("Steam couldn't open a matchmaking room. Please try again.");
+            return;
+        }
+        phase = Phase.MATCH_WAITING;
+        nextRecheckMs = System.currentTimeMillis() + MATCH_RECHECK_MS;
+        System.out.println("[MP] Waiting in the " + queueName() + " queue (lobby " + lobbyID + ")");
+    }
+
+    /** In the lobby found (or not): its owner is the opponent, unless they've gone, when it's back to looking. */
+    private void handleMatchLobbyEnter(SteamID enteredLobbyID, SteamMatchmaking.ChatRoomEnterResponse response) {
+        if (response != SteamMatchmaking.ChatRoomEnterResponse.Success) {
+            System.out.println("[MP] Couldn't join a waiting player's lobby (" + response + "): looking again");
+            lobbyID = null;
+            searchForMatch();
+            return;
+        }
+        lobbyID = new SteamID(enteredLobbyID);
+        SteamID ownerID = matchmaking.getLobbyOwner(lobbyID);
+        if (ownerID == null || ownerID.equals(mySteamID)) {
+            System.out.println("[MP] The waiting player had gone: looking again");
+            searchForMatch();
+            return;
+        }
+        partnerArrived(ownerID);
+    }
+
+    /** Leaves the lobby this player's in (if any), keeping the phase: for moving on to another. */
+    private void leaveLobbyOnly() {
+        // (someone who'd begun connecting as the lobby was left isn't the partner after all)
+        if (remoteSteamID != null) networking.closeP2PSessionWithUser(remoteSteamID);
+        remoteSteamID = null;
+        if (lobbyID == null) return;
+        matchmaking.setLobbyJoinable(lobbyID, false);
+        matchmaking.leaveLobby(lobbyID);
+        lobbyID = null;
+    }
+
     private void handleLobbyMatchList(int lobbyCount) {
         MatchAction action = matchAction;
         matchAction = MatchAction.NONE;
 
-        if (action == MatchAction.CHECK_HOST_CODE) {
+        if (action == MatchAction.MATCH_SEARCH) {
+            handleMatchSearch(lobbyCount);
+        } else if (action == MatchAction.MATCH_RECHECK) {
+            handleMatchRecheck(lobbyCount);
+        } else if (action == MatchAction.CHECK_HOST_CODE) {
             if (phase != Phase.CHECKING_HOST_CODE) return;
             if (lobbyCount > 0) {
                 retryHostCode();
@@ -325,6 +473,10 @@ public final class SteamTransport implements MultiplayerTransport {
     }
 
     private void handleLobbyCreated(SteamResult result, SteamID createdLobbyID) {
+        if (phase == Phase.MATCH_CREATING) {
+            handleMatchLobbyCreated(result, createdLobbyID);
+            return;
+        }
         if (phase != Phase.CREATING_LOBBY) return;
         if (result != SteamResult.OK) {
             endRoom("Steam couldn't create a room (" + result + ").");
@@ -344,6 +496,10 @@ public final class SteamTransport implements MultiplayerTransport {
     }
 
     private void handleLobbyEnter(SteamID enteredLobbyID, SteamMatchmaking.ChatRoomEnterResponse response) {
+        if (phase == Phase.MATCH_JOINING) {
+            handleMatchLobbyEnter(enteredLobbyID, response);
+            return;
+        }
         if (phase != Phase.JOINING_ROOM) return;
         if (response != SteamMatchmaking.ChatRoomEnterResponse.Success) {
             endRoom("Couldn't join the room (" + response + ").");
@@ -364,7 +520,8 @@ public final class SteamTransport implements MultiplayerTransport {
         if (lobbyID == null || !lobbyID.equals(changedLobbyID)) return;
 
         if (stateChange == SteamMatchmaking.ChatMemberStateChange.Entered) {
-            if (changedUserID.equals(mySteamID)) return;
+            // (only a lobby's owner waits for someone to enter: a joiner's partner is the owner)
+            if (!waitingInOwnLobby() || changedUserID.equals(mySteamID)) return;
             if (remoteSteamID != null && !remoteSteamID.equals(changedUserID)) return;
             partnerArrived(changedUserID);
             return;
@@ -386,10 +543,18 @@ public final class SteamTransport implements MultiplayerTransport {
     private void partnerArrived(SteamID partner) {
         if (phase == Phase.IN_ROOM) return;
         remoteSteamID = new SteamID(partner);
-        if (phase == Phase.HOSTING) matchmaking.setLobbyJoinable(lobbyID, false);
+        if (waitingInOwnLobby()) matchmaking.setLobbyJoinable(lobbyID, false);
+        if (phase == Phase.MATCH_WAITING || phase == Phase.MATCH_JOINING) {
+            listener.matched(phase == Phase.MATCH_WAITING);
+        }
         phase = Phase.IN_ROOM;
         System.out.println("[MP] Partner in room " + roomCode + ": " + remoteSteamID);
         onSwing(() -> listener.connected());
+    }
+
+    /** Whether this player owns the lobby and is waiting for the partner (a code room's host, or matchmaking's). */
+    private boolean waitingInOwnLobby() {
+        return phase == Phase.HOSTING || phase == Phase.MATCH_WAITING;
     }
 
     private boolean isLobbyMember(SteamID userID) {
@@ -424,7 +589,7 @@ public final class SteamTransport implements MultiplayerTransport {
             SteamID senderID = new SteamID();
             int bytesRead = networking.readP2PPacket(senderID, readBuffer, channel);
             if (bytesRead <= 0) continue;
-            if (remoteSteamID == null && phase == Phase.HOSTING && isLobbyMember(senderID)
+            if (remoteSteamID == null && waitingInOwnLobby() && isLobbyMember(senderID)
                     && !senderID.equals(mySteamID)) {
                 partnerArrived(senderID);
             }

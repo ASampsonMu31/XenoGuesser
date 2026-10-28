@@ -19,7 +19,8 @@ import javax.swing.SwingUtilities;
  * -Dxenoguesser.mpfake=host or =join): Steam won't run two accounts on one PC, so without this
  * every test would need two machines. The host listens on 127.0.0.1:27999 and the joiner
  * connects to it; the room code is made and shown like Steam's but not checked, since there
- * can only be one room on the PC.
+ * can only be one room on the PC. Matchmaking has a port for each queue (28000 casual, 28001
+ * ranked): a window joins one already listening there, or else listens there itself.
  *
  * Both kinds of message go over the one TCP connection, each as its length then its bytes, so
  * "unreliable" ones always arrive here. -Dxenoguesser.mpdrop=0.3 throws away that share of the
@@ -28,6 +29,9 @@ import javax.swing.SwingUtilities;
 public final class LocalTransport implements MultiplayerTransport {
 
     private static final int PORT = 27999;
+    // Matchmaking's queues, one port each, so a casual and a ranked window never meet
+    private static final int CASUAL_PORT = 28000, RANKED_PORT = 28001;
+    private static final int MATCH_ATTEMPTS = 20;
     private static final double DROP_SHARE = parseDropShare(Dev.property("xenoguesser.mpdrop"));
     // Larger than any message the game sends (the writing systems, under 1 MB)
     private static final int MAX_MESSAGE = 4 * 1024 * 1024;
@@ -69,6 +73,11 @@ public final class LocalTransport implements MultiplayerTransport {
     @Override
     public void join(String code) {
         tasks.offer(() -> joinRoom(code));
+    }
+
+    @Override
+    public void matchmake(boolean ranked, int rating) {
+        tasks.offer(() -> findMatch(ranked ? RANKED_PORT : CASUAL_PORT));
     }
 
     @Override
@@ -120,29 +129,72 @@ public final class LocalTransport implements MultiplayerTransport {
 
     private void openRoom() {
         int myRoom;
-        ServerSocket listening;
         synchronized (lock) {
             closeRoom();
             myRoom = room;
-            try {
-                server = new ServerSocket();
-                server.setReuseAddress(true);
-                server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), PORT));
-            } catch (IOException e) {
-                closeRoom();
-                fail(myRoom, "Couldn't open a local room on port " + PORT + " (is another window already hosting?)");
-                return;
-            }
-            listening = server;
+        }
+        if (!listen(myRoom, PORT, null)) {
+            fail(myRoom, "Couldn't open a local room on port " + PORT + " (is another window already hosting?)");
+            return;
         }
         String code = Multiplayer.newRoomCode();
         System.out.println("[MP] Local room " + code + " open on port " + PORT);
         onSwing(() -> listener.roomCode(code));
+    }
 
+    /**
+     * Matchmaking on this PC: joins a window already waiting on the queue's port, or else waits
+     * there itself. Two windows looking at once both find nobody; whichever binds the port waits,
+     * and the other, failing to, looks again and finds it.
+     */
+    private void findMatch(int port) {
+        int myRoom;
+        synchronized (lock) {
+            closeRoom();
+            myRoom = room;
+        }
+        System.out.println("[MP] Local matchmaking on port " + port);
+        for (int attempt = 0; attempt < MATCH_ATTEMPTS && isRoom(myRoom); attempt++) {
+            Socket partner = new Socket();
+            try {
+                partner.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 500);
+                if (!connect(myRoom, partner, false)) partner.close();
+                return;
+            } catch (IOException e) {
+                // Nobody waiting there
+                closeQuietly(partner);
+            }
+            if (listen(myRoom, port, true)) {
+                System.out.println("[MP] Waiting in the local queue on port " + port);
+                return;
+            }
+        }
+        fail(myRoom, "Couldn't find or open the local matchmaking queue on port " + port + ".");
+    }
+
+    /**
+     * Listens on a port for the partner (matchedAsHost: true for matchmaking, null for a code
+     * room), accepting them on a thread of its own; false if the port couldn't be had.
+     */
+    private boolean listen(int myRoom, int port, Boolean matchedAsHost) {
+        ServerSocket listening;
+        synchronized (lock) {
+            if (room != myRoom) return false;
+            try {
+                server = new ServerSocket();
+                server.setReuseAddress(true);
+                server.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+            } catch (IOException e) {
+                closeQuietly(server);
+                server = null;
+                return false;
+            }
+            listening = server;
+        }
         Thread accept = new Thread(() -> {
             try {
                 Socket partner = listening.accept();
-                if (!connect(myRoom, partner)) partner.close();
+                if (!connect(myRoom, partner, matchedAsHost)) partner.close();
             } catch (IOException e) {
                 // Closed by leave(), or the room was replaced
                 if (isRoom(myRoom)) fail(myRoom, "The local room closed (" + e.getMessage() + ")");
@@ -150,6 +202,7 @@ public final class LocalTransport implements MultiplayerTransport {
         }, "local-accept");
         accept.setDaemon(true);
         accept.start();
+        return true;
     }
 
     private void joinRoom(String code) {
@@ -162,15 +215,18 @@ public final class LocalTransport implements MultiplayerTransport {
         try {
             Socket partner = new Socket();
             partner.connect(new InetSocketAddress(InetAddress.getLoopbackAddress(), PORT), 2000);
-            if (!connect(myRoom, partner)) partner.close();
+            if (!connect(myRoom, partner, null)) partner.close();
         } catch (IOException e) {
             fail(myRoom, "No open room found for code " + code
                     + " (no window is hosting with -Dxenoguesser.mpfake=host).");
         }
     }
 
-    /** Starts using a connection to the partner, unless the room has been left meanwhile. */
-    private boolean connect(int myRoom, Socket partner) throws IOException {
+    /**
+     * Starts using a connection to the partner, unless the room has been left meanwhile;
+     * matchedAsHost says, for matchmaking, which this player is (null for a code room).
+     */
+    private boolean connect(int myRoom, Socket partner, Boolean matchedAsHost) throws IOException {
         DataInputStream in;
         synchronized (lock) {
             if (room != myRoom) return false;
@@ -183,6 +239,7 @@ public final class LocalTransport implements MultiplayerTransport {
             server = null;
         }
         System.out.println("[MP] Local partner connected");
+        if (matchedAsHost != null) listener.matched(matchedAsHost);
         onSwing(() -> {
             if (isRoom(myRoom)) listener.connected();
         });

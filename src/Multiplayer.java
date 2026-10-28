@@ -19,9 +19,14 @@ import javax.swing.SwingUtilities;
  * -Dxenoguesser.mpfake) is made the first time it's needed and kept until the game exits, so
  * Steam is only started when Play Multiplayer is pressed.
  *
- * The handshake: the joiner enters the room and says HELLO (with its player's name and suit);
- * the host answers with START (its world seed, game mode and map kind, which the joiner adopts,
- * and its player's name and suit); the joiner answers START_ACK.
+ * A session is either a friend's (hosted, or joined by its room code) or found by matchmaking
+ * (M59) in the casual or ranked queue, where which player hosts is only known once the two
+ * have met (the one who was waiting): until then role is null.
+ *
+ * The handshake: the joiner enters the room and says HELLO (with its player's name and suit,
+ * whether it's in the ranked queue and its rating); the host answers with START (its world
+ * seed, game mode and map kind, which the joiner adopts, and its player's name, suit, ranked
+ * and rating); the joiner answers START_ACK.
  * Each side's Listener hears ready() when its half is done. After that the game's screens send
  * their messages through the send methods and read what has come from the partner here.
  *
@@ -33,7 +38,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 4;
+    public static final int PROTOCOL_VERSION = 5;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -99,6 +104,10 @@ public final class Multiplayer {
         default void roomCode(String code) {
         }
 
+        /** Matchmaking: an opponent's been found, and this player is the host or the joiner. */
+        default void matched(Role role) {
+        }
+
         /** Both players are in the room and the handshake is done: the world can be made. */
         default void ready() {
         }
@@ -140,10 +149,18 @@ public final class Multiplayer {
 
     // ---- The session ----
 
-    public final Role role;
+    // Which player this PC is: set as the session opens, or for matchmaking once the two have met
+    public volatile Role role;
+    // Found by matchmaking (made with no role), and in its ranked queue (a friend's game never is)
+    private final boolean matchmade, rankedQueue;
     // Who this player is, as they joined, and who the partner is (from their HELLO or START)
     private final String localName = Profile.name();
     private final SuitColour localSuit = Profile.suit();
+    private final int localRating = Rating.rating();
+    private volatile boolean remoteRanked;
+    private volatile int remoteRating = Rating.START;
+    // Whether the partner said they were leaving (LEAVE), rather than going quiet or dropping
+    private volatile boolean remoteLeft;
     private volatile String remoteName;
     private volatile SuitColour remoteSuit;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
@@ -199,8 +216,10 @@ public final class Multiplayer {
     private long lastPoseSentMs;
     private int posesReceived;
 
-    private Multiplayer(Role role) {
+    private Multiplayer(Role role, boolean rankedQueue) {
         this.role = role;
+        this.matchmade = role == null;
+        this.rankedQueue = rankedQueue;
     }
 
     /**
@@ -208,7 +227,7 @@ public final class Multiplayer {
      * then waits for the partner. Starts the transport (Steam) first if this is its first use.
      */
     public static Multiplayer host(long worldSeed, GameMode gameMode, MapKind mapKind, Listener listener) {
-        Multiplayer session = open(Role.HOST, listener);
+        Multiplayer session = open(Role.HOST, false, listener);
         session.worldSeed = worldSeed;
         session.gameMode = gameMode;
         session.mapKind = mapKind;
@@ -216,21 +235,36 @@ public final class Multiplayer {
         return session;
     }
 
+    /**
+     * Matchmaking (M59): finds an opponent in the casual or the ranked queue (never one in the
+     * other), and the Listener hears matched() with which player this is. Should it be the
+     * host, the world is this seed, mode and map; a joiner takes the host's.
+     */
+    public static Multiplayer matchmake(boolean ranked, long worldSeed, GameMode gameMode, MapKind mapKind, Listener listener) {
+        Multiplayer session = open(null, ranked, listener);
+        session.worldSeed = worldSeed;
+        session.gameMode = gameMode;
+        session.mapKind = mapKind;
+        transport.matchmake(ranked, session.localRating);
+        return session;
+    }
+
     /** Joins the room with this code (cleaned with cleanRoomCode first); the world comes from the host. */
     public static Multiplayer join(String code, Listener listener) {
-        Multiplayer session = open(Role.JOIN, listener);
+        Multiplayer session = open(Role.JOIN, false, listener);
         session.roomCode = cleanRoomCode(code);
         transport.join(session.roomCode);
         return session;
     }
 
-    private static synchronized Multiplayer open(Role role, Listener listener) {
+    private static synchronized Multiplayer open(Role role, boolean ranked, Listener listener) {
         if (active != null) active.leave();
-        Multiplayer session = new Multiplayer(role);
+        Multiplayer session = new Multiplayer(role, ranked);
         if (listener != null) session.listeners.add(listener);
         active = session;
         startTransport();
-        System.out.println("[MP] " + (role == Role.HOST ? "Hosting" : "Joining") + " as " + session.localName);
+        System.out.println("[MP] " + (role == Role.HOST ? "Hosting" : role == Role.JOIN ? "Joining"
+                : ranked ? "Matchmaking (ranked)" : "Matchmaking (casual)") + " as " + session.localName);
         return session;
     }
 
@@ -359,6 +393,30 @@ public final class Multiplayer {
 
     public String roomCode() {
         return roomCode;
+    }
+
+    /** Whether this session was found by matchmaking (either queue), not a friend's room code. */
+    public boolean isMatchmade() {
+        return matchmade;
+    }
+
+    /** Whether this is a ranked game: both players came through the ranked queue (M59). */
+    public boolean isRanked() {
+        return rankedQueue && remoteRanked;
+    }
+
+    /** This player's rating as the session opened, and the partner's (from their HELLO or START). */
+    public int localRating() {
+        return localRating;
+    }
+
+    public int remoteRating() {
+        return remoteRating;
+    }
+
+    /** Whether the partner left on purpose (said LEAVE), rather than going quiet or the connection dropping. */
+    public boolean remoteLeftOnPurpose() {
+        return remoteLeft;
     }
 
     /** The world's seed: the host's own, or the one in the host's START. */
@@ -571,20 +629,22 @@ public final class Multiplayer {
 
     private void sendHello() {
         byte[] java = javaVersion(), name = localName.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer m = message(HELLO, 4 + 2 + java.length + 2 + name.length + 1).putInt(PROTOCOL_VERSION);
+        ByteBuffer m = message(HELLO, 4 + 2 + java.length + 2 + name.length + 1 + 1 + 4).putInt(PROTOCOL_VERSION);
         putString(m, java);
         putString(m, name);
         m.put((byte) localSuit.ordinal());
+        m.put((byte) (rankedQueue ? 1 : 0)).putInt(localRating);
         send(m, true);
     }
 
     private void sendStart() {
         byte[] java = javaVersion(), name = localName.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer m = message(START, 4 + 8 + 1 + 1 + 2 + java.length + 2 + name.length + 1).putInt(PROTOCOL_VERSION)
+        ByteBuffer m = message(START, 4 + 8 + 1 + 1 + 2 + java.length + 2 + name.length + 1 + 1 + 4).putInt(PROTOCOL_VERSION)
                 .putLong(worldSeed).put((byte) gameMode.ordinal()).put((byte) mapKind.ordinal());
         putString(m, java);
         putString(m, name);
         m.put((byte) localSuit.ordinal());
+        m.put((byte) (rankedQueue ? 1 : 0)).putInt(localRating);
         send(m, true);
     }
 
@@ -598,6 +658,18 @@ public final class Multiplayer {
         remoteSuit = SuitColour.of(suit);
         System.out.println("[MP] Partner: " + remoteName + ", " + remoteSuit.label + " suit");
         Profile.spoken(remoteName);
+    }
+
+    /**
+     * Takes whether the partner came through the ranked queue, and their rating. Both must have
+     * for the game to be ranked; the queues are kept apart, so a difference means something's
+     * amiss, and the game is then casual for both.
+     */
+    private void meetRival(boolean ranked, int rating) {
+        remoteRanked = ranked;
+        remoteRating = rating;
+        if (ranked != rankedQueue) System.out.println("[MP] Only one player came through the ranked queue: the game isn't ranked");
+        else if (ranked) System.out.println("[MP] Ranked game: " + localRating + " against " + rating);
     }
 
     /** Networking thread, every few ms: sends this player's latest pose every 200 ms once the game is on. */
@@ -680,9 +752,13 @@ public final class Multiplayer {
                 // (an older game's HELLO ends here: its version is turned down below)
                 String name = m.hasRemaining() ? getString(m) : "Partner";
                 int suit = m.hasRemaining() ? m.get() : 0;
+                // (an older game's ends before whether it's ranked: its version is turned down below)
+                boolean ranked = m.hasRemaining() && m.get() != 0;
+                int rating = m.hasRemaining() ? m.getInt() : Rating.START;
                 if (m.hasRemaining() || !expect(Role.HOST, "HELLO")) return false;
                 remoteJavaVersion = java;
                 meetPartner(name, suit);
+                meetRival(ranked, rating);
                 // The joiner checks the version too, so START goes even when it differs
                 sendStart();
                 if (!versionsMatch(version, java)) return false;
@@ -698,6 +774,8 @@ public final class Multiplayer {
                 String java = getString(m);
                 String name = m.hasRemaining() ? getString(m) : "Partner";
                 int suit = m.hasRemaining() ? m.get() : 0;
+                boolean ranked = m.hasRemaining() && m.get() != 0;
+                int rating = m.hasRemaining() ? m.getInt() : Rating.START;
                 if (m.hasRemaining() || !expect(Role.JOIN, "START")) return false;
                 if (mode < 0 || mode >= GameMode.values().length || map < 0 || map >= MapKind.values().length) {
                     System.out.println("[MP] Ignored a START with an unknown game mode or map kind");
@@ -706,6 +784,7 @@ public final class Multiplayer {
                 remoteJavaVersion = java;
                 if (!versionsMatch(version, java)) return false;
                 meetPartner(name, suit);
+                meetRival(ranked, rating);
                 worldSeed = seed;
                 gameMode = GameMode.values()[mode];
                 mapKind = MapKind.values()[map];
@@ -754,6 +833,7 @@ public final class Multiplayer {
             }
             case LEAVE -> {
                 String reason = remoteName() + " left.";
+                remoteLeft = true;
                 close();
                 notifyListeners(l -> l.disconnected(reason));
                 return false;
@@ -865,9 +945,10 @@ public final class Multiplayer {
             byte type = m.get();
             return switch (type) {
                 case HELLO -> "HELLO version " + m.getInt() + ", Java " + getString(m)
-                        + (m.hasRemaining() ? ", " + getString(m) + ", suit " + m.get() : "");
+                        + (m.hasRemaining() ? ", " + getString(m) + ", suit " + m.get() : "") + describeRanked(m);
                 case START -> "START version " + m.getInt() + ", seed " + m.getLong() + ", mode " + m.get()
-                        + ", map " + m.get() + ", Java " + getString(m) + (m.hasRemaining() ? ", " + getString(m) + ", suit " + m.get() : "");
+                        + ", map " + m.get() + ", Java " + getString(m) + (m.hasRemaining() ? ", " + getString(m) + ", suit " + m.get() : "")
+                        + describeRanked(m);
                 case START_ACK -> "START_ACK";
                 case WORLD_READY -> "WORLD_READY";
                 case BEGIN -> "BEGIN";
@@ -891,8 +972,25 @@ public final class Multiplayer {
         }
     }
 
+    /** The end of a HELLO or START: ranked or not, and the rating (an older game's has neither). */
+    private static String describeRanked(ByteBuffer m) {
+        if (!m.hasRemaining()) return "";
+        return m.get() != 0 ? ", ranked, rating " + m.getInt() : ", casual, rating " + m.getInt();
+    }
+
     /** Routes the transport's events to the active session. */
     private static final class TransportEvents implements MultiplayerTransport.Listener {
+        @Override
+        public void matched(boolean host) {
+            Multiplayer session = active;
+            if (session == null || session.role != null) return;
+            Role role = host ? Role.HOST : Role.JOIN;
+            // (here, on the networking thread, so it's set before the partner's first message is read)
+            session.role = role;
+            System.out.println("[MP] Matched: this player is the " + (host ? "host" : "joiner"));
+            session.notifyListeners(l -> l.matched(role));
+        }
+
         @Override
         public void roomCode(String code) {
             Multiplayer session = active;

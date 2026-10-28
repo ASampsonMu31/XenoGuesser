@@ -130,7 +130,8 @@ Parts extend `GamePart` (field `game`).
   `NameCheck` (swearing by spelling, sound and spoonerism), `Pronunciation` (a name split into words,
   said from `assets/text/word_sounds.txt.gz`, made by `tools/word_sounds.py`), `SuitColour`.
 - **Multiplayer**: `Multiplayer` (session, messages), `MultiplayerTransport`, `SteamTransport`,
-  `LocalTransport`, `MultiplayerPanel`, `MultiplayerScore` (rounds won), `RemotePlayer`, `TownsfolkSync` (the host's
+  `LocalTransport`, `MultiplayerPanel` (friends' codes, and matchmaking's casual and ranked queues), `MultiplayerScore`
+  (rounds won), `Rating` (ranked Elo), `RemotePlayer`, `TownsfolkSync` (the host's
   people and vehicles sent to the joiner's PC).
 - **GL plumbing**: `Shader`, `Mesh`, `MeshBuilder`, `MeshData`, `Model`, `Renderer`, `Material`,
   `Light`, `TextureLibrary`, `Offscreen`, `SoftwareRenderer`, `Affine`, `SphereRender`,

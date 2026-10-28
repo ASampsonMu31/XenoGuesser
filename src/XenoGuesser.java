@@ -245,11 +245,12 @@ public class XenoGuesser extends JFrame {
       openProfile(true);
     }
     // Developer aid: -Dxenoguesser.mpauto=host (or =join) opens the multiplayer panel and presses
-    // Host game (or Join game with any code: for -Dxenoguesser.mpfake, which doesn't check it)
+    // Host game (or Join game with any code: for -Dxenoguesser.mpfake, which doesn't check it);
+    // =match or =ranked presses Find match in that queue
     String mpAuto = Dev.property("xenoguesser.mpauto");
     if (mpAuto != null) {
       startMultiplayer();
-      multiplayerPanel.autoStart(!mpAuto.equalsIgnoreCase("join"));
+      multiplayerPanel.autoStart(mpAuto);
     }
   }
 
@@ -733,6 +734,8 @@ glEventListener.setGameHUD(gameHUD);
     // (multiplayer: from now on, silence from the partner counts as them gone)
     Multiplayer playing = Multiplayer.active();
     if (playing != null) playing.setPlaying(true);
+    // (ranked: counted as lost from now until it's won, so quitting a game going badly loses it)
+    if (playing != null && playing.isRanked()) rankedGame = Rating.begin(playing.remoteRating());
     devTestRun.runHudTest();
     updateMouseMode();
   }
@@ -1111,6 +1114,7 @@ glEventListener.setGameHUD(gameHUD);
       lines.add(session.name(player) + (player == me ? " (You)" : "") + ": " + wins + (wins == 1 ? " round" : " rounds") + " won");
       colours.add(GameHUD.textColour(session.suit(player)));
     }
+    addRankedLine(won ? Boolean.TRUE : Boolean.FALSE, lines, colours);
     System.out.println("[MP] Game over: " + session.name(winner) + " wins");
     gameOver = true;
     quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? GOOD : BAD,
@@ -1124,6 +1128,30 @@ glEventListener.setGameHUD(gameHUD);
         });
     layoutComponents();
     devTestRun.verdictShot("gameend");
+  }
+
+  // Ranked multiplayer (M59): the game being played, counted as lost until it ends; null otherwise
+  private Rating.Game rankedGame;
+
+  /**
+   * Ranked: settles the game (won: TRUE, lost: FALSE, void: null) and adds a line saying how
+   * the player's rating moved, for the game's end. Nothing if the game wasn't ranked.
+   */
+  private void addRankedLine(Boolean won, java.util.List<String> lines, java.util.List<Color> colours) {
+    Rating.Game game = rankedGame;
+    if (game == null) return;
+    rankedGame = null;
+    if (won == null) {
+      game.voided();
+      lines.add("Ranked: no result, as the connection was lost. Your rating stays " + game.before + ".");
+      colours.add(HudStyle.LABEL);
+      return;
+    }
+    if (won) game.won();
+    else game.lost();
+    int after = game.after(won), change = after - game.before;
+    lines.add("Ranked rating: " + game.before + " -> " + after + " (" + (change >= 0 ? "+" : "") + change + ")");
+    colours.add(change >= 0 ? GOOD : BAD);
   }
 
   // Multiplayer: this player's own game mode and map kind, given back after the game (the
@@ -1144,8 +1172,13 @@ glEventListener.setGameHUD(gameHUD);
     if (inGame && quarterPanel != null) {
       gameOver = true;
       if (shopPanel != null && shopPanel.isOpen()) shopPanel.close();
+      java.util.List<String> lines = new java.util.ArrayList<>(java.util.List.of(reason));
+      java.util.List<Color> colours = new java.util.ArrayList<>(java.util.List.of(HudStyle.LABEL));
+      // Ranked (M59): a partner who left on purpose has lost; a dropped connection can't say whose
+      // doing it was (both PCs see the other go), so that game counts for neither
+      addRankedLine(session.remoteLeftOnPurpose() ? Boolean.TRUE : null, lines, colours);
       quarterPanel.showMultiplayer("You win", GOOD, "You win: " + who + " disconnected",
-          HudStyle.VALUE, GOOD, java.util.List.of(reason), java.util.List.of(HudStyle.LABEL), "Main menu", null, () -> {
+          HudStyle.VALUE, GOOD, lines, colours, "Main menu", null, () -> {
             quarterPanel.close();
             endGame(true);
           });
@@ -1164,6 +1197,11 @@ glEventListener.setGameHUD(gameHUD);
    */
   void returnToMenu() {
     boolean forfeited = Multiplayer.isActive() && !gameOver;
+    // (a ranked game forfeited stays lost, as it was counted when it began)
+    if (rankedGame != null) {
+      rankedGame.lost();
+      rankedGame = null;
+    }
     setSettingsOpen(false);
     if (messageStrip != null) messageStrip.stop();
     System.out.println(forfeited ? "[MP] Forfeited: back to the menu" : "Back to the menu");
@@ -1192,7 +1230,7 @@ glEventListener.setGameHUD(gameHUD);
         if (again != null && Dev.property("xenoguesser.mpautoagain") != null) {
           later(3000, () -> {
             startMultiplayer();
-            if (multiplayerPanel != null) multiplayerPanel.autoStart(!again.equalsIgnoreCase("join"));
+            if (multiplayerPanel != null) multiplayerPanel.autoStart(again);
           });
         }
       });
