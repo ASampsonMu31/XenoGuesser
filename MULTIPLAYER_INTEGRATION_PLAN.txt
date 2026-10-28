@@ -1575,3 +1575,8 @@ LOG
             PROTOCOL_VERSION 3. Not yet seen over Steam. Vehicles passing through are kept up to
             36 round each player counting every one within reach of them, whoever it was made for,
             so players together share one lot (it was two, 72 on the same roads).
+            Each TOWNSFOLK piece carries when the host took its snapshot (the fine timer); the
+            joiner keeps each one's last 6 snapshots and draws them 260 ms behind the host's time
+            (as best known: the quickest any piece has come), so there are snapshots either side of
+            the moment drawn (with only the last two kept, cars paused and then jumped 5 times a
+            second). The log measures how evenly the moving ones are drawn on each PC.

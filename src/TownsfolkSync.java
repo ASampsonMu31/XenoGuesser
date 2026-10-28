@@ -31,16 +31,29 @@ final class TownsfolkSync {
     // (in case those were lost)
     private static final int LOOKS_FIRST = 4;
     private static final long LOOKS_EVERY_MS = 3000;
-    // The joiner's PC draws them this long behind the latest snapshot (one interval and a margin
-    // for the network's unevenness), carries one on along its way at most this long past its
-    // latest, and forgets one not heard of for this long (gone out of reach)
+    // The joiner's PC draws them this long behind the host's time (as each snapshot was taken
+    // there), on top of the quickest a snapshot has come: one interval and a margin for the
+    // network's unevenness, so there are nearly always snapshots either side of the moment drawn.
+    // It keeps the last few of each one's snapshots, carries one on along its way at most
+    // PREDICT_MS past its latest (should snapshots be late or lost), and forgets one not heard of
+    // for FORGET_MS (gone out of reach)
     private static final long BEHIND_MS = 260, PREDICT_MS = 400, FORGET_MS = 1500;
+    private static final int SAMPLES_KEPT = 6;
 
     // Entry kinds, and their flags
     private static final byte PERSON = 1, VEHICLE = 2, DOOR = 3;
     private static final byte WITH_LOOKS = 1, DRIVING = 2, HOUSEHOLD = 4, PARKED = 8;
 
     private final Inhabitants inhabitants;
+
+    /**
+     * The time snapshots are taken and drawn by, in milliseconds (only differences mean
+     * anything): from the fine timer, as the wall clock on Windows moves in steps of up to 16 ms,
+     * a frame's worth, which would have things drawn moving in fits and starts.
+     */
+    private static long clock() {
+        return System.nanoTime() / 1_000_000L;
+    }
 
     TownsfolkSync(Inhabitants inhabitants) {
         this.inhabitants = inhabitants;
@@ -70,10 +83,11 @@ final class TownsfolkSync {
 
     /** The host's PC, every frame: every INTERVAL_MS, those near the joiner (at joiner) are sent. */
     void hostFrame(Multiplayer session, SpherePosition joiner, long now) {
+        if (joiner != null) measureHost(joiner);
         if (joiner == null || now - lastSentMs < INTERVAL_MS) return;
         lastSentMs = now;
         snapshot++;
-        Pieces out = new Pieces(session, snapshot, joiner);
+        Pieces out = new Pieces(session, snapshot, clock(), joiner);
         Vehicles vehicles = inhabitants.vehicles();
         peopleSent = 0;
         vehiclesSent = 0;
@@ -120,8 +134,14 @@ final class TownsfolkSync {
         out.flush();
         if (now - loggedAt >= LOG_MS) {
             if (loggedAt > 0) {
-                System.out.printf(java.util.Locale.ROOT, "[TOWNSFOLK] Sent %d people and %d vehicles in the latest snapshot; %.1f kB a second%n",
-                        peopleSent, vehiclesSent, bytesSent / ((now - loggedAt) / 1000.0) / 1000.0);
+                System.out.printf(java.util.Locale.ROOT, "[TOWNSFOLK] Sent %d people and %d vehicles in the latest snapshot; %.1f kB a second; "
+                        + "moving ones' speed frame to frame here off their average by %.0f%% on average, under half of it in %.1f%% of frames, over 1.5 times it in %.1f%%%n",
+                        peopleSent, vehiclesSent, bytesSent / ((now - loggedAt) / 1000.0) / 1000.0, 100.0 * unevenness / Math.max(1, movingFrames),
+                        100.0 * stalls / Math.max(1, movingFrames), 100.0 * surges / Math.max(1, movingFrames));
+                movingFrames = 0;
+                unevenness = 0.0;
+                stalls = 0;
+                surges = 0;
             }
             loggedAt = now;
             bytesSent = 0;
@@ -159,24 +179,26 @@ final class TownsfolkSync {
         return packed / 32767.0 * Math.PI;
     }
 
-    /** A snapshot's messages: each begins with the snapshot's number and the joiner's place, then as many entries as fit. */
+    /** A snapshot's messages: each begins with the snapshot's number, when it was taken (the host's time) and the joiner's place, then as many entries as fit. */
     private final class Pieces {
-        private static final int HEADER = 4 + 3 * 8;
+        private static final int HEADER = 4 + 8 + 3 * 8;
         private final Multiplayer session;
         private final int snapshot;
+        private final long takenAt;
         private final SpherePosition joiner;
         private final ByteBuffer piece = ByteBuffer.allocate(Multiplayer.MAX_TOWNSFOLK_BYTES);
 
-        Pieces(Multiplayer session, int snapshot, SpherePosition joiner) {
+        Pieces(Multiplayer session, int snapshot, long takenAt, SpherePosition joiner) {
             this.session = session;
             this.snapshot = snapshot;
+            this.takenAt = takenAt;
             this.joiner = joiner;
             begin();
         }
 
         private void begin() {
             piece.clear();
-            piece.putInt(snapshot).putDouble(joiner.x()).putDouble(joiner.y()).putDouble(joiner.z());
+            piece.putInt(snapshot).putLong(takenAt).putDouble(joiner.x()).putDouble(joiner.y()).putDouble(joiner.z());
         }
 
         /** Room for an entry of this many bytes (sending what's already there first if it wouldn't fit). */
@@ -199,18 +221,20 @@ final class TownsfolkSync {
 
     // ------------------------------------------------------------------ the joiner's PC
 
-    /** Where one was in a snapshot, and when that came. */
+    /** Where one was in a snapshot, and when that was taken (the host's time). */
     private record Sample(long at, SpherePosition place, double heading, float walking, float lift) {
     }
 
-    /** One of the host's people or vehicles as drawn here: its two latest samples, and when it was last heard of. */
+    /** One of the host's people or vehicles as drawn here: its latest few samples, oldest first, and when it was last heard of (this PC's time). */
     private static final class Replica {
         final Object thing;
-        Sample before, latest;
+        final List<Sample> samples = new ArrayList<>();
         long heardAt;
         int drivingId = -1;
         // How far it has gone (to turn its wheels or walk its legs by), and from where it was last drawn
         SpherePosition drawnAt;
+        // For the log's measure of smoothness
+        final Track track = new Track();
 
         Replica(Object thing) {
             this.thing = thing;
@@ -218,6 +242,8 @@ final class TownsfolkSync {
     }
 
     private final Map<Integer, Replica> replicas = new HashMap<>();
+    // This PC's time less the host's, for a snapshot that came as quickly as any (see read)
+    private long hostBehind = Long.MIN_VALUE;
     // The host's open doors as last heard (by door id: how far), and the doors near the joiner by id
     private final Map<Long, Float> doorsOpen = new HashMap<>();
     private int doorsSnapshot = -1;
@@ -233,7 +259,11 @@ final class TownsfolkSync {
                 System.out.println("[MP] Ignored a TOWNSFOLK piece that was too short (" + piece.length + " bytes)");
             }
         }
-        long drawAt = now - BEHIND_MS;
+        // (the moment drawn, in the host's time)
+        long drawAt = clock() - hostBehind - BEHIND_MS;
+        long frameNanos = System.nanoTime();
+        float frameSeconds = lastFrameNanos == 0L ? 0f : (frameNanos - lastFrameNanos) / 1e9f;
+        lastFrameNanos = frameNanos;
         List<Inhabitants.Person> people = inhabitants.replicaPeople;
         List<Vehicles.Vehicle> cars = inhabitants.replicaCars;
         people.clear();
@@ -245,12 +275,13 @@ final class TownsfolkSync {
                 it.remove();
                 continue;
             }
-            if (r.thing instanceof Vehicles.Vehicle v) {
+            if (r.thing instanceof Vehicles.Vehicle v && !r.samples.isEmpty()) {
                 Sample s = sampleAt(r, drawAt);
                 double moved = r.drawnAt == null ? 0.0 : SphereMath.distance(r.drawnAt, s.place());
                 v.position = s.place();
                 v.heading = s.heading();
                 v.spin += (float) moved;
+                measure(r.track, moved, frameSeconds, 5.0);
                 r.drawnAt = s.place();
                 cars.add(v);
             }
@@ -266,6 +297,7 @@ final class TownsfolkSync {
                 p.position = v.position;
                 r.drawnAt = null;
             } else {
+                if (r.samples.isEmpty()) continue;
                 Sample s = sampleAt(r, drawAt);
                 double moved = r.drawnAt == null ? 0.0 : SphereMath.distance(r.drawnAt, s.place());
                 p.phase = Inhabitants.Phase.WALKING;
@@ -274,6 +306,7 @@ final class TownsfolkSync {
                 p.heading = s.heading();
                 p.walking = s.walking();
                 p.lift = s.lift();
+                measure(r.track, moved, frameSeconds, 3.0);
                 // (their legs walked by how far they've gone, as on the host)
                 p.walkPhase = (p.walkPhase + (float) moved / inhabitants.halfStride(p) * (float) Math.PI) % (float) (Math.PI * 2);
                 p.lookYaw = 0.35f * (float) Math.sin(p.walkPhase * 0.13f + p.sway);
@@ -282,7 +315,16 @@ final class TownsfolkSync {
             people.add(p);
         }
         if (now - loggedAt >= LOG_MS) {
-            if (loggedAt > 0) System.out.printf("[TOWNSFOLK] Drawing %d of the host's people and %d vehicles%n", people.size(), cars.size());
+            if (loggedAt > 0) {
+                System.out.printf(java.util.Locale.ROOT, "[TOWNSFOLK] Drawing %d of the host's people and %d vehicles; moving ones' speed frame to frame "
+                        + "off their average by %.0f%% on average, under half of it in %.1f%% of frames, over 1.5 times it in %.1f%%%n",
+                        people.size(), cars.size(), 100.0 * unevenness / Math.max(1, movingFrames), 100.0 * stalls / Math.max(1, movingFrames),
+                        100.0 * surges / Math.max(1, movingFrames));
+            }
+            movingFrames = 0;
+            unevenness = 0.0;
+            stalls = 0;
+            surges = 0;
             loggedAt = now;
         }
         Map<InfrastructureManager.Doorway, Float> open = new HashMap<>();
@@ -293,10 +335,66 @@ final class TownsfolkSync {
         inhabitants.showDoors(open, dt);
     }
 
+    // For the log: frames in which something drawn was moving, how far its speed that frame was
+    // from its average (summed, as a share), and how many were under half of it or over 1.5 times it
+    private int movingFrames, stalls, surges;
+    private double unevenness;
+
+    /** Counts how evenly one moving thing is drawn going along (moving: its average over minSpeed a second). */
+    private void measure(Track t, double moved, float dt, double minSpeed) {
+        if (dt <= 0f) return;
+        double speed = moved / dt;
+        t.averageSpeed += (speed - t.averageSpeed) * Math.min(1.0, dt);
+        if (t.averageSpeed < minSpeed) return;
+        movingFrames++;
+        unevenness += Math.abs(speed - t.averageSpeed) / t.averageSpeed;
+        if (speed < t.averageSpeed * 0.5) stalls++;
+        if (speed > t.averageSpeed * 1.5) surges++;
+    }
+
+    /** One thing's place as last drawn and its speed averaged over about a second, for the log's measure of smoothness. */
+    private static final class Track {
+        SpherePosition at;
+        double averageSpeed;
+    }
+
+    // The host's PC: those near the joiner as moved here, for the same measure (to compare with
+    // the joiner's, which can be no smoother than this)
+    private final IdentityHashMap<Object, Track> hostTracks = new IdentityHashMap<>();
+    private long lastFrameNanos, lastHostNanos;
+
+    /** The host's PC, every frame: measures how evenly those near the joiner go along here. */
+    private void measureHost(SpherePosition joiner) {
+        long nanos = System.nanoTime();
+        float seconds = lastHostNanos == 0L ? 0f : (nanos - lastHostNanos) / 1e9f;
+        lastHostNanos = nanos;
+        java.util.Set<Object> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Vehicles.Vehicle v : inhabitants.vehiclesNow()) {
+            if (SphereMath.distance(joiner, v.position()) > VEHICLE_REACH) continue;
+            seen.add(v);
+            Track t = hostTracks.computeIfAbsent(v, k -> new Track());
+            if (t.at != null) measure(t, SphereMath.distance(t.at, v.position()), seconds, 5.0);
+            t.at = v.position();
+        }
+        inhabitants.forEachOut(p -> {
+            if (p.phase != Inhabitants.Phase.WALKING || p.position == null || SphereMath.distance(joiner, p.position) > PEOPLE_REACH) return;
+            seen.add(p);
+            Track t = hostTracks.computeIfAbsent(p, k -> new Track());
+            if (t.at != null) measure(t, SphereMath.distance(t.at, p.position), seconds, 3.0);
+            t.at = p.position;
+        });
+        hostTracks.keySet().retainAll(seen);
+    }
+
     /** Reads one piece of a snapshot. */
     private void read(ByteBuffer m, InfrastructureManager infrastructure, long now) {
         int number = m.getInt();
+        long takenAt = m.getLong();
         SpherePosition joiner = new SpherePosition(m.getDouble(), m.getDouble(), m.getDouble());
+        // How far this PC's clock is ahead of the host's, less the network's quickest delivery:
+        // the least seen, let creep up slowly (so a clock drifting the other way is followed)
+        long behind = clock() - takenAt;
+        hostBehind = hostBehind == Long.MIN_VALUE || behind < hostBehind ? behind : hostBehind + Math.max(1L, (behind - hostBehind) / 500L);
         Vehicles vehicles = inhabitants.vehicles();
         while (m.hasRemaining()) {
             byte kind = m.get();
@@ -327,7 +425,7 @@ final class TownsfolkSync {
                 }
                 if (r == null || !(r.thing instanceof Vehicles.Vehicle v)) continue;
                 v.parked = (flags & PARKED) != 0;
-                add(r, new Sample(now, place, heading, 0f, 0f), now);
+                add(r, new Sample(takenAt, place, heading, 0f, 0f), now);
             } else if (kind == PERSON) {
                 boolean driving = (flags & DRIVING) != 0;
                 int drivingId = -1, carrying = 0, boughtFrom = 0, packing = 0;
@@ -342,7 +440,7 @@ final class TownsfolkSync {
                     carrying = m.get();
                     boughtFrom = m.get();
                     packing = m.get();
-                    sample = new Sample(now, place, heading, walking, lift);
+                    sample = new Sample(takenAt, place, heading, walking, lift);
                 }
                 Replica r = replicas.get(id);
                 if ((flags & WITH_LOOKS) != 0) {
@@ -354,7 +452,7 @@ final class TownsfolkSync {
                 r.drivingId = drivingId;
                 if (sample != null) {
                     // (out of a vehicle: walked on from where they got out, not slid from where they last walked)
-                    if (r.drawnAt == null) r.latest = null;
+                    if (r.drawnAt == null) r.samples.clear();
                     add(r, sample, now);
                     p.carrying = carrying;
                     p.boughtFrom = boughtFrom;
@@ -374,25 +472,30 @@ final class TownsfolkSync {
         return new SpherePosition(joiner.x() + m.getFloat(), joiner.y() + m.getFloat(), joiner.z() + m.getFloat());
     }
 
-    /** A new sample for one (the latest one before it moving back). */
+    /** A new sample for one, in order of when it was taken (one come out of order slotted in, one from a snapshot already had replacing it). */
     private static void add(Replica r, Sample sample, long now) {
         r.heardAt = now;
-        if (r.latest == null) {
-            r.before = sample;
-            r.latest = sample;
-            return;
-        }
-        r.before = r.latest;
-        r.latest = sample;
+        List<Sample> samples = r.samples;
+        int i = samples.size();
+        while (i > 0 && samples.get(i - 1).at() > sample.at()) i--;
+        if (i > 0 && samples.get(i - 1).at() == sample.at()) samples.set(i - 1, sample);
+        else samples.add(i, sample);
+        while (samples.size() > SAMPLES_KEPT) samples.remove(0);
     }
 
     /**
-     * Where one was at a moment: between its two latest samples, or carried on along its way a
-     * little past the latest (should a snapshot be late or lost), held there after that.
+     * Where one was at a moment (the host's time): between the samples either side of it, or
+     * carried on along its way a little past the latest (should snapshots be late or lost),
+     * held there after that; before the earliest, at the earliest.
      */
     private static Sample sampleAt(Replica r, long at) {
-        Sample a = r.before, b = r.latest;
-        if (a == null || b == null || b.at() <= a.at() || at <= a.at()) return a != null ? a : b;
+        List<Sample> samples = r.samples;
+        int n = samples.size();
+        if (n == 1 || at <= samples.get(0).at()) return samples.get(0);
+        int k = 1;
+        while (k < n - 1 && samples.get(k).at() < at) k++;
+        Sample a = samples.get(k - 1), b = samples.get(k);
+        if (b.at() <= a.at()) return b;
         double f = Math.min((double) (at - a.at()) / (b.at() - a.at()), 1.0 + (double) PREDICT_MS / (b.at() - a.at()));
         // (on the datum: so near together, a straight line between them and back down to it)
         SpherePosition p = SphereMath.atAltitude(new SpherePosition(a.place().x() + (b.place().x() - a.place().x()) * f,
@@ -419,5 +522,6 @@ final class TownsfolkSync {
         doorsById.clear();
         doorsFoundAt = null;
         doorsSnapshot = -1;
+        hostBehind = Long.MIN_VALUE;
     }
 }
