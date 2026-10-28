@@ -266,57 +266,54 @@ public final class HudStyle {
         money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
     }
 
+    /** Multiplayer: where the rounds-won circles are on the score panel (each row's first circle's middle), and their size. */
+    public static final int CIRCLES_X = 318, CIRCLES_Y = 38, CIRCLE_ROW = 26, CIRCLE_STEP = 20, CIRCLE_SIZE = 15;
+
     /**
-     * The score panel in multiplayer (M13): no target; the quarter's months (or "Final decider
-     * N" once the year's over, M17), both players' productivity this quarter and their quarter
-     * points, each named in their colour (this player first, "(You)" after their code). No
-     * cash: multiplayer's shop is free (the round's loser takes one).
+     * The score panel in multiplayer (M58): the round being played, and each player (this one
+     * first, "(You)" after their name) with a row of ROUNDS_TO_WIN circles, filled in their suit's
+     * colour for each round they've won. No cash: multiplayer's shop is free (the round's loser
+     * takes one).
      */
-    public static void paintMultiplayerScorePanel(Graphics2D g, int quarter, int month, int decider, String[] names,
-                                                  Color[] colours, int[] productivity, int[] points, Color body) {
+    public static void paintMultiplayerScorePanel(Graphics2D g, int round, String[] names, Color[] suits, Color[] textColours,
+                                                  int[] won, Color body) {
         panel(g, 0, 0, SCORE_W, SCORE_H, body);
-        if (decider > 0) {
-            label(g, "Final decider", 20, 28, 11f, LABEL);
-            g.setFont(font(Font.BOLD, 30f));
-            g.setColor(GOLD);
-            g.drawString(Integer.toString(decider), 20, 64);
-        } else {
-            Color colour = QUARTER_COLOURS[quarter];
-            label(g, "Quarter " + (quarter + 1), 20, 28, 11f, LABEL);
-            float tabW = 40f, tabH = 26f, gap = 6f, tabY = 40f;
-            Font monthFont = font(Font.BOLD, 12f);
-            for (int m = 0; m < 3; m++) {
-                float x = 20f + m * (tabW + gap);
-                java.awt.geom.RoundRectangle2D tab = new java.awt.geom.RoundRectangle2D.Float(x, tabY, tabW, tabH, 12f, 12f);
-                g.setColor(m < month ? greyed(colour) : m == month ? colour : new Color(255, 255, 255, 18));
-                g.fill(tab);
-                g.setStroke(new BasicStroke(1.2f));
-                g.setColor(m > month ? new Color(120, 205, 235, 90) : new Color(255, 255, 255, 150));
-                g.draw(tab);
-                String name = MONTHS[quarter * 3 + m];
-                g.setFont(monthFont);
-                FontMetrics fm = g.getFontMetrics();
-                g.setColor(m > month ? DIM : new Color(20, 24, 32));
-                g.drawString(name, x + (tabW - fm.stringWidth(name)) / 2f, tabY + (tabH + fm.getAscent() - fm.getDescent()) / 2f);
-            }
-        }
+        label(g, "Round", 20, 28, 11f, LABEL);
+        g.setFont(font(Font.BOLD, 30f));
+        g.setColor(VALUE);
+        g.drawString(Integer.toString(round), 20, 64);
+        label(g, "First to " + MultiplayerScore.ROUNDS_TO_WIN, 72, 64, 10f, GOLD);
         g.setColor(new Color(120, 205, 235, 70));
-        g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
-        // Each player: name, productivity this quarter, and quarter points (spread across where
-        // the cash was)
-        label(g, "Productivity", 184, 24, 10f, LABEL);
-        float pointsRight = SCORE_W - 24;
-        float pointsLabelW = labelWidth(g, "Points", 10f);
-        label(g, "Points", pointsRight - pointsLabelW, 24, 10f, LABEL);
+        g.fill(new java.awt.geom.Rectangle2D.Float(150, 18, 1f, SCORE_H - 36));
+        float nameRight = CIRCLES_X - CIRCLE_SIZE / 2f - 12f;
         for (int p = 0; p < 2; p++) {
-            float y = 46 + p * 24;
-            label(g, names[p], 184, y, 11f, colours[p]);
-            g.setFont(font(Font.BOLD, 17f));
-            g.setColor(VALUE);
-            g.drawString(String.format("%,d", productivity[p]), 320, y + 1);
-            String pts = Integer.toString(points[p]);
-            g.setColor(colours[p]);
-            g.drawString(pts, pointsRight - g.getFontMetrics().stringWidth(pts), y + 1);
+            float cy = CIRCLES_Y + p * CIRCLE_ROW;
+            // The name as typed ("(You)" after this player's), cut short should it not fit before the circles
+            g.setFont(font(Font.BOLD, 14f));
+            FontMetrics fm = g.getFontMetrics();
+            String name = names[p], after = p == 0 ? " (You)" : "";
+            boolean cut = false;
+            while (name.length() > 1 && fm.stringWidth(name + (cut ? "..." : "") + after) > nameRight - 166f) {
+                name = name.substring(0, name.length() - 1);
+                cut = true;
+            }
+            g.setColor(textColours[p]);
+            g.drawString((cut ? name + "..." : name) + after, 166, cy + 5f);
+            g.setStroke(new BasicStroke(1.6f));
+            for (int c = 0; c < MultiplayerScore.ROUNDS_TO_WIN; c++) {
+                float x = CIRCLES_X + c * CIRCLE_STEP - CIRCLE_SIZE / 2f, y = cy - CIRCLE_SIZE / 2f;
+                java.awt.geom.Ellipse2D ring = new java.awt.geom.Ellipse2D.Float(x, y, CIRCLE_SIZE, CIRCLE_SIZE);
+                if (c < won[p]) {
+                    g.setColor(suits[p]);
+                    g.fill(ring);
+                    g.setColor(new Color(255, 255, 255, 190));
+                } else {
+                    g.setColor(new Color(255, 255, 255, 14));
+                    g.fill(ring);
+                    g.setColor(new Color(suits[p].getRed(), suits[p].getGreen(), suits[p].getBlue(), 170));
+                }
+                g.draw(ring);
+            }
         }
     }
 

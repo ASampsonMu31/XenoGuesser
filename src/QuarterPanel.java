@@ -67,7 +67,7 @@ public class QuarterPanel extends JPanel {
      * Multiplayer: shows a verdict (or the game's end): kicker over a headline, then lines (each
      * in lineColours), the panel edged in edge (green good, red bad; null the usual), and a
      * button saying buttonText that runs onContinue; once pressed, while
-     * waiting gives a text (e.g. "Waiting for Player 119-B") the button shows that, greyed.
+     * waiting gives a text (e.g. "Waiting for Sam") the button shows that, greyed.
      */
     public void showMultiplayer(String kicker, Color kickerColour, String headline, Color headlineColour, Color edge,
                                 java.util.List<String> lines, java.util.List<Color> lineColours, String buttonText,

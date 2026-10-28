@@ -1530,11 +1530,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         playerBody.initialise(gl);
         Multiplayer session = Multiplayer.active();
         if (session != null) {
-            // Multiplayer (M6): the packs on this player's own body in their colour, and the
+            // Multiplayer (M6, M58): the packs on this player's own body in their suit colour, and the
             // partner, seen from outside, in theirs (darker, as lit in the world; grey trim as the pod's)
-            playerBody.setColours(new float[] { 0.5f, 0.51f, 0.54f }, session.role.trimColour());
+            playerBody.setColours(new float[] { 0.5f, 0.51f, 0.54f }, session.suit(session.role).trimColour());
             partnerBody = PlayerBody.seenFromOutside();
-            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, session.role.other().litTrimColour());
+            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, session.suit(session.role.other()).litTrimColour());
             partnerBody.initialise(gl);
         }
     }

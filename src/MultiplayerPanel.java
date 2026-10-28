@@ -25,11 +25,11 @@ import javax.swing.Timer;
  * game's standard panel (HudStyle.panel) with the main menu's buttons (HudStyle.button), and
  * goes through these states:
  *   CHOOSE    - Host game, Join game, Back.
- *   HOSTING   - "Starting room...", then the code in large letters, waiting for 119-B; Cancel.
+ *   HOSTING   - "Starting room...", then the code in large letters, waiting for the partner; Cancel.
  *   JOIN      - five boxes for the code (typed: letters, Backspace, Enter joins, Esc goes back,
  *               Ctrl+V pastes); Join (once all five are in) and Back.
  *   JOINING   - "Looking for room KXQPB...", then "Joining room..." once in it.
- *   CONNECTED - "Employee 119-B connected" / "Connected to Employee 119-A" for a moment, then
+ *   CONNECTED - "Sam connected" / "Connected to Alex" (the partner's name) for a moment, then
  *               onReady runs (the game goes on to the loading screen).
  *   ERROR     - why it didn't work (no room, Steam not running, partner left, different
  *               versions); Back.
@@ -239,7 +239,7 @@ public class MultiplayerPanel extends JComponent {
             if (finished || session == null) return;
             state = State.CONNECTED;
             repaint();
-            System.out.println("[MP] Connected: Employee " + session.localLabel() + " and Employee " + session.remoteLabel()
+            System.out.println("[MP] Connected: " + session.localName() + " and " + session.remoteName()
                     + ", world seed " + session.worldSeed());
             Multiplayer connected = session;
             Timer next = new Timer(javaWarning() != null ? CONNECTED_WARNING_MS : CONNECTED_MS, e -> {
@@ -348,7 +348,7 @@ public class MultiplayerPanel extends JComponent {
                     y = bigCode(g, code, x, y + 16 * unit, unit);
                     y = paragraph(g, "Share this code with your partner.", x, y + 8 * unit, inner, unit);
                     boolean joining = session.isInRoom();
-                    y = paragraph(g, (joining ? "Employee 119-B is joining" : "Waiting for Employee 119-B") + dots(),
+                    y = paragraph(g, (joining ? "Your partner is joining" : "Waiting for your partner") + dots(),
                             x, y + 6 * unit, inner, unit, HudStyle.ACCENT);
                 }
                 y = backButton(g, "Cancel", this::cancel, x, y + 26 * unit, unit);
@@ -368,13 +368,14 @@ public class MultiplayerPanel extends JComponent {
                 String code = session != null ? session.roomCode() : typed;
                 boolean inRoom = session != null && session.isInRoom();
                 y = heading(g, inRoom ? "Joining room" + dots() : "Looking for room " + code + dots(), x, y, unit);
-                y = paragraph(g, inRoom ? "Found it. Linking up with Employee 119-A." : "Searching for your partner's room.",
+                y = paragraph(g, inRoom ? "Found it. Linking up with your partner." : "Searching for your partner's room.",
                         x, y, inner, unit);
                 y = backButton(g, "Cancel", this::cancel, x, y + 26 * unit, unit);
             }
             case CONNECTED -> {
                 boolean host = session == null || session.role == Multiplayer.Role.HOST;
-                y = heading(g, host ? "Employee 119-B connected" : "Connected to Employee 119-A", x, y, unit);
+                String partner = session != null ? session.remoteName() : "your partner";
+                y = heading(g, host ? partner + " connected" : "Connected to " + partner, x, y, unit);
                 y = paragraph(g, "Preparing for planetfall" + dots(), x, y, inner, unit, HudStyle.ACCENT);
                 String warning = javaWarning();
                 if (warning != null) y = paragraph(g, warning, x, y + 8 * unit, inner, unit, HudStyle.GOLD);

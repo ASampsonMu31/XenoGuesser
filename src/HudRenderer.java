@@ -80,7 +80,7 @@ final class HudRenderer extends GamePart {
         if (clock != null) {
             long tenth = clock[0] / 100L;
             String note = clock[2] == 1L && Multiplayer.active() != null
-                    ? "Employee " + Multiplayer.active().remoteLabel() + " guessed!" : "Time to guess";
+                    ? Multiplayer.active().remoteName() + " guessed!" : "Time to guess";
             if (rescaled || tenth != hudClockTenth || !hud.has("clock")) {
                 hudClockTenth = tenth;
                 BufferedImage image = HudStyle.canvas(HudStyle.TIMER_W, HudStyle.TIMER_H, scale, g);

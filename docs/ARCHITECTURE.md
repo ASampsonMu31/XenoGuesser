@@ -11,7 +11,8 @@ animals and people. Each round the player is dropped from a landing pod somewher
 around (walking or not, see `GameMode`), then guesses where they are on the map. Points buy maps
 (heatmaps, layers, maps of pictures) in the shop between rounds. Quarters, targets, Xenocorp's
 voiced messages and achievements frame a "year". Multiplayer (two players, Steam P2P or two local
-windows) plays the same world and rounds.
+windows) plays the same world and rounds, first to win 10 rounds (the closer guess wins each).
+Players have a username and suit colour (`Profile`), said in Xenocorp's messages.
 
 ## Startup, in order
 
@@ -123,10 +124,12 @@ Parts extend `GamePart` (field `game`).
   `NationScripts`, `WritingSystems`, `GlyphGenerator`, `Products`, `PackagingArt`, `PlanetName`.
 - **Player and pod**: `PlayerBody`, `LandingPod`, `PodSequence`, `PodTimeline`, `PodInterior`,
   `PodFurniture`, `PodChair`, `PodPhysics`, `PodTerminal`, `PodSpaceView`, `PodSounds`,
-  `LoadingScreen`, `LoadingArt`, `LoadingProgress`, `TransmissionMessage`, `MessageSplicer`,
-  `PlanetVoice`, `OxygenBlur`.
+  `LoadingScreen`, `LoadingArt`, `LoadingProgress`, `TransmissionMessage` (with the players' names
+  spliced in), `PlanetVoice`, `OxygenBlur`.
+- **Player profile**: `Profile` (username, suit colour, the name's recording), `ProfilePanel`,
+  `NameCheck` (swearing by spelling and sound), `Pronunciation` (spelling to phonemes), `SuitColour`.
 - **Multiplayer**: `Multiplayer` (session, messages), `MultiplayerTransport`, `SteamTransport`,
-  `LocalTransport`, `MultiplayerPanel`, `MultiplayerScore`, `RemotePlayer`, `TownsfolkSync` (the host's
+  `LocalTransport`, `MultiplayerPanel`, `MultiplayerScore` (rounds won), `RemotePlayer`, `TownsfolkSync` (the host's
   people and vehicles sent to the joiner's PC).
 - **GL plumbing**: `Shader`, `Mesh`, `MeshBuilder`, `MeshData`, `Model`, `Renderer`, `Material`,
   `Light`, `TextureLibrary`, `Offscreen`, `SoftwareRenderer`, `Affine`, `SphereRender`,
@@ -139,4 +142,4 @@ Parts extend `GamePart` (field `game`).
 ## Codes in comments
 
 - `D1`–`D14`: design decisions for the sphere world, in `GEODESIC_MIGRATION_PLAN.txt`.
-- `M1`–`M56`: multiplayer and later feature decisions, in `MULTIPLAYER_INTEGRATION_PLAN.txt`.
+- `M1`–`M58`: multiplayer and later feature decisions, in `MULTIPLAYER_INTEGRATION_PLAN.txt`.

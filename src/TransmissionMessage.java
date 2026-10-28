@@ -27,10 +27,8 @@ public class TransmissionMessage {
 
     // Each message is a recording (.wav) and its transcript with word timings (.txt)
     public static final String SINGLEPLAYER = GamePaths.HOME + "assets/audio/xenocorp_singleplayer";
-    // The multiplayer message, addressed to each player (M12): the host, Employee 119-A, paired
-    // with 119-B, and the joiner the other way round (made from the A one by MessageSplicer)
-    public static final String MULTIPLAYER_A = GamePaths.HOME + "assets/audio/xenocorp_multiplayer_a";
-    public static final String MULTIPLAYER_B = GamePaths.HOME + "assets/audio/xenocorp_multiplayer_b";
+    // The multiplayer message, addressed to each player by name and naming their partner (M12, M58)
+    public static final String MULTIPLAYER = GamePaths.HOME + "assets/audio/xenocorp_multiplayer";
     // Played in the shop before the first round: the free gift, and that everything after is to be paid for
     public static final String GIFT = GamePaths.HOME + "assets/audio/xenocorp_gift";
     // Played as January's first round begins (singleplayer): the detailed instructions enclosed
@@ -133,24 +131,9 @@ public class TransmissionMessage {
     /** Loads the message for a world's planet, or returns null if it's unavailable. */
     public static TransmissionMessage load(String name, long seed) {
         try {
-            List<String> lines = Files.readAllLines(new File(name + ".txt").toPath(), StandardCharsets.UTF_8);
-            String transcript = lines.get(0);
-            long end = Long.parseLong(lines.get(1).split("\t")[1]);
-            List<long[]> words = new ArrayList<>();
-            for (String line : lines.subList(2, lines.size())) {
-                String[] parts = line.split("\t");
-                if (parts.length >= 2 && Character.isDigit(parts[0].charAt(0))) {
-                    words.add(new long[] { Long.parseLong(parts[0].trim()), Long.parseLong(parts[1].trim()) });
-                }
-            }
-            AudioFormat format;
-            byte[] pcm;
-            try (AudioInputStream in = AudioSystem.getAudioInputStream(new File(name + ".wav"))) {
-                format = in.getFormat();
-                pcm = in.readAllBytes();
-            }
+            Recording r = read(name);
             prepare(seed);
-            return new TransmissionMessage(transcript, words, end, format, pcm, readExtra(name + ".txt"),
+            return new TransmissionMessage(r.transcript, r.words, r.end, r.format, r.pcm, r.extra,
                     PlanetName.forSeed(seed).spelling, true, preparing.get(seed));
         } catch (Exception e) {
             System.err.println("Message unavailable: " + e.getMessage());
@@ -165,26 +148,131 @@ public class TransmissionMessage {
      */
     public static TransmissionMessage load(String name, String slotName, CompletableFuture<PlanetVoice.Speech> speech) {
         try {
-            List<String> lines = Files.readAllLines(new File(name + ".txt").toPath(), StandardCharsets.UTF_8);
-            String transcript = lines.get(0);
-            long end = Long.parseLong(lines.get(1).split("\t")[1]);
-            List<long[]> words = new ArrayList<>();
-            for (String line : lines.subList(2, lines.size())) {
-                String[] parts = line.split("\t");
-                if (parts.length >= 2 && Character.isDigit(parts[0].charAt(0))) {
-                    words.add(new long[] { Long.parseLong(parts[0].trim()), Long.parseLong(parts[1].trim()) });
-                }
-            }
-            AudioFormat format;
-            byte[] pcm;
-            try (AudioInputStream in = AudioSystem.getAudioInputStream(new File(name + ".wav"))) {
-                format = in.getFormat();
-                pcm = in.readAllBytes();
-            }
-            return new TransmissionMessage(transcript, words, end, format, pcm, readExtra(name + ".txt"), slotName, false, speech);
+            Recording r = read(name);
+            return new TransmissionMessage(r.transcript, r.words, r.end, r.format, r.pcm, r.extra, slotName, false, speech);
         } catch (Exception e) {
             System.err.println("Message unavailable: " + e.getMessage());
             return null;
+        }
+    }
+
+    /** A message's recording and its transcript, word timings and the lines after them. */
+    private record Recording(String transcript, List<long[]> words, long end, AudioFormat format, byte[] pcm,
+                             Map<String, String[]> extra) {
+    }
+
+    /** Reads a message, with the players' names said where its recording gives employee numbers (M58). */
+    private static Recording read(String name) throws Exception {
+        List<String> lines = Files.readAllLines(new File(name + ".txt").toPath(), StandardCharsets.UTF_8);
+        String transcript = lines.get(0);
+        long end = Long.parseLong(lines.get(1).split("\t")[1]);
+        List<long[]> words = new ArrayList<>();
+        for (String line : lines.subList(2, lines.size())) {
+            String[] parts = line.split("\t");
+            if (parts.length >= 2 && Character.isDigit(parts[0].charAt(0))) {
+                words.add(new long[] { Long.parseLong(parts[0].trim()), Long.parseLong(parts[1].trim()) });
+            }
+        }
+        AudioFormat format;
+        byte[] pcm;
+        try (AudioInputStream in = AudioSystem.getAudioInputStream(new File(name + ".wav"))) {
+            format = in.getFormat();
+            pcm = in.readAllBytes();
+        }
+        return withNames(new Recording(transcript, words, end, format, pcm, readExtra(name + ".txt")));
+    }
+
+    // How long a message waits for a name to be said (it's usually said long before)
+    private static final long NAME_WAIT_MS = 10_000;
+
+    /**
+     * The recording with the names said (M58): where it says "Employee 119" to this player (its
+     * "self" line: the stretch of the recording, from and to frames, and of the transcript, its
+     * place and length), this player's name instead, and where it names the partner ("partner"),
+     * theirs. Each name is said in the same voice, shaped as the planet sentence is, and the
+     * words after it, and the planet sentence's slot, move on by however much longer it is. A
+     * name that can't be said leaves the recording's own words where they were.
+     */
+    private static Recording withNames(Recording r) {
+        Multiplayer session = Multiplayer.active();
+        List<String> keys = new ArrayList<>();
+        for (String key : new String[] { "self", "partner" }) if (r.extra.containsKey(key)) keys.add(key);
+        // (the latest first, so the earlier ones' places stay put)
+        keys.sort((a, b) -> Integer.compare(Integer.parseInt(r.extra.get(b)[1]), Integer.parseInt(r.extra.get(a)[1])));
+        Recording out = r;
+        for (String key : keys) {
+            String who = key.equals("self") ? Profile.name() : session != null ? session.remoteName() : null;
+            if (who == null) continue;
+            PlanetVoice.Speech said;
+            try {
+                said = Profile.spoken(who).get(NAME_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                said = null;
+            }
+            if (said != null) out = splice(out, out.extra.get(key), who, said);
+        }
+        return out;
+    }
+
+    /** The recording with a stretch of it (cut: from frame, to frame, transcript place, length) said as who. */
+    private static Recording splice(Recording r, String[] cut, String who, PlanetVoice.Speech said) {
+        int rate = Integer.parseInt(r.extra.get("rate")[1]);
+        if (said.sampleRate() != rate) return r;
+        byte[] name = pcm(shape(said.audio(), rate, r.extra), r.format, r.extra);
+        if (name.length == 0) return r;
+        int frameBytes = r.format.getFrameSize();
+        int from = Integer.parseInt(cut[1]), to = Integer.parseInt(cut[2]);
+        int at = Integer.parseInt(cut[3]), length = Integer.parseInt(cut[4]);
+        // The recording either side, faded where it meets the name so the joins don't click
+        byte[] pcm = new byte[r.pcm.length - (to - from) * frameBytes + name.length];
+        System.arraycopy(r.pcm, 0, pcm, 0, from * frameBytes);
+        System.arraycopy(name, 0, pcm, from * frameBytes, name.length);
+        System.arraycopy(r.pcm, to * frameBytes, pcm, from * frameBytes + name.length, r.pcm.length - to * frameBytes);
+        int fade = rate / 250;
+        fade(pcm, r.format, from - fade, fade, false);
+        fade(pcm, r.format, from + name.length / frameBytes, fade, true);
+        // The words after it moved on in time and along the transcript, the name a word of its own
+        int moved = name.length / frameBytes - (to - from), grow = who.length() - length;
+        long shiftMs = moved * 1000L / rate;
+        List<long[]> words = new ArrayList<>();
+        boolean added = false;
+        for (long[] word : r.words) {
+            if (word[1] >= at && word[1] < at + length) continue;
+            if (word[1] >= at + length && !added) {
+                words.add(new long[] { from * 1000L / rate, at });
+                added = true;
+            }
+            words.add(word[1] >= at + length ? new long[] { word[0] + shiftMs, word[1] + grow } : word.clone());
+        }
+        if (!added) words.add(new long[] { from * 1000L / rate, at });
+        Map<String, String[]> extra = new HashMap<>(r.extra);
+        String[] slot = extra.get("slot");
+        if (slot != null) {
+            slot = slot.clone();
+            int slotFrame = Integer.parseInt(slot[1]), slotChar = Integer.parseInt(slot[2]);
+            if (slotFrame >= to) slot[1] = Integer.toString(slotFrame + moved);
+            if (slotChar >= at + length) slot[2] = Integer.toString(slotChar + grow);
+            extra.put("slot", slot);
+        }
+        String transcript = r.transcript.substring(0, at) + who + r.transcript.substring(at + length);
+        return new Recording(transcript, words, r.end + shiftMs, r.format, pcm, extra);
+    }
+
+    /** Fades 16-bit sound in (or out) over frames frames from frame start. */
+    private static void fade(byte[] pcm, AudioFormat format, int start, int frames, boolean in) {
+        int frameBytes = format.getFrameSize();
+        boolean big = format.isBigEndian();
+        for (int f = 0; f < frames; f++) {
+            int frame = start + f;
+            if (frame < 0 || (frame + 1) * frameBytes > pcm.length) continue;
+            float gain = in ? f / (float) frames : 1f - (f + 1) / (float) frames;
+            for (int ch = 0; ch < format.getChannels(); ch++) {
+                int o = frame * frameBytes + ch * 2;
+                int lo = pcm[o + (big ? 1 : 0)] & 0xFF, hi = pcm[o + (big ? 0 : 1)];
+                int v = Math.round(((short) ((hi << 8) | lo)) * gain);
+                pcm[o + (big ? 1 : 0)] = (byte) v;
+                pcm[o + (big ? 0 : 1)] = (byte) (v >> 8);
+            }
         }
     }
 
@@ -308,7 +396,12 @@ public class TransmissionMessage {
         words.addAll(at, added);
         set(baseTranscript.replace(PLANET, name), words, baseEnd + lasting);
         if (!settle) return;
-        // As 16-bit samples, with the static the rest lies on
+        sentence = pcm(shaped, format, extra);
+        settled = true;
+    }
+
+    /** Shaped speech as the recording's 16-bit samples, with the static the rest lies on. */
+    private static byte[] pcm(float[] shaped, AudioFormat format, Map<String, String[]> extra) {
         int bytes = format.getSampleSizeInBits() / 8 * format.getChannels();
         float[] hiss = hiss(shaped.length, extra);
         byte[] out = new byte[shaped.length * bytes];
@@ -321,8 +414,7 @@ public class TransmissionMessage {
                 out[o + (big ? 0 : 1)] = (byte) (v >> 8);
             }
         }
-        sentence = out;
-        settled = true;
+        return out;
     }
 
     private void set(String text, List<long[]> words, long end) {
@@ -511,12 +603,11 @@ public class TransmissionMessage {
 
     /**
      * Developer aid: writes the message for a seed, planet name spoken, to a file and prints its
-     * transcript. Arguments: seed, "single", "multi" (the host's) or "multib" (the joiner's), output .wav.
+     * transcript. Arguments: seed, "single" or "multi" (no partner: their name stays as recorded), output .wav.
      */
     public static void main(String[] args) throws Exception {
         long seed = Long.parseLong(args[0]);
-        TransmissionMessage message = load("multi".equals(args[1]) ? MULTIPLAYER_A
-                : "multib".equals(args[1]) ? MULTIPLAYER_B : SINGLEPLAYER, seed);
+        TransmissionMessage message = load("multi".equals(args[1]) ? MULTIPLAYER : SINGLEPLAYER, seed);
         preparing.get(seed).get();
         message.settleName();
         int split = message.slotFrame * message.format.getFrameSize();

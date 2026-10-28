@@ -187,12 +187,14 @@ M11 In multiplayer the stairs are wider and both players start on them side by s
     119-A on the left, 119-B on the right, as seen facing down the stairs, both facing
     down the stairs. Singleplayer's pod is unchanged.
 
-M12 The multiplayer message is addressed correctly to each player, text AND audio. Two
+M12 (Superseded by M58: one recording, each player's name spliced in.)
+    The multiplayer message is addressed correctly to each player, text AND audio. Two
     recordings with their own word timings: xenocorp_multiplayer_a.{wav,txt} for the host
     ("Good morning, Employee 119-A ... you have been paired with Employee 119-B") and
     xenocorp_multiplayer_b.{wav,txt} for the joiner (119-B, paired with 119-A). The
     ticker's word timings must match the new audio (Phase 3).
-M13 Multiplayer scoring replaces quarter targets. There are NO productivity thresholds
+M13 (Superseded by M58: first to 10 rounds.)
+    Multiplayer scoring replaces quarter targets. There are NO productivity thresholds
     and no losing at a quarter end in multiplayer. At the end of each quarter, the player
     with the higher productivity that quarter wins it and gains quarter points equal to
     the quarter's number: Q1 = 1, Q2 = 2, Q3 = 3, Q4 = 4 (10 in all). A player who wins
@@ -211,7 +213,8 @@ M16 Lock-step stages: both players are always on the same stage of the game. Eve
     next round: one player may enter (and leave) the results and the shop before the
     other, but the next round starts for both together (Phase 7).
 
-M17 Ties. Equal productivity in a quarter: nobody gets that quarter's points. Equal
+M17 (Superseded by M58: a level round is won by nobody; there are no deciders.)
+    Ties. Equal productivity in a quarter: nobody gets that quarter's points. Equal
     quarter points after Q4 (e.g. 5-5, or 0-0... any equal total): the game goes on to
     FINAL DECIDER rounds, one round at a time, played like any other round (same
     lock-step, reveal, shop). After each decider the player with the higher score in
@@ -1580,3 +1583,32 @@ LOG
             (as best known: the quickest any piece has come), so there are snapshots either side of
             the moment drawn (with only the last two kept, cars paused and then jumped 5 times a
             second). The log measures how evenly the moving ones are drawn on each PC.
+2026-10-28  M58 (user). Multiplayer is first to 10 rounds: no months, quarters, productivity,
+            quarter points or deciders. Each round goes to the closer guess (GUESS now carries the
+            distance, not a score; a guess beats none; equal, or neither guessing, is a level round
+            nobody wins), worked out on both PCs alike (MultiplayerScore). The score panel shows the
+            round and each player's row of 10 circles in their suit colour, filled per round won.
+            After the reveal the winner is written large over the map ("YOU WIN THE ROUND!", "SAM
+            WINS THE ROUND!", or "LEVEL ROUND!") in their colour, then flies up to the circle it
+            fills; the results list each player's distance. The round's loser takes an upgrade from
+            the shop (both, after a level round). Once a player has 10 the results' button reads
+            "See the Result" and both PCs show the game's end.
+            Employee numbers are gone: each player chooses a username (Profile; asked for as the game
+            starts until one is chosen, and changed from the main menu's profile button at any time,
+            ProfilePanel) and a suit colour (8, SuitColour). The name is checked (NameCheck): 3-16
+            letters, digits, _ or -; refused if its spelling holds a swear word or slur however it's
+            dressed up (digits as letters, ph/ck/c/q as their sounds, repeated letters as one), on
+            purpose strictly ("ILoveScunthorpe" is refused), milder words only as a word of their
+            own; or if it sounds like one, from the phonemes it would be said with ("fhukyoo").
+            Pronunciation turns a name's spelling into the voice's phonemes (the NRL letter-to-sound
+            rules with British vowels; numbers as numbers, capitals and vowelless words as letters),
+            and the name's said in Xenocorp's voice as it's saved, kept in
+            %LOCALAPPDATA%/XenoGuesser/names. The messages that said "Employee 119" (singleplayer,
+            gift, multiplayer, twice in it: "Good morning, X ... paired with Y") have the name
+            spliced into the recording in its place ("self" and "partner" lines in their .txt: the
+            frames cut and the transcript's place), shaped and hissed as the planet sentence is;
+            the multiplayer recording is the old A one, and MessageSplicer and the B recording are
+            gone. HELLO and START carry the name and suit; the partner's name is said on their PC
+            from it. Each player wears their own suit colour in the trim (pod, game, map pin and
+            line, HUD, verdicts); a joiner who chose the host's colour wears the next one round.
+            PROTOCOL_VERSION 4. Developer aid: -Dxenoguesser.username and -Dxenoguesser.suit.

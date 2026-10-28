@@ -15,7 +15,7 @@ the startup order, the per-frame render order and the two big classes' parts.
 - `trailer/` — the Steam trailer (an HTML page and its clips); `tools/trailer/` films, records and
   encodes the clips (see its README).
 - `GEODESIC_MIGRATION_PLAN.txt` (decisions `D1`–`D14`) and `MULTIPLAYER_INTEGRATION_PLAN.txt`
-  (`M1`–`M56`): the codes comments cite. Read a decision there rather than guessing.
+  (`M1`–`M58`): the codes comments cite. Read a decision there rather than guessing.
 
 ## Build and run (Windows; Git Bash for the scripts)
 

@@ -38,8 +38,8 @@ public final class MultiplayerCheck {
 
             @Override
             public void ready() {
-                System.out.println("[CHECK] Ready: Employee " + session.localLabel() + " with Employee "
-                        + session.remoteLabel() + ", world seed " + session.worldSeed()
+                System.out.println("[CHECK] Ready: " + session.localName() + " with "
+                        + session.remoteName() + " (" + session.suit(session.role.other()).label + "), world seed " + session.worldSeed()
                         + ", " + session.gameMode() + ", " + session.mapKind());
                 sendEverything(session);
             }
@@ -91,14 +91,17 @@ public final class MultiplayerCheck {
         System.exit(allHeard ? 0 : 1);
     }
 
+    // A stage id to send and expect back (any will do)
+    private static final int STAGE = 101;
+
     private static void sendEverything(Multiplayer s) {
         s.sendWorldReady();
         s.sendBegin();
         boolean host = s.role == Multiplayer.Role.HOST;
-        s.sendGuess(new Multiplayer.Guess(1, 0.6, host ? 0.8 : -0.8, 0, host ? 4321 : 1234, host ? 4321 : 1234));
+        s.sendGuess(new Multiplayer.Guess(1, 0.6, host ? 0.8 : -0.8, 0, host ? 4321.5 : 1234.5));
         s.sendShopDone(1);
         s.sendRoundBuilt(2);
-        s.sendStageDone(Multiplayer.STAGE_QUARTER_END + 1);
+        s.sendStageDone(STAGE);
         if (host) s.sendAlphabets(new byte[200_000]);
     }
 
@@ -108,11 +111,11 @@ public final class MultiplayerCheck {
         Multiplayer.RemotePoses poses = s.remotePoses();
         byte[] alphabets = s.remoteAlphabets();
         boolean wantAlphabets = s.role == Multiplayer.Role.JOIN;
-        System.out.println("[CHECK] From Employee " + s.remoteLabel() + ":");
+        System.out.println("[CHECK] From " + s.remoteName() + ":");
         System.out.println("[CHECK]   WORLD_READY " + s.remoteWorldReady() + ", BEGIN " + s.remoteBegun());
         System.out.println("[CHECK]   GUESS round 1: " + guess);
         System.out.println("[CHECK]   SHOP_DONE 1 " + s.remoteShopDone(1) + ", ROUND_BUILT 2 " + s.remoteRoundBuilt(2)
-                + ", STAGE_DONE " + (Multiplayer.STAGE_QUARTER_END + 1) + " " + s.remoteStageDone(Multiplayer.STAGE_QUARTER_END + 1));
+                + ", STAGE_DONE " + STAGE + " " + s.remoteStageDone(STAGE));
         if (wantAlphabets) System.out.println("[CHECK]   ALPHABETS " + (alphabets == null ? "none" : alphabets.length + " bytes"));
         if (poses.latest() != null) {
             Multiplayer.PoseSample a = poses.previous(), b = poses.latest();
@@ -122,7 +125,7 @@ public final class MultiplayerCheck {
             System.out.println("[CHECK]   no POSE");
         }
         return s.remoteWorldReady() && s.remoteBegun() && guess != null && s.remoteShopDone(1)
-                && s.remoteRoundBuilt(2) && s.remoteStageDone(Multiplayer.STAGE_QUARTER_END + 1)
+                && s.remoteRoundBuilt(2) && s.remoteStageDone(STAGE)
                 && poses.latest() != null && poses.latest().seq() >= 10
                 && (!wantAlphabets || (alphabets != null && alphabets.length == 200_000));
     }

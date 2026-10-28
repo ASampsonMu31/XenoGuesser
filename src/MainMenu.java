@@ -24,7 +24,8 @@ import javax.swing.JComponent;
  * can be turned round by dragging. Play Singleplayer starts loading a world; beside it, the
  * game mode to play it in (see GameMode) and the kind of map (see MapKind), each one of a few
  * like radio buttons. Play Multiplayer opens the multiplayer panel over the menu (see
- * MultiplayerPanel), which dims it until the panel is closed (unchoose()).
+ * MultiplayerPanel), which dims it until the panel is closed (unchoose()); the player's name and
+ * suit colour, at the top right, open their profile the same way (see ProfilePanel, M58).
  */
 public class MainMenu extends JComponent {
 
@@ -33,6 +34,7 @@ public class MainMenu extends JComponent {
     private final Runnable onSingleplayer;
     private final Runnable onMultiplayer;
     private final Runnable onQuit;
+    private final Runnable onProfile;
     // The backgrounds (frames of the game, in assets/art/menu), one chosen at random each time
     // the menu is shown, never the same twice running. Each with where its horizon is and where
     // the spaceman's feet go (on dry ground, below him), as shares of the picture's height, and
@@ -54,6 +56,7 @@ public class MainMenu extends JComponent {
     private int scaledWidth = -1, scaledHeight = -1;
 
     private final Rectangle singleButton = new Rectangle(), multiButton = new Rectangle(), quitButton = new Rectangle();
+    private final Rectangle profileButton = new Rectangle();
     // The game modes' buttons, beside Play Singleplayer, in GameMode's order; the kinds of map's below, in MapKind's
     private final Rectangle[] modeButtons = new Rectangle[GameMode.values().length], mapButtons = new Rectangle[MapKind.values().length];
     // ...and the graphics' (see GameSettings.Quality) and the shadows' (off, on) below those
@@ -75,10 +78,11 @@ public class MainMenu extends JComponent {
     private boolean dragging;
     private Rectangle spacemanBounds = new Rectangle();
 
-    public MainMenu(Runnable onSingleplayer, Runnable onMultiplayer, Runnable onQuit) {
+    public MainMenu(Runnable onSingleplayer, Runnable onMultiplayer, Runnable onQuit, Runnable onProfile) {
         this.onSingleplayer = onSingleplayer;
         this.onMultiplayer = onMultiplayer;
         this.onQuit = onQuit;
+        this.onProfile = onProfile;
         setOpaque(true);
         for (int m = 0; m < modeButtons.length; m++) modeButtons[m] = new Rectangle();
         for (int m = 0; m < mapButtons.length; m++) mapButtons[m] = new Rectangle();
@@ -111,6 +115,9 @@ public class MainMenu extends JComponent {
                     onMultiplayer.run();
                 } else if (quitButton.contains(e.getPoint())) {
                     onQuit.run();
+                } else if (profileButton.contains(e.getPoint())) {
+                    chosen = true;
+                    onProfile.run();
                 } else if (choiceAt(modeButtons, e.getX(), e.getY()) >= 0) {
                     // (one mode at a time: choosing one unticks the others)
                     GameMode.choose(GameMode.values()[choiceAt(modeButtons, e.getX(), e.getY())]);
@@ -157,6 +164,7 @@ public class MainMenu extends JComponent {
                         : singleButton.contains(e.getPoint()) ? singleButton
                         : multiButton.contains(e.getPoint()) ? multiButton
                         : quitButton.contains(e.getPoint()) ? quitButton
+                        : profileButton.contains(e.getPoint()) ? profileButton
                         : mode >= 0 ? modeButtons[mode] : map >= 0 ? mapButtons[map]
                         : quality >= 0 ? qualityButtons[quality] : shadow >= 0 ? shadowButtons[shadow] : null;
                 if (over != hovered) {
@@ -174,6 +182,12 @@ public class MainMenu extends JComponent {
     /** Shows a notice over the menu (multiplayer: why the game didn't go ahead) until a choice is made. */
     public void setNotice(String text) {
         notice = text;
+        repaint();
+    }
+
+    /** Dims the menu while a panel is over it that it didn't open itself (the profile asked for as the game starts). */
+    public void dim() {
+        chosen = true;
         repaint();
     }
 
@@ -287,6 +301,7 @@ public class MainMenu extends JComponent {
                 new Color(220, 228, 240, 170));
         paintSpaceman(g, feetX, feetY, tall);
 
+        paintProfile(g, w, unit);
         paintAchievements(g, w, h, unit);
         if (notice != null && !chosen) paintNotice(g, left, top - 110 * unit, 520 * unit, unit);
         if (confirming) paintResetQuestion(g, w, h, unit);
@@ -386,6 +401,22 @@ public class MainMenu extends JComponent {
         g.setFont(HudStyle.font(Font.PLAIN, 13 * unit));
         g.setColor(shown != null ? Color.WHITE : new Color(200, 206, 216, 170));
         g.drawString(about, px + pad, top + rows * row + 20 * unit);
+    }
+
+    /**
+     * The player's profile at the top right (M58): their name on a button that opens it, with a
+     * swatch of their suit's colour before it.
+     */
+    private void paintProfile(Graphics2D g, int w, float unit) {
+        float bw = 380 * unit, bh = 56 * unit, margin = 40 * unit;
+        profileButton.setBounds(Math.round(w - margin - bw), Math.round(margin), Math.round(bw), Math.round(bh));
+        paintButton(g, profileButton, Profile.name(), "Edit profile", true, false, unit);
+        float swatch = 26 * unit, sx = profileButton.x - swatch - 14 * unit, sy = profileButton.y + (bh - swatch) / 2f;
+        g.setColor(Profile.suit().awt());
+        g.fill(new java.awt.geom.Ellipse2D.Float(sx, sy, swatch, swatch));
+        g.setColor(Color.WHITE);
+        g.setStroke(new BasicStroke(2f * Math.max(1f, unit)));
+        g.draw(new java.awt.geom.Ellipse2D.Float(sx, sy, swatch, swatch));
     }
 
     /** The question before Reset: are they sure, it can't be undone. */

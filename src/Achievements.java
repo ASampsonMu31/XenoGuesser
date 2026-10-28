@@ -32,7 +32,7 @@ public final class Achievements {
         ZOOLOGIST("Zoologist", "Unlock all fauna heatmaps in one game", 9),
         PLAY_MULTIPLAYER("Play a Multiplayer game", null, 10),
         WIN_MULTIPLAYER("Win a Multiplayer game", null, 11),
-        FLAWLESS_MULTIPLAYER("Flawless", "Win a Multiplayer game with your opponent on 0 points", 12);
+        FLAWLESS_MULTIPLAYER("Flawless", "Win a Multiplayer game without your opponent winning a round", 12);
 
         public final String title, detail;
         // Its bit in what's kept (fixed, so adding one never moves another's)

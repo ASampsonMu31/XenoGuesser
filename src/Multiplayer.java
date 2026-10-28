@@ -10,15 +10,18 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.SwingUtilities;
 
 /**
- * A two-player game: who this player is (the host is Employee 119-A, blue; the joiner is
- * 119-B, red), the world they share, and every message between the two PCs, written and read
+ * A two-player game: who this player is (the host or the joiner), who each is called and the
+ * colour of their suit (M58: their own choices, see Profile; the joiner's moved on to the next
+ * colour should both have chosen the same), the world they share, and every message between the
+ * two PCs, written and read
  * here (see PROTOCOL in MULTIPLAYER_INTEGRATION_PLAN.txt). There is one session at a time,
  * active() while multiplayer is on; the transport under it (Steam, or a local socket with
  * -Dxenoguesser.mpfake) is made the first time it's needed and kept until the game exits, so
  * Steam is only started when Play Multiplayer is pressed.
  *
- * The handshake: the joiner enters the room and says HELLO; the host answers with START (its
- * world seed, game mode and map kind, which the joiner adopts); the joiner answers START_ACK.
+ * The handshake: the joiner enters the room and says HELLO (with its player's name and suit);
+ * the host answers with START (its world seed, game mode and map kind, which the joiner adopts,
+ * and its player's name and suit); the joiner answers START_ACK.
  * Each side's Listener hears ready() when its half is done. After that the game's screens send
  * their messages through the send methods and read what has come from the partner here.
  *
@@ -30,7 +33,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 3;
+    public static final int PROTOCOL_VERSION = 4;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -73,11 +76,6 @@ public final class Multiplayer {
     // How often the loading, the pod pose and the chair are sent (ms)
     private static final long PROGRESS_INTERVAL_MS = 250, POD_POSE_INTERVAL_MS = 50, CHAIR_INTERVAL_MS = 66;
 
-    // Stage ids for STAGE_DONE, the lock-step points that have no message of their own: a
-    // quarter's verdict panel (plus the quarter, 1 to 4), and a final decider's (plus its number)
-    public static final int STAGE_QUARTER_END = 100;
-    public static final int STAGE_FINAL_DECIDER = 200;
-
     // POSE flags
     public static final byte POSE_SWIMMING = 1;
     public static final byte POSE_AIRBORNE = 2;
@@ -88,32 +86,10 @@ public final class Multiplayer {
 
     /** Which of the two players this PC is. */
     public enum Role {
-        // Trim colours (boots, gloves, back pack, helmet collar): first-person, and lit in the world
-        HOST("119-A", "blue", new float[] {0.18f, 0.36f, 0.85f}, new float[] {0.08f, 0.18f, 0.55f}),
-        JOIN("119-B", "red", new float[] {0.82f, 0.16f, 0.14f}, new float[] {0.55f, 0.07f, 0.06f});
-
-        public final String label;
-        public final String colourName;
-        private final float[] trimColour;
-        private final float[] litTrimColour;
-
-        Role(String label, String colourName, float[] trimColour, float[] litTrimColour) {
-            this.label = label;
-            this.colourName = colourName;
-            this.trimColour = trimColour;
-            this.litTrimColour = litTrimColour;
-        }
+        HOST, JOIN;
 
         public Role other() {
             return this == HOST ? JOIN : HOST;
-        }
-
-        public float[] trimColour() {
-            return trimColour.clone();
-        }
-
-        public float[] litTrimColour() {
-            return litTrimColour.clone();
         }
     }
 
@@ -152,8 +128,11 @@ public final class Multiplayer {
     public record RemotePoses(PoseSample previous, PoseSample latest) {
     }
 
-    /** A player's guess for a round: the pin's direction, the score, and the quarter's productivity so far. */
-    public record Guess(int round, double px, double py, double pz, int score, int quarterProductivity) {
+    /**
+     * A player's guess for a round: the pin's direction, and how far it was from the answer
+     * (world units; NaN, as the pin, for a round gone unguessed), which decides the round (M58).
+     */
+    public record Guess(int round, double px, double py, double pz, double distance) {
     }
 
     private static MultiplayerTransport transport;
@@ -162,6 +141,11 @@ public final class Multiplayer {
     // ---- The session ----
 
     public final Role role;
+    // Who this player is, as they joined, and who the partner is (from their HELLO or START)
+    private final String localName = Profile.name();
+    private final SuitColour localSuit = Profile.suit();
+    private volatile String remoteName;
+    private volatile SuitColour remoteSuit;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
     private volatile String roomCode;
     private volatile long worldSeed;
@@ -246,7 +230,7 @@ public final class Multiplayer {
         if (listener != null) session.listeners.add(listener);
         active = session;
         startTransport();
-        System.out.println("[MP] " + (role == Role.HOST ? "Hosting" : "Joining") + " as Employee " + role.label);
+        System.out.println("[MP] " + (role == Role.HOST ? "Hosting" : "Joining") + " as " + session.localName);
         return session;
     }
 
@@ -347,12 +331,30 @@ public final class Multiplayer {
 
     // ---- What the game reads ----
 
-    public String localLabel() {
-        return role.label;
+    public String localName() {
+        return localName;
     }
 
-    public String remoteLabel() {
-        return role.other().label;
+    /** The partner's name ("your partner" until their HELLO or START has come). */
+    public String remoteName() {
+        String name = remoteName;
+        return name != null ? name : "your partner";
+    }
+
+    /** A player's name, by role. */
+    public String name(Role player) {
+        return player == role ? localName : remoteName();
+    }
+
+    /**
+     * A player's suit colour, by role: each their own, except that a joiner who chose the host's
+     * is in the next one round, so the two can be told apart (on both PCs alike).
+     */
+    public SuitColour suit(Role player) {
+        SuitColour host = role == Role.HOST ? localSuit : remoteSuit != null ? remoteSuit : SuitColour.BLUE;
+        SuitColour join = role == Role.JOIN ? localSuit : remoteSuit != null ? remoteSuit : SuitColour.RED;
+        if (join == host) join = join.next();
+        return player == Role.HOST ? host : join;
     }
 
     public String roomCode() {
@@ -513,9 +515,8 @@ public final class Multiplayer {
 
     public void sendGuess(Guess guess) {
         localGuesses.put(guess.round(), guess);
-        ByteBuffer m = message(GUESS, 4 + 3 * 8 + 4 + 4);
-        m.putInt(guess.round()).putDouble(guess.px()).putDouble(guess.py()).putDouble(guess.pz())
-                .putInt(guess.score()).putInt(guess.quarterProductivity());
+        ByteBuffer m = message(GUESS, 4 + 3 * 8 + 8);
+        m.putInt(guess.round()).putDouble(guess.px()).putDouble(guess.py()).putDouble(guess.pz()).putDouble(guess.distance());
         send(m, true);
     }
 
@@ -569,24 +570,40 @@ public final class Multiplayer {
     }
 
     private void sendHello() {
-        byte[] java = javaVersion();
-        ByteBuffer m = message(HELLO, 4 + 2 + java.length).putInt(PROTOCOL_VERSION);
+        byte[] java = javaVersion(), name = localName.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer m = message(HELLO, 4 + 2 + java.length + 2 + name.length + 1).putInt(PROTOCOL_VERSION);
         putString(m, java);
+        putString(m, name);
+        m.put((byte) localSuit.ordinal());
         send(m, true);
     }
 
     private void sendStart() {
-        byte[] java = javaVersion();
-        ByteBuffer m = message(START, 4 + 8 + 1 + 1 + 2 + java.length).putInt(PROTOCOL_VERSION)
+        byte[] java = javaVersion(), name = localName.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer m = message(START, 4 + 8 + 1 + 1 + 2 + java.length + 2 + name.length + 1).putInt(PROTOCOL_VERSION)
                 .putLong(worldSeed).put((byte) gameMode.ordinal()).put((byte) mapKind.ordinal());
         putString(m, java);
+        putString(m, name);
+        m.put((byte) localSuit.ordinal());
         send(m, true);
+    }
+
+    /**
+     * Takes the partner's name and suit from their HELLO or START, and starts saying the name
+     * for the messages. A name this game wouldn't have let them choose (an older or altered
+     * game's) is shown as "Partner".
+     */
+    private void meetPartner(String name, int suit) {
+        remoteName = NameCheck.problem(name) == null ? name : "Partner";
+        remoteSuit = SuitColour.of(suit);
+        System.out.println("[MP] Partner: " + remoteName + ", " + remoteSuit.label + " suit");
+        Profile.spoken(remoteName);
     }
 
     /** Networking thread, every few ms: sends this player's latest pose every 200 ms once the game is on. */
     private void tick(long now) {
         if (playing && ready && !closed && now - lastHeardMs > SILENCE_MS) {
-            String reason = "No word from Employee " + remoteLabel() + " for " + SILENCE_MS / 1000 + " seconds.";
+            String reason = "No word from " + remoteName() + " for " + SILENCE_MS / 1000 + " seconds.";
             System.out.println("[MP] " + reason);
             close();
             notifyListeners(l -> l.disconnected(reason));
@@ -660,8 +677,12 @@ public final class Multiplayer {
             case HELLO -> {
                 int version = m.getInt();
                 String java = getString(m);
+                // (an older game's HELLO ends here: its version is turned down below)
+                String name = m.hasRemaining() ? getString(m) : "Partner";
+                int suit = m.hasRemaining() ? m.get() : 0;
                 if (m.hasRemaining() || !expect(Role.HOST, "HELLO")) return false;
                 remoteJavaVersion = java;
+                meetPartner(name, suit);
                 // The joiner checks the version too, so START goes even when it differs
                 sendStart();
                 if (!versionsMatch(version, java)) return false;
@@ -675,6 +696,8 @@ public final class Multiplayer {
                 int mode = m.get();
                 int map = m.get();
                 String java = getString(m);
+                String name = m.hasRemaining() ? getString(m) : "Partner";
+                int suit = m.hasRemaining() ? m.get() : 0;
                 if (m.hasRemaining() || !expect(Role.JOIN, "START")) return false;
                 if (mode < 0 || mode >= GameMode.values().length || map < 0 || map >= MapKind.values().length) {
                     System.out.println("[MP] Ignored a START with an unknown game mode or map kind");
@@ -682,10 +705,11 @@ public final class Multiplayer {
                 }
                 remoteJavaVersion = java;
                 if (!versionsMatch(version, java)) return false;
+                meetPartner(name, suit);
                 worldSeed = seed;
                 gameMode = GameMode.values()[mode];
                 mapKind = MapKind.values()[map];
-                System.out.println("[MP] World from Employee " + remoteLabel() + ": seed " + seed
+                System.out.println("[MP] World from " + remoteName() + ": seed " + seed
                         + ", " + gameMode + ", " + mapKind);
                 send(message(START_ACK, 0), true);
                 ready = true;
@@ -714,7 +738,7 @@ public final class Multiplayer {
                 return false;
             }
             case GUESS -> {
-                Guess guess = new Guess(m.getInt(), m.getDouble(), m.getDouble(), m.getDouble(), m.getInt(), m.getInt());
+                Guess guess = new Guess(m.getInt(), m.getDouble(), m.getDouble(), m.getDouble(), m.getDouble());
                 if (m.hasRemaining()) return false;
                 remoteGuesses.put(guess.round(), guess);
                 return true;
@@ -729,7 +753,7 @@ public final class Multiplayer {
                 return addNumber(m, remoteStagesDone);
             }
             case LEAVE -> {
-                String reason = "Employee " + remoteLabel() + " left.";
+                String reason = remoteName() + " left.";
                 close();
                 notifyListeners(l -> l.disconnected(reason));
                 return false;
@@ -840,15 +864,16 @@ public final class Multiplayer {
         try {
             byte type = m.get();
             return switch (type) {
-                case HELLO -> "HELLO version " + m.getInt() + ", Java " + getString(m);
+                case HELLO -> "HELLO version " + m.getInt() + ", Java " + getString(m)
+                        + (m.hasRemaining() ? ", " + getString(m) + ", suit " + m.get() : "");
                 case START -> "START version " + m.getInt() + ", seed " + m.getLong() + ", mode " + m.get()
-                        + ", map " + m.get() + ", Java " + getString(m);
+                        + ", map " + m.get() + ", Java " + getString(m) + (m.hasRemaining() ? ", " + getString(m) + ", suit " + m.get() : "");
                 case START_ACK -> "START_ACK";
                 case WORLD_READY -> "WORLD_READY";
                 case BEGIN -> "BEGIN";
                 case POSE -> "POSE #" + m.getInt();
-                case GUESS -> String.format(java.util.Locale.ROOT, "GUESS round %d, pin (%.3f, %.3f, %.3f), score %d, quarter %d",
-                        m.getInt(), m.getDouble(), m.getDouble(), m.getDouble(), m.getInt(), m.getInt());
+                case GUESS -> String.format(java.util.Locale.ROOT, "GUESS round %d, pin (%.3f, %.3f, %.3f), %.1f away",
+                        m.getInt(), m.getDouble(), m.getDouble(), m.getDouble(), m.getDouble());
                 case SHOP_DONE -> "SHOP_DONE round " + m.getInt();
                 case ROUND_BUILT -> "ROUND_BUILT round " + m.getInt();
                 case LEAVE -> "LEAVE";
@@ -880,7 +905,7 @@ public final class Multiplayer {
         public void connected() {
             Multiplayer session = active;
             if (session == null) return;
-            System.out.println("[MP] In a room with Employee " + session.remoteLabel());
+            System.out.println("[MP] In a room with a partner");
             session.lastHeardMs = System.currentTimeMillis();
             session.inRoom = true;
             session.notifyListeners(Listener::changed);
