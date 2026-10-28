@@ -102,7 +102,7 @@ Parts extend `GamePart` (field `game`).
 ## Everything else, by area
 
 - **Window and flow**: `XenoGuesser` (window, menus, rounds' flow between map, results, shop,
-  quarters, messages; `runHudTest` = dev test runs), `MainMenu`, `SettingsMenu`, `ControlsPanel`,
+  quarters, messages; `runHudTest` = dev test runs), `MainMenu`, `SingleplayerPanel` (mode and map, after Play Singleplayer), `Expedition` (the game being played, said and drawn alike everywhere; matchmaking's ticks), `SettingsMenu`, `ControlsPanel`,
   `ShopPanel`, `QuarterPanel`, `GameHUD`, `HudStyle`, `HudOverlay`, `MessageStrip`/`MessageTicker`,
   `WindowTitleBar`/`WindowResizer`, `Achievements`, `GameSettings`, `GameMode`, `MapKind`, `GameClock`.
 - **Map**: `MapPanel` (minimap/large map, guessing, results; `Layer`), `MapLayersPanel`, `MapMarkers`,

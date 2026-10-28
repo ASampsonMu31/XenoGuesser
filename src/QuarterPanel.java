@@ -36,6 +36,18 @@ public class QuarterPanel extends JPanel {
     private java.util.function.Supplier<String> waiting;
     private final javax.swing.Timer waitingRepaint = new javax.swing.Timer(250, e -> repaint());
 
+    /** A ranked game's rating, before it and after. */
+    public record RatingChange(int before, int after) {
+    }
+
+    // Ranked: the rating change shown large under the lines (null for none), when it was shown,
+    // and the timer drawing it as it ticks from the old number to the new
+    private RatingChange rating;
+    private long ratingShownAt;
+    private final javax.swing.Timer ratingTick = new javax.swing.Timer(16, e -> repaint());
+    // How long the rating waits before it ticks, how long the tick takes, and the pop at its end (ms)
+    private static final long RATING_DELAY = 700, RATING_TICK = 1800, RATING_POP = 300;
+
     public QuarterPanel() {
         setOpaque(true);
         setLayout(null);
@@ -84,8 +96,22 @@ public class QuarterPanel extends JPanel {
         this.buttonText = buttonText;
         this.waiting = waiting;
         this.onContinue = onContinue;
+        this.rating = null;
+        ratingTick.stop();
         waitingRepaint.start();
         setVisible(true);
+        repaint();
+    }
+
+    /**
+     * Ranked, after showMultiplayer: the rating written large in bubble writing under the lines,
+     * ticking from the old number to the new, green going up and red going down.
+     */
+    public void showRatingChange(RatingChange change) {
+        if (change == null) return;
+        rating = change;
+        ratingShownAt = System.currentTimeMillis();
+        ratingTick.start();
         repaint();
     }
 
@@ -121,6 +147,7 @@ public class QuarterPanel extends JPanel {
         setVisible(false);
         onContinue = null;
         waitingRepaint.stop();
+        ratingTick.stop();
     }
 
     public boolean isOpen() {
@@ -193,7 +220,8 @@ public class QuarterPanel extends JPanel {
                 detailColours.add(i < lineColours.size() ? lineColours.get(i) : HudStyle.VALUE);
             }
         }
-        int ph = 70 + headlineLines.size() * 40 + 16 + detail.size() * 30 + 34 + 48 + 34;
+        int ratingH = rating != null ? 150 : 0;
+        int ph = 70 + headlineLines.size() * 40 + 16 + detail.size() * 30 + ratingH + 34 + 48 + 34;
         int px = (w - pw) / 2, py = Math.max(20, (h - ph) / 2 - 30);
         HudStyle.panel(g, px, py, pw, ph, HudStyle.GLASS_SOLID);
         if (edge != null) HudStyle.edge(g, px, py, pw, ph, edge);
@@ -215,6 +243,7 @@ public class QuarterPanel extends JPanel {
             g.drawString(detail.get(i), px + (pw - fm.stringWidth(detail.get(i))) / 2f, y);
             y += 30;
         }
+        if (rating != null) paintRating(g, px, pw, y);
         String waitingFor = pressed && waiting != null ? waiting.get() : null;
         String text = waitingFor != null ? waitingFor + ".".repeat((int) (System.currentTimeMillis() / 400 % 4)) : buttonText;
         int bw = 360, bh = 48;
@@ -222,6 +251,54 @@ public class QuarterPanel extends JPanel {
         HudStyle.panel(g, button.x, button.y, bw, bh, waitingFor != null || pressed ? new Color(60, 66, 76) : new Color(40, 150, 90));
         float size = 15f, textW = HudStyle.labelWidth(g, text, size);
         HudStyle.label(g, text, button.x + (bw - textW) / 2f, button.y + bh / 2f + size * 0.38f, size, HudStyle.VALUE);
+    }
+
+    /**
+     * The ranked rating under the lines (y the top of its room): "Ranked rating" over the number
+     * in bubble writing, ticking from before to after after a moment, then popping a little as it
+     * lands with the change beside it.
+     */
+    private void paintRating(Graphics2D g, int px, int pw, int y) {
+        int before = rating.before(), after = rating.after(), change = after - before;
+        Color colour = change > 0 ? new Color(110, 225, 130) : change < 0 ? new Color(245, 105, 90) : HudStyle.VALUE;
+        String heading = "Ranked rating";
+        float headingW = HudStyle.labelWidth(g, heading, 13f);
+        HudStyle.label(g, heading, px + (pw - headingW) / 2f, y + 14, 13f, HudStyle.GOLD);
+
+        long since = System.currentTimeMillis() - ratingShownAt - RATING_DELAY;
+        float t = Math.max(0f, Math.min(1f, since / (float) RATING_TICK));
+        float ease = 1f - (1f - t) * (1f - t) * (1f - t);
+        int shown = before + Math.round(change * ease);
+        // (once it's landed, a quick swell and back)
+        float popT = Math.max(0f, Math.min(1f, (since - RATING_TICK) / (float) RATING_POP));
+        float scale = 1f + 0.18f * (float) Math.sin(Math.PI * popT);
+        if (since > RATING_TICK + RATING_POP) ratingTick.stop();
+
+        String number = Integer.toString(shown);
+        Font font = new Font("Arial Black", Font.BOLD, Math.round(72f * scale));
+        g.setFont(font);
+        FontMetrics fm = g.getFontMetrics();
+        int textW = fm.stringWidth(number);
+        // (centred on one spot, so the pop swells it evenly)
+        int x = px + (pw - textW) / 2, baseline = y + 82 + Math.round(fm.getAscent() * 0.36f);
+        drawBubble(g, number, x, baseline, Math.max(3, Math.round(6f * scale)), colour);
+        if (t >= 1f && change != 0) {
+            String delta = (change > 0 ? "+" : "") + change;
+            g.setFont(new Font("Arial Black", Font.BOLD, 30));
+            drawBubble(g, delta, x + textW + 16, baseline, 3, colour);
+        }
+    }
+
+    /** Bubble writing: text with a thick dark outline round its colour. */
+    private static void drawBubble(Graphics2D g, String text, int x, int y, int outline, Color colour) {
+        g.setColor(new Color(30, 30, 34, 235));
+        for (int dx = -outline; dx <= outline; dx++) {
+            for (int dy = -outline; dy <= outline; dy++) {
+                if (dx * dx + dy * dy <= outline * outline) g.drawString(text, x + dx, y + dy);
+            }
+        }
+        g.setColor(colour);
+        g.drawString(text, x, y);
     }
 
     private static java.util.List<String> wrap(FontMetrics fm, String text, int width) {

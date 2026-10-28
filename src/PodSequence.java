@@ -484,6 +484,7 @@ public class PodSequence implements GLEventListener {
         updateHatch();
         updateTargets();
         updateDiagnostics();
+        updateBanner();
         sounds.set(timeline.engine, timeline.roar, timeline.rumble, chair.y == 0f ? (float) Math.hypot(chair.vx, chair.vz) / PodChair.PUSH_SPEED : 0f);
         devTests();
 
@@ -602,6 +603,27 @@ public class PodSequence implements GLEventListener {
         boolean rescaled = pixelScale != diagnosticsScale;
         diagnosticsScale = pixelScale;
         diagnostics.show(hud, true, fps, pixelScale, rescaled, width);
+    }
+
+    // The scale and width the game's banner was last drawn for
+    private float bannerScale;
+    private int bannerWidth;
+
+    /** The game loading (singleplayer or which multiplayer, its game mode and map) at the top in the middle, all the way down. */
+    private void updateBanner() {
+        if (hud.has("banner") && bannerScale == pixelScale && bannerWidth == width) return;
+        bannerScale = pixelScale;
+        bannerWidth = width;
+        Graphics2D[] g = new Graphics2D[1];
+        // (measured on a scrap of image first)
+        HudStyle.canvas(1, 1, 1f, g);
+        java.awt.Dimension size = Expedition.bannerSize(g[0]);
+        g[0].dispose();
+        BufferedImage image = HudStyle.canvas(size.width, size.height, pixelScale, g);
+        Expedition.paintBanner(g[0]);
+        g[0].dispose();
+        hud.put("banner", image, (width - image.getWidth()) / 2, Math.round(HudStyle.HUD_MARGIN * pixelScale));
+        hud.setVisible("banner", true);
     }
 
     // The targets' picture, and when it was last drawn (it bobs, so it's drawn again a few times a second)

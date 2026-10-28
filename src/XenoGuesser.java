@@ -177,7 +177,7 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.java2d.noddraw", "true");
 
     // 3. The main menu first; the loading screen then covers everything until the round's first frame
-    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame, () -> openProfile(false));
+    mainMenu = new MainMenu(this::chooseSingleplayer, this::startMultiplayer, this::shutdownGame, () -> openProfile(false));
     // The planet's name is said (for the message from Xenocorp) while the menu is up, and the
     // player's own (M58), should its recording not have been kept
     TransmissionMessage.prepare(worldSeed);
@@ -256,6 +256,8 @@ public class XenoGuesser extends JFrame {
 
   // Play Multiplayer's panel, over the main menu while it's up
   private MultiplayerPanel multiplayerPanel;
+  // Play Singleplayer's choice of game mode and map, over the main menu while it's up
+  private SingleplayerPanel singleplayerPanel;
   // The player's profile (M58), over the main menu while it's up
   private ProfilePanel profilePanel;
 
@@ -284,7 +286,7 @@ public class XenoGuesser extends JFrame {
    * both players are in, both load the host's world (multiplayerReady).
    */
   private void startMultiplayer() {
-    if (loadingScreen != null || multiplayerPanel != null) return;
+    if (loadingScreen != null || multiplayerPanel != null || singleplayerPanel != null) return;
     Multiplayer.startTransport();
     multiplayerPanel = new MultiplayerPanel(() -> worldSeed, this::closeMultiplayerPanel, this::multiplayerReady);
     layeredPane.add(multiplayerPanel, Integer.valueOf(JLayeredPane.DRAG_LAYER + 1));
@@ -311,8 +313,9 @@ public class XenoGuesser extends JFrame {
 
   /**
    * Both players are in the room: the world is the host's (M5). The joiner takes the host's
-   * seed, game mode and map kind over its own menu choices, and the planet's name is said
-   * afresh for it; then both load the world as singleplayer does.
+   * seed, game mode and map kind over its own choices (and a matchmade host the mode and map
+   * picked from those both ticked), and the planet's name is said afresh for it; then both
+   * load the world as singleplayer does.
    */
   private void multiplayerReady(Multiplayer session) {
     removeMultiplayerPanel();
@@ -332,17 +335,44 @@ public class XenoGuesser extends JFrame {
         partnerGone(session, reason);
       }
     });
-    if (session.role == Multiplayer.Role.JOIN) {
-      GameMode.choose(session.gameMode());
-      MapKind.choose(session.mapKind());
-    }
+    GameMode.choose(session.gameMode());
+    MapKind.choose(session.mapKind());
     TransmissionMessage.prepare(worldSeed);
     System.out.println("[MP] Loading the world as " + session.localName() + ": seed " + worldSeed
         + ", " + GameMode.current() + ", " + MapKind.current());
     startGame(true);
   }
 
-  /** Play Singleplayer: the loading screen replaces the menu while a world is generated. */
+  /**
+   * Play Singleplayer: the game mode and map chosen first, on a panel over the (dimmed) menu;
+   * Start goes on to loading the world, Back to the menu as it was.
+   */
+  private void chooseSingleplayer() {
+    if (loadingScreen != null || singleplayerPanel != null) return;
+    singleplayerPanel = new SingleplayerPanel(() -> {
+      removeSingleplayerPanel();
+      startSingleplayer();
+    }, () -> {
+      removeSingleplayerPanel();
+      if (mainMenu != null) mainMenu.unchoose();
+      requestFocus();
+    });
+    layeredPane.add(singleplayerPanel, Integer.valueOf(JLayeredPane.DRAG_LAYER + 1));
+    layoutComponents();
+    layeredPane.repaint();
+    SwingUtilities.invokeLater(() -> {
+      if (singleplayerPanel != null) singleplayerPanel.takeFocus();
+    });
+  }
+
+  private void removeSingleplayerPanel() {
+    if (singleplayerPanel == null) return;
+    layeredPane.remove(singleplayerPanel);
+    singleplayerPanel = null;
+    layeredPane.repaint();
+  }
+
+  /** The loading screen replaces the menu while a world is generated, in the game mode and map chosen. */
   void startSingleplayer() {
     startGame(false);
   }
@@ -536,8 +566,8 @@ glEventListener.setGameHUD(gameHUD);
     quarterPanel = new QuarterPanel();
     minimap.setOnProceedToShop(this::afterResults);
     minimap.setProceedLabel(() -> multiplayerScore != null
-        ? (multiplayerScore.gameWinner(gameHUD.getRound()) != null ? "See the Result" : "Proceed to Shop")
-        : gameHUD.isQuarterEnd() ? "End of Quarter" : "Proceed to Shop");
+        ? (multiplayerScore.gameWinner(gameHUD.getRound()) != null ? "See the result" : "Proceed to shop")
+        : gameHUD.isQuarterEnd() ? "End of quarter" : "Proceed to shop");
 
     // The mouse wheel (and a touchpad's pinch, which comes as one) switches the gadget in hand,
     // down the inventory or up it; with none out it zooms the view where the game mode allows it
@@ -764,7 +794,7 @@ glEventListener.setGameHUD(gameHUD);
     escapeDown = true;
     escapeAt = e.getWhen();
     if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof JTextComponent) return false;
-    if ((multiplayerPanel != null || profilePanel != null) && !settingsOpen) return false;
+    if ((multiplayerPanel != null || singleplayerPanel != null || profilePanel != null) && !settingsOpen) return false;
     if (firstPress) {
       if (controlsPanel != null && controlsPanel.isOpen()) controlsPanel.close();
       else setSettingsOpen(!settingsOpen);
@@ -1111,10 +1141,10 @@ glEventListener.setGameHUD(gameHUD);
     colours.add(HudStyle.GOLD);
     for (Multiplayer.Role player : new Multiplayer.Role[] { me, them }) {
       int wins = score.wins(player, round);
-      lines.add(session.name(player) + (player == me ? " (You)" : "") + ": " + wins + (wins == 1 ? " round" : " rounds") + " won");
+      lines.add(session.name(player) + ": " + wins + (wins == 1 ? " round" : " rounds") + " won");
       colours.add(GameHUD.textColour(session.suit(player)));
     }
-    addRankedLine(won ? Boolean.TRUE : Boolean.FALSE, lines, colours);
+    QuarterPanel.RatingChange rating = settleRanked(won ? Boolean.TRUE : Boolean.FALSE, lines, colours);
     System.out.println("[MP] Game over: " + session.name(winner) + " wins");
     gameOver = true;
     quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? GOOD : BAD,
@@ -1126,6 +1156,7 @@ glEventListener.setGameHUD(gameHUD);
           session.leave();
           endGame(won);
         });
+    quarterPanel.showRatingChange(rating);
     layoutComponents();
     devTestRun.verdictShot("gameend");
   }
@@ -1134,24 +1165,23 @@ glEventListener.setGameHUD(gameHUD);
   private Rating.Game rankedGame;
 
   /**
-   * Ranked: settles the game (won: TRUE, lost: FALSE, void: null) and adds a line saying how
-   * the player's rating moved, for the game's end. Nothing if the game wasn't ranked.
+   * Ranked: settles the game (won: TRUE, lost: FALSE, void: null) and gives how the player's
+   * rating moved, shown large at the game's end; a void game adds a line saying it stays as it
+   * was instead. Null if the game wasn't ranked, or was void.
    */
-  private void addRankedLine(Boolean won, java.util.List<String> lines, java.util.List<Color> colours) {
+  private QuarterPanel.RatingChange settleRanked(Boolean won, java.util.List<String> lines, java.util.List<Color> colours) {
     Rating.Game game = rankedGame;
-    if (game == null) return;
+    if (game == null) return null;
     rankedGame = null;
     if (won == null) {
       game.voided();
       lines.add("Ranked: no result, as the connection was lost. Your rating stays " + game.before + ".");
       colours.add(HudStyle.LABEL);
-      return;
+      return null;
     }
     if (won) game.won();
     else game.lost();
-    int after = game.after(won), change = after - game.before;
-    lines.add("Ranked rating: " + game.before + " -> " + after + " (" + (change >= 0 ? "+" : "") + change + ")");
-    colours.add(change >= 0 ? GOOD : BAD);
+    return new QuarterPanel.RatingChange(game.before, game.after(won));
   }
 
   // Multiplayer: this player's own game mode and map kind, given back after the game (the
@@ -1176,12 +1206,13 @@ glEventListener.setGameHUD(gameHUD);
       java.util.List<Color> colours = new java.util.ArrayList<>(java.util.List.of(HudStyle.LABEL));
       // Ranked (M59): a partner who left on purpose has lost; a dropped connection can't say whose
       // doing it was (both PCs see the other go), so that game counts for neither
-      addRankedLine(session.remoteLeftOnPurpose() ? Boolean.TRUE : null, lines, colours);
+      QuarterPanel.RatingChange rating = settleRanked(session.remoteLeftOnPurpose() ? Boolean.TRUE : null, lines, colours);
       quarterPanel.showMultiplayer("You win", GOOD, "You win: " + who + " disconnected",
           HudStyle.VALUE, GOOD, lines, colours, "Main menu", null, () -> {
             quarterPanel.close();
             endGame(true);
           });
+      quarterPanel.showRatingChange(rating);
       layoutComponents();
       updateMouseMode();
       devTestRun.verdictShot("partnergone");
@@ -1270,13 +1301,13 @@ glEventListener.setGameHUD(gameHUD);
       // three, for free, the winner nothing (a level round, both take one)
       Multiplayer.Role winner = multiplayerScore != null ? multiplayerScore.roundWinner(round) : null;
       boolean won = winner == session.role;
-      String note = won ? "You won the round: no upgrade this time"
-          : winner != null ? "You lost the round: take an upgrade, free"
-          : "A level round: take an upgrade, free";
+      String note = won ? "You won the round. No upgrade this time!"
+          : winner != null ? "You lost the round: take one upgrade"
+          : "A level round: take one upgrade";
       shopPanel.open(won ? java.util.List.of() : glEventListener.shopOffers(round),
           () -> leaveShopTogether(session, round, minimap::requestNextRound),
           () -> session.remoteShopDone(round) && session.remoteRoundBuilt(round + 1) ? null
-              : "Waiting for " + session.remoteName(), note);
+              : "Waiting for " + session.remoteName(), note, won ? session.remoteName() + " is shopping." : null);
     }
     layoutComponents();
   }
@@ -1409,7 +1440,7 @@ glEventListener.setGameHUD(gameHUD);
     loadingScreen = null;
     // (the next game is on a new world)
     if (FIXED_SEED == null) worldSeed = Math.max(System.currentTimeMillis(), worldSeed + 1);
-    mainMenu = new MainMenu(this::startSingleplayer, this::startMultiplayer, this::shutdownGame, () -> openProfile(false));
+    mainMenu = new MainMenu(this::chooseSingleplayer, this::startMultiplayer, this::shutdownGame, () -> openProfile(false));
     TransmissionMessage.prepare(worldSeed);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
     layoutComponents();
@@ -1480,6 +1511,7 @@ glEventListener.setGameHUD(gameHUD);
     }
     if (mainMenu != null) mainMenu.setBounds(0, top, paneWidth, paneHeight);
     if (multiplayerPanel != null) multiplayerPanel.setBounds(0, top, paneWidth, paneHeight);
+    if (singleplayerPanel != null) singleplayerPanel.setBounds(0, top, paneWidth, paneHeight);
     if (profilePanel != null) profilePanel.setBounds(0, top, paneWidth, paneHeight);
     if (loadingScreen != null) {
       // (once the pod's in view, only the message's strip along the bottom)

@@ -70,6 +70,8 @@ public class ShopPanel extends JPanel {
     // A line under the heading (multiplayer: whether this player, losing the round, may take
     // one, or, winning it, gets nothing); null for none
     private String note;
+    // With nothing on offer, a line over the note (multiplayer: the partner who's shopping meanwhile); null for none
+    private String above;
     // A message from Xenocorp scrolling along the bottom as it's spoken (null for none), and
     // whether the shop's held until it's been said or skipped (the first shop's: nothing taken nor
     // the shop left while it plays, nor before it starts)
@@ -134,7 +136,16 @@ public class ShopPanel extends JPanel {
 
     /** As open, with a line under the heading saying why the shop is as it is (multiplayer: the round's winner and loser). */
     public void open(List<Card> offers, Runnable onLeave, java.util.function.Supplier<String> waitingText, String note) {
+        open(offers, onLeave, waitingText, note, null);
+    }
+
+    /**
+     * As open, and where nothing's on offer the note is written large in the middle with above
+     * over it (multiplayer, the round won: "Sam is shopping.").
+     */
+    public void open(List<Card> offers, Runnable onLeave, java.util.function.Supplier<String> waitingText, String note, String above) {
         this.note = note;
+        this.above = above;
         this.waitingText = waitingText;
         this.cards = List.copyOf(offers);
         this.bought = new boolean[cards.size()];
@@ -258,7 +269,8 @@ public class ShopPanel extends JPanel {
             if (count > 0) cardH = Math.min(cardH, Math.round((w - 80 - gap * (count - 1)) / (float) count / CARD_ASPECT));
             int cardW = Math.round(cardH * CARD_ASPECT);
             int rowW = count * cardW + Math.max(0, count - 1) * gap;
-            int top = Math.round(h * 0.17f);
+            // (lower under a note, so a card lifted once taken doesn't cover it)
+            int top = Math.round(h * (note != null && count > 0 ? 0.21f : 0.17f));
             int rowX = (w - rowW) / 2;
 
             // The heading
@@ -270,7 +282,22 @@ public class ShopPanel extends JPanel {
             g.drawString(title, (w - fm.stringWidth(title)) / 2, titleY);
             g.setColor(HudStyle.ACCENT);
             g.fill(new java.awt.geom.Rectangle2D.Float(w / 2f - 40, titleY + 12, 80, 2.5f));
-            if (note != null) {
+            if (note != null && count == 0) {
+                // Nothing on offer (the round won): the note large in the middle, who's shopping over it
+                float noteSize = Math.min(46f, h * 0.05f);
+                g.setFont(HudStyle.font(Font.BOLD, noteSize));
+                while (noteSize > 14f && g.getFontMetrics().stringWidth(note) > w * 0.9f) g.setFont(HudStyle.font(Font.BOLD, noteSize -= 1f));
+                FontMetrics nfm = g.getFontMetrics();
+                int noteY = Math.round(h * 0.45f);
+                g.setColor(HudStyle.VALUE);
+                g.drawString(note, (w - nfm.stringWidth(note)) / 2, noteY);
+                if (above != null) {
+                    g.setFont(HudStyle.font(Font.BOLD, noteSize * 0.6f));
+                    FontMetrics afm = g.getFontMetrics();
+                    g.setColor(HudStyle.ACCENT);
+                    g.drawString(above, (w - afm.stringWidth(above)) / 2, noteY - Math.round(noteSize * 1.5f));
+                }
+            } else if (note != null) {
                 float noteSize = Math.max(11f, Math.min(16f, h * 0.018f));
                 HudStyle.label(g, note, (w - HudStyle.labelWidth(g, note, noteSize)) / 2f, titleY + 14 + noteSize * 2.2f, noteSize, HudStyle.LABEL);
             }

@@ -67,7 +67,7 @@ public final class MultiplayerCheck {
         };
 
         session = matching
-                ? Multiplayer.matchmake(args[0].equalsIgnoreCase("ranked"), System.currentTimeMillis(), GameMode.current(), MapKind.current(), listener)
+                ? Multiplayer.matchmake(args[0].equalsIgnoreCase("ranked"), System.currentTimeMillis(), Expedition.ALL_MODES, Expedition.ALL_MAPS, listener)
                 : hosting
                 ? Multiplayer.host(System.currentTimeMillis(), GameMode.current(), MapKind.current(), listener)
                 : Multiplayer.join(args[1], listener);

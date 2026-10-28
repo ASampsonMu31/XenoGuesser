@@ -12,7 +12,8 @@ import javax.swing.text.BadLocationException;
 import javax.swing.SwingUtilities;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
-import java.awt.LinearGradientPaint;
+import java.awt.RadialGradientPaint;
+import java.awt.geom.Path2D;
 import java.awt.Dimension;
 import java.awt.Insets;
 import java.awt.Polygon;
@@ -111,13 +112,6 @@ public class MapPanel extends JPanel {
     private static final int HORIZONTAL_SHUFFLE_OFFSET = 2; 
 
     private final Color baseDarkGrey = new Color(45, 45, 45);
-    private final Color highlightLightGrey = new Color(90, 90, 90);
-    private final Color trayGrey = new Color(60, 60, 60); 
-
-    private final Color btnDisabledGrey = new Color(90, 92, 95);
-    private final Color btnEnabledGreen = new Color(50, 165, 50);
-    private final Color btnNextRoundBlue = new Color(40, 120, 210); 
-    private final Color btnTextWhite = new Color(255, 255, 255);
 
     private float totalRegionWidth;
     private float halfRegion;
@@ -339,15 +333,18 @@ public class MapPanel extends JPanel {
         this.setLayout(null); 
 
         noteArea = new JTextArea();
-        noteArea.setFont(new Font(Font.MONOSPACED, Font.BOLD, 14));
-        noteArea.setBackground(Color.WHITE);          
-        noteArea.setForeground(Color.BLACK);          
-        noteArea.setCaretColor(Color.BLACK);          
-        noteArea.setLineWrap(true);                   
-        noteArea.setWrapStyleWord(false);              
+        // (typed into on the results, in the HUD's dark glass and cyan edge)
+        noteArea.setFont(HudStyle.font(Font.BOLD, 15f));
+        noteArea.setBackground(HudStyle.GLASS_SOLID);
+        noteArea.setForeground(HudStyle.VALUE);
+        noteArea.setCaretColor(HudStyle.ACCENT);
+        noteArea.setSelectionColor(new Color(24, 110, 145));
+        noteArea.setSelectedTextColor(Color.WHITE);
+        noteArea.setLineWrap(true);
+        noteArea.setWrapStyleWord(false);
         noteArea.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(new Color(60, 60, 65), 1),
-            BorderFactory.createEmptyBorder(6, 8, 6, 8)
+            BorderFactory.createLineBorder(HudStyle.ACCENT, 1),
+            BorderFactory.createEmptyBorder(6, 10, 6, 10)
         ));
         noteArea.setVisible(false);
 
@@ -583,6 +580,7 @@ public class MapPanel extends JPanel {
             @Override
             public void mouseMoved(MouseEvent e) {
                 hoverLandmark(e.getX(), e.getY());
+                hoverRevealButtons(e.getX(), e.getY());
             }
 
             @Override
@@ -837,13 +835,35 @@ public class MapPanel extends JPanel {
         return new Rectangle(visualMapX + 8, visualMapY + 8, TOGGLE_W, TOGGLE_H);
     }
 
+    // The results' button the pointer is over: 0 none, 1 Add note, 2 the one going on
+    private int hoveredButton;
+
+    /** The results' scale, as the menus' (the screen's height / 1080), for their buttons. */
+    private float revealUnit() {
+        return Math.max(0.75f, getHeight() / 1080f);
+    }
+
+    /** The results' buttons (and the enlarged map's Guess): which the pointer is over, drawn lighter, redrawn as that changes. */
+    private void hoverRevealButtons(int x, int y) {
+        boolean buttons = isFullScreenReveal || isLarge;
+        int over = !buttons ? 0
+                : isFullScreenReveal && !isTypingNote && new Rectangle(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight).contains(x, y) ? 1
+                : new Rectangle(btnX, btnY, btnWidth, btnHeight).contains(x, y) ? 2 : 0;
+        if (over != hoveredButton) {
+            hoveredButton = over;
+            repaint();
+        }
+    }
+
     /** The globe/flat toggle (on the enlarged map and the results): naming what it turns the map to. */
     private void drawToggle(Graphics2D g2d) {
         Rectangle r = toggleBounds();
-        g2d.setColor(new Color(25, 25, 27, 210));
-        g2d.fillRoundRect(r.x, r.y, r.width, r.height, 10, 10);
-        g2d.setColor(new Color(120, 205, 235, 170));
-        g2d.drawRoundRect(r.x, r.y, r.width, r.height, 10, 10);
+        // (cut-cornered dark glass with the cyan edge, as the HUD's buttons)
+        Path2D shape = HudStyle.chamfered(r.x + 0.5f, r.y + 0.5f, r.width - 1f, r.height - 1f, 6f);
+        g2d.setColor(HudStyle.GLASS);
+        g2d.fill(shape);
+        g2d.setColor(HudStyle.EDGE);
+        g2d.draw(shape);
         g2d.setFont(HudStyle.font(Font.BOLD, 12f));
         FontMetrics fm = g2d.getFontMetrics();
         String text = globeShown() ? "Flat map" : "Globe";
@@ -1640,16 +1660,17 @@ public class MapPanel extends JPanel {
             this.visualMapX = (getWidth() - currentMapSize) / 2;
             this.visualMapY = Math.max(20, (getHeight() - mapHeight()) / 2 - 45);
             
+            // (the two buttons alike, as tall as the menus' at this size)
             this.btnWidth = currentMapSize;
-            this.btnHeight = 40;
-            
+            this.btnHeight = Math.max(40, Math.round(52 * revealUnit()));
+
             this.noteBtnWidth = btnWidth;
-            this.noteBtnHeight = 55; 
+            this.noteBtnHeight = btnHeight;
             this.noteBtnX = visualMapX;
-            this.noteBtnY = visualMapY + mapHeight() + BORDER_SIZE + 15; 
-            
+            this.noteBtnY = visualMapY + mapHeight() + BORDER_SIZE + 14;
+
             this.btnX = visualMapX;
-            this.btnY = noteBtnY + noteBtnHeight + 15; 
+            this.btnY = noteBtnY + noteBtnHeight + 10;
 
             if (noteArea != null && noteArea.isVisible()) {
                 noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight);
@@ -1667,9 +1688,9 @@ public class MapPanel extends JPanel {
             this.visualMapY = BORDER_SIZE;
             
             this.btnWidth = panelWidth - 24;
-            this.btnHeight = 40;
+            this.btnHeight = 44;
             this.btnX = (panelWidth - btnWidth) / 2;
-            this.btnY = mapHeight() + (BORDER_SIZE * 2) + 7;
+            this.btnY = mapHeight() + (BORDER_SIZE * 2) + 2;
 
             if (noteArea != null && noteArea.isVisible()) {
                 noteArea.setVisible(false);
@@ -1699,56 +1720,34 @@ public class MapPanel extends JPanel {
             int frameW = getWidth();
             int frameH = getHeight();
 
-            if (isFullScreenReveal) {
-                g2d.setColor(new Color(245, 235, 195)); 
-                g2d.fillRect(0, 0, frameW, frameH);
-            } else {
-                g2d.setColor(trayGrey);
-                g2d.fillRect(0, 0, frameW, frameH);
-            }
-
             int mapX = (this.visualMapX != 0) ? this.visualMapX : (BORDER_SIZE + HORIZONTAL_SHUFFLE_OFFSET);
             int mapY = (this.visualMapY != 0) ? this.visualMapY : BORDER_SIZE;
 
-            float[] fractions = {0.0f, 0.5f, 1.0f};
-            Color[] colours = {baseDarkGrey, highlightLightGrey, baseDarkGrey};
-
-            int mapFrameH = mapHeight() + (BORDER_SIZE * 2);
-            int mapFrameW = currentMapSize + (BORDER_SIZE * 2);
-            int startX = mapX - BORDER_SIZE;
-            int startY = mapY - BORDER_SIZE;
-            
-            Polygon topFrame = new Polygon();
-            topFrame.addPoint(startX, startY); 
-            topFrame.addPoint(startX + mapFrameW + 2, startY); 
-            topFrame.addPoint(startX + mapFrameW - BORDER_SIZE + 2, startY + BORDER_SIZE); 
-            topFrame.addPoint(startX + BORDER_SIZE, startY + BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point(startX, startY), new Point(startX, startY + BORDER_SIZE), fractions, colours));
-            g2d.fill(topFrame);
-
-            Polygon bottomFrame = new Polygon();
-            bottomFrame.addPoint(startX + BORDER_SIZE, startY + mapFrameH - BORDER_SIZE); 
-            bottomFrame.addPoint(startX + mapFrameW - BORDER_SIZE + 2, startY + mapFrameH - BORDER_SIZE); 
-            bottomFrame.addPoint(startX + mapFrameW + 2, startY + mapFrameH); 
-            bottomFrame.addPoint(startX, startY + mapFrameH);
-            g2d.setPaint(new LinearGradientPaint(new Point(startX, startY + mapFrameH - BORDER_SIZE), new Point(startX, startY + mapFrameH), fractions, colours));
-            g2d.fill(bottomFrame);
-
-            Polygon leftFrame = new Polygon();
-            leftFrame.addPoint(startX, startY); 
-            leftFrame.addPoint(startX + BORDER_SIZE, startY + BORDER_SIZE); 
-            leftFrame.addPoint(startX + BORDER_SIZE, startY + mapFrameH - BORDER_SIZE); 
-            leftFrame.addPoint(startX, startY + mapFrameH);
-            g2d.setPaint(new LinearGradientPaint(new Point(startX, startY), new Point(startX + BORDER_SIZE, startY), fractions, colours));
-            g2d.fill(leftFrame);
-
-            Polygon rightFrame = new Polygon();
-            rightFrame.addPoint(startX + mapFrameW - BORDER_SIZE, startY + BORDER_SIZE); 
-            rightFrame.addPoint(startX + mapFrameW + 2, startY); 
-            rightFrame.addPoint(startX + mapFrameW + 2, startY + mapFrameH); 
-            rightFrame.addPoint(startX + mapFrameW - BORDER_SIZE, startY + mapFrameH - BORDER_SIZE);
-            g2d.setPaint(new LinearGradientPaint(new Point(startX + mapFrameW - BORDER_SIZE, startY), new Point(startX + mapFrameW + 2, startY), fractions, colours));
-            g2d.fill(rightFrame);
+            if (isFullScreenReveal) {
+                // The shop's and verdicts' dark blue-black backdrop, a little lighter in the middle
+                g2d.setPaint(new RadialGradientPaint(new Point2D.Float(frameW * 0.5f, frameH * 0.45f), Math.max(frameW, frameH) * 0.75f,
+                        new float[] { 0f, 1f }, new Color[] { new Color(26, 34, 48), new Color(6, 9, 14) }));
+                g2d.fillRect(0, 0, frameW, frameH);
+                // The results' frame as the HUD's panels are drawn: dark glass with cut corners,
+                // a cyan edge and an accent bar down the left
+                int mapFrameH = mapHeight() + (BORDER_SIZE * 2);
+                int mapFrameW = currentMapSize + (BORDER_SIZE * 2);
+                int startX = mapX - BORDER_SIZE;
+                int startY = mapY - BORDER_SIZE;
+                Path2D frame = HudStyle.chamfered(startX + 0.5f, startY + 0.5f, mapFrameW + 1f, mapFrameH - 1f, BORDER_SIZE);
+                g2d.setColor(HudStyle.GLASS_SOLID);
+                g2d.fill(frame);
+                g2d.setColor(HudStyle.EDGE);
+                g2d.setStroke(new BasicStroke(1.2f));
+                g2d.draw(frame);
+                g2d.setColor(HudStyle.ACCENT);
+                g2d.fill(new java.awt.geom.Rectangle2D.Float(startX + 3.5f, startY + BORDER_SIZE + 4f, 2.5f, mapFrameH - BORDER_SIZE * 2 - 8f));
+            } else {
+                // The map's tray (the Guess button under it when enlarged) as one of the HUD's panels
+                Stroke stroke = g2d.getStroke();
+                HudStyle.panel(g2d, 0, 0, frameW, frameH, HudStyle.GLASS_SOLID);
+                g2d.setStroke(stroke);
+            }
 
             // The land and sea, plain or coloured by the gradient map chosen; then whatever's ticked
             // (the results show just the land and sea)
@@ -1854,22 +1853,12 @@ public class MapPanel extends JPanel {
             }
 
             if (isLarge && !isFullScreenReveal) {
-                g2d.setColor(hasPin ? btnEnabledGreen : btnDisabledGrey);
-                g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight); 
-
-                g2d.setColor(new Color(255, 255, 255, 50));
-                g2d.setStroke(new BasicStroke(1.2f));
-                g2d.drawRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
-
-                g2d.setColor(btnTextWhite);
-                g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 22f));
-                FontMetrics fm = g2d.getFontMetrics();
-                String btnText = "Guess";
-                int stringWidth = fm.stringWidth(btnText);
-                int stringHeight = fm.getAscent();
-                int textX = btnX + (btnWidth - stringWidth) / 2;
-                int textY = btnY + (btnHeight + stringHeight) / 2 - 2; 
-                g2d.drawString(btnText, textX, textY);
+                // The menus' primary button, greyed until a marker's down
+                Stroke stroke = g2d.getStroke();
+                HudStyle.smooth(g2d);
+                HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), "Guess", null, hasPin, true,
+                        hoveredButton == 2, 1f);
+                g2d.setStroke(stroke);
             }
 
             if (isLarge || isFullScreenReveal) {
@@ -2000,53 +1989,33 @@ public class MapPanel extends JPanel {
                 // (in multiplayer, in this player's colour)
                 if (pinShown) MapMarkers.pin(g2d, displayPinX, displayPinY, ownColour() != null ? ownColour() : new Color(220, 40, 40));
                 if (isFullScreenReveal && partnerPin != null) drawPartnerPin(g2d, mapX, mapY, pinLength, headDiameter);
-                // (multiplayer: this player's own pin named too, with "(You)")
+                // (multiplayer: this player's own pin named too)
                 Multiplayer pinSession = Multiplayer.active();
                 if (isFullScreenReveal && pinShown && pinSession != null && currentPhase != RevealPhase.WAITING_FOR_PARTNER) {
-                    drawPinLabel(g2d, pinSession.localName() + " (You)", displayPinX, displayPinY, pinLength, headDiameter,
+                    drawPinLabel(g2d, pinSession.localName(), displayPinX, displayPinY, pinLength, headDiameter,
                             brighter(ownColour()));
                 }
 
                 if (isFullScreenReveal && goalShown && (resultsShown() || currentPhase == RevealPhase.DRAW_LINES)) {
                     MapMarkers.flag(g2d, displayGoalX, displayGoalY);
                 }
+                if (isFullScreenReveal && resultsShown()) drawLineDistances(g2d, mapX, mapY);
 
                 g2d.setClip(markerClip);
 
                 if (isFullScreenReveal) {
                     boolean resultsReady = resultsShown();
                     
+                    // The menus' buttons: adding a note dark, going on cyan with its arrow
+                    HudStyle.smooth(g2d);
                     if (!isTypingNote) {
-                        g2d.setColor(resultsReady ? btnEnabledGreen : btnDisabledGrey);
-                        g2d.fillRoundRect(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight, 12, 12);
-
-                        g2d.setColor(new Color(255, 255, 255, resultsReady ? 60 : 30));
-                        g2d.setStroke(new BasicStroke(1.5f));
-                        g2d.drawRoundRect(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight, 12, 12);
-                        g2d.setStroke(originalStroke);
-
-                        g2d.setColor(btnTextWhite);
-                        g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 18f));
-                        FontMetrics fmNote = g2d.getFontMetrics();
-                        String noteBtnText = "Add Note";
-                        int noteStrW = fmNote.stringWidth(noteBtnText);
-                        int noteStrH = fmNote.getAscent();
-                        g2d.drawString(noteBtnText, noteBtnX + (noteBtnWidth - noteStrW) / 2, noteBtnY + (noteBtnHeight + noteStrH) / 2 - 2);
+                        HudStyle.button(g2d, new Rectangle(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight), "Add note", null,
+                                resultsReady, false, hoveredButton == 1, revealUnit());
                     }
-
-                    g2d.setColor(resultsReady ? btnNextRoundBlue : btnDisabledGrey);
-                    g2d.fillRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
-
-                    g2d.setColor(new Color(255, 255, 255, resultsReady ? 60 : 30));
-                    g2d.setStroke(new BasicStroke(1.5f));
-                    g2d.drawRoundRect(btnX, btnY, btnWidth, btnHeight, btnHeight, btnHeight);
+                    String endText = proceedLabel != null ? proceedLabel.get() : "Proceed to shop";
+                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), endText, null,
+                            resultsReady, true, hoveredButton == 2, revealUnit());
                     g2d.setStroke(originalStroke);
-
-                    g2d.setColor(btnTextWhite);
-                    g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 20f));
-                    FontMetrics fm = g2d.getFontMetrics();
-                    String endText = proceedLabel != null ? proceedLabel.get() : "Proceed to Shop";
-                    g2d.drawString(endText, btnX + (btnWidth - fm.stringWidth(endText)) / 2, btnY + (btnHeight + fm.getAscent()) / 2 - 2);
                 }
 
                 // How the guess was paid: its points as productivity, and the salary plus half of them as cash
@@ -2515,24 +2484,22 @@ public class MapPanel extends JPanel {
     // How far the guess was from the answer this round (world units)
     private double roundDistance;
 
-    /** A distance in world units as the player reads it: metres up to a kilometre, then kilometres. */
+    /**
+     * A distance in world units as the player reads it, to three significant figures: metres up
+     * to a kilometre, then kilometres ("523 m", "1.20 km", "1,230 km").
+     */
     private static String distanceText(double units) {
+        java.math.MathContext three = new java.math.MathContext(3);
         double metres = units / PlayerBody.METRE;
-        if (metres < 1000.0) return String.format("%,d m", Math.round(metres));
-        return String.format(metres < 100_000.0 ? "%,.1f km" : "%,.0f km", metres / 1000.0);
+        java.math.BigDecimal m = new java.math.BigDecimal(metres).round(three);
+        if (m.compareTo(java.math.BigDecimal.valueOf(1000)) < 0) return m.toPlainString() + " m";
+        java.math.BigDecimal km = new java.math.BigDecimal(metres / 1000.0).round(three);
+        return (km.compareTo(java.math.BigDecimal.valueOf(1000)) < 0 ? km.toPlainString() : String.format("%,d", km.longValue())) + " km";
     }
 
-    /**
-     * The reckoning's last line: singleplayer, the cash the guess earned; multiplayer (no cash),
-     * who takes from the shop (the round's loser, both if it's level, the winner nothing).
-     */
-    private String paidLine(Multiplayer session, int points, int cash) {
-        if (session == null) return String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash);
-        if (partnerGuess == null) return "Shop: the round's loser takes an upgrade";
-        Multiplayer.Role winner = roundWinner(session);
-        return winner == session.role ? "You won the round: no upgrade this time"
-                : winner != null ? "You lost the round: take an upgrade from the shop"
-                : "A level round: both take an upgrade from the shop";
+    /** The reckoning's last line (singleplayer): the cash the guess earned. */
+    private static String paidLine(int points, int cash) {
+        return String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash);
     }
 
     /** Multiplayer: who won this round (the closer guess, M58), or null for a level one or before the partner's guess is in. */
@@ -2541,38 +2508,53 @@ public class MapPanel extends JPanel {
         return MultiplayerScore.of(session).roundWinner(gameHUD.getRound());
     }
 
-    /** A guess's distance for the reckoning, or that it wasn't made. */
-    private static String guessLine(String who, double distance) {
-        return Double.isNaN(distance) ? who + ": didn't guess in time" : who + ": " + distanceText(distance);
+    /**
+     * Once the lines are drawn, each guess's distance written on the middle of its dashed line,
+     * in its player's colour (singleplayer: white, as the line is); in a dark tag, the second
+     * moved below the first should the two meet.
+     */
+    private void drawLineDistances(Graphics2D g2d, int mapX, int mapY) {
+        List<GeodesicChunkGrid.Direction> guesses = new ArrayList<>();
+        List<Color> colours = new ArrayList<>();
+        if (pin != null) {
+            guesses.add(pin);
+            colours.add(ownColour() != null ? brighter(ownColour()) : Color.WHITE);
+        }
+        if (partnerPin != null) {
+            guesses.add(partnerPin);
+            colours.add(brighter(partnerColour()));
+        }
+        g2d.setFont(HudStyle.font(Font.BOLD, 16f));
+        FontMetrics fm = g2d.getFontMetrics();
+        List<Rectangle> placed = new ArrayList<>();
+        for (int i = 0; i < guesses.size(); i++) {
+            double[] mid = screenOf(RevealGlobe.along(guesses.get(i), goal, 0.5), mapX, mapY);
+            if (mid[2] < 0.0) continue;
+            String text = distanceText(SphereMath.angle(guesses.get(i), goal) * Planet.radius());
+            int w = fm.stringWidth(text) + 14, h = fm.getHeight() + 6;
+            Rectangle box = new Rectangle((int) Math.round(mid[0]) - w / 2, (int) Math.round(mid[1]) - h / 2, w, h);
+            for (Rectangle other : placed) if (other.intersects(box)) box.y = other.y + other.height + 4;
+            box.x = Math.max(mapX + 3, Math.min(mapX + currentMapSize - w - 3, box.x));
+            box.y = Math.max(mapY + 3, Math.min(mapY + mapHeight() - h - 3, box.y));
+            placed.add(box);
+            g2d.setColor(new Color(10, 14, 22, 220));
+            g2d.fillRoundRect(box.x, box.y, w, h, 8, 8);
+            g2d.setColor(colours.get(i));
+            g2d.drawString(text, box.x + 7, box.y + 3 + fm.getAscent());
+        }
     }
 
+    /**
+     * Under the top of the results' map (singleplayer; multiplayer's distances are on its lines
+     * and who won is written large): the guess's productivity and the cash it earned.
+     */
     private void drawReckoning(Graphics2D g2d, int mapX, int mapY) {
+        if (Multiplayer.isActive()) return;
         int points = targetRoundScore, cash = GameHUD.cashFor(points);
-        Multiplayer session = Multiplayer.active();
-        String[] lines = {
-            "Distance: " + distanceText(roundDistance),
-            String.format("Productivity: +%,d", points),
-            paidLine(session, points, cash)
-        };
-        Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
-        if (session != null) {
-            // Multiplayer (M58): each player's distance on a line of their own, named in their
-            // colour (who won is written large over the map), then who takes from the shop
-            double theirDistance = partnerPin == null ? Double.NaN : SphereMath.angle(partnerPin, goal) * Planet.radius();
-            List<String> said = new ArrayList<>();
-            List<Color> shades = new ArrayList<>();
-            said.add(guessLine(session.localName() + " (You)", pin == null ? Double.NaN : roundDistance));
-            shades.add(brighter(ownColour()));
-            if (partnerGuess != null) {
-                said.add(guessLine(session.remoteName(), theirDistance));
-                shades.add(brighter(partnerColour()));
-            }
-            said.add(paidLine(session, points, cash));
-            shades.add(new Color(120, 230, 140));
-            lines = said.toArray(new String[0]);
-            colours = shades.toArray(new Color[0]);
-        } else if (pin == null) {
-            lines = new String[] { "You didn't guess in time", paidLine(null, points, cash) };
+        String[] lines = { String.format("Productivity: +%,d", points), paidLine(points, cash) };
+        Color[] colours = { new Color(150, 220, 255), new Color(120, 230, 140) };
+        if (pin == null) {
+            lines = new String[] { "You didn't guess in time", paidLine(points, cash) };
             colours = new Color[] { new Color(245, 105, 90), new Color(120, 230, 140) };
         }
         Font font = HudStyle.font(Font.BOLD, 15f);
@@ -2580,13 +2562,14 @@ public class MapPanel extends JPanel {
         FontMetrics fm = g2d.getFontMetrics();
         int w = 0;
         for (String line : lines) w = Math.max(w, fm.stringWidth(line));
-        int padX = 14, padY = 9, lineH = fm.getHeight();
+        int padX = 20, padY = 11, lineH = fm.getHeight();
         int boxW = w + padX * 2, boxH = lineH * lines.length + padY * 2;
         int x = mapX + (currentMapSize - boxW) / 2, y = mapY + 12;
-        g2d.setColor(new Color(25, 25, 27, 215));
-        g2d.fillRoundRect(x, y, boxW, boxH, 12, 12);
-        g2d.setColor(new Color(255, 255, 255, 50));
-        g2d.drawRoundRect(x, y, boxW, boxH, 12, 12);
+        // (an HUD panel, as the score's above it)
+        Stroke stroke = g2d.getStroke();
+        HudStyle.panel(g2d, x, y, boxW, boxH, HudStyle.GLASS);
+        g2d.setStroke(stroke);
+        g2d.setFont(font);
         for (int i = 0; i < lines.length; i++) {
             g2d.setColor(colours[i]);
             g2d.drawString(lines[i], x + padX, y + padY + fm.getAscent() + i * lineH);
@@ -2712,7 +2695,7 @@ public class MapPanel extends JPanel {
         drawPinLabel(g2d, session.remoteName(), x, y, pinLength, headDiameter, brighter(partnerColour()));
     }
 
-    /** A pin's name ("Alex (You)") in a dark tag beside its head, in the player's colour. */
+    /** A pin's name ("Alex") in a dark tag beside its head, in the player's colour. */
     private static void drawPinLabel(Graphics2D g2d, String label, int x, int y, int pinLength, int headDiameter, Color colour) {
         float size = 12f;
         float w = HudStyle.labelWidth(g2d, label, size);

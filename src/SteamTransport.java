@@ -28,10 +28,12 @@ import javax.swing.SwingUtilities;
  * and its owner is the partner. Reliable messages go on channel 0, unreliable on channel 1.
  *
  * Matchmaking: lobbies with no code but a queue ("casual" or "ranked", and for ranked the
- * owner's rating, which Steam sorts the list by nearness to). Look for one waiting in the queue
- * and join it (the joiner), or else make one and wait in it (the host). Two players who look at
+ * owner's rating, which Steam sorts the list by nearness to), and the game modes and maps the
+ * owner ticked. Look for one waiting in the queue whose owner ticked a mode and a map this
+ * player did too (Steam can't compare sets, so the list is checked here) and join it (the
+ * joiner), or else make one and wait in it (the host). Two players who look at
  * the same moment each make one, so a waiting player looks again every few seconds and, should
- * there be an older lobby (a lower id) waiting, leaves theirs and joins it; only the newer of
+ * there be an older lobby (a lower id) waiting that suits them both, leaves theirs and joins it; only the newer of
  * any two moves, so they meet. A lobby that can't be joined (just filled, or its owner gone)
  * only means looking again.
  */
@@ -43,6 +45,8 @@ public final class SteamTransport implements MultiplayerTransport {
     // Matchmaking lobbies: which queue, and the owner's rating in the ranked one
     private static final String QUEUE_KEY = "queue";
     private static final String RATING_KEY = "rating";
+    // ...and the game modes and maps its owner ticked (as numbers: bit n is values()[n])
+    private static final String MODES_KEY = "modes", MAPS_KEY = "maps";
     // How often a player waiting in their own matchmaking lobby looks for an older one to join (ms)
     private static final long MATCH_RECHECK_MS = 3000;
     private static final int MAX_CODE_COLLISION_RETRIES = 20;
@@ -97,9 +101,10 @@ public final class SteamTransport implements MultiplayerTransport {
     private Phase phase = Phase.IDLE;
     private MatchAction matchAction = MatchAction.NONE;
     private int collisionRetries;
-    // Matchmaking: the queue, this player's rating, and when a waiting player next looks again
+    // Matchmaking: the queue, this player's rating and the modes and maps they ticked, and when a
+    // waiting player next looks again
     private boolean rankedQueue;
-    private int matchRating;
+    private int matchRating, matchModes, matchMaps;
     private long nextRecheckMs;
     private ByteBuffer sendBuffer = ByteBuffer.allocateDirect(64 * 1024);
     private ByteBuffer readBuffer = ByteBuffer.allocateDirect(64 * 1024);
@@ -129,8 +134,8 @@ public final class SteamTransport implements MultiplayerTransport {
     }
 
     @Override
-    public void matchmake(boolean ranked, int rating) {
-        tasks.offer(() -> beginMatchmaking(ranked, rating));
+    public void matchmake(boolean ranked, int rating, int modes, int maps) {
+        tasks.offer(() -> beginMatchmaking(ranked, rating, modes, maps));
     }
 
     @Override
@@ -301,10 +306,12 @@ public final class SteamTransport implements MultiplayerTransport {
         matchmaking.requestLobbyList();
     }
 
-    private void beginMatchmaking(boolean ranked, int rating) {
+    private void beginMatchmaking(boolean ranked, int rating, int modes, int maps) {
         if (phase != Phase.IDLE) resetRoom();
         rankedQueue = ranked;
         matchRating = rating;
+        matchModes = modes;
+        matchMaps = maps;
         System.out.println("[MP] Matchmaking in the " + queueName() + " queue" + (ranked ? " at rating " + rating : ""));
         searchForMatch();
     }
@@ -332,11 +339,16 @@ public final class SteamTransport implements MultiplayerTransport {
         matchmaking.requestLobbyList();
     }
 
-    /** The answer to a matchmaking search: join the first waiting player found, or wait for one. */
+    /** The answer to a matchmaking search: join the first waiting player found who suits this one, or wait for one. */
     private void handleMatchSearch(int lobbyCount) {
         if (phase != Phase.MATCH_SEARCHING) return;
-        if (lobbyCount > 0) {
-            joinMatchLobby(matchmaking.getLobbyByIndex(0));
+        SteamID found = null;
+        for (int i = 0; i < lobbyCount && found == null; i++) {
+            SteamID lobby = matchmaking.getLobbyByIndex(i);
+            if (lobby != null && suits(lobby)) found = lobby;
+        }
+        if (found != null) {
+            joinMatchLobby(found);
         } else {
             phase = Phase.MATCH_CREATING;
             matchmaking.createLobby(SteamMatchmaking.LobbyType.Public, LOBBY_MEMBER_LIMIT);
@@ -349,7 +361,7 @@ public final class SteamTransport implements MultiplayerTransport {
         long mine = SteamNativeHandle.getNativeHandle(lobbyID);
         for (int i = 0; i < lobbyCount; i++) {
             SteamID other = matchmaking.getLobbyByIndex(i);
-            if (other != null && SteamNativeHandle.getNativeHandle(other) < mine) {
+            if (other != null && SteamNativeHandle.getNativeHandle(other) < mine && suits(other)) {
                 System.out.println("[MP] An older lobby is waiting in the queue: moving to it");
                 leaveLobbyOnly();
                 joinMatchLobby(other);
@@ -357,6 +369,21 @@ public final class SteamTransport implements MultiplayerTransport {
             }
         }
         nextRecheckMs = System.currentTimeMillis() + MATCH_RECHECK_MS;
+    }
+
+    /** Whether a waiting player's lobby suits this one: they ticked a game mode and a map this player did too. */
+    private boolean suits(SteamID lobby) {
+        return (lobbyNumber(lobby, MODES_KEY, Expedition.ALL_MODES) & matchModes) != 0
+                && (lobbyNumber(lobby, MAPS_KEY, Expedition.ALL_MAPS) & matchMaps) != 0;
+    }
+
+    /** A number in a lobby's data, or orElse should it be missing or unreadable. */
+    private int lobbyNumber(SteamID lobby, String key, int orElse) {
+        try {
+            return Integer.parseInt(matchmaking.getLobbyData(lobby, key));
+        } catch (RuntimeException e) {
+            return orElse;
+        }
     }
 
     private void joinMatchLobby(SteamID found) {
@@ -374,6 +401,8 @@ public final class SteamTransport implements MultiplayerTransport {
         if (!matchmaking.setLobbyData(lobbyID, QUEUE_KEY, queueName())
                 || !matchmaking.setLobbyData(lobbyID, GAME_KEY, Multiplayer.BUILD_ID)
                 || (rankedQueue && !matchmaking.setLobbyData(lobbyID, RATING_KEY, Integer.toString(matchRating)))
+                || !matchmaking.setLobbyData(lobbyID, MODES_KEY, Integer.toString(matchModes))
+                || !matchmaking.setLobbyData(lobbyID, MAPS_KEY, Integer.toString(matchMaps))
                 || !matchmaking.setLobbyMemberLimit(lobbyID, LOBBY_MEMBER_LIMIT)
                 || !matchmaking.setLobbyJoinable(lobbyID, true)) {
             endRoom("Steam couldn't open a matchmaking room. Please try again.");

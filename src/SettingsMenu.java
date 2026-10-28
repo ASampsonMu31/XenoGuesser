@@ -20,7 +20,7 @@ import javax.swing.JPanel;
  */
 public class SettingsMenu extends JPanel {
 
-    public static final int W = 440, H = 566;
+    public static final int W = 440, H = 624;
 
     private final Runnable onResume;
     private final Runnable onQuit, onDisplayChanged, onReturnToMenu;
@@ -31,19 +31,21 @@ public class SettingsMenu extends JPanel {
     private String confirmingWord;
     // Opens the controls (M48), as enclosed with January's message
     private Runnable onControls;
+    // The game being played (what kind, its game mode and map), under the heading
+    private final Rectangle gameRow = new Rectangle(30, 84, W - 60, 56);
     // The graphics: a button for each of Low, Medium and High, along the right of their row
-    private final Rectangle qualityRow = new Rectangle(30, 96, W - 60, 72);
+    private final Rectangle qualityRow = new Rectangle(30, 154, W - 60, 72);
     private final Rectangle[] qualityButtons = new Rectangle[GameSettings.Quality.values().length];
     // (the shadows straight under the graphics, as they go together)
-    private final Rectangle shadowsRow = new Rectangle(30, 178, W - 60, 52);
-    private final Rectangle diagnosticsRow = new Rectangle(30, 240, W - 60, 52);
-    private final Rectangle fullscreenRow = new Rectangle(30, 302, W - 60, 52);
-    private final Rectangle controlsRow = new Rectangle(30, 364, W - 60, 52);
+    private final Rectangle shadowsRow = new Rectangle(30, 236, W - 60, 52);
+    private final Rectangle diagnosticsRow = new Rectangle(30, 298, W - 60, 52);
+    private final Rectangle fullscreenRow = new Rectangle(30, 360, W - 60, 52);
+    private final Rectangle controlsRow = new Rectangle(30, 422, W - 60, 52);
     // The buttons: Resume and Quit side by side, or with a game on, Resume and Return to menu, Quit under them
     private final Rectangle resumeButton = new Rectangle(), returnButton = new Rectangle(), quitButton = new Rectangle();
     // The question's buttons, while one's being asked
-    private final Rectangle confirmButton = new Rectangle(30, 452, (W - 72) / 2, 44);
-    private final Rectangle cancelButton = new Rectangle(42 + (W - 72) / 2, 452, (W - 72) / 2, 44);
+    private final Rectangle confirmButton = new Rectangle(30, 510, (W - 72) / 2, 44);
+    private final Rectangle cancelButton = new Rectangle(42 + (W - 72) / 2, 510, (W - 72) / 2, 44);
     {
         int bw = 74, gap = 6, right = qualityRow.x + qualityRow.width - 14;
         for (int k = 0; k < qualityButtons.length; k++) {
@@ -173,13 +175,13 @@ public class SettingsMenu extends JPanel {
     private void layOutButtons() {
         int half = (W - 72) / 2;
         if (inGame.getAsBoolean()) {
-            resumeButton.setBounds(30, 446, half, 44);
-            returnButton.setBounds(42 + half, 446, half, 44);
-            quitButton.setBounds(30, 500, W - 60, 44);
+            resumeButton.setBounds(30, 504, half, 44);
+            returnButton.setBounds(42 + half, 504, half, 44);
+            quitButton.setBounds(30, 558, W - 60, 44);
         } else {
-            resumeButton.setBounds(30, 462, half, 44);
+            resumeButton.setBounds(30, 520, half, 44);
             returnButton.setBounds(0, 0, 0, 0);
-            quitButton.setBounds(42 + half, 462, half, 44);
+            quitButton.setBounds(42 + half, 520, half, 44);
         }
     }
 
@@ -199,6 +201,7 @@ public class SettingsMenu extends JPanel {
             g.setColor(new Color(120, 205, 235, 70));
             g.fillRect(30, 70, W - 60, 1);
 
+            paintGame(g);
             paintQuality(g);
             paintToggle(g, shadowsRow, "Shadows", GameSettings.shadows(), "On", "Off");
             paintToggle(g, diagnosticsRow, "Show diagnostics", GameSettings.showDiagnostics(), "On", "Off");
@@ -228,7 +231,7 @@ public class SettingsMenu extends JPanel {
     private void paintQuestion(Graphics2D g) {
         g.setColor(new Color(6, 8, 12, 200));
         g.fillRect(0, 0, W, H);
-        int top = 340;
+        int top = 398;
         g.setColor(new Color(24, 28, 36));
         g.fill(new RoundRectangle2D.Float(18, top, W - 36, H - top - 18, 14, 14));
         g.setColor(new Color(235, 140, 130));
@@ -246,6 +249,21 @@ public class SettingsMenu extends JPanel {
         g.drawString(warn, (W - fm.stringWidth(warn)) / 2, top + 78);
         paintButton(g, confirmButton, confirmingWord, false);
         paintButton(g, cancelButton, "Cancel", true);
+    }
+
+    /**
+     * The game being played, on a row of its own: what kind of game ("Singleplayer", "Friends
+     * multiplayer", "Matchmaking multiplayer: Ranked"...) over its game mode and map; at the
+     * menu, that no game's being played.
+     */
+    private void paintGame(Graphics2D g) {
+        boolean playing = inGame.getAsBoolean();
+        g.setColor(new Color(255, 255, 255, 10));
+        g.fill(new RoundRectangle2D.Float(gameRow.x, gameRow.y, gameRow.width, gameRow.height, 10, 10));
+        HudStyle.label(g, playing ? Expedition.kind() : "Main menu", gameRow.x + 16, gameRow.y + 22, 10f, HudStyle.ACCENT);
+        g.setFont(HudStyle.font(Font.BOLD, 16f));
+        g.setColor(playing ? HudStyle.VALUE : HudStyle.DIM);
+        g.drawString(playing ? Expedition.choice() : "No game being played", gameRow.x + 16, gameRow.y + 44);
     }
 
     /** The graphics' row: its name, a button for each choice (the one chosen lit), and what changes when. */
