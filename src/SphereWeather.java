@@ -70,8 +70,8 @@ public final class SphereWeather {
     // drier than usual today is, and how streaked along the wind the clouds are
     private float dayOffsetX, dayOffsetZ, dayWetness, streak = 1f;
 
-    // How much of the sky is clouded (0 to 1) and how dark the clouds are, eased towards the
-    // rainfall where the player is
+    // How much of the sky is clouded (0 to 1) and how dark the clouds are, from the rainfall where
+    // the player is (-1 until the day's first update)
     private float coverage = -1f, darkness;
     private float rainfallTimer;
     private float intensity;
@@ -132,8 +132,8 @@ public final class SphereWeather {
         coverage = -1f;
         intensity = 0f;
         freshSnow = 0f;
-        // (the mix of snow and rain set afresh for the new place, not eased from the last round's:
-        // M54, snow was seen falling at 30 degrees for a while after a snowy round)
+        // (the mix of snow and rain unknown until the new place's first update: M54, snow was once
+        // seen falling at 30 degrees for a while after a snowy round)
         snowShare = -1f;
         java.util.Arrays.fill(dropLive, false);
     }
@@ -272,10 +272,12 @@ public final class SphereWeather {
         return Math.max(0f, snowShare);
     }
 
-    // Snow and rain mix over this many degrees either side of freezing, and the mix follows the
-    // place's coldness over about this many seconds (so walking from snow into rain there's a
-    // while of sleet, snow and rain together, and back)
-    private static final float SLEET_DEGREES = 3f, SLEET_SECONDS = 8f;
+    // Snow and rain mix over this many degrees either side of freezing (so walking from snow into
+    // rain there's a stretch of sleet, snow and rain together, and back)
+    private static final float SLEET_DEGREES = 3f;
+    // The fresh snow at a place is worked out from what fell on it over this many seconds before
+    // now, in steps of this many seconds
+    private static final float FRESH_HISTORY = 240f, FRESH_STEP = 3f;
 
     /** Whether drop i falls as a flake (rather than rain) now: the first snowShare of them, in an order of their own. */
     private boolean flake(int i) {
@@ -290,47 +292,66 @@ public final class SphereWeather {
      * every frame): the wetter the place, the likelier a cloudy day, though any place can have
      * a clear day or an overcast one. The more cloud there is, the darker it is, and so the
      * more it rains.
+     *
+     * Everything here is set by the day, the place and the time alone, never eased from where
+     * the player has been: in multiplayer the two PCs share the day and the round's clock, so
+     * two players standing in the same place see the same sky, rain and snow (M19).
      */
     public void update(float dt, float time, SpherePosition eye, java.util.function.DoubleSupplier rainfallHere, Ground ground,
                        float degreesBelowFreezing) {
         dt = Math.max(0f, Math.min(dt, 0.1f));
-        // Snow where it's below freezing, rain where it's above, and a mix of the two near
-        // freezing, the mix catching up with the place gradually
-        float wantSnow = smoothstep(-SLEET_DEGREES, SLEET_DEGREES, degreesBelowFreezing);
-        if (snowShare < 0f) snowShare = wantSnow;
-        else snowShare += (wantSnow - snowShare) * Math.min(1f, dt / SLEET_SECONDS);
+        // Snow where it's below freezing, rain where it's above, and a mix of the two near freezing
+        snowShare = smoothstep(-SLEET_DEGREES, SLEET_DEGREES, degreesBelowFreezing);
         coldness = Math.max(0f, degreesBelowFreezing);
         swayTime += dt;
+        float[] here = uv(eye);
         rainfallTimer -= dt;
         if (coverage < 0f || rainfallTimer <= 0f) {
             rainfallTimer = 0.5f;
+            // (the rainfall map is smooth enough that the cover changes over tens of seconds as
+            // the player walks, without easing)
             float rainfall = (float) rainfallHere.getAsDouble();
-            float wantCoverage = Math.max(0.03f, Math.min(1f, 0.05f + 0.9f * rainfall + dayWetness));
-            float wantDarkness = smoothstep(0.3f, 0.95f, wantCoverage);
-            if (coverage < 0f) {
-                coverage = wantCoverage;
-                darkness = wantDarkness;
+            coverage = Math.max(0.03f, Math.min(1f, 0.05f + 0.9f * rainfall + dayWetness));
+            darkness = smoothstep(0.3f, 0.95f, coverage);
+            freshSnow = freshSnowAt(here[0], here[1], time);
+        }
+        // Rain (or snow) falls when the clouds round about overhead are dark, not just the very
+        // spot above, so it comes and goes gradually rather than flicking on and off as the
+        // player moves or the clouds drift over
+        intensity = fallingAt(here[0], here[1], time);
+        updateDrops(dt, here, (float) SphereMath.altitude(eye), ground);
+    }
+
+    /** How hard it rains (or snows) at cloud coordinates (u, v) at the given time, 0 to 1. */
+    private float fallingAt(float u, float v, float time) {
+        return Math.max(0f, Math.min(1f, (darknessAround(u, v, time) - RAIN_DARKNESS) / RAIN_DARKNESS_RANGE));
+    }
+
+    /**
+     * How much fresh snow lies at cloud coordinates (u, v) by the given time (with today's
+     * cover and the snow share and coldness just set, which a place keeps all round, the sun
+     * standing still). It's worked out afresh from what fell on that very spot over the last
+     * FRESH_HISTORY seconds, rather than piled up as the player went, so it belongs to the place:
+     * it piles up while it snows (some straight away), and melts off when it stops, the slower
+     * the colder. The steps fall on whole multiples of FRESH_STEP, so it doesn't shimmer as the
+     * time moves on.
+     */
+    private float freshSnowAt(float u, float v, float time) {
+        if (snowShare <= 0.5f) return 0f;
+        float fresh = 0f;
+        long first = (long) Math.floor((time - FRESH_HISTORY) / FRESH_STEP), last = (long) Math.floor(time / FRESH_STEP);
+        for (long k = first; k <= last; k++) {
+            float end = k == last ? time : (k + 1) * FRESH_STEP, step = end - Math.max(k * FRESH_STEP, time - FRESH_HISTORY);
+            if (step <= 0f) continue;
+            float falling = fallingAt(u, v, end);
+            if (falling > 0f) {
+                fresh = Math.max(fresh, FRESH_AT_ONCE * snowShare);
+                fresh = Math.min(1f, fresh + step * falling * snowShare / FRESH_COVERING_TIME);
             } else {
-                // Weather changes over tens of seconds, not at once
-                coverage += (wantCoverage - coverage) * 0.04f;
-                darkness += (wantDarkness - darkness) * 0.04f;
+                fresh = Math.max(0f, fresh - step / (FRESH_MELT_TIME * (1f + coldness)));
             }
         }
-        float[] here = uv(eye);
-        // Rain (or snow) falls when the clouds round about overhead are dark, not just the very
-        // spot above, and eases in and out rather than flicking on and off as the player moves
-        float wanted = Math.max(0f, Math.min(1f, (darknessAround(here[0], here[1], time) - RAIN_DARKNESS) / RAIN_DARKNESS_RANGE));
-        intensity += (wanted - intensity) * Math.min(1f, dt * 0.5f);
-        if (intensity < 0.01f && wanted == 0f) intensity = 0f;
-        // Fresh snow piles up while it snows (some straight away), and melts off when it stops,
-        // the slower the colder
-        if (snowShare > 0.5f && intensity > 0f) {
-            freshSnow = Math.max(freshSnow, FRESH_AT_ONCE * snowShare);
-            freshSnow = Math.min(1f, freshSnow + dt * intensity * snowShare / FRESH_COVERING_TIME);
-        } else {
-            freshSnow = Math.max(0f, freshSnow - dt / (FRESH_MELT_TIME * (1f + coldness)));
-        }
-        updateDrops(dt, here, (float) SphereMath.altitude(eye), ground);
+        return fresh;
     }
 
     private void updateDrops(float dt, float[] eye, float eyeHeight, Ground ground) {

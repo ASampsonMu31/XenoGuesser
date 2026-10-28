@@ -126,7 +126,8 @@ Parts extend `GamePart` (field `game`).
   `LoadingScreen`, `LoadingArt`, `LoadingProgress`, `TransmissionMessage`, `MessageSplicer`,
   `PlanetVoice`, `OxygenBlur`.
 - **Multiplayer**: `Multiplayer` (session, messages), `MultiplayerTransport`, `SteamTransport`,
-  `LocalTransport`, `MultiplayerPanel`, `MultiplayerScore`, `RemotePlayer`.
+  `LocalTransport`, `MultiplayerPanel`, `MultiplayerScore`, `RemotePlayer`, `TownsfolkSync` (the host's
+  people and vehicles sent to the joiner's PC).
 - **GL plumbing**: `Shader`, `Mesh`, `MeshBuilder`, `MeshData`, `Model`, `Renderer`, `Material`,
   `Light`, `TextureLibrary`, `Offscreen`, `SoftwareRenderer`, `Affine`, `SphereRender`,
   `com.xenoguesser.math.*`, `BuildingMeshes`, `InfrastructureObject` (a cell's batch or a sign).

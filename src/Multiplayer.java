@@ -30,7 +30,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 2;
+    public static final int PROTOCOL_VERSION = 3;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -61,6 +61,10 @@ public final class Multiplayer {
     static final byte POD_POSE = 14;
     static final byte POD_EVENT = 15;
     static final byte CHAIR_STATE = 16;
+    // The host's people, vehicles and open doors round the joiner, a few times a second (see
+    // TownsfolkSync), in pieces small enough for one unreliable packet each
+    static final byte TOWNSFOLK = 17;
+    public static final int MAX_TOWNSFOLK_BYTES = 1100;
 
     // POD_EVENT kinds
     public static final byte POD_LIGHTS_OFF = 1;
@@ -202,6 +206,8 @@ public final class Multiplayer {
     private final Set<Integer> remoteRoundBuilt = ConcurrentHashMap.newKeySet();
     private final Set<Integer> remoteStagesDone = ConcurrentHashMap.newKeySet();
     private final AtomicReference<RemotePoses> remotePoses = new AtomicReference<>(new RemotePoses(null, null));
+    // The host's townsfolk pieces as they came (joiner only), for the GL thread to take
+    private final java.util.concurrent.ConcurrentLinkedQueue<byte[]> remoteTownsfolk = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
     // This player's pose, published by the GL thread and sent by the networking thread
     private final AtomicReference<Pose> localPose = new AtomicReference<>();
@@ -479,6 +485,17 @@ public final class Multiplayer {
         return remotePoses.get();
     }
 
+    /** The next piece of the host's townsfolk to have come (joiner only), or null if none is waiting. */
+    public byte[] pollTownsfolk() {
+        return remoteTownsfolk.poll();
+    }
+
+    /** Sends a piece of the townsfolk round the joiner (host only; at most MAX_TOWNSFOLK_BYTES, unreliable). */
+    public void sendTownsfolk(byte[] piece) {
+        if (role != Role.HOST || piece.length > MAX_TOWNSFOLK_BYTES) return;
+        send(message(TOWNSFOLK, piece.length).put(piece), false);
+    }
+
     /** This player's pose as of this frame (GL thread); the latest one is sent every 200 ms. */
     public void publishLocalPose(Pose pose) {
         localPose.set(pose);
@@ -532,7 +549,7 @@ public final class Multiplayer {
         if (MUTE_AFTER_MS != null && playing && System.currentTimeMillis() - playingSince > MUTE_AFTER_MS) return;
         m.flip();
         byte kind = m.get(0);
-        if (kind != POSE && kind != LOAD_PROGRESS && kind != POD_POSE && kind != CHAIR_STATE) System.out.println("[MP] -> " + describe(m));
+        if (kind != POSE && kind != LOAD_PROGRESS && kind != POD_POSE && kind != CHAIR_STATE && kind != TOWNSFOLK) System.out.println("[MP] -> " + describe(m));
         t.send(m, reliable);
     }
 
@@ -619,7 +636,7 @@ public final class Multiplayer {
         if (length == 0) return;
         lastHeardMs = System.currentTimeMillis();
         byte type = m.get(m.position());
-        if (type != POSE && type != LOAD_PROGRESS && type != POD_POSE && type != CHAIR_STATE) System.out.println("[MP] <- " + describe(m.duplicate()));
+        if (type != POSE && type != LOAD_PROGRESS && type != POD_POSE && type != CHAIR_STATE && type != TOWNSFOLK) System.out.println("[MP] <- " + describe(m.duplicate()));
         try {
             m.get();
             boolean changed = read(type, m);
@@ -744,6 +761,13 @@ public final class Multiplayer {
                 remoteChair = chair;
                 return false;
             }
+            case TOWNSFOLK -> {
+                byte[] piece = new byte[m.remaining()];
+                m.get(piece);
+                // (a backlog, should the GL thread stall, is dropped: only the latest matter)
+                if (role == Role.JOIN && remoteTownsfolk.size() < 200) remoteTownsfolk.add(piece);
+                return false;
+            }
             case ALPHABETS -> {
                 int size = m.getInt();
                 if (size < 0 || size != m.remaining() || !expect(Role.JOIN, "ALPHABETS")) {
@@ -834,6 +858,7 @@ public final class Multiplayer {
                 case POD_POSE -> "POD_POSE";
                 case POD_EVENT -> "POD_EVENT " + m.get();
                 case CHAIR_STATE -> "CHAIR_STATE";
+                case TOWNSFOLK -> "TOWNSFOLK (" + m.remaining() + " bytes)";
                 default -> "unknown type " + type + " (" + original.remaining() + " bytes)";
             };
         } catch (BufferUnderflowException e) {

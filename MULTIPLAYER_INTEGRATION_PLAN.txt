@@ -251,6 +251,12 @@ M19 Everything that sets up a round is the same on both PCs, drawn from a Random
       pass seconds since the ROUND began (rounds start together, M16); and the cloud cover
       eases towards the rainfall where EACH player stands, so it can differ a little when
       they are far apart, which is fine (it's what's overhead);
+      (user, 2026-10-27) Nothing in the weather is eased from the player's own path any more:
+      the cover and darkness come straight from the rainfall where the player stands, the
+      rain or snow from the clouds over that place at the round's time, the snow share from
+      its temperature, and the fresh snow is worked out from what fell on that spot over the
+      last four minutes. So two players in the same place see the same sky, rain and snow,
+      however each got there (SphereWeather.update, freshSnowAt);
     - the animals: which species live where is part of the world and already matches;
       where each round's individual creatures stand comes from OrganismManager.clear()'s
       roundSalt = new Random().nextLong(), which differs per PC. In multiplayer set it from
@@ -1546,3 +1552,26 @@ LOG
 2026-10-19  M56 done (user). The nations map never colours a nation like the planet's sea: the
             palette's colours within 120 (a weighted, eye-like RGB distance) of the map's sea are
             left out before the nations are coloured (overlay and its tiles alike). Not yet seen.
+2026-10-28  M57 (user). The same animals, people, vehicles and border lights on both PCs, wherever
+            either player looks, at any time. Animals: every creature on the ground walks a path
+            fixed by its seed and the round's clock (OrganismManager.Path: turn to face the next
+            stop, walk there, stand a while), a herd's members keep a slot round their herd's
+            centre and shuffle about it on timetables of their own, and only walls, rocks and the
+            like push one about as it's drawn (GeodesicCollision.resolveStatic), never moving
+            things, so where one is depends on the time alone; paths keep out of house plots and
+            the sea. People and vehicles react to one another, so they can't be made from the seed
+            alone: the host's PC moves them round both players (Inhabitants.update given the
+            partner: cells peopled, traffic kept up and things moved on out of sight round both),
+            treats the partner as solid, and 5 times a second sends the joiner's PC those within
+            its draw distances (TOWNSFOLK messages, unreliable, under 1,100 bytes each: place,
+            heading, gait, bag; looks as nation and seed with the first few and every 3 s; open
+            doors). The joiner's PC moves none of its own and draws the host's, 260 ms behind,
+            smoothed between snapshots (TownsfolkSync). Considered instead: each PC managing those
+            nearer its own player and handing them over as the other came nearer; rejected, as
+            the hand-over line runs between the players just where both look, and people and
+            vehicles on either side of it would react to each other a snapshot late. Border
+            lights change by the round's clock in multiplayer. Shop prices already match (all
+            free in multiplayer); the deck is still dealt differently on each PC (M27).
+            PROTOCOL_VERSION 3. Not yet seen over Steam. Vehicles passing through are kept up to
+            36 round each player counting every one within reach of them, whoever it was made for,
+            so players together share one lot (it was two, 72 on the same roads).

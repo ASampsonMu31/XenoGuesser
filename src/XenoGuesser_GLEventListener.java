@@ -112,7 +112,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // (in multiplayer with wider stairs, so both players start on them side by side: M11)
     final LandingPod landingPod = new LandingPod(Multiplayer.isActive());
     private RockField rockField;
-    static final Object PLAYER = "player";
+    static final Object PLAYER = "player", PARTNER = "partner";
     static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
     // Developer aid: -Dxenoguesser.menushot photographs the pod for the main menu's background
     static final boolean MENU_SHOT = Dev.property("xenoguesser.menushot") != null;
@@ -390,6 +390,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
         this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, worldNoise);
+        this.townsfolk = new TownsfolkSync(inhabitants);
         System.out.println("[INHABITANTS] " + inhabitants.describe());
                 this.infraManager.prepareRoadNetwork(seaLevelHeight, worldNoise);
         // (low frequencies: the soil's colour drifts over many kilometres)
@@ -434,6 +435,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         organismManager.setCollision(geodesicCollision);
         organismManager.setWild(p -> settlementManager.getUrbanness(p) < 0.12f);
         organismManager.setRoads((p, clearance) -> infraManager.isRoadLocation(p, clearance));
+        organismManager.setPlots(p -> infraManager.isPlotLocation(p, 0f));
+        infraManager.borders().setLightClock(() -> Multiplayer.isActive() ? getSeconds() - roundClockStart : getSeconds());
         double floraReach = (VIEW_DISTANCE + PREFETCH_RINGS) * PHYSICAL_CHUNK_SIZE;
         floraStream = new CellStream<List<SphereFlora>>(VEGETATION_LEVEL, floraReach, PHYSICAL_CHUNK_SIZE * 1.5, this::buildFloraCell)
                 .onChange(added -> { for (SphereFlora tree : added) trees.add(tree.position(), tree.trunk(), tree); },
@@ -1731,6 +1734,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 else organismManager.clear();
         if (rockField != null) rockField.clear(gl);
         inhabitants.clear();
+        townsfolk.clear();
 
         roundSpawner.spawnPlayerAtRandomLocation();
         if (rockField != null) rockField.update(gl, camera.getSpherePosition(), true);
@@ -2607,9 +2611,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         // The creatures and people moved on first, so their shadows are cast from where they're
         // drawn this frame (a frame behind, a moving vehicle's shadow fell on its rider's back)
-        // (the herds walk paths fixed by the round's clock: see OrganismManager.Herd)
+        // (the creatures walk paths fixed by the round's clock: see OrganismManager.Path)
         organismManager.update((float) deltaTime, eye, getSeconds() - roundClockStart);
-        inhabitants.update((float) deltaTime, eye);
+        // (in multiplayer the host's PC moves the townsfolk round both players, and the joiner's
+        // draws the host's: see TownsfolkSync, M57)
+        Multiplayer session = Multiplayer.active();
+        inhabitants.setReplica(session != null && session.role == Multiplayer.Role.JOIN);
+        inhabitants.update((float) deltaTime, eye, session != null && session.role == Multiplayer.Role.HOST && partner.hasPose() ? partner.eye() : null);
 
         // --- PASS 0: THE SUN'S SHADOWS (drawn from the sun, for everything lit by it to look up) ---
         renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
@@ -2699,6 +2707,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // --- CREATURES AND PEOPLE (moved on before the shadows) ---
         // The player is solid to everything else too; then this frame's bodies take over
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
+        // (and so is the partner, so the host's townsfolk step round them and stop for them)
+        if (Multiplayer.isActive() && partner.hasPose()) geodesicCollision.addBody(PARTNER, partner.eye(), PLAYER_RADIUS, true);
         geodesicCollision.endFrame();
         organismManager.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
         inhabitants.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
@@ -2944,6 +2954,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     // Where the partner is shown, and their body, seen from outside (null in singleplayer)
     final RemotePlayer partner = new RemotePlayer();
+    // The people, vehicles and open doors kept the same on both PCs (made with the inhabitants)
+    TownsfolkSync townsfolk;
     PlayerBody partnerBody;
     private long partnerLoggedAt;
 
@@ -2958,7 +2970,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
      */
     private void multiplayerFrame(double deltaTime) {
         Multiplayer session = Multiplayer.active();
-        if (session == null) return;
+        if (session == null) {
+            townsfolk.clear();
+            return;
+        }
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
         byte flags = (byte) ((swimming ? Multiplayer.POSE_SWIMMING : 0) | (playerMotion.airborne ? Multiplayer.POSE_AIRBORNE : 0));
@@ -2966,6 +2981,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         long now = System.currentTimeMillis();
         partner.update(session.remotePoses(), now, deltaTime, p -> groundHeightAt(p), playerEyeHeight);
+        // The townsfolk near the joiner, sent from the host's PC and drawn on the joiner's (M57)
+        if (session.role == Multiplayer.Role.HOST) townsfolk.hostFrame(session, partner.hasPose() ? partner.eye() : null, now);
+        else townsfolk.joinerFrame(session, infraManager, now, (float) deltaTime);
         if (partner.hasPose() && now - partnerLoggedAt >= 2000) {
             partnerLoggedAt = now;
             SpherePosition at = partner.eye();

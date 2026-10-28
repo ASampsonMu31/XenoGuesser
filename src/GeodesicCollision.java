@@ -180,10 +180,19 @@ public final class GeodesicCollision {
      * lower than clearance passes beneath it.
      */
     public SpherePosition resolve(SpherePosition position, double r, Object self, double clearance) {
+        return resolve(position, r, self, clearance, true);
+    }
+
+    /** As resolve, pushed out of the static shapes only (walls, rocks and the like), not moving bodies. */
+    public SpherePosition resolveStatic(SpherePosition position, double r, double clearance) {
+        return resolve(position, r, null, clearance, false);
+    }
+
+    private SpherePosition resolve(SpherePosition position, double r, Object self, double clearance, boolean moving) {
         requireRadius(r);
         gatherNear(position, r + 4.0);
         List<double[]> places = new ArrayList<>();
-        List<Body> near = nearbyBodies(r + 4.0, places);
+        List<Body> near = moving ? nearbyBodies(r + 4.0, places) : List.of();
         double px = 0.0, pz = 0.0;
         for (int pass = 0; pass < 3; pass++) {
             boolean moved = false;
