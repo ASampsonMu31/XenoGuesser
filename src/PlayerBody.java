@@ -60,7 +60,8 @@ public class PlayerBody {
     private static final float PALM_START = 0.5f, PALM_LENGTH = 1.1f;
     // Where the compass rests on the palm: along the hand, and the palm's half-thickness
     private static final float COMPASS_ON_PALM = 1.05f, PALM_TOP = 0.17f;
-    private static final float COMPASS_RAISE = 0.45f, COMPASS_HOLD = 2.4f;
+    // How long a gadget takes to come out of the pocket or go back (seconds)
+    private static final float COMPASS_RAISE = 0.45f;
     // Held a little left of and below the middle of the view, at this distance from the eyes
     private static final float COMPASS_REACH = 5.0f;
     private static final float COMPASS_BELOW = (float) Math.toRadians(14), COMPASS_LEFT = (float) Math.toRadians(13);
@@ -91,8 +92,6 @@ public class PlayerBody {
     // fingers point away from the eyes (the glass and the grip on it stay where they are)
     private static final float WRIST_TURN = (float) Math.toRadians(65);
     private static final float[] MAGNIFIER_FIST = { 0.8f, 0.9f, 0.8f, 0.75f, 1.7f };
-    // How long the kit stays out once taken out
-    private static final float KIT_HOLD = 6f;
     // The magnifying glass in the left glove's frame: across the fist (the glove's +x is up the
     // handle, the thumb's side), facing as the palm does
     private static final float[] MAGNIFIER_IN_HAND;
@@ -185,21 +184,24 @@ public class PlayerBody {
     private float swimBlend;
     private float pitch;
     private SpherePosition lastEye;
-    // Time since the compass was taken out (negative when put away), and its needle's
-    // heading in the world (0 is north) and how fast that is turning
-    private float compassTime = -1f;
-    // The same for the thermometer, and what it reads (degrees Celsius), the column easing to it
-    private float thermometerTime = -1f;
+    // The gadgets the player can hold, in the inventory's order, and NO_GADGET for none
+    public static final int NO_GADGET = -1, GADGET_COMPASS = 0, GADGET_THERMOMETER = 1, GADGET_ALTIMETER = 2, GADGET_KIT = 3;
+    // The hands each gadget takes (1 the left, 2 the right): the compass the left, the
+    // thermometer and the altimeter the right, the kit (glass and book) both
+    private static final int[] GADGET_HANDS = { 1, 2, 2, 3 };
+    // The gadget the player wants in hand (it comes out once whatever shares its hand has gone
+    // back), and how far each is out of the pocket, 0 put away to 1 held up (eased by raised)
+    private int wantedGadget = NO_GADGET;
+    private final float[] gadgetOut = new float[4];
+    // The compass needle's heading in the world (0 is north) and how fast that is turning
+    private float needleAngle, needleSpin;
+    // What the thermometer reads (degrees Celsius), the column easing to it
     private float reading = 15f, shown = 15f;
     private Texture scale;
-    private float needleAngle, needleSpin;
-    // The altimeter: time since taken out (negative when put away), the height it reads and
-    // its needle easing to it (metres), and the top of its scale
-    private float altimeterTime = -1f;
+    // The height the altimeter reads and its needle easing to it (metres), and the top of its scale
     private float altitude, shownAltitude, altimeterTop = 1000f;
-    // The identification kit: time since taken out, the pictures in its book, and the
-    // magnifying glass's lens as last posed {x, y, z, radius} in the world
-    private float kitTime = -1f;
+    // The pictures in the identification kit's book, and the magnifying glass's lens as last
+    // posed {x, y, z, radius} in the world
     private java.util.List<java.awt.Image> bookPictures = java.util.List.of();
     private float[] lens;
     // The dial's and the pages' print, drawn again when what's on it changes
@@ -450,24 +452,50 @@ public class PlayerBody {
         out[4] = 0.022f * (1f - 0.5f * t);
     }
 
-    /** Take the altimeter out (into the right hand, so anything else there is put away), or keep it out a little longer. */
-    public void useAltimeter() {
-        thermometerTime = -1f;
-        kitTime = -1f;
-        if (altimeterTime < 0f) {
-            altimeterTime = 0f;
-            // Fresh out of the pocket the needle swings up from 0
-            shownAltitude = 0f;
-        } else if (altimeterTime > COMPASS_RAISE) altimeterTime = COMPASS_RAISE;
+    /**
+     * Takes gadget out (GADGET_COMPASS to GADGET_KIT) and keeps it out, or puts whatever's held
+     * away (NO_GADGET). What it shares a hand with goes back first, before it comes out; what's
+     * in the other hand goes back as it comes out.
+     */
+    public void hold(int gadget) {
+        wantedGadget = gadget;
     }
 
-    /** Take the identification kit out (in both hands, so everything else is put away), or keep it out a little longer. */
-    public void useKit() {
-        compassTime = -1f;
-        thermometerTime = -1f;
-        altimeterTime = -1f;
-        if (kitTime < 0f) kitTime = 0f;
-        else if (kitTime > COMPASS_RAISE) kitTime = COMPASS_RAISE;
+    /** Puts every gadget away at once, nothing wanted (a new round starts empty-handed). */
+    public void putAwayAtOnce() {
+        wantedGadget = NO_GADGET;
+        java.util.Arrays.fill(gadgetOut, 0f);
+    }
+
+    /**
+     * Brings each gadget out or puts it back by one frame: the wanted one comes up once nothing
+     * sharing its hand is still out, the rest go down.
+     */
+    private void moveGadgets(float dt) {
+        for (int i = 0; i < gadgetOut.length; i++) {
+            boolean up = i == wantedGadget;
+            for (int j = 0; up && j < gadgetOut.length; j++) {
+                if (j != i && (GADGET_HANDS[i] & GADGET_HANDS[j]) != 0 && gadgetOut[j] > 0f) up = false;
+            }
+            if (up && gadgetOut[i] == 0f) freshOut(i);
+            gadgetOut[i] = Math.max(0f, Math.min(1f, gadgetOut[i] + (up ? dt : -dt) / COMPASS_RAISE));
+        }
+    }
+
+    /** A gadget fresh out of the pocket: its reading starts from nothing and settles. */
+    private void freshOut(int gadget) {
+        switch (gadget) {
+            case GADGET_COMPASS -> {
+                // the needle swings before it settles
+                needleAngle = (needleKick.nextBoolean() ? 1f : -1f) * (0.7f + 0.6f * needleKick.nextFloat());
+                needleSpin = 0f;
+            }
+            // the column creeps up or down to the reading from 0
+            case GADGET_THERMOMETER -> shown = 0f;
+            // the needle swings up from 0
+            case GADGET_ALTIMETER -> shownAltitude = 0f;
+            default -> { }
+        }
     }
 
     /** What the altimeter reads where the player stands: metres above the sea. */
@@ -496,49 +524,18 @@ public class PlayerBody {
         return kitBlend() > 0.97f ? lens : null;
     }
 
-    /** How far an item is raised, 0 put away to 1 held up to look at, time after it was taken out and held for hold. */
-    private static float raised(float time, float hold) {
-        if (time < 0f) return 0f;
-        float t;
-        if (time < COMPASS_RAISE) t = time / COMPASS_RAISE;
-        else if (time < COMPASS_RAISE + hold) t = 1f;
-        else t = 1f - (time - COMPASS_RAISE - hold) / COMPASS_RAISE;
-        t = Math.max(0f, Math.min(1f, t));
+    /** How far a gadget is raised, 0 put away to 1 held up to look at, eased in and out. */
+    private float raised(int gadget) {
+        float t = gadgetOut[gadget];
         return t * t * (3f - 2f * t);
     }
 
     private float altimeterBlend() {
-        return raised(altimeterTime, COMPASS_HOLD * 1.5f);
+        return raised(GADGET_ALTIMETER);
     }
 
     private float kitBlend() {
-        return raised(kitTime, KIT_HOLD);
-    }
-
-    /** C: take the compass out, or keep it out a little longer if it already is. */
-    public void useCompass() {
-        kitTime = -1f;
-        if (compassTime < 0f || compassTime > COMPASS_RAISE + COMPASS_HOLD) {
-            if (compassTime < 0f) {
-                // Freshly out of the pocket the needle swings before it settles
-                needleAngle = (needleKick.nextBoolean() ? 1f : -1f) * (0.7f + 0.6f * needleKick.nextFloat());
-                needleSpin = 0f;
-            }
-            compassTime = compassTime < 0f ? 0f : COMPASS_RAISE;
-        } else if (compassTime > COMPASS_RAISE) {
-            compassTime = COMPASS_RAISE;
-        }
-    }
-
-    /** 2: take the thermometer out, or keep it out a little longer if it already is. */
-    public void useThermometer() {
-        altimeterTime = -1f;
-        kitTime = -1f;
-        if (thermometerTime < 0f) {
-            thermometerTime = 0f;
-            // Fresh out of the pocket it starts from 0 and creeps up or down to the reading
-            shown = 0f;
-        } else if (thermometerTime > COMPASS_RAISE) thermometerTime = COMPASS_RAISE;
+        return raised(GADGET_KIT);
     }
 
     /** What the thermometer reads where the player stands, in degrees Celsius. */
@@ -548,13 +545,7 @@ public class PlayerBody {
 
     /** How far the thermometer is raised, 0 put away to 1 held up to look at. */
     private float thermometerBlend() {
-        if (thermometerTime < 0f) return 0f;
-        float t;
-        if (thermometerTime < COMPASS_RAISE) t = thermometerTime / COMPASS_RAISE;
-        else if (thermometerTime < COMPASS_RAISE + COMPASS_HOLD * 1.5f) t = 1f;
-        else t = 1f - (thermometerTime - COMPASS_RAISE - COMPASS_HOLD * 1.5f) / COMPASS_RAISE;
-        t = Math.max(0f, Math.min(1f, t));
-        return t * t * (3f - 2f * t);
+        return raised(GADGET_THERMOMETER);
     }
 
     /**
@@ -615,13 +606,7 @@ public class PlayerBody {
 
     /** How far the compass is raised, 0 put away to 1 held up to look at. */
     private float compassBlend() {
-        if (compassTime < 0f) return 0f;
-        float t;
-        if (compassTime < COMPASS_RAISE) t = compassTime / COMPASS_RAISE;
-        else if (compassTime < COMPASS_RAISE + COMPASS_HOLD) t = 1f;
-        else t = 1f - (compassTime - COMPASS_RAISE - COMPASS_HOLD) / COMPASS_RAISE;
-        t = Math.max(0f, Math.min(1f, t));
-        return t * t * (3f - 2f * t);
+        return raised(GADGET_COMPASS);
     }
 
     /** A ball of suit fabric at a joint, centred on the current origin. */
@@ -695,24 +680,11 @@ public class PlayerBody {
         walkPhase = (walkPhase + moved * (float) (2 * Math.PI) / STRIDE) % (float) (2 * Math.PI);
         swimBlend += ((swimming ? 1f : 0f) - swimBlend) * Math.min(1f, dt * 3f);
         strokePhase = (strokePhase + dt * (1.4f + 1.8f * walking)) % (float) (2 * Math.PI);
-        if (thermometerTime >= 0f) {
-            thermometerTime += dt;
-            if (thermometerTime > 2f * COMPASS_RAISE + COMPASS_HOLD * 1.5f) thermometerTime = -1f;
-        }
+        moveGadgets(dt);
         // The column creeps to the reading rather than jumping
         shown += (reading - shown) * Math.min(1f, dt * 1.5f);
-        if (altimeterTime >= 0f) {
-            altimeterTime += dt;
-            if (altimeterTime > 2f * COMPASS_RAISE + COMPASS_HOLD * 1.5f) altimeterTime = -1f;
-        }
         shownAltitude += (altitude - shownAltitude) * Math.min(1f, dt * 2f);
-        if (kitTime >= 0f) {
-            kitTime += dt;
-            if (kitTime > 2f * COMPASS_RAISE + KIT_HOLD) kitTime = -1f;
-        }
-        if (compassTime >= 0f) {
-            compassTime += dt;
-            if (compassTime > 2f * COMPASS_RAISE + COMPASS_HOLD) compassTime = -1f;
+        if (gadgetOut[GADGET_COMPASS] > 0f) {
             // The needle is a damped pendulum pulled towards north; its heading is kept in
             // the local frame (north is local -z), so it holds steady as the body turns under
             // it. The pull weakens towards the poles, where the planet's field points into the

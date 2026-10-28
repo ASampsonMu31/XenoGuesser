@@ -25,7 +25,7 @@ if exist dist rmdir /s /q dist
 jpackage --type app-image --name XenoGuesser --app-version 1.0 ^
   --input %STAGE% --main-jar xenoguesser.jar --main-class XenoGuesser ^
   --icon assets\icons\xenoguesser.ico --dest dist ^
-  --java-options "-XX:+UseZGC -XX:+ZGenerational -XX:MaxRAMPercentage=70 -XX:ZUncommitDelay=30" ^
+  --java-options "-XX:+UseZGC -XX:+ZGenerational -XX:MaxRAMPercentage=70 -XX:MaxRAM=8g -XX:ZUncommitDelay=10" ^
   --java-options "-Dxenoguesser.store=release" ^
   --java-options "--add-exports java.base/java.lang=ALL-UNNAMED" ^
   --java-options "--add-exports java.desktop/sun.java2d=ALL-UNNAMED" ^

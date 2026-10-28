@@ -33,7 +33,7 @@ public class PodTerminal {
         this.worldSeed = worldSeed;
         this.role = role;
         // The link to the partner's PC is already made; the loading stages follow it
-        if (role != null) finishedSteps.add("Partner pod linked " + role.other().label);
+        if (role != null) finishedSteps.add("Partner pod linked: " + name(role.other()));
     }
 
     /**
@@ -71,7 +71,7 @@ public class PodTerminal {
         List<String> lines = new ArrayList<>();
         if (role != null) {
             lines.add("XENO-NAV 2.7   MULTIPLAYER");
-            lines.add("LINK 119-A <> 119-B");
+            lines.add(fit("LINK " + name(Multiplayer.Role.HOST) + " <> " + name(Multiplayer.Role.JOIN), COLS));
         } else {
             lines.add("XENO-NAV 2.7   PLANETFALL");
             lines.add("WORLD SEED " + worldSeed);
@@ -89,11 +89,11 @@ public class PodTerminal {
         int bottom = role != null ? 3 : 2;
         while (lines.size() < ROWS - bottom) lines.add("");
         if (role != null) {
-            // This player's bar and the partner's, each by its employee number
+            // This player's bar and the partner's, each by the first letters of their name
             Multiplayer.Role a = Multiplayer.Role.HOST;
             int aPercent = role == a ? percent : partnerPercent, bPercent = role == a ? partnerPercent : percent;
-            lines.add(bar(a.label, aPercent, COLS - 13));
-            lines.add(bar(a.other().label, bPercent, COLS - 13));
+            lines.add(bar(shortName(a), aPercent, COLS - 13));
+            lines.add(bar(shortName(a.other()), bPercent, COLS - 13));
         } else {
             lines.add(bar(null, percent, COLS - 8));
         }
@@ -124,6 +124,17 @@ public class PodTerminal {
         for (int i = 0; i < cells; i++) bar.append(i < filled ? '#' : '.');
         bar.append("] ").append(String.format("%3d%%", percent));
         return bar.toString();
+    }
+
+    /** A player's name (M58), upper case as the terminal writes everything. */
+    private static String name(Multiplayer.Role player) {
+        Multiplayer session = Multiplayer.active();
+        return (session != null ? session.name(player) : player == Multiplayer.Role.HOST ? "Host" : "Partner").toUpperCase();
+    }
+
+    /** A player's name cut or padded to five letters, so both bars line up. */
+    private static String shortName(Multiplayer.Role player) {
+        return String.format("%-5s", fit(name(player), 5));
     }
 
     private static String fit(String text, int width) {

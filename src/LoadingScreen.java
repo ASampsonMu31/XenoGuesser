@@ -60,8 +60,7 @@ public class LoadingScreen extends JComponent {
     private void loadMessage() {
         Thread loader = new Thread(() -> {
             TransmissionMessage loaded = TransmissionMessage.load(
-                    role == null ? TransmissionMessage.SINGLEPLAYER
-                            : role == Multiplayer.Role.HOST ? TransmissionMessage.MULTIPLAYER_A : TransmissionMessage.MULTIPLAYER_B, worldSeed);
+                    role == null ? TransmissionMessage.SINGLEPLAYER : TransmissionMessage.MULTIPLAYER, worldSeed);
             javax.swing.SwingUtilities.invokeLater(() -> {
                 message = loaded;
                 if (podShowing && message != null && !skipped) playMessage();

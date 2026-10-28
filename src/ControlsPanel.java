@@ -21,9 +21,9 @@ public class ControlsPanel extends JComponent {
         { "Mouse", "Look" },
         { "Space", "Jump" },
         { "M", "Expand / contract the map" },
-        { "Scroll", "Zoom the map" },
+        { "Scroll", "Zoom the map / switch gadget" },
         { "Click", "Place your marker on the enlarged map" },
-        { "1 2 3 4", "Use gadgets" },
+        { "Middle mouse", "Take out / put away gadgets" },
         { "Esc", "Settings" },
         { "Enter", "Skip a message" },
     };

@@ -99,8 +99,8 @@ public class PodSequence implements GLEventListener {
         // In multiplayer this player's suit in their colour, and the partner's in theirs (as in the game)
         partnerBody = role == null ? null : PlayerBody.seenFromOutside();
         if (role != null) {
-            body.setColours(new float[] { 0.5f, 0.51f, 0.54f }, role.trimColour());
-            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, role.other().litTrimColour());
+            body.setColours(new float[] { 0.5f, 0.51f, 0.54f }, suit(role).trimColour());
+            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, suit(role.other()).litTrimColour());
         }
         for (float[] box : furniture) physics.addBox(box);
         // In from the computer at the back, facing the door (in multiplayer the host on the left, the joiner on the right)
@@ -372,6 +372,7 @@ public class PodSequence implements GLEventListener {
      */
     @Override
     public void display(GLAutoDrawable drawable) {
+        FreezeWatch.frame();
         try {
             frame(drawable);
         } catch (RuntimeException | OutOfMemoryError e) {
@@ -482,6 +483,7 @@ public class PodSequence implements GLEventListener {
         updateReady();
         updateHatch();
         updateTargets();
+        updateDiagnostics();
         sounds.set(timeline.engine, timeline.roar, timeline.rumble, chair.y == 0f ? (float) Math.hypot(chair.vx, chair.vz) / PodChair.PUSH_SPEED : 0f);
         devTests();
 
@@ -508,8 +510,19 @@ public class PodSequence implements GLEventListener {
     /** What E at the door would do: open it; in multiplayer, if the partner's not ready, only say so; null if nothing yet. */
     private String doorPrompt() {
         if (!doorAvailable()) return null;
-        if (role != null && !partnerReady) return "Employee " + role.other().label + " not ready";
+        if (role != null && !partnerReady) return partnerName() + " not ready";
         return OPEN;
+    }
+
+    /** A player's suit colour (M58), as the session has it (or the role's usual, should it be gone). */
+    private static SuitColour suit(Multiplayer.Role player) {
+        Multiplayer session = Multiplayer.active();
+        return session != null ? session.suit(player) : player == Multiplayer.Role.HOST ? SuitColour.BLUE : SuitColour.RED;
+    }
+
+    private static String partnerName() {
+        Multiplayer session = Multiplayer.active();
+        return session != null ? session.remoteName() : "Your partner";
     }
 
     /** The door's opened, here or by the partner: it swings open for both, and the game starts. */
@@ -567,6 +580,28 @@ public class PodSequence implements GLEventListener {
     private static float smoothStep(float x) {
         x = Math.max(0f, Math.min(1f, x));
         return x * x * (3f - 2f * x);
+    }
+
+    // The diagnostics (as in the game), the frame rate counted over half a second at a time, and the
+    // scale they were last drawn at
+    private final DiagnosticsPanel diagnostics = new DiagnosticsPanel();
+    private long fpsWindowStart;
+    private int fpsFrames, fps;
+    private float diagnosticsScale;
+
+    /** The frame rate and the memory at the top right, from the start of the descent (see DiagnosticsPanel). */
+    private void updateDiagnostics() {
+        long now = System.nanoTime();
+        fpsFrames++;
+        if (fpsWindowStart == 0L) fpsWindowStart = now;
+        if (now - fpsWindowStart >= 500_000_000L) {
+            fps = Math.round(fpsFrames * 1e9f / (now - fpsWindowStart));
+            fpsFrames = 0;
+            fpsWindowStart = now;
+        }
+        boolean rescaled = pixelScale != diagnosticsScale;
+        diagnosticsScale = pixelScale;
+        diagnostics.show(hud, true, fps, pixelScale, rescaled, width);
     }
 
     // The targets' picture, and when it was last drawn (it bobs, so it's drawn again a few times a second)
@@ -865,7 +900,7 @@ public class PodSequence implements GLEventListener {
         }
         if (state != readyShown) {
             readyShown = state;
-            String[] keys = state == 1 ? new String[] { "R", "Ready" } : new String[] { "", "Ready: waiting for Employee " + role.other().label };
+            String[] keys = state == 1 ? new String[] { "R", "Ready" } : new String[] { "", "Ready: waiting for " + partnerName() };
             BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
             Graphics2D pg = probe.createGraphics();
             HudStyle.smooth(pg);

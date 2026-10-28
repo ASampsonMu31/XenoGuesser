@@ -107,6 +107,12 @@ public final class Vehicles {
         float lift;
         SpherePosition liftAt;
         boolean settling;
+        // The nation whose sort of vehicle it is, the seed its looks were drawn from, and whether
+        // that was a household's (after the draw for whether it has one), so another PC can make
+        // the same one (see replica)
+        int looksNation;
+        long looks;
+        boolean householdLooks;
 
         private Vehicle(int kind, int variant, float scale, InfrastructureManager.Doorway home, Random rand) {
             this.kind = kind;
@@ -183,7 +189,8 @@ public final class Vehicles {
     // Places taken along each door's kerb (by door id)
     private final Map<Long, boolean[]> slotsTaken = new HashMap<>();
     private GeodesicCollision collision;
-    private SpherePosition viewer;
+    // Whether a place is out of everyone's sight (the viewer's, and in multiplayer the partner's)
+    private java.util.function.Predicate<SpherePosition> unseen = p -> true;
     private final float[] bones = new float[OrganismSpecies.MAX_BONES * 16];
 
     public Vehicles(long seed, int nationCount, float personHeight, InfrastructureManager infrastructure, PerlinNoise terrainNoise) {
@@ -511,18 +518,15 @@ public final class Vehicles {
     // ------------------------------------------------------------------ owning and parking
 
     /** The household's vehicle (parked outside), or null if it hasn't one. */
-    public Vehicle forHousehold(InfrastructureManager.Doorway home, Random rand) {
+    public Vehicle forHousehold(InfrastructureManager.Doorway home, long looks) {
+        Random rand = new Random(looks);
         float share = ownership.getOrDefault(home.nationId, 0.5f) * (1f - 0.35f * home.urbanness);
         if (rand.nextFloat() >= share) return null;
-        float[] weights = kindWeights.getOrDefault(home.nationId, new float[] { 1f, 0f, 0f, 0f });
-        float roll = rand.nextFloat();
-        int kind = 0;
-        for (int k = 0; k < KINDS; k++) {
-            roll -= weights[k];
-            if (roll <= 0f && weights[k] > 0f) { kind = k; break; }
-            if (weights[k] > 0f) kind = k;
-        }
+        int kind = kindFor(home.nationId, rand);
         Vehicle v = new Vehicle(kind, pickVariant(rand), scale, home, rand);
+        v.looksNation = home.nationId;
+        v.looks = looks;
+        v.householdLooks = true;
         Spot spot = parkingSpot(home, v);
         v.parkedAt = home.id;
         v.slot = spot.slot();
@@ -642,7 +646,18 @@ public final class Vehicles {
      * then onArrive. Null if there's no way by road.
      */
     public Vehicle traffic(int nationId, InfrastructureManager.Doorway near, SpherePosition from, SpherePosition to,
-                           Random rand, Runnable onArrive) {
+                           long looks, Runnable onArrive) {
+        Random rand = new Random(looks);
+        Vehicle v = new Vehicle(kindFor(nationId, rand), pickVariant(rand), scale, near, rand);
+        v.looksNation = nationId;
+        v.looks = looks;
+        v.traffic = true;
+        v.slot = -1;
+        return travel(v, from, to, onArrive) ? v : null;
+    }
+
+    /** Which kind of vehicle one of a nation's people drives, by its taste in them. */
+    private int kindFor(int nationId, Random rand) {
         float[] weights = kindWeights.getOrDefault(nationId, new float[] { 1f, 0f, 0f, 0f });
         float roll = rand.nextFloat();
         int kind = 0;
@@ -651,10 +666,24 @@ public final class Vehicles {
             if (roll <= 0f && weights[k] > 0f) { kind = k; break; }
             if (weights[k] > 0f) kind = k;
         }
-        Vehicle v = new Vehicle(kind, pickVariant(rand), scale, near, rand);
-        v.traffic = true;
+        return kind;
+    }
+
+    /**
+     * Multiplayer, on the joiner's PC: a vehicle looking just like one on the host's, from its
+     * nation and the seed its looks were drawn from (see forHousehold and traffic), to be moved
+     * where the host says (see TownsfolkSync). It belongs to nobody here.
+     */
+    public Vehicle replica(int nationId, long looks, boolean household) {
+        Random rand = new Random(looks);
+        // (a household's first draw is for whether it has one at all)
+        if (household) rand.nextFloat();
+        Vehicle v = new Vehicle(kindFor(nationId, rand), pickVariant(rand), scale, null, rand);
+        v.looksNation = nationId;
+        v.looks = looks;
+        v.householdLooks = household;
         v.slot = -1;
-        return travel(v, from, to, onArrive) ? v : null;
+        return v;
     }
 
     /** The way along the roads as a vehicle's stops, each with the road it's on there. */
@@ -794,16 +823,21 @@ public final class Vehicles {
     }
 
     /**
-     * Moves every vehicle on, and lists them all as solid for this frame. Range decisions use
-     * true distance from the viewer.
+     * Moves every vehicle on, and lists them all as solid for this frame. Whether one is seen
+     * is asked of unseen (out of sight of the viewer and, on the host, the partner too).
      */
-    public void update(List<Vehicle> all, float dt, SpherePosition viewer) {
-        this.viewer = viewer;
+    public void update(List<Vehicle> all, float dt, java.util.function.Predicate<SpherePosition> unseen) {
+        this.unseen = unseen;
         for (Vehicle v : all) v.forward = SphereFrame.at(v.position).headingDirection(v.heading);
         for (Vehicle v : all) {
             if (!v.parked) step(v, all, dt);
             else if (v.settling) settle(v, dt);
         }
+        listSolid(all);
+    }
+
+    /** Lists every vehicle as solid for this frame. */
+    public void listSolid(List<Vehicle> all) {
         if (collision == null) return;
         for (Vehicle v : all) {
             // Solid along its whole length: overlapping circles from nose to tail
@@ -1077,7 +1111,7 @@ public final class Vehicles {
                 if (!Float.isNaN(lateral) && Math.abs(lateral) > at.half() - v.width - 2f) v.detourSide = lateral > 0f ? -1 : 1;
             } else if (v.stuck > (obstacle ? 4f : 10f)) {
                 // Still held up after that: out of sight it moves on; in sight it edges through
-                if (SphereMath.distance(viewer, v.position) > OUT_OF_SIGHT && !final_) {
+                if (unseen.test(v.position) && !final_) {
                     moveTo(v, target(v));
                     v.next = Math.min(v.next + 1, v.route.size());
                 } else {

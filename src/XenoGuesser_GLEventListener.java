@@ -112,7 +112,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // (in multiplayer with wider stairs, so both players start on them side by side: M11)
     final LandingPod landingPod = new LandingPod(Multiplayer.isActive());
     private RockField rockField;
-    static final Object PLAYER = "player";
+    static final Object PLAYER = "player", PARTNER = "partner";
     static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
     // Developer aid: -Dxenoguesser.menushot photographs the pod for the main menu's background
     static final boolean MENU_SHOT = Dev.property("xenoguesser.menushot") != null;
@@ -129,9 +129,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     static final float NEAR_PLANE = 2.0f, SWIMMING_NEAR_PLANE = 1.5f, FAR_PLANE = 3000.0f;
     float currentNearPlane = NEAR_PLANE;
 
-    // Grass dies back from this many degrees above the water's freezing point, and is gone by
-    // this many below it
-    private static final float GRASS_FROST_START = 6f, GRASS_FROST_DEATH = 6f;
     // The temperature (Celsius) the planet's water freezes at, so below which it snows
     float freezingPoint;
 
@@ -202,17 +199,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // While the game's paused (M46) the view is greyed out altogether: nothing of it to study
     static final float PAUSED_DIM = 1f;
     volatile boolean menuOpen;
-    private volatile boolean compassWanted;
 
     // --- ECOSYSTEM SPAWNING MANAGER DATA ---
     RegionalGenerationManager regionalManager;
 
-    private RegionalFactor grassTemperateFactor;
     private RegionalFactor leafTemperateFactor;
     RegionalFactor grassMoistureFactor;
-    private RegionalFactor grassPatchNoiseFactor;
-    private RegionalFactor grassHeightNoiseFactor;
-    private RegionalFactor grassColourNoiseFactor;
     private RegionalFactor leafColourNoiseFactor;
 
         // Regional soil colour: where the ground drifts toward each of the palette's soil variants
@@ -341,30 +333,17 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
         this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
 
-        float GRASS_TEMP_MEAN = 0.4f;
-        float GRASS_TEMP_STD_DEV = 0.5f;
         // (world units from the sea)
         float GRASS_WATER_MEAN = 0f;
         float GRASS_WATER_STD_DEV = 8000.0f;
-        float GRASS_DENSITY_SCALE = 2e-5f;
-        float GRASS_VARIATION_SCALE = 1e-5f;
                 this.GRASS_BASE_ABUNDANCE = 1050f;
 
-        // Grass likes it mild, and dies back where it's cold enough for snow: from a few degrees
-        // above the water's freezing point down to several below, it thins out to almost nothing
-        // (and what's left is dry and dead, see grassColourFactor)
-        RegionalFactor mildness = this.regionalManager.createTemperaturePreference(GRASS_TEMP_MEAN, GRASS_TEMP_STD_DEV);
-        this.grassTemperateFactor = new RegionalFactor(1.0f, d -> {
-            float celsius = -30f + 70f * regionalManager.temperatureMap.evaluate(d);
-            float t = Math.max(0f, Math.min(1f, (celsius - (freezingPoint - GRASS_FROST_DEATH)) / (GRASS_FROST_DEATH + GRASS_FROST_START)));
-            return mildness.evaluate(d) * t * t * (3f - 2f * t);
-        });
         this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
-        this.grassPatchNoiseFactor = this.regionalManager.createNoiseMap(GRASS_DENSITY_SCALE);
         // The rainfall follows the moisture (with the temperature)
         this.regionalManager.setMoistureMap(this.grassMoistureFactor);
-        this.grassHeightNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
-        this.grassColourNoiseFactor = this.regionalManager.createNoiseMap(GRASS_VARIATION_SCALE);
+        // The grass's old noise tracks, too broad to vary across the planet: still drawn, so the
+        // maps drawn after them (the leaves', the soil's, the species') keep theirs
+        for (float scale : new float[] { 2e-5f, 1e-5f, 1e-5f }) this.regionalManager.createNoiseMap(scale);
 
         float LEAF_VARIATION_SCALE = 1e-5f;
         float LEAF_TEMP_MEAN = 0.2f;
@@ -373,29 +352,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.leafColourNoiseFactor = this.regionalManager.createNoiseMap(LEAF_VARIATION_SCALE);
         this.leafTemperateFactor = this.regionalManager.createTemperaturePreference(LEAF_TEMP_MEAN, LEAF_TEMP_STD_DEV);
 
-        this.grassAbundanceFactor = new RegionalFactor.Builder()
-            .setWeight(3f)
-            .setPowerCurve(5.0f)
-            .addFactor(this.grassTemperateFactor, 0.4f)
-            .addFactor(this.grassMoistureFactor, 0.4f)
-            .addFactor(this.grassPatchNoiseFactor, 0.2f)
-            .build();
-
-        this.grassHeightFactor = new RegionalFactor.Builder()
-            .setWeight(1.5f)
-            .setPowerCurve(3.0f)
-            .addFactor(this.grassTemperateFactor, 0.2f)
-            .addFactor(this.grassMoistureFactor, 0.2f)
-            .addFactor(this.grassHeightNoiseFactor, 0.6f)
-            .build();
-
-        this.grassColourFactor = new RegionalFactor.Builder()
-            .setWeight(1.5f)
-            .setPowerCurve(3.0f)
-            .addFactor(this.grassTemperateFactor, 0.35f)
-            .addFactor(this.grassMoistureFactor, 0.35f)
-            .addFactor(this.grassColourNoiseFactor, 0.3f)
-            .build();
+        GrassClimate grass = GrassClimate.of(this.regionalManager, this.freezingPoint, this.grassMoistureFactor);
+        this.grassAbundanceFactor = grass.abundance();
+        this.grassHeightFactor = grass.height();
+        this.grassColourFactor = grass.colour();
 
         this.leafColourFactor = new RegionalFactor.Builder()
             .setWeight(1.5f)
@@ -429,6 +389,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.infraManager = new InfrastructureManager(this.worldSeed, this.totalNationsCount, this.nationManager,
                 this.settlementManager, this);
         this.inhabitants = new Inhabitants(worldSeed, totalNationsCount, infraManager, worldNoise);
+        this.townsfolk = new TownsfolkSync(inhabitants);
         System.out.println("[INHABITANTS] " + inhabitants.describe());
                 this.infraManager.prepareRoadNetwork(seaLevelHeight, worldNoise);
         // (low frequencies: the soil's colour drifts over many kilometres)
@@ -473,6 +434,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         organismManager.setCollision(geodesicCollision);
         organismManager.setWild(p -> settlementManager.getUrbanness(p) < 0.12f);
         organismManager.setRoads((p, clearance) -> infraManager.isRoadLocation(p, clearance));
+        organismManager.setPlots(p -> infraManager.isPlotLocation(p, 0f));
+        infraManager.borders().setLightClock(() -> Multiplayer.isActive() ? getSeconds() - roundClockStart : getSeconds());
         double floraReach = (VIEW_DISTANCE + PREFETCH_RINGS) * PHYSICAL_CHUNK_SIZE;
         floraStream = new CellStream<List<SphereFlora>>(VEGETATION_LEVEL, floraReach, PHYSICAL_CHUNK_SIZE * 1.5, this::buildFloraCell)
                 .onChange(added -> { for (SphereFlora tree : added) trees.add(tree.position(), tree.trunk(), tree); },
@@ -1567,11 +1530,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         playerBody.initialise(gl);
         Multiplayer session = Multiplayer.active();
         if (session != null) {
-            // Multiplayer (M6): the packs on this player's own body in their colour, and the
+            // Multiplayer (M6, M58): the packs on this player's own body in their suit colour, and the
             // partner, seen from outside, in theirs (darker, as lit in the world; grey trim as the pod's)
-            playerBody.setColours(new float[] { 0.5f, 0.51f, 0.54f }, session.role.trimColour());
+            playerBody.setColours(new float[] { 0.5f, 0.51f, 0.54f }, session.suit(session.role).trimColour());
             partnerBody = PlayerBody.seenFromOutside();
-            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, session.role.other().litTrimColour());
+            partnerBody.setColours(new float[] { 0.2f, 0.21f, 0.23f }, session.suit(session.role.other()).litTrimColour());
             partnerBody.initialise(gl);
         }
     }
@@ -1770,6 +1733,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 else organismManager.clear();
         if (rockField != null) rockField.clear(gl);
         inhabitants.clear();
+        townsfolk.clear();
 
         roundSpawner.spawnPlayerAtRandomLocation();
         if (rockField != null) rockField.update(gl, camera.getSpherePosition(), true);
@@ -2646,9 +2610,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         // The creatures and people moved on first, so their shadows are cast from where they're
         // drawn this frame (a frame behind, a moving vehicle's shadow fell on its rider's back)
-        // (the herds walk paths fixed by the round's clock: see OrganismManager.Herd)
+        // (the creatures walk paths fixed by the round's clock: see OrganismManager.Path)
         organismManager.update((float) deltaTime, eye, getSeconds() - roundClockStart);
-        inhabitants.update((float) deltaTime, eye);
+        // (in multiplayer the host's PC moves the townsfolk round both players, and the joiner's
+        // draws the host's: see TownsfolkSync, M57)
+        Multiplayer session = Multiplayer.active();
+        inhabitants.setReplica(session != null && session.role == Multiplayer.Role.JOIN);
+        inhabitants.update((float) deltaTime, eye, session != null && session.role == Multiplayer.Role.HOST && partner.hasPose() ? partner.eye() : null);
 
         // --- PASS 0: THE SUN'S SHADOWS (drawn from the sun, for everything lit by it to look up) ---
         renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
@@ -2738,6 +2706,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // --- CREATURES AND PEOPLE (moved on before the shadows) ---
         // The player is solid to everything else too; then this frame's bodies take over
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
+        // (and so is the partner, so the host's townsfolk step round them and stop for them)
+        if (Multiplayer.isActive() && partner.hasPose()) geodesicCollision.addBody(PARTNER, partner.eye(), PLAYER_RADIUS, true);
         geodesicCollision.endFrame();
         organismManager.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
         inhabitants.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
@@ -2849,22 +2819,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     /** The player's own body and what they're holding, posed and drawn in the camera's local frame. */
     private void renderPlayerBody(SpherePosition eye, double deltaTime, float[] sunDir, float[] sunColour, Matrix4 localSkyRotation,
                                   String skyTextureKey) {
-        if (compassWanted) {
-            compassWanted = false;
-            playerBody.useCompass();
+        if (gadgetsDropped) {
+            gadgetsDropped = false;
+            playerBody.putAwayAtOnce();
         }
-        if (thermometerWanted) {
-            thermometerWanted = false;
-            playerBody.useThermometer();
-        }
-        if (altimeterWanted) {
-            altimeterWanted = false;
-            playerBody.useAltimeter();
-        }
-        if (kitWanted) {
-            kitWanted = false;
-            playerBody.useKit();
-        }
+        playerBody.hold(heldItem < 0 ? PlayerBody.NO_GADGET : gadgetOf(ownedItems.get(heldItem)));
         playerBody.setReading(temperatureAt(eye));
         // The altimeter reads the height of the ground underfoot (or the road) above the sea, in
         // metres: not the rock or roof stood on, so it agrees with the map
@@ -2983,6 +2942,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     // Where the partner is shown, and their body, seen from outside (null in singleplayer)
     final RemotePlayer partner = new RemotePlayer();
+    // The people, vehicles and open doors kept the same on both PCs (made with the inhabitants)
+    TownsfolkSync townsfolk;
     PlayerBody partnerBody;
     private long partnerLoggedAt;
 
@@ -2997,7 +2958,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
      */
     private void multiplayerFrame(double deltaTime) {
         Multiplayer session = Multiplayer.active();
-        if (session == null) return;
+        if (session == null) {
+            townsfolk.clear();
+            return;
+        }
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
         byte flags = (byte) ((swimming ? Multiplayer.POSE_SWIMMING : 0) | (playerMotion.airborne ? Multiplayer.POSE_AIRBORNE : 0));
@@ -3005,6 +2969,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         long now = System.currentTimeMillis();
         partner.update(session.remotePoses(), now, deltaTime, p -> groundHeightAt(p), playerEyeHeight);
+        // The townsfolk near the joiner, sent from the host's PC and drawn on the joiner's (M57)
+        if (session.role == Multiplayer.Role.HOST) townsfolk.hostFrame(session, partner.hasPose() ? partner.eye() : null, now);
+        else townsfolk.joinerFrame(session, infraManager, now, (float) deltaTime);
         if (partner.hasPose() && now - partnerLoggedAt >= 2000) {
             partnerLoggedAt = now;
             SpherePosition at = partner.eye();
@@ -3082,8 +3049,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     // ------------------------------------------------------------------ what the player has bought
 
-    // The things the player can carry, every one had from the start (in this order, so 1 is the
-    // compass and 4 the kit); and the maps bought in the shop, nothing to begin with: the map's
+    // The things the player can carry, every one had from the start (in this order, so the
+    // compass comes out first and the kit is last); and the maps bought in the shop, nothing to begin with: the map's
     // layers and overlays
     private static final String COMPASS = "Compass", THERMOMETER = "Thermometer", ALTIMETER = "Altimeter", KIT = "Identification kit";
     private static final String[] ITEMS = { COMPASS, THERMOMETER, ALTIMETER, KIT };
@@ -3101,24 +3068,59 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // Bumped when an item is bought, so the inventory is drawn again
     volatile int itemsVersion;
 
-    /** The items the player has, in the order bought (the first used with 1, the next with 2, and so on). */
+    /** Which of the body's gadgets an item is. */
+    private static int gadgetOf(String item) {
+        return switch (item) {
+            case COMPASS -> PlayerBody.GADGET_COMPASS;
+            case THERMOMETER -> PlayerBody.GADGET_THERMOMETER;
+            case ALTIMETER -> PlayerBody.GADGET_ALTIMETER;
+            default -> PlayerBody.GADGET_KIT;
+        };
+    }
+
+    /** The items the player has, in the order bought (the inventory's order, scrolled through top to bottom). */
     List<HudStyle.Item> inventoryItems() {
         List<HudStyle.Item> items = new ArrayList<>();
-        for (String item : ownedItems) {
-            items.add(new HudStyle.Item(item, String.valueOf(items.size() + 1), itemIcon(item)));
-        }
+        for (String item : ownedItems) items.add(new HudStyle.Item(item, itemIcon(item)));
         return items;
     }
 
-    /** A number key: takes out the item in that place in the inventory, if the player has one there (0 for the first). */
+    // The place in the inventory of the item in hand (kept out until put away or scrolled off), or -1 for none
+    private volatile int heldItem = -1;
+    // Set when everything's to be put away at once rather than lowered (a new round)
+    private volatile boolean gadgetsDropped;
+
+    /** The place in the inventory of the item in hand, or -1 for none. */
+    int heldItem() {
+        return heldItem;
+    }
+
+    /** Takes out the item in that place in the inventory (0 for the first) and keeps it out; -1, or a place with nothing, puts it away. */
     public void useItem(int index) {
-        if (index < 0 || index >= ownedItems.size()) return;
-        switch (ownedItems.get(index)) {
-            case COMPASS -> useCompass();
-            case THERMOMETER -> useThermometer();
-            case ALTIMETER -> altimeterWanted = true;
-            default -> kitWanted = true;
-        }
+        heldItem = index >= 0 && index < ownedItems.size() ? index : -1;
+    }
+
+    /** The middle mouse button: takes out the inventory's first item, or puts away the one in hand. */
+    public void toggleItems() {
+        useItem(heldItem < 0 ? 0 : -1);
+    }
+
+    /**
+     * The mouse wheel while an item's in hand: the next item down the inventory (steps above
+     * 0) or up it, round from the last to the first and back. Whether it was taken (nothing in
+     * hand, it's left to zoom the view).
+     */
+    public boolean scrollItems(int steps) {
+        int held = heldItem, count = ownedItems.size();
+        if (held < 0 || count == 0) return false;
+        if (steps != 0) useItem(Math.floorMod(held + steps, count));
+        return true;
+    }
+
+    /** Nothing in hand, everything put away at once rather than lowered (each round starts so). */
+    public void dropItems() {
+        heldItem = -1;
+        gadgetsDropped = true;
     }
 
     // Each plant species' name (see floraName)
@@ -3326,17 +3328,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         rainSound.stop();
     }
 
-    /** C: the player takes out the compass and looks at it for a moment. */
+    /** The player takes out the compass and keeps it out. */
     public void useCompass() {
-        compassWanted = true;
+        useItem(ownedItems.indexOf(COMPASS));
     }
 
-    /** 2: the player takes out the thermometer and reads it for a moment. */
+    /** The player takes out the thermometer and keeps it out. */
     public void useThermometer() {
-        thermometerWanted = true;
+        useItem(ownedItems.indexOf(THERMOMETER));
     }
-
-    private volatile boolean thermometerWanted, altimeterWanted, kitWanted;
 
     /**
      * The haze the distance fades into: the sky's colour greyed (as the air's haze greys

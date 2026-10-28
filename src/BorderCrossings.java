@@ -69,6 +69,14 @@ final class BorderCrossings extends InfraPart {
     }
 
     private final List<BorderCheck> borderChecks = new ArrayList<>();
+    // The seconds the border lights change by: the world's time, or in multiplayer the round's
+    // (the same on both PCs, so the joiner sees the lights the host's vehicles obey: M57)
+    private java.util.function.DoubleSupplier lightClock = () -> GameClock.millis() / 1000.0;
+
+    /** Sets the seconds the border lights change by. */
+    void setLightClock(java.util.function.DoubleSupplier clock) {
+        lightClock = clock;
+    }
 
     private final CellIndex<BorderCheck> checkIndex = new CellIndex<>(LOOKUP_LEVEL);
 
@@ -259,7 +267,7 @@ final class BorderCrossings extends InfraPart {
         if (!borderChecks.get(i).lights) return 3;
         float cycle = 2f * (LIGHT_GO + LIGHT_CLEAR);
         // (each crossing a little out of step with the others)
-        double t = (GameClock.millis() / 1000.0 + i * 7.3) % cycle;
+        double t = Math.floorMod((long) Math.floor((lightClock.getAsDouble() + i * 7.3) * 1000.0), (long) (cycle * 1000f)) / 1000.0;
         if (t < LIGHT_GO) return 1;
         if (t < LIGHT_GO + LIGHT_CLEAR) return 0;
         if (t < 2f * LIGHT_GO + LIGHT_CLEAR) return 2;

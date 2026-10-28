@@ -11,8 +11,8 @@ import com.xenoguesser.math.Vector3;
  * assets/art (it is not part of the procedural world, so it never needs regenerating):
  * <ul>
  *   <li>the spaceman turntable: the player in their suit seen from 48 angles, with grey
- *       boots, gloves, pack and collar, and again in multiplayer's blue (Employee 119-A,
- *       the host) and red (119-B, the joiner);</li>
+ *       boots, gloves, pack and collar, and again in blue and red, the suit colours the
+ *       host and the joiner wore before players chose their own (M58);</li>
  *   <li>the suit's crumpled white fabric, also used on the player's body in the game.</li>
  * </ul>
  * Anything missing is generated when first asked for; run main() to regenerate it all.
@@ -60,10 +60,10 @@ public final class LoadingArt {
         if (new File(SPACEMAN_BLUE).exists() && new File(SPACEMAN_RED).exists()) return;
         BufferedImage fabric = ImageIO.read(new File(FABRIC));
         if (!new File(SPACEMAN_BLUE).exists()) {
-            ImageIO.write(spaceman(fabric, Multiplayer.Role.HOST.litTrimColour()), "png", new File(SPACEMAN_BLUE));
+            ImageIO.write(spaceman(fabric, SuitColour.BLUE.litTrimColour()), "png", new File(SPACEMAN_BLUE));
         }
         if (!new File(SPACEMAN_RED).exists()) {
-            ImageIO.write(spaceman(fabric, Multiplayer.Role.JOIN.litTrimColour()), "png", new File(SPACEMAN_RED));
+            ImageIO.write(spaceman(fabric, SuitColour.RED.litTrimColour()), "png", new File(SPACEMAN_RED));
         }
     }
 
@@ -79,8 +79,8 @@ public final class LoadingArt {
     private static void renderAll() throws Exception {
         BufferedImage fabric = ImageIO.read(new File(FABRIC));
         ImageIO.write(spaceman(fabric, TRIM_GREY), "png", new File(SPACEMAN));
-        ImageIO.write(spaceman(fabric, Multiplayer.Role.HOST.litTrimColour()), "png", new File(SPACEMAN_BLUE));
-        ImageIO.write(spaceman(fabric, Multiplayer.Role.JOIN.litTrimColour()), "png", new File(SPACEMAN_RED));
+        ImageIO.write(spaceman(fabric, SuitColour.BLUE.litTrimColour()), "png", new File(SPACEMAN_BLUE));
+        ImageIO.write(spaceman(fabric, SuitColour.RED.litTrimColour()), "png", new File(SPACEMAN_RED));
     }
 
     // ==========================================

@@ -223,7 +223,7 @@ public final class RegressionCheck {
         GeodesicCollision collision = (GeodesicCollision) field(listener, "geodesicCollision");
         int[] walkers = new int[1];
         for (int frame = 0; frame < 600; frame++) {
-            people.update(0.05f, town);
+            people.update(0.05f, town, null);
             collision.endFrame();
             if (frame % 50 == 49) people.forEachWalker((p, at, street, speed) -> walkers[0]++);
         }

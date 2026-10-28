@@ -63,9 +63,16 @@ public class OrganismManager {
         int outlineDrawing;
         float progressTimer, progressExpected;
         SpherePosition progressFrom;
-        // In a herd (null for one living alone), and its place in it {along, across the herd's heading}
+        // The path it walks alone (null in a herd, or for a picture's, which goes about on its own)
+        Path path;
+        // In a herd (null for one living alone), its place in it {along, across the herd's
+        // heading}, its timetable for shuffling round that and how far, and its slant to the
+        // herd's way as it stands
         Herd herd;
         float[] slot;
+        long shuffleSeed;
+        float shuffleReach;
+        double slant;
         // A flyer's place round its circle at the round's start, and how wide its circle is (a
         // flock's members share a home, a little apart round it); NaN for one wheeling on its own clock
         double flightPhase = Double.NaN;
@@ -103,6 +110,8 @@ public class OrganismManager {
     // them in (they may cross)
     private Predicate<SpherePosition> wild = p -> true;
     private RoadLookup roads = (p, clearance) -> false;
+    // House plots, which creatures' ways keep out of (the houses and their fences stand in them)
+    private Predicate<SpherePosition> plots = p -> false;
 
     @FunctionalInterface
     public interface RoadLookup {
@@ -116,6 +125,11 @@ public class OrganismManager {
 
     public void setRoads(RoadLookup lookup) {
         this.roads = lookup;
+    }
+
+    /** Where the house plots are (whether a place is in one). */
+    public void setPlots(Predicate<SpherePosition> plots) {
+        this.plots = plots;
     }
 
     /** Somewhere a walking creature can be: dry land in the wild, off the roads. */
@@ -230,92 +244,175 @@ public class OrganismManager {
         return ranges[i].share(raw(place)[i]);
     }
 
-    // ------------------------------------------------------------------ herds
+    // ------------------------------------------------------------------ paths
 
-    // The time the herds' paths are measured from: seconds since the round began (the same on
-    // both PCs in multiplayer, where rounds begin together)
+    // The time the paths are measured from: seconds since the round began (the same on both PCs
+    // in multiplayer, where rounds begin together)
     private double roundTime;
     // Counts the updates, so each herd's place is worked out once an update
     private long updates;
-    // How far a herd wanders from where it was found, how long it grazes at each stop, and how
-    // fast it goes (a share of its members' own pace, so they keep up)
+    // How far a herd wanders from where it was found, and how fast it goes (a share of its
+    // members' own pace, so they keep up)
     private static final float HERD_ROAM = 140f, HERD_PACE = 0.7f;
+    // How fast (radians a second) one alone turns to face its next stop, and a herd as a whole
+    private static final double TURN_RATE = 1.2, HERD_TURN_RATE = 0.5;
+    // A way is checked clear of the sea and of house plots every this far along it
+    private static final double WAY_CHECK = 20.0;
+    // The most legs a path is worked out to (far more than a round needs)
+    private static final int MOST_LEGS = 4000;
+    // A herd member shuffles to a new spot round its slot about this often, taking this long,
+    // within this share of the herd's spacing
+    private static final double SHUFFLE_EVERY = 9.0, SHUFFLE_TIME = 2.5;
+    private static final float SHUFFLE_REACH = 0.3f;
+    // How long before now a herd member's place is looked at again, to tell how it's moving
+    private static final double LOOK_BACK = 0.5;
+
+    /** Where a path has its walker at a moment: the place, the way it faces (D10, there), and how fast it's going (0 standing). */
+    private record PathState(SpherePosition at, double heading, float pace) {
+    }
 
     /**
-     * A herd: its members keep round a centre that walks a path fixed by its seed and the
-     * round's clock (not by when or where anyone saw it), so it's the same on both PCs and the
-     * same when a viewer comes back to it. The path is a string of legs: walk from one stop to
-     * the next, graze there a while, on and on, never straying far from home.
+     * Where a creature on the ground (or a herd's centre) goes: a path fixed by its seed and the
+     * round's clock (not by when or where anyone saw it, nor by anything it met), so it's the
+     * same on both PCs at any moment and the same when a viewer comes back to it (M19). It's a
+     * string of legs: turn to face the next stop, walk there, stand a while, on and on, never
+     * straying far from home. One alone mostly makes purposeful trips, roughly on the way it was
+     * already going, now and then grazing about nearby; a herd wanders from stop to stop and grazes.
      */
-    private final class Herd {
+    private final class Path {
         final long seed;
         final SpherePosition home;
         final float speed;
-        final List<Creature> members = new ArrayList<>();
-        final List<double[]> legs = new ArrayList<>();          // {start, arrive, leave} per leg
-        final List<SpherePosition[]> stops = new ArrayList<>(); // {from, to} per leg
-        // Where it is this update, which way it's going, and whether it's on the move
-        SpherePosition centre;
-        double heading;
-        boolean moving;
-        long updated = -1;
+        final boolean herd;
+        // {start, set off, arrive, leave, pace} per leg: round seconds, and how fast it's walked
+        final List<double[]> legs = new ArrayList<>();
+        // {from, to} per leg
+        final List<SpherePosition[]> stops = new ArrayList<>();
+        // {before turning, on setting off, on arriving} per leg (the first two at from, the last at to)
+        final List<double[]> headings = new ArrayList<>();
 
-        Herd(long seed, SpherePosition home, float speed) {
+        Path(long seed, SpherePosition home, float speed, boolean herd) {
             this.seed = seed;
             this.home = home;
             this.speed = speed;
+            this.herd = herd;
             Random r = new Random(seed);
-            legs.add(new double[] { 0.0, 0.0, 4.0 + r.nextDouble() * 12.0 });
+            double facing = r.nextDouble() * Math.PI * 2.0;
+            double stand = herd ? 4.0 + r.nextDouble() * 12.0 : r.nextDouble() * 3.0;
+            legs.add(new double[] { 0.0, 0.0, 0.0, stand, 0.0 });
             stops.add(new SpherePosition[] { home, home });
-            heading = r.nextDouble() * Math.PI * 2.0;
+            headings.add(new double[] { facing, facing, facing });
         }
 
-        /** Where the herd is at time t (round seconds), filling in its path as far as that. */
-        void at(double t) {
-            while (legs.get(legs.size() - 1)[2] < t && legs.size() < 2000) addLeg();
+        /** Where it is at time t (round seconds), filling in the path as far as that. */
+        PathState at(double t) {
+            t = Math.max(0.0, t);
+            while (legs.get(legs.size() - 1)[3] < t && legs.size() < MOST_LEGS) addLeg();
             int k = legs.size() - 1;
             while (k > 0 && legs.get(k)[0] > t) k--;
-            double[] leg = legs.get(k);
+            double[] leg = legs.get(k), h = headings.get(k);
             SpherePosition from = stops.get(k)[0], to = stops.get(k)[1];
-            if (t < leg[1] && leg[1] > leg[0]) {
-                double f = Math.max(0.0, (t - leg[0]) / (leg[1] - leg[0]));
-                centre = SphereMath.slerp(from, to, f);
-                heading = SphereMath.carryHeading(from, centre, SphereMath.heading(from, to));
-                moving = true;
-            } else {
-                centre = to;
-                if (SphereMath.distance(from, to) > 1.0) heading = SphereMath.carryHeading(from, to, SphereMath.heading(from, to));
-                moving = false;
+            if (t < leg[1]) {
+                // Turning on the spot to face the way to the next stop
+                double f = (t - leg[0]) / (leg[1] - leg[0]);
+                return new PathState(from, h[0] + wrap(h[1] - h[0]) * f, 0f);
             }
+            if (t < leg[2]) {
+                SpherePosition at = SphereMath.slerp(from, to, (t - leg[1]) / (leg[2] - leg[1]));
+                return new PathState(at, SphereMath.carryHeading(from, at, h[1]), (float) leg[4]);
+            }
+            return new PathState(to, h[2], 0f);
         }
 
         private void addLeg() {
             int k = legs.size();
             double[] last = legs.get(k - 1);
             SpherePosition from = stops.get(k - 1)[1];
+            double facing = headings.get(k - 1)[2];
             Random r = new Random(seed * 0x9E3779B97F4A7C15L + k * 0x632BE59BD9B4E019L);
-            SpherePosition to = from;
+            boolean travelling = herd || r.nextFloat() < 0.65f;
             double fromHome = SphereMath.distance(from, home);
+            SpherePosition to = from;
             for (int attempt = 0; attempt < 10; attempt++) {
-                // Off somewhere, turning back towards home once it has strayed
-                double angle = fromHome > HERD_ROAM * 1.5 ? SphereMath.heading(from, home) + (r.nextDouble() - 0.5) * 1.2
-                        : r.nextDouble() * Math.PI * 2.0;
-                SpherePosition candidate = SphereMath.move(from, angle, HERD_ROAM * (0.4 + 0.6 * r.nextDouble()));
-                if (walkable(candidate)) {
+                double angle, length;
+                if (herd) {
+                    // Off somewhere, turning back towards home once it has strayed
+                    angle = fromHome > HERD_ROAM * 1.5 ? SphereMath.heading(from, home) + (r.nextDouble() - 0.5) * 1.2
+                            : r.nextDouble() * Math.PI * 2.0;
+                    length = HERD_ROAM * (0.4 + 0.6 * r.nextDouble());
+                } else if (travelling) {
+                    // A good way off, roughly on the way it was going (back towards home if it
+                    // has wandered far), walked steadily
+                    double base = fromHome > ROAM_RADIUS * 3f ? SphereMath.heading(from, home) : facing;
+                    angle = base + (r.nextDouble() - 0.5) * 1.6;
+                    length = ROAM_RADIUS * (1.2 + 1.6 * r.nextDouble());
+                } else {
+                    // A little grazing about nearby
+                    angle = r.nextDouble() * Math.PI * 2.0;
+                    length = 10.0 + 25.0 * r.nextDouble();
+                }
+                SpherePosition candidate = SphereMath.move(from, angle, length);
+                if (walkable(candidate) && wayClear(from, candidate)) {
                     to = candidate;
                     break;
                 }
             }
-            double start = last[2], arrive = start + SphereMath.distance(from, to) / Math.max(0.1f, speed);
-            legs.add(new double[] { start, arrive, arrive + 6.0 + r.nextDouble() * 16.0 });
+            double length = SphereMath.distance(from, to);
+            if (length < 1.0) travelling = false;
+            double setOffHeading = length < 1.0 ? facing : SphereMath.heading(from, to);
+            double start = last[3], setOff = start + Math.abs(wrap(setOffHeading - facing)) / (herd ? HERD_TURN_RATE : TURN_RATE);
+            float pace = speed * (travelling && !herd ? 1.35f : 1f);
+            double arrive = setOff + length / Math.max(0.1f, pace);
+            // A short stop after a trip, a longer one grazing; a herd grazes at each stop
+            double rest = herd ? 6.0 + r.nextDouble() * 16.0 : travelling ? 0.3 + r.nextDouble() * 1.7 : 2.0 + r.nextDouble() * 6.0;
+            legs.add(new double[] { start, setOff, arrive, arrive + rest, pace });
             stops.add(new SpherePosition[] { from, to });
+            headings.add(new double[] { facing, setOffHeading, length < 1.0 ? facing : SphereMath.carryHeading(from, to, setOffHeading) });
         }
     }
 
-    /** A herd's members' places round its centre: a slot each, in the herd's own frame (along, across). */
-    private static float[] slot(Random rand, int members, float spacing) {
-        double r = spacing * Math.sqrt(members) * Math.sqrt(rand.nextDouble()), a = rand.nextDouble() * Math.PI * 2.0;
-        return new float[] { (float) (r * Math.cos(a)), (float) (r * Math.sin(a)) };
+    /** An angle brought into -pi to pi. */
+    private static double wrap(double angle) {
+        return Math.atan2(Math.sin(angle), Math.cos(angle));
+    }
+
+    /** Whether the straight way between two places stays on dry land and out of house plots (roads it may cross). */
+    private boolean wayClear(SpherePosition a, SpherePosition b) {
+        int steps = (int) Math.ceil(SphereMath.distance(a, b) / WAY_CHECK);
+        for (int i = 1; i < steps; i++) {
+            SpherePosition p = SphereMath.slerp(a, b, (double) i / steps);
+            if (TerrainMesh.getLayeredHeight(p, terrainNoise) <= seaLevel + 0.5f || plots.test(p)) return false;
+        }
+        return true;
+    }
+
+    /** A herd: its members keep their places round a centre that walks a path of its own. */
+    private static final class Herd {
+        final Path path;
+        final List<Creature> members = new ArrayList<>();
+        // Where its centre is this update, and was a moment before (for which way its members are going)
+        PathState now, before;
+        long updated = -1;
+
+        Herd(Path path) {
+            this.path = path;
+        }
+    }
+
+    /** A herd member's slot round its centre, in the herd's own frame (along, across), kept apart from those already given out. */
+    private static float[] slot(Random rand, int members, float spacing, List<float[]> taken) {
+        float[] best = null;
+        for (int attempt = 0; attempt < 12; attempt++) {
+            double r = spacing * Math.sqrt(members) * Math.sqrt(rand.nextDouble()), a = rand.nextDouble() * Math.PI * 2.0;
+            best = new float[] { (float) (r * Math.cos(a)), (float) (r * Math.sin(a)) };
+            boolean apart = true;
+            for (float[] other : taken) {
+                if (Math.hypot(other[0] - best[0], other[1] - best[1]) < spacing * 0.8f) apart = false;
+            }
+            if (apart) break;
+        }
+        taken.add(best);
+        return best;
     }
 
     /** Developer aid: a spot deep in the heartland of a species living in herds (null if none does). */
@@ -336,60 +433,92 @@ public class OrganismManager {
         double bestDistance = Double.MAX_VALUE;
         for (List<Creature> list : creaturesByCell.values()) {
             for (Creature c : list) {
-                if (c.herd == null || c.herd.centre == null) continue;
-                double d = SphereMath.distance(place, c.herd.centre);
+                if (c.herd == null || c.herd.now == null) continue;
+                double d = SphereMath.distance(place, c.herd.now.at());
                 if (d < bestDistance) {
                     bestDistance = d;
-                    best = c.herd.centre;
+                    best = c.herd.now.at();
                 }
             }
         }
         return best;
     }
 
-    /** A herd member's slot in the world just now (as the herd stands and faces). */
-    private SpherePosition slotPlace(Creature c) {
-        return SphereFrame.at(c.herd.centre, c.herd.heading).toSphere(c.slot[0], 0.0, c.slot[1]);
+    /** A number from 0 to 1 drawn from a seed and a count (the same for the same pair). */
+    private static double hashed(long seed, long n) {
+        long z = seed + n * 0x9E3779B97F4A7C15L;
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        z ^= z >>> 31;
+        return (z >>> 11) * 0x1.0p-53;
     }
 
     /**
-     * Boids for a herd member: it heads for its slot round the herd's centre (cohesion), bears
-     * away from any herd-mate too close (separation), and on the move faces the way the herd
-     * goes (alignment). Sets where it's walking to; once there with the herd grazing, it grazes.
+     * A herd member's place at time t, as its herd's centre stands then: its slot, turned with
+     * the herd, and a little to one side of it, shuffling to a new spot every few seconds (each
+     * on a timetable of its own).
      */
-    private void herdSteer(Creature c) {
-        Herd h = c.herd;
-        if (h.updated != updates) {
-            h.at(roundTime);
-            h.updated = updates;
+    private SpherePosition memberPlace(Creature c, PathState centre, double t) {
+        double every = SHUFFLE_EVERY * (0.7 + 0.6 * hashed(c.shuffleSeed, -1));
+        double phase = t / every + hashed(c.shuffleSeed, -2);
+        long n = (long) Math.floor(phase);
+        double f = Math.min(1.0, (phase - n) * every / SHUFFLE_TIME);
+        f = f * f * (3.0 - 2.0 * f);
+        double reach = c.shuffleReach;
+        double a0 = hashed(c.shuffleSeed, 2 * n - 2) * Math.PI * 2.0, r0 = reach * Math.sqrt(hashed(c.shuffleSeed, 2 * n - 1));
+        double a1 = hashed(c.shuffleSeed, 2 * n) * Math.PI * 2.0, r1 = reach * Math.sqrt(hashed(c.shuffleSeed, 2 * n + 1));
+        double along = c.slot[0] + r0 * Math.cos(a0) + (r1 * Math.cos(a1) - r0 * Math.cos(a0)) * f;
+        double across = c.slot[1] + r0 * Math.sin(a0) + (r1 * Math.sin(a1) - r0 * Math.sin(a0)) * f;
+        SpherePosition p = SphereFrame.at(centre.at(), centre.heading()).toSphere(along, 0.0, across);
+        // (never out over the water: drawn in towards the herd's centre till it's on land)
+        for (int i = 3; i >= 0 && TerrainMesh.getLayeredHeight(p, terrainNoise) <= seaLevel + 0.5f; i--) {
+            p = SphereMath.slerp(centre.at(), p, i / 4.0);
         }
-        SphereFrame frame = SphereFrame.at(c.position);
-        double[] goal = frame.fromSphere(slotPlace(c));
-        double gx = goal[0], gz = goal[2];
-        double toSlot = Math.hypot(gx, gz);
-        // Separation: away from mates within a couple of body widths, more the closer
-        float room = bodyRadius(c) * 2.5f + 2f;
-        for (Creature mate : h.members) {
-            if (mate == c) continue;
-            double[] m = frame.fromSphere(mate.position);
-            double d = Math.hypot(m[0], m[2]);
-            if (d < room && d > 1e-3) {
-                double push = (room - d) / room * room;
-                gx -= m[0] / d * push;
-                gz -= m[2] / d * push;
+        return p;
+    }
+
+    /**
+     * Puts a creature on the ground where its path (or its herd's) has it just now, facing the
+     * way it's going, or for a herd member standing, the herd's way with its own slant. Only
+     * walls, rocks and the like push it about as it's drawn (never moving things, nor anything
+     * carried over from one update to the next), so where it is depends on the time alone.
+     */
+    private void place(Creature c, float dt) {
+        SpherePosition ideal;
+        float walking;
+        if (c.herd != null) {
+            Herd h = c.herd;
+            if (h.updated != updates) {
+                h.now = h.path.at(roundTime);
+                h.before = h.path.at(roundTime - LOOK_BACK);
+                h.updated = updates;
             }
+            ideal = memberPlace(c, h.now, roundTime);
+            SpherePosition before = memberPlace(c, h.before, roundTime - LOOK_BACK);
+            double moved = SphereMath.distance(before, ideal), speed = moved / LOOK_BACK;
+            // Facing the way it's going as it moves, the herd's way (with its own slant) as it stands
+            double rest = SphereMath.carryHeading(h.now.at(), ideal, h.now.heading()) + c.slant;
+            double going = moved > 1e-3 ? SphereMath.carryHeading(before, ideal, SphereMath.heading(before, ideal)) : rest;
+            double w = Math.min(1.0, speed / Math.max(0.1, 0.4 * c.species.walkSpeed));
+            double x = w * Math.cos(going) + (1.0 - w) * Math.cos(rest), z = w * Math.sin(going) + (1.0 - w) * Math.sin(rest);
+            c.heading = x * x + z * z > 1e-6 ? Math.atan2(z, x) : rest;
+            walking = (float) Math.min(1.0, speed / Math.max(0.1, c.species.walkSpeed * 0.6));
+        } else {
+            PathState now = c.path.at(roundTime);
+            ideal = now.at();
+            c.heading = now.heading();
+            walking = now.pace() > 0f ? 1f : 0f;
         }
-        // Alignment: on the move, a pull along the herd's heading (carried to where this one is)
-        if (h.moving) {
-            double along = SphereMath.carryHeading(h.centre, c.position, h.heading);
-            gx += Math.cos(along) * 6.0;
-            gz += Math.sin(along) * 6.0;
+        c.position = collision != null ? resolveBody(c, ideal, legHeight(c) * STEP_OVER) : ideal;
+        c.travelling = walking > 0.5f;
+        c.walking += (walking - c.walking) * Math.min(1f, dt * 3f);
+        c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond * c.walking) % 1f;
+        if (collision != null) {
+            // The whole length is solid to others: middle, nose and tail
+            collision.addBody(c, c.position, bodyRadius(c));
+            collision.addBody(c, SphereMath.move(c.position, c.heading, noseReach(c)), endRadius(c));
+            collision.addBody(c, SphereMath.move(c.position, c.heading + Math.PI, tailReach(c)), endRadius(c));
         }
-        c.target = frame.toSphere(gx, 0.0, gz);
-        // Far behind, it hurries; with the herd standing grazing and itself in place, it grazes too
-        c.travelling = toSlot > 12.0 || h.moving;
-        if (!h.moving && toSlot < 4.0 && c.pause <= 0f && c.rand.nextFloat() < 0.02f) c.pause = 1f + c.rand.nextFloat() * 4f;
-        if (h.moving) c.pause = 0f;
     }
 
     // Each species' name (see the constructor)
@@ -651,29 +780,35 @@ public class OrganismManager {
                     continue;
                 }
                 if (s.herdSize <= 0) {
-                    list.add(create(s, p, new Random(creatureSeed)));
+                    // One alone, on a path of its own
+                    Creature c = create(s, p, new Random(creatureSeed));
+                    c.path = new Path(creatureSeed ^ 0x5A17L, c.home, s.walkSpeed * c.sizeScale * c.legScale, false);
+                    list.add(c);
                     continue;
                 }
                 Random herdRand = new Random(creatureSeed);
-                Herd herd = new Herd(herdRand.nextLong(), p, s.walkSpeed * HERD_PACE);
-                herd.at(roundTime);
+                Herd herd = new Herd(new Path(herdRand.nextLong(), p, s.walkSpeed * HERD_PACE, true));
+                PathState start = herd.path.at(0.0);
                 int members = Math.max(2, Math.round(s.herdSize * (0.6f + 0.8f * herdRand.nextFloat())));
                 float spacing = Math.max(4f, s.halfLength() * 2.2f);
-                List<Creature> herdMembers = new ArrayList<>();
+                List<float[]> taken = new ArrayList<>();
                 for (int m = 0; m < members; m++) {
-                    float[] slot = slot(herdRand, members, spacing);
-                    SpherePosition at = SphereFrame.at(herd.centre, herd.heading).toSphere(slot[0], 0.0, slot[1]);
-                    if (!walkable(at)) at = herd.centre;
+                    float[] slot = slot(herdRand, members, spacing, taken);
+                    // (each member's looks from where it stands as the herd sets out)
+                    SpherePosition at = SphereFrame.at(start.at(), start.heading()).toSphere(slot[0], 0.0, slot[1]);
                     Creature c = create(s, at, new Random(herdRand.nextLong()));
                     c.herd = herd;
                     c.slot = slot;
-                    c.heading = herd.heading;
-                    herdMembers.add(c);
+                    c.shuffleSeed = herdRand.nextLong();
+                    c.shuffleReach = spacing * SHUFFLE_REACH;
+                    c.slant = (herdRand.nextDouble() - 0.5) * 1.2;
+                    herd.members.add(c);
                 }
-                herd.members.addAll(herdMembers);
-                list.addAll(herdMembers);
+                list.addAll(herd.members);
             }
         }
+        // (each put where it is just now, so none is seen in the wrong place for a moment)
+        for (Creature c : list) if (c.path != null || c.herd != null) place(c, 0f);
         return list;
     }
 
@@ -772,7 +907,10 @@ public class OrganismManager {
             c.gaitPhase = (c.gaitPhase + dt * c.species.stepsPerSecond) % 1f;
             return;
         }
-        if (c.herd != null) herdSteer(c);
+        if (c.path != null || c.herd != null) {
+            place(c, dt);
+            return;
+        }
         float speed = c.species.walkSpeed * c.sizeScale * c.legScale * (c.travelling ? 1.35f : 1f);
         boolean resting = c.pause > 0f;
         if (resting) {
@@ -780,14 +918,9 @@ public class OrganismManager {
         } else {
             double distance = SphereMath.distance(c.position, c.target);
             if (distance < 4.0) {
-                if (c.herd != null) {
-                    // In its place in the herd: it stands a moment (its goal moves with the herd)
-                    if (!c.herd.moving) c.pause = 0.5f + c.rand.nextFloat() * 1.5f;
-                } else {
-                    // A short stop after a trip; a longer one grazing
-                    c.pause = c.travelling ? 0.3f + c.rand.nextFloat() * 1.7f : 2f + c.rand.nextFloat() * 6f;
-                    pickTarget(c);
-                }
+                // A short stop after a trip; a longer one grazing
+                c.pause = c.travelling ? 0.3f + c.rand.nextFloat() * 1.7f : 2f + c.rand.nextFloat() * 6f;
+                pickTarget(c);
             } else {
                 double desired = SphereMath.heading(c.position, c.target);
                 if (collision != null) {
@@ -891,18 +1024,19 @@ public class OrganismManager {
     }
 
     /**
-     * Moves the whole body, middle, nose and tail, out of anything it has walked into (anything
-     * lower than clearance it passes over), in the tangent frame where it now is.
+     * Moves the whole body, middle, nose and tail, out of anything solid it stands in (walls,
+     * rocks and the like: not moving things, so where it ends up is the same on both PCs;
+     * anything lower than clearance it passes over), in the tangent frame where it now is.
      */
     private SpherePosition resolveBody(Creature c, SpherePosition p, float clearance) {
         double nose = noseReach(c), tail = tailReach(c), end = endRadius(c);
         for (int pass = 0; pass < 2; pass++) {
-            p = collision.resolve(p, bodyRadius(c), c, clearance);
+            p = collision.resolveStatic(p, bodyRadius(c), clearance);
             SphereFrame frame = SphereFrame.at(p);
             double hx = Math.cos(c.heading), hz = Math.sin(c.heading);
-            double[] head = frame.fromSphere(collision.resolve(frame.toSphere(hx * nose, 0.0, hz * nose), end, c, clearance));
+            double[] head = frame.fromSphere(collision.resolveStatic(frame.toSphere(hx * nose, 0.0, hz * nose), end, clearance));
             double x = head[0] - hx * nose, z = head[2] - hz * nose;
-            double[] back = frame.fromSphere(collision.resolve(frame.toSphere(x - hx * tail, 0.0, z - hz * tail), end, c, clearance));
+            double[] back = frame.fromSphere(collision.resolveStatic(frame.toSphere(x - hx * tail, 0.0, z - hz * tail), end, clearance));
             p = frame.toSphere(back[0] + hx * tail, SphereMath.altitude(p), back[2] + hz * tail);
         }
         return p;
@@ -973,12 +1107,13 @@ public class OrganismManager {
     private float bodyHeight(Creature c, float ground, float frontGround, float backGround, float time) {
         OrganismSpecies s = c.species;
         if (s.locomotion == OrganismSpecies.Locomotion.FLYER) {
-            // Holding its height above the land or sea below
-            return Math.max(ground, seaLevel) + s.bodyHeight + (c.level ? 0f : (float) Math.sin(time * 0.4f + phase(c.home)) * 8f) - ground;
+            // Holding its height above the land or sea below, rising and falling by the round's
+            // clock (so as high on both PCs)
+            return Math.max(ground, seaLevel) + s.bodyHeight + (c.level ? 0f : (float) Math.sin(roundTime * 0.4 + phase(c.home)) * 8f) - ground;
         }
         if (s.locomotion == OrganismSpecies.Locomotion.FLOATER) {
             // Floaters drift level, bobbing gently
-            return Math.max(ground, seaLevel) + (s.bodyHeight + (float) Math.sin(time * 0.7f + phase(c.home)) * 2.5f) * c.sizeScale - ground;
+            return Math.max(ground, seaLevel) + (s.bodyHeight + (float) Math.sin(roundTime * 0.7 + phase(c.home)) * 2.5f) * c.sizeScale - ground;
         }
         float bob = s.locomotion == OrganismSpecies.Locomotion.WALKER
                 ? (float) Math.abs(Math.sin(c.gaitPhase * Math.PI * 4)) * 0.03f * s.bodyHeight * c.walking : 0f;

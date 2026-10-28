@@ -53,10 +53,15 @@ public class Inhabitants {
         float patternScale;
     }
 
-    private enum Phase { INSIDE, WALKING, DRIVING }
+    enum Phase { INSIDE, WALKING, DRIVING }
 
     /** One person. */
-    private static final class Person {
+    static final class Person {
+        // Their nation, and the seed their looks were drawn from (a household's after their pace,
+        // a traveller's straight away), so another PC can make them the same (see replicaPerson)
+        int nation;
+        long looks;
+        boolean householdLooks;
         InfrastructureManager.Doorway home;
         // The door they last came out of (held open as they go)
         InfrastructureManager.Doorway leftFrom;
@@ -153,8 +158,9 @@ public class Inhabitants {
     private static final int THROUGH_TRAFFIC = 36;
     private static final float STUCK_SECONDS = 1.5f;
     private static final float HOP_SECONDS = 0.6f;
-    // Where the viewer is: someone hopelessly stuck may be quietly moved on, out of sight
-    private SpherePosition viewer;
+    // Where the viewer is, and on the host's PC in multiplayer the partner (null otherwise):
+    // someone hopelessly stuck may be quietly moved on, out of sight of both
+    private SpherePosition viewer, partner;
     private GeodesicCollision collision;
 
     /** Shares the world's solid things, so people and vehicles go round them and not through. */
@@ -163,7 +169,7 @@ public class Inhabitants {
         vehicles.setCollision(collision);
     }
 
-    private float bodyRadius(Person p) {
+    float bodyRadius(Person p) {
         float across = plan == MANY_LEGGED ? 0.16f : plan == BLOB ? blobRadius / height + 0.02f : 0.11f;
         return across * height * p.scale * p.bulk;
     }
@@ -216,7 +222,7 @@ public class Inhabitants {
     private final float[] bones = new float[OrganismSpecies.MAX_BONES * 16];
     private final OrganismMesh[] meshes = new OrganismMesh[8];
     private Shader shader;
-    private long lastCell = -1L;
+    private long lastCell = -1L, lastPartnerCell = -1L;
 
     public Inhabitants(long seed, int nationCount, InfrastructureManager infrastructure, PerlinNoise terrainNoise) {
         this.seed = seed;
@@ -693,7 +699,7 @@ public class Inhabitants {
         if (booths == null) booths = infrastructure.borders().borderGuards();
         for (int i = 0; i < booths.size(); i++) {
             InfrastructureManager.Guard b = booths.get(i);
-            boolean near = SphereMath.distance(viewer, b.place()) < ACTIVE_RADIUS;
+            boolean near = fromViewers(b.place()) < ACTIVE_RADIUS;
             if (!near) {
                 guards.remove(i);
                 continue;
@@ -835,20 +841,36 @@ public class Inhabitants {
     // ==========================================
 
     /**
-     * Moves everyone on. The households in the geodesic cells within reach of the viewer are
-     * peopled (and their vehicles parked), nearest first; those well behind go.
+     * Moves everyone on. The households in the geodesic cells within reach of the viewer (and,
+     * in multiplayer on the host's PC, of the partner too, M57) are peopled (and their vehicles
+     * parked), nearest first; those well behind them go. On the joiner's PC nobody is moved
+     * here: the host's townsfolk are drawn instead (see TownsfolkSync).
      */
-    public void update(float dt, SpherePosition viewer) {
+    public void update(float dt, SpherePosition viewer, SpherePosition partner) {
         this.viewer = viewer;
+        this.partner = replica ? null : partner;
+        if (replica) {
+            // (only the guards, who stand still in their booths, are this PC's own)
+            if (collision != null) {
+                for (Person p : replicaPeople) if (p.phase == Phase.WALKING) collision.addBody(p, p.position, bodyRadius(p));
+            }
+            allVehicles.clear();
+            allVehicles.addAll(replicaCars);
+            vehicles.listSolid(allVehicles);
+            staffBooths();
+            return;
+        }
         GeodesicChunkGrid.Cell here = cells.cellAt(viewer);
-        if (here.id() != lastCell) {
+        long partnerCell = this.partner != null ? cells.cellAt(this.partner).id() : -1L;
+        if (here.id() != lastCell || partnerCell != lastPartnerCell) {
             lastCell = here.id();
+            lastPartnerCell = partnerCell;
             double keep = ACTIVE_RADIUS + here.angularRadius() * Planet.radius() * 3.0;
             Iterator<Map.Entry<Long, List<Person>>> it = peopleByCell.entrySet().iterator();
             while (it.hasNext()) {
                 Map.Entry<Long, List<Person>> entry = it.next();
                 long key = entry.getKey();
-                if (SphereMath.angle(cells.cell(key).centre(), SphereMath.direction(viewer)) * Planet.radius() > keep) {
+                if (fromViewers(cells.cell(key).centre()) > keep) {
                     it.remove();
                     // Anyone still on the move (driving, or walking where they can be seen) carries
                     // on until they're done and out of sight, and so do vehicles in use or in sight
@@ -867,19 +889,23 @@ public class Inhabitants {
             }
             // What's still to be peopled, nearest first
             unpeopled.clear();
-            GeodesicChunkGrid.Direction at = SphereMath.direction(viewer);
-            List<GeodesicChunkGrid.Cell> near = cells.cellsWithin(at, ACTIVE_RADIUS / Planet.radius());
-            near.sort((a, b) -> Double.compare(SphereMath.angle(a.centre(), at), SphereMath.angle(b.centre(), at)));
-            for (GeodesicChunkGrid.Cell cell : near) if (!peopleByCell.containsKey(cell.id())) unpeopled.add(cell.id());
+            List<GeodesicChunkGrid.Cell> near = new ArrayList<>(cells.cellsWithin(SphereMath.direction(viewer), ACTIVE_RADIUS / Planet.radius()));
+            if (this.partner != null) near.addAll(cells.cellsWithin(SphereMath.direction(this.partner), ACTIVE_RADIUS / Planet.radius()));
+            near.sort((a, b) -> Double.compare(fromViewers(a.centre()), fromViewers(b.centre())));
+            for (GeodesicChunkGrid.Cell cell : near) {
+                if (!peopleByCell.containsKey(cell.id()) && !unpeopled.contains(cell.id())) unpeopled.add(cell.id());
+            }
         }
         if (!unpeopled.isEmpty()) {
             int count = 0;
             for (List<Person> list : peopleByCell.values()) count += list.size();
+            // (as many again round the partner)
+            int most = this.partner != null ? MAX_PEOPLE * 2 : MAX_PEOPLE;
             for (int n = 0; n < CELLS_PER_FRAME && !unpeopled.isEmpty(); n++) {
                 long key = unpeopled.remove(0);
                 if (peopleByCell.containsKey(key)) continue;
                 List<Vehicles.Vehicle> cars = new ArrayList<>();
-                List<Person> people = populate(key, MAX_PEOPLE - count, cars);
+                List<Person> people = populate(key, most - count, cars);
                 count += people.size();
                 peopleByCell.put(key, people);
                 vehiclesByCell.put(key, cars);
@@ -904,7 +930,7 @@ public class Inhabitants {
         float farDistance = DRAW_DISTANCE + 100f;
         for (List<Person> list : peopleByCell.values()) {
             for (Person p : list) {
-                if (p.phase != Phase.DRIVING && SphereMath.distance(viewer, p.position) > farDistance) {
+                if (p.phase != Phase.DRIVING && fromViewers(p.position) > farDistance) {
                     if (((frame + System.identityHashCode(p)) & 3) != 0) continue;
                     live(p, Math.min(step * 4f, 0.25f));
                 } else {
@@ -913,9 +939,103 @@ public class Inhabitants {
             }
         }
         for (Person p : roaming) live(p, step);
-        vehicles.update(allVehicles, step, viewer);
+        vehicles.update(allVehicles, step, this::outOfSight);
         swingDoors(step);
         staffBooths();
+    }
+
+    /** How far a place is from the nearer of the viewer and (on the host's PC in multiplayer) the partner. */
+    private double fromViewers(SpherePosition place) {
+        double d = SphereMath.distance(viewer, place);
+        return partner == null ? d : Math.min(d, SphereMath.distance(partner, place));
+    }
+
+    /** As fromViewers, for a direction (a cell's centre). */
+    private double fromViewers(GeodesicChunkGrid.Direction direction) {
+        double a = SphereMath.angle(direction, SphereMath.direction(viewer));
+        if (partner != null) a = Math.min(a, SphereMath.angle(direction, SphereMath.direction(partner)));
+        return a * Planet.radius();
+    }
+
+    // ------------------------------------------------------------------ the joiner's PC (M57)
+
+    // Multiplayer, on the joiner's PC: nobody is moved here, and the host's townsfolk are drawn
+    // instead, as TownsfolkSync keeps them (where the host's PC says, a snapshot behind)
+    private boolean replica;
+    final List<Person> replicaPeople = new ArrayList<>();
+    final List<Vehicles.Vehicle> replicaCars = new ArrayList<>();
+
+    /** Whether this PC draws the host's townsfolk (the joiner's) rather than moving its own. */
+    void setReplica(boolean replica) {
+        if (this.replica == replica) return;
+        this.replica = replica;
+        clear();
+        peopleByCell.clear();
+        roaming.clear();
+        roamingCars.clear();
+        travellers.clear();
+        throughCars.clear();
+        throughForPartner.clear();
+        arrived.clear();
+        openDoors.clear();
+        replicaPeople.clear();
+        replicaCars.clear();
+    }
+
+    boolean isReplica() {
+        return replica;
+    }
+
+    /** Someone looking just like one of the host's (see Person.looks), to be put where the host says. */
+    Person replicaPerson(int nationId, long looks, boolean household) {
+        Person p = new Person();
+        Random rand = new Random(looks);
+        // (a household member's first draw is their pace)
+        if (household) rand.nextFloat();
+        dress(p, nationId, rand);
+        p.rand = rand;
+        p.looks = looks;
+        p.householdLooks = household;
+        p.phase = Phase.WALKING;
+        return p;
+    }
+
+    /** How far someone goes in half a step (their walk's phase turns by pi in it). */
+    float halfStride(Person p) {
+        return legLength * 0.55f * p.scale;
+    }
+
+    Vehicles vehicles() {
+        return vehicles;
+    }
+
+    /** Everyone out just now (walking, or driving), on the host's PC. */
+    void forEachOut(java.util.function.Consumer<Person> visit) {
+        for (List<Person> list : peopleByCell.values()) for (Person p : list) if (p.phase != Phase.INSIDE) visit.accept(p);
+        for (Person p : roaming) if (p.phase != Phase.INSIDE) visit.accept(p);
+        for (Person p : travellers) if (p.phase != Phase.INSIDE) visit.accept(p);
+    }
+
+    /** Every vehicle about just now, on the host's PC. */
+    List<Vehicles.Vehicle> vehiclesNow() {
+        return allVehicles;
+    }
+
+    /** Each front door open just now, and how far (0 to 1). */
+    void forEachOpenDoor(java.util.function.BiConsumer<InfrastructureManager.Doorway, Float> visit) {
+        for (DoorState state : openDoors.values()) if (state.amount > 0f) visit.accept(state.door, state.amount);
+    }
+
+    /** The joiner's PC: the host's open doors as last heard, by door, each swung towards how open it was there. */
+    void showDoors(Map<InfrastructureManager.Doorway, Float> open, float dt) {
+        for (InfrastructureManager.Doorway door : open.keySet()) openDoors.computeIfAbsent(door.id, k -> new DoorState(door));
+        Iterator<DoorState> it = openDoors.values().iterator();
+        while (it.hasNext()) {
+            DoorState state = it.next();
+            float wanted = open.getOrDefault(state.door, 0f);
+            state.amount += Math.max(-DOOR_CLOSING * dt, Math.min(DOOR_OPENING * dt, wanted - state.amount));
+            if (state.amount <= 0f && wanted <= 0f) it.remove();
+        }
     }
 
     // ------------------------------------------------------------------ doors
@@ -1092,12 +1212,15 @@ public class Inhabitants {
     private final List<Vehicles.Vehicle> roamingCars = new ArrayList<>();
     private final List<Person> travellers = new ArrayList<>();
     private final List<Vehicles.Vehicle> throughCars = new ArrayList<>();
+    // Which of those passing through are kept round the partner rather than the viewer (on the
+    // host's PC in multiplayer, M57), alongside throughCars
+    private final List<Boolean> throughForPartner = new ArrayList<>();
     // Vehicles passing through that have got where they were going, to go once out of sight
     private final java.util.Set<Vehicles.Vehicle> arrived = new java.util.HashSet<>();
     private final Random trafficRand = new Random(0x7AFF1CL);
 
     private boolean outOfSight(SpherePosition place) {
-        return SphereMath.distance(viewer, place) > Vehicles.OUT_OF_SIGHT;
+        return fromViewers(place) > Vehicles.OUT_OF_SIGHT;
     }
 
     /**
@@ -1107,29 +1230,54 @@ public class Inhabitants {
      * as the other, and is gone once it's there unseen or far off.
      */
     private void passThrough(float dt) {
-        // Gone far off, or there and out of sight: no longer kept
+        // Gone far off and out of sight, or there and out of sight: no longer kept (nor once the
+        // partner it was kept round has gone)
         for (int i = throughCars.size() - 1; i >= 0; i--) {
             Vehicles.Vehicle v = throughCars.get(i);
-            if (SphereMath.distance(viewer, v.position()) > Vehicles.OUT_OF_SIGHT * 1.6f || (arrived.contains(v) && outOfSight(v.position()))) {
+            boolean forPartner = throughForPartner.get(i), unseen = outOfSight(v.position());
+            boolean far = SphereMath.distance(around(forPartner), v.position()) > Vehicles.OUT_OF_SIGHT * 1.6f;
+            if ((far && unseen) || (arrived.contains(v) && unseen) || (forPartner && partner == null && unseen)) {
                 arrived.remove(v);
                 throughCars.remove(i);
                 travellers.remove(i);
+                throughForPartner.remove(i);
             }
         }
-        // Kept up to strength: a few more each frame while short (so arriving anywhere, there's
-        // traffic on the roads at once, however long the viewer has been there)
-        for (int k = 0; k < 3 && throughCars.size() < THROUGH_TRAFFIC; k++) addThroughCar();
+        // Kept up to strength round each: a few more each frame while short (so arriving
+        // anywhere, there's traffic on the roads at once, however long the viewer has been there)
+        for (int k = 0; k < 3 && throughKeptRound(false) < THROUGH_TRAFFIC; k++) addThroughCar(false);
+        for (int k = 0; k < 3 && partner != null && throughKeptRound(true) < THROUGH_TRAFFIC; k++) addThroughCar(true);
+    }
+
+    /** Who a vehicle passing through is kept round: the partner (while there is one) or the viewer. */
+    private SpherePosition around(boolean forPartner) {
+        return forPartner && partner != null ? partner : viewer;
+    }
+
+    /**
+     * How many of those passing through are about the partner (or the viewer): every one within
+     * reach of them, whoever it was made for, so two players together share one lot of traffic
+     * rather than having twice as much.
+     */
+    private int throughKeptRound(boolean forPartner) {
+        SpherePosition around = around(forPartner);
+        int count = 0;
+        for (Vehicles.Vehicle v : throughCars) if (SphereMath.distance(around, v.position()) <= Vehicles.OUT_OF_SIGHT * 1.6f) count++;
+        return count;
     }
 
     /**
      * One more car passing through: normally coming from out of sight; but when well short (just
      * arrived somewhere), anywhere on the roads round about, already part way along.
      */
-    private void addThroughCar() {
-        boolean filling = throughCars.size() < THROUGH_TRAFFIC / 2;
-        SpherePosition from = filling ? infrastructure.roadPointBetween(viewer, 0f, Vehicles.OUT_OF_SIGHT + 300f, trafficRand)
-                : infrastructure.roadPointBetween(viewer, Vehicles.OUT_OF_SIGHT, Vehicles.OUT_OF_SIGHT + 300f, trafficRand);
+    private void addThroughCar(boolean forPartner) {
+        SpherePosition around = around(forPartner), other = forPartner ? viewer : partner;
+        boolean filling = throughKeptRound(forPartner) < THROUGH_TRAFFIC / 2;
+        SpherePosition from = filling ? infrastructure.roadPointBetween(around, 0f, Vehicles.OUT_OF_SIGHT + 300f, trafficRand)
+                : infrastructure.roadPointBetween(around, Vehicles.OUT_OF_SIGHT, Vehicles.OUT_OF_SIGHT + 300f, trafficRand);
         if (from == null) return;
+        // (never appearing in sight of the other)
+        if (other != null && SphereMath.distance(other, from) <= Vehicles.OUT_OF_SIGHT) return;
         List<InfrastructureManager.Doorway> doors = infrastructure.doorwaysNear(from, 1500f);
         doors.removeIf(d -> d.shop);
         if (doors.isEmpty()) return;
@@ -1137,7 +1285,8 @@ public class Inhabitants {
         Person driver = new Person();
         driver.home = near;
         driver.residence = near;
-        driver.rand = new Random(trafficRand.nextLong());
+        driver.looks = trafficRand.nextLong();
+        driver.rand = new Random(driver.looks);
         driver.speed = 14f;
         dress(driver, near.nationId, driver.rand);
         Vehicles.Vehicle[] made = new Vehicles.Vehicle[1];
@@ -1151,7 +1300,7 @@ public class Inhabitants {
                 return;
             }
             for (int attempt = 0; attempt < 8; attempt++) {
-                SpherePosition onward = attempt == 0 ? farSide(here) : infrastructure.roadPointBetween(here, 300f, 2600f, trafficRand);
+                SpherePosition onward = attempt == 0 ? farSide(here, around(forPartner)) : infrastructure.roadPointBetween(here, 300f, 2600f, trafficRand);
                 if (onward != null && vehicles.travel(made[0], here, onward, arrive[0])) return;
             }
             arrived.add(made[0]);
@@ -1160,7 +1309,7 @@ public class Inhabitants {
         for (int attempt = 0; attempt < 6 && made[0] == null; attempt++) {
             // Most come by on the way across to the far side; the rest head off any way at all
             boolean across = trafficRand.nextFloat() < 0.75f;
-            SpherePosition to = across ? farSide(from) : infrastructure.roadPointBetween(from, 1200f, 2600f, trafficRand);
+            SpherePosition to = across ? farSide(from, around) : infrastructure.roadPointBetween(from, 1200f, 2600f, trafficRand);
             if (to == null || SphereMath.distance(from, to) < 600.0) continue;
             // Either way along it, as likely as each other, whichever end happens to be nearer the roads
             // round about (both ends out of sight)
@@ -1169,7 +1318,7 @@ public class Inhabitants {
                 start = to;
                 end = from;
             }
-            made[0] = vehicles.traffic(near.nationId, near, start, end, new Random(trafficRand.nextLong()), arrive[0]);
+            made[0] = vehicles.traffic(near.nationId, near, start, end, trafficRand.nextLong(), arrive[0]);
         }
         if (made[0] == null) return;
         if (filling) vehicles.skipAlong(made[0], trafficRand.nextFloat() * 0.6f);
@@ -1177,13 +1326,14 @@ public class Inhabitants {
         driver.driving = made[0];
         throughCars.add(made[0]);
         travellers.add(driver);
+        throughForPartner.add(forPartner);
     }
 
-    /** A point on the roads across on the far side of the viewer from a place, out of sight. */
-    private SpherePosition farSide(SpherePosition from) {
-        // (on along the great circle from the place through the viewer)
-        double onward = SphereMath.heading(viewer, from) + Math.PI;
-        SpherePosition across = SphereMath.move(SphereMath.atAltitude(viewer, 0.0), onward, Vehicles.OUT_OF_SIGHT + 200f);
+    /** A point on the roads across on the far side of someone (the viewer, or the partner) from a place, out of sight. */
+    private SpherePosition farSide(SpherePosition from, SpherePosition around) {
+        // (on along the great circle from the place through them)
+        double onward = SphereMath.heading(around, from) + Math.PI;
+        SpherePosition across = SphereMath.move(SphereMath.atAltitude(around, 0.0), onward, Vehicles.OUT_OF_SIGHT + 200f);
         SpherePosition to = infrastructure.roadPointBetween(across, 0f, 500f, trafficRand);
         return to != null && !outOfSight(to) ? null : to;
     }
@@ -1204,10 +1354,13 @@ public class Inhabitants {
             float expected = 0.8f + 2.6f * door.urbanness;
             int household = (int) expected + (rand.nextFloat() < expected - (int) expected ? 1 : 0);
             // Their vehicle, if they have one, parked at the roadside outside
-            Vehicles.Vehicle car = household > 0 ? vehicles.forHousehold(door, new Random(rand.nextLong())) : null;
+            Vehicles.Vehicle car = household > 0 ? vehicles.forHousehold(door, rand.nextLong()) : null;
             if (car != null) cars.add(car);
             for (int member = 0; member < household && people.size() < room; member++) {
-                Person person = create(door, new Random(rand.nextLong()), member == 0 ? car : null);
+                long looks = rand.nextLong();
+                Person person = create(door, new Random(looks), member == 0 ? car : null);
+                person.looks = looks;
+                person.householdLooks = true;
                 people.add(person);
             }
             if (people.size() >= room) break;
@@ -1275,6 +1428,7 @@ public class Inhabitants {
 
     /** Build and clothes: their nation's dress, their own size and shade of skin. */
     private void dress(Person p, int nationId, Random rand) {
+        p.nation = nationId;
         p.sway = rand.nextFloat() * 6.2832f;
         p.scale = 0.9f + rand.nextFloat() * 0.2f;
         p.bulk = 0.85f + rand.nextFloat() * 0.35f;
@@ -2013,7 +2167,7 @@ public class Inhabitants {
             p.steerTimer = 0f;
         } else if (p.stuckCount <= 5) {
             replan(p);
-        } else if (SphereMath.distance(viewer, p.position) > DRAW_DISTANCE) {
+        } else if (fromViewers(p.position) > DRAW_DISTANCE) {
             // Hopeless, and no one to see: on from the next stretch of street
             moveTo(p, p.route.get(p.next).place());
             p.next = Math.min(p.next + 1, p.route.size() - 1);
@@ -2223,6 +2377,7 @@ public class Inhabitants {
         List<List<Person>> everyone = new ArrayList<>(peopleByCell.values());
         everyone.add(roaming);
         everyone.add(travellers);
+        everyone.add(replicaPeople);
         for (List<Person> list : everyone) {
             for (Person p : list) {
                 // Out walking, or driving a vehicle with an open top they can be seen in
@@ -2235,10 +2390,10 @@ public class Inhabitants {
                     SphereRender.setAnchor(gl, shader, SphereFrame.at(seat.place()).modelMatrix(1f, eye.at));
                     pose(p, time, new float[] { 0f, seat.rim(), 0f, (float) (Math.PI * 0.5 - seat.heading()) });
                     gl.glUniformMatrix4fv(bonesLocation, boneCount, false, bones, 0);
-                    drawPerson(gl, p, p.home.nationId, seen < 260f * 260f);
+                    drawPerson(gl, p, p.nation, seen < 260f * 260f);
                     continue;
                 }
-                drawStanding(gl, bonesLocation, p, p.home.nationId, eye, time);
+                drawStanding(gl, bonesLocation, p, p.nation, eye, time);
             }
         }
         // The border guards, standing in their booths

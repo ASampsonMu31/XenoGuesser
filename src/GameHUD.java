@@ -9,7 +9,9 @@ import javax.swing.JPanel;
  * Each guess earns its points as productivity, and as cash the monthly salary plus half the
  * points; cash is what the shop takes. During play the panel is drawn over the 3D view by
  * the GL HUD, which can be see-through; this Swing copy is shown only over the results
- * screen, which covers the 3D view, so the round's points have somewhere to land.
+ * screen, which covers the 3D view, so the round's points have somewhere to land. Multiplayer
+ * (M58) has none of this: rounds go on until a player has won 10, and the panel shows each
+ * player's rounds won as a row of circles in their suit's colour.
  */
 public class GameHUD extends JPanel {
     public static final int QUARTERS = 4, ROUNDS_PER_QUARTER = 3, ROUNDS = QUARTERS * ROUNDS_PER_QUARTER;
@@ -23,11 +25,12 @@ public class GameHUD extends JPanel {
     private volatile int currentFps = 0;
     // Bumped whenever the round or score changes, so the GL copy knows to repaint
     private volatile int version;
-    // Multiplayer (M13): the game's scoring (both players' productivity and quarter points, shown
-    // instead of the target), and whether the year has gone on to final deciders (M17)
+    // Multiplayer (M58): the game's scoring (both players' rounds won, shown instead of
+    // everything else), and the last round whose result has landed on the panel (the rounds won
+    // are counted up to it, so a round's circle fills as its result flies up, not before)
     private volatile MultiplayerScore multiplayer;
     private volatile Multiplayer session;
-    private volatile boolean deciders;
+    private volatile int bankedRound;
 
     public GameHUD() {
         setOpaque(false);
@@ -43,6 +46,7 @@ public class GameHUD extends JPanel {
     /** A guess's points: all of them added to productivity, and cashFor them to the cash (singleplayer only: multiplayer has no cash). */
     public void addRound(int points) {
         productivity += points;
+        bankedRound = currentRound;
         if (!Multiplayer.isActive()) {
             cash += cashFor(points);
             recentPay[paidRounds++ % recentPay.length] = cashFor(points);
@@ -92,7 +96,7 @@ public class GameHUD extends JPanel {
         return Math.min(QUARTERS - 1, (currentRound - 1) / ROUNDS_PER_QUARTER);
     }
 
-    /** Multiplayer: shows both players' productivity and quarter points (from score) instead of the target. */
+    /** Multiplayer: shows both players' rounds won (from score) instead of the year. */
     public void setMultiplayer(Multiplayer session, MultiplayerScore score) {
         this.session = session;
         this.multiplayer = score;
@@ -100,16 +104,10 @@ public class GameHUD extends JPanel {
         repaint();
     }
 
-    /** Multiplayer (M17): the points were level after Q4, so rounds go on past the year, one decider at a time. */
-    public void startDeciders() {
-        deciders = true;
-        version++;
-        repaint();
-    }
-
-    /** Whether this round is a final decider (past the year's last round), and which (from 1); 0 if not. */
-    public int deciderNumber() {
-        return currentRound > ROUNDS ? currentRound - ROUNDS : 0;
+    /** Multiplayer: the rounds a player has won, as far as the panel shows (up to the last round whose result has landed). */
+    public int roundsWon(Multiplayer.Role player) {
+        MultiplayerScore score = multiplayer;
+        return score == null ? 0 : score.wins(player, bankedRound);
     }
 
     /** The money needed by the end of this quarter (lower in the harder game modes: see GameMode), to the nearest 50. */
@@ -127,9 +125,9 @@ public class GameHUD extends JPanel {
         return currentRound >= ROUNDS;
     }
 
-    /** Advances the global game state round loop index. */
+    /** Advances the global game state round loop index (multiplayer's rounds go on until the game's won). */
     public void advanceRound() {
-        if (currentRound < ROUNDS || deciders) {
+        if (currentRound < ROUNDS || multiplayer != null) {
             currentRound++;
             // A new quarter starts its productivity afresh
             if ((currentRound - 1) % ROUNDS_PER_QUARTER == 0) productivity = 0;
@@ -147,9 +145,7 @@ public class GameHUD extends JPanel {
     }
 
     public int getVersion() {
-        // (and whenever a guess comes in from the partner, for their productivity and the points)
-        Multiplayer s = session;
-        return version + (s != null ? s.guessCount() * 7919 : 0);
+        return version;
     }
 
     /** Paints the panel; shared by this component and the GL HUD. */
@@ -158,22 +154,19 @@ public class GameHUD extends JPanel {
         MultiplayerScore score = multiplayer;
         Multiplayer s = session;
         if (score != null && s != null) {
-            // Both players, this one on top marked "(You)": this quarter's productivity (this
-            // player's live, the partner's as of their last guess) and their quarter points
+            // Both players, this one on top marked "(You)", each with their rounds won
             Multiplayer.Role a = s.role, b = s.role.other();
-            int productivityA = a == s.role ? productivity : score.productivitySoFar(a, currentRound);
-            int productivityB = b == s.role ? productivity : score.productivitySoFar(b, currentRound);
-            HudStyle.paintMultiplayerScorePanel(g, getQuarter(), (currentRound - 1) % ROUNDS_PER_QUARTER, deciderNumber(),
-                    new String[] { a.label + " (You)", b.label }, new java.awt.Color[] { textColour(a), textColour(b) },
-                    new int[] { productivityA, productivityB }, new int[] { score.points(a), score.points(b) }, body);
+            HudStyle.paintMultiplayerScorePanel(g, currentRound, new String[] { s.name(a), s.name(b) },
+                    new java.awt.Color[] { s.suit(a).awt(), s.suit(b).awt() }, new java.awt.Color[] { textColour(s.suit(a)), textColour(s.suit(b)) },
+                    new int[] { roundsWon(a), roundsWon(b) }, body);
             return;
         }
         HudStyle.paintScorePanel(g, getQuarter(), (currentRound - 1) % ROUNDS_PER_QUARTER, productivity, getTarget(), cash, body);
     }
 
-    /** A player's colour (M6) lifted towards white, to read as text on the dark panel. */
-    static java.awt.Color textColour(Multiplayer.Role player) {
-        float[] c = player.trimColour();
+    /** A suit's colour (M6, M58) lifted towards white, to read as text on the dark panel. */
+    static java.awt.Color textColour(SuitColour suit) {
+        float[] c = suit.trimColour();
         return new java.awt.Color((c[0] + 2f) / 3f, (c[1] + 2f) / 3f, (c[2] + 2f) / 3f);
     }
 

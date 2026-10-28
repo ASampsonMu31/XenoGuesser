@@ -90,6 +90,9 @@ final class DevTestRun {
         case "partner": XenoGuesser.later(1500, () -> app.glEventListener.lookAtPartner(0f)); break;
         // quit: quits the game -Dxenoguesser.quitdelay ms in (default 5000), as the settings' Quit game does
         case "quit": XenoGuesser.later(Dev.integer("xenoguesser.quitdelay", 5000), app::shutdownGame); break;
+        // leave: Return to menu, as the settings' button (forfeiting a multiplayer game), five
+        // seconds in (-Dxenoguesser.leavedelay)
+        case "leave": XenoGuesser.later(Dev.integer("xenoguesser.leavedelay", 5000), app::returnToMenu); break;
         // autoplay: every -Dxenoguesser.autoplayms (default 4000) the next thing a player would do:
         // press on from the quarter's verdict, else leave the shop (buying nothing), else go on
         // from the results, else guess (see guessat)

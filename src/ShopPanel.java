@@ -126,7 +126,7 @@ public class ShopPanel extends JPanel {
 
     /**
      * As open, with what the wait after leaving says given by waitingText (asked each time it's
-     * drawn; multiplayer: "Waiting for Player 119-B" until the partner is ready too).
+     * drawn; multiplayer: "Waiting for Sam" (the partner's name) until the partner is ready too).
      */
     public void open(List<Card> offers, Runnable onLeave, java.util.function.Supplier<String> waitingText) {
         open(offers, onLeave, waitingText, null);
@@ -310,8 +310,8 @@ public class ShopPanel extends JPanel {
             int bh = Math.max(40, Math.round(h * 0.052f)), bw = Math.max(200, Math.round(cardW * 0.9f));
             if (leaving) {
                 nextButton.setBounds(0, 0, 0, 0);
-                // (wide enough for "Waiting for Player 119-B" too)
-                int lw = Math.round(bw * 1.5f);
+                // (wide enough for "Waiting for" and the longest of names too)
+                int lw = Math.round(bw * 1.7f);
                 drawLoading(g, (w - lw) / 2, buttonsY, lw, bh, now);
             } else {
                 nextButton.setBounds((w - bw) / 2, buttonsY, bw, bh);

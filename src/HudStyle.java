@@ -266,57 +266,54 @@ public final class HudStyle {
         money(g, cash, 408, SCORE_W - 408 - 14, VALUE);
     }
 
+    /** Multiplayer: where the rounds-won circles are on the score panel (each row's first circle's middle), and their size. */
+    public static final int CIRCLES_X = 318, CIRCLES_Y = 38, CIRCLE_ROW = 26, CIRCLE_STEP = 20, CIRCLE_SIZE = 15;
+
     /**
-     * The score panel in multiplayer (M13): no target; the quarter's months (or "Final decider
-     * N" once the year's over, M17), both players' productivity this quarter and their quarter
-     * points, each named in their colour (this player first, "(You)" after their code). No
-     * cash: multiplayer's shop is free (the round's loser takes one).
+     * The score panel in multiplayer (M58): the round being played, and each player (this one
+     * first, "(You)" after their name) with a row of ROUNDS_TO_WIN circles, filled in their suit's
+     * colour for each round they've won. No cash: multiplayer's shop is free (the round's loser
+     * takes one).
      */
-    public static void paintMultiplayerScorePanel(Graphics2D g, int quarter, int month, int decider, String[] names,
-                                                  Color[] colours, int[] productivity, int[] points, Color body) {
+    public static void paintMultiplayerScorePanel(Graphics2D g, int round, String[] names, Color[] suits, Color[] textColours,
+                                                  int[] won, Color body) {
         panel(g, 0, 0, SCORE_W, SCORE_H, body);
-        if (decider > 0) {
-            label(g, "Final decider", 20, 28, 11f, LABEL);
-            g.setFont(font(Font.BOLD, 30f));
-            g.setColor(GOLD);
-            g.drawString(Integer.toString(decider), 20, 64);
-        } else {
-            Color colour = QUARTER_COLOURS[quarter];
-            label(g, "Quarter " + (quarter + 1), 20, 28, 11f, LABEL);
-            float tabW = 40f, tabH = 26f, gap = 6f, tabY = 40f;
-            Font monthFont = font(Font.BOLD, 12f);
-            for (int m = 0; m < 3; m++) {
-                float x = 20f + m * (tabW + gap);
-                java.awt.geom.RoundRectangle2D tab = new java.awt.geom.RoundRectangle2D.Float(x, tabY, tabW, tabH, 12f, 12f);
-                g.setColor(m < month ? greyed(colour) : m == month ? colour : new Color(255, 255, 255, 18));
-                g.fill(tab);
-                g.setStroke(new BasicStroke(1.2f));
-                g.setColor(m > month ? new Color(120, 205, 235, 90) : new Color(255, 255, 255, 150));
-                g.draw(tab);
-                String name = MONTHS[quarter * 3 + m];
-                g.setFont(monthFont);
-                FontMetrics fm = g.getFontMetrics();
-                g.setColor(m > month ? DIM : new Color(20, 24, 32));
-                g.drawString(name, x + (tabW - fm.stringWidth(name)) / 2f, tabY + (tabH + fm.getAscent() - fm.getDescent()) / 2f);
-            }
-        }
+        label(g, "Round", 20, 28, 11f, LABEL);
+        g.setFont(font(Font.BOLD, 30f));
+        g.setColor(VALUE);
+        g.drawString(Integer.toString(round), 20, 64);
+        label(g, "First to " + MultiplayerScore.ROUNDS_TO_WIN, 72, 64, 10f, GOLD);
         g.setColor(new Color(120, 205, 235, 70));
-        g.fill(new java.awt.geom.Rectangle2D.Float(168, 18, 1f, SCORE_H - 36));
-        // Each player: name, productivity this quarter, and quarter points (spread across where
-        // the cash was)
-        label(g, "Productivity", 184, 24, 10f, LABEL);
-        float pointsRight = SCORE_W - 24;
-        float pointsLabelW = labelWidth(g, "Points", 10f);
-        label(g, "Points", pointsRight - pointsLabelW, 24, 10f, LABEL);
+        g.fill(new java.awt.geom.Rectangle2D.Float(150, 18, 1f, SCORE_H - 36));
+        float nameRight = CIRCLES_X - CIRCLE_SIZE / 2f - 12f;
         for (int p = 0; p < 2; p++) {
-            float y = 46 + p * 24;
-            label(g, names[p], 184, y, 11f, colours[p]);
-            g.setFont(font(Font.BOLD, 17f));
-            g.setColor(VALUE);
-            g.drawString(String.format("%,d", productivity[p]), 320, y + 1);
-            String pts = Integer.toString(points[p]);
-            g.setColor(colours[p]);
-            g.drawString(pts, pointsRight - g.getFontMetrics().stringWidth(pts), y + 1);
+            float cy = CIRCLES_Y + p * CIRCLE_ROW;
+            // The name as typed ("(You)" after this player's), cut short should it not fit before the circles
+            g.setFont(font(Font.BOLD, 14f));
+            FontMetrics fm = g.getFontMetrics();
+            String name = names[p], after = p == 0 ? " (You)" : "";
+            boolean cut = false;
+            while (name.length() > 1 && fm.stringWidth(name + (cut ? "..." : "") + after) > nameRight - 166f) {
+                name = name.substring(0, name.length() - 1);
+                cut = true;
+            }
+            g.setColor(textColours[p]);
+            g.drawString((cut ? name + "..." : name) + after, 166, cy + 5f);
+            g.setStroke(new BasicStroke(1.6f));
+            for (int c = 0; c < MultiplayerScore.ROUNDS_TO_WIN; c++) {
+                float x = CIRCLES_X + c * CIRCLE_STEP - CIRCLE_SIZE / 2f, y = cy - CIRCLE_SIZE / 2f;
+                java.awt.geom.Ellipse2D ring = new java.awt.geom.Ellipse2D.Float(x, y, CIRCLE_SIZE, CIRCLE_SIZE);
+                if (c < won[p]) {
+                    g.setColor(suits[p]);
+                    g.fill(ring);
+                    g.setColor(new Color(255, 255, 255, 190));
+                } else {
+                    g.setColor(new Color(255, 255, 255, 14));
+                    g.fill(ring);
+                    g.setColor(new Color(suits[p].getRed(), suits[p].getGreen(), suits[p].getBlue(), 170));
+                }
+                g.draw(ring);
+            }
         }
     }
 
@@ -336,25 +333,98 @@ public final class HudStyle {
         g.drawString(text, x, 64);
     }
 
-    // ------------------------------------------------------------------ FPS
+    // ------------------------------------------------------------------ Diagnostics
 
-    public static final int FPS_W = 92, FPS_H = 24;
+    public static final int DIAGNOSTICS_W = 300, DIAGNOSTICS_H = 86;
+    private static final float GB = 1024f * 1024f * 1024f;
+    // The memory bar's parts: the game's heap in use, the rest of what the game holds, everything
+    // else's, and the page file holding what's committed past the RAM (red once it's half full)
+    private static final Color HEAP_USED = new Color(110, 215, 245), GAME_REST = new Color(50, 125, 158),
+            OTHERS = new Color(150, 168, 185, 190), PAGED = GOLD, PAGED_HIGH = new Color(245, 105, 90);
 
-    public static void paintFps(Graphics2D g, int fps) {
+    /**
+     * The frame rate, and a bar of the PC's memory across: its RAM (the game's, the heap's in use
+     * at the start of it, then everything else's, then what's free) and, after a gap, its page
+     * file (to scale), filling as more is committed than the RAM can hold. Under the bar what
+     * each part comes to, and the heap in use of its budget (see MemoryBudget).
+     */
+    public static void paintDiagnostics(Graphics2D g, int fps, MemoryBudget.Reading memory) {
+        int w = DIAGNOSTICS_W;
+        panel(g, 0, 0, w, DIAGNOSTICS_H, GLASS);
+
+        // The frame rate, at the right as it always was
         String n = Integer.toString(fps);
         Font big = font(Font.BOLD, 16f);
         FontMetrics fm = g.getFontMetrics(big);
         float labelW = labelWidth(g, "fps", 10f);
-        float x = FPS_W - 6 - labelW - 5 - fm.stringWidth(n);
-        // A soft shadow keeps it legible over bright sky
+        float x = w - 14 - labelW - 5 - fm.stringWidth(n);
         g.setFont(big);
-        g.setColor(new Color(0, 0, 0, 150));
-        g.drawString(n, x + 1, 18);
-        Color c = fps >= 45 ? new Color(120, 235, 140) : fps >= 25 ? GOLD : new Color(245, 105, 90);
-        g.setColor(c);
-        g.drawString(n, x, 17);
-        label(g, "fps", FPS_W - 6 - labelW + 1, 18, 10f, new Color(0, 0, 0, 150));
-        label(g, "fps", FPS_W - 6 - labelW, 17, 10f, new Color(225, 232, 240));
+        g.setColor(fps >= 45 ? new Color(120, 235, 140) : fps >= 25 ? GOLD : new Color(245, 105, 90));
+        g.drawString(n, x, 22);
+        label(g, "fps", w - 14 - labelW, 22, 10f, VALUE);
+
+        // (gold when the PC's short and the heap's held tight: see MemoryBudget)
+        boolean squeezed = memory != null && memory.squeezed();
+        label(g, squeezed ? "Memory short" : "Memory", 14, 22, 10f, squeezed ? GOLD : LABEL);
+        boolean known = memory != null && memory.total() > 0L;
+
+        float bx = 14f, by = 32f, bw = w - 28f, bh = 12f, gap = 3f;
+        long pageFile = known ? memory.pageFile() : 0L;
+        float ramW = known && pageFile > 0L ? (bw - gap) * memory.total() / (float) (memory.total() + pageFile) : bw;
+        java.awt.Shape clip = g.getClip();
+        java.awt.geom.RoundRectangle2D ram = new java.awt.geom.RoundRectangle2D.Float(bx, by, ramW, bh, 6f, 6f);
+        g.setColor(new Color(255, 255, 255, 34));
+        g.fill(ram);
+        if (known) {
+            g.clip(ram);
+            float perByte = ramW / memory.total();
+            float heapW = memory.heapUsed() * perByte, gameW = Math.min(ramW, memory.game() * perByte);
+            float inUse = Math.min(ramW, Math.max(0L, memory.total() - memory.free()) * perByte);
+            g.setColor(GAME_REST);
+            g.fill(new java.awt.geom.Rectangle2D.Float(bx, by, gameW, bh));
+            g.setColor(HEAP_USED);
+            g.fill(new java.awt.geom.Rectangle2D.Float(bx, by, Math.min(heapW, gameW), bh));
+            if (inUse > gameW) {
+                g.setColor(OTHERS);
+                g.fill(new java.awt.geom.Rectangle2D.Float(bx + gameW, by, inUse - gameW, bh));
+            }
+            g.setClip(clip);
+        }
+        float pageShare = 0f;
+        if (pageFile > 0L) {
+            java.awt.geom.RoundRectangle2D page = new java.awt.geom.RoundRectangle2D.Float(bx + ramW + gap, by, bw - ramW - gap, bh, 6f, 6f);
+            g.setColor(new Color(255, 255, 255, 18));
+            g.fill(page);
+            pageShare = Math.min(1f, memory.pastRam() / (float) pageFile);
+            if (pageShare > 0f) {
+                g.clip(page);
+                g.setColor(pageShare > 0.5f ? PAGED_HIGH : PAGED);
+                g.fill(new java.awt.geom.Rectangle2D.Float(bx + ramW + gap, by, (bw - ramW - gap) * pageShare, bh));
+                g.setClip(clip);
+            }
+        }
+
+        if (!known) {
+            label(g, "The PC's memory can't be read", 14, 62, 9.5f, DIM);
+            return;
+        }
+        float lx = key(g, 14f, 62f, HEAP_USED, String.format(java.util.Locale.ROOT, "Game %.1f GB", memory.game() / GB));
+        lx = key(g, lx + 10f, 62f, OTHERS, String.format(java.util.Locale.ROOT, "Other %.1f",
+                Math.max(0L, memory.total() - memory.free() - memory.game()) / GB));
+        key(g, lx + 10f, 62f, new Color(255, 255, 255, 60), String.format(java.util.Locale.ROOT, "Free %.1f", memory.free() / GB));
+        key(g, 14f, 78f, pageShare > 0.5f ? PAGED_HIGH : PAGED, pageFile > 0L
+                ? String.format(java.util.Locale.ROOT, "Page file %.1f of %.1f", memory.pastRam() / GB, pageFile / GB)
+                : "No page file");
+        String heap = String.format(java.util.Locale.ROOT, "Heap %.1f of %.1f", memory.heapUsed() / GB, MemoryBudget.budget() / GB);
+        label(g, heap, w - 14 - labelWidth(g, heap, 9.5f), 78f, 9.5f, DIM);
+    }
+
+    /** A small square of the colour and what it stands for, from x; where the text ends. */
+    private static float key(Graphics2D g, float x, float baseline, Color colour, String text) {
+        g.setColor(colour);
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(x, baseline - 8f, 8f, 8f, 3f, 3f));
+        label(g, text, x + 12f, baseline, 9.5f, VALUE);
+        return x + 12f + labelWidth(g, text, 9.5f);
     }
 
     public static final int STAMINA_W = 220, STAMINA_H = 40;
@@ -382,8 +452,8 @@ public final class HudStyle {
 
     // ------------------------------------------------------------------ Inventory
 
-    /** Something the player carries: its name, the key that uses it and a way to draw its icon. */
-    public record Item(String name, String key, IconPainter icon) {
+    /** Something the player carries: its name and a way to draw its icon. */
+    public record Item(String name, IconPainter icon) {
     }
 
     @FunctionalInterface
@@ -391,35 +461,47 @@ public final class HudStyle {
         void paint(Graphics2D g, float x, float y, float size);
     }
 
-    public static final int INVENTORY_W = 236;
+    public static final int INVENTORY_W = 200;
+    // The height of the heading, and of each item's row under it
+    private static final int INVENTORY_HEAD = 28, INVENTORY_ROW = 40;
 
     public static int inventoryHeight(int items) {
-        return 38 + items * 54 + 6;
+        return INVENTORY_HEAD + items * INVENTORY_ROW + 6;
     }
 
-    public static void paintInventory(Graphics2D g, List<Item> items) {
+    /** The inventory, the item in hand (its place in items, or -1 for none) lit up. */
+    public static void paintInventory(Graphics2D g, List<Item> items, int held) {
         int h = inventoryHeight(items.size());
         panel(g, 0, 0, INVENTORY_W, h, GLASS);
-        label(g, "Inventory", 18, 25, 11f, LABEL);
+        label(g, "Inventory", 16, 19, 10f, LABEL);
         g.setColor(new Color(120, 205, 235, 60));
-        g.fill(new java.awt.geom.Rectangle2D.Float(18, 33, INVENTORY_W - 36, 1f));
-        float y = 40;
-        for (Item item : items) {
+        g.fill(new java.awt.geom.Rectangle2D.Float(16, 25, INVENTORY_W - 32, 1f));
+        float y = INVENTORY_HEAD + 2;
+        for (int i = 0; i < items.size(); i++) {
+            Item item = items.get(i);
+            boolean inHand = i == held;
+            // The one in hand on a lit band across the panel
+            if (inHand) {
+                java.awt.geom.RoundRectangle2D band = new java.awt.geom.RoundRectangle2D.Float(10, y, INVENTORY_W - 20, INVENTORY_ROW - 2, 9, 9);
+                g.setColor(new Color(110, 215, 245, 40));
+                g.fill(band);
+                g.setColor(new Color(110, 215, 245, 150));
+                g.setStroke(new BasicStroke(1.2f));
+                g.draw(band);
+            }
             // Icon in its own slot
-            java.awt.geom.RoundRectangle2D slot = new java.awt.geom.RoundRectangle2D.Float(18, y + 3, 44, 44, 8, 8);
-            g.setColor(new Color(255, 255, 255, 14));
+            java.awt.geom.RoundRectangle2D slot = new java.awt.geom.RoundRectangle2D.Float(16, y + 3, 32, 32, 7, 7);
+            g.setColor(new Color(255, 255, 255, inHand ? 30 : 14));
             g.fill(slot);
-            g.setColor(new Color(120, 205, 235, 90));
-            g.setStroke(new BasicStroke(1f));
+            g.setColor(inHand ? ACCENT : new Color(120, 205, 235, 90));
+            g.setStroke(new BasicStroke(inHand ? 1.6f : 1f));
             g.draw(slot);
-            item.icon().paint(g, 21, y + 6, 38);
-            g.setFont(font(Font.BOLD, 16f));
-            g.setColor(VALUE);
-            g.drawString(item.name(), 74, y + 22);
-            label(g, "Use", 74, y + 40, 9.5f, DIM);
-            float useW = labelWidth(g, "Use", 9.5f);
-            keyCap(g, item.key(), 74 + useW + 7, y + 28, 17);
-            y += 54;
+            item.icon().paint(g, 18, y + 5, 28);
+            g.setFont(font(Font.BOLD, 14f));
+            FontMetrics fm = g.getFontMetrics();
+            g.setColor(inHand ? VALUE : new Color(200, 210, 220));
+            g.drawString(item.name(), 58, y + 19 + (fm.getAscent() - fm.getDescent()) / 2f);
+            y += INVENTORY_ROW;
         }
     }
 

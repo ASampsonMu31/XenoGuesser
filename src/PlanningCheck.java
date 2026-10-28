@@ -359,7 +359,7 @@ public final class PlanningCheck {
             for (int frame = 0; frame < 1200; frame++) {
                 before.clear();
                 people.forEachWalker((p, at, street, speed) -> before.put(p, at));
-                people.update(dt, centre);
+                people.update(dt, centre, null);
                 collision.endFrame();
                 if (frame == 20) start = people.census();
                 int[] moves = new int[3];
@@ -407,7 +407,7 @@ public final class PlanningCheck {
             SpherePosition centre = Planet.position(Math.toRadians(town[0]), Math.toRadians(town[1]), 0.0);
             for (InfrastructureManager.Doorway door : infra.doorwaysNear(centre, 1500f)) {
                 if (door.shop) continue;
-                Vehicles.Vehicle v = vehicles.forHousehold(door, rand);
+                Vehicles.Vehicle v = vehicles.forHousehold(door, rand.nextLong());
                 if (v == null) continue;
                 parked++;
                 if (infra.isBuildingLocation(v.position, 0f)) inBuilding++;
@@ -445,7 +445,7 @@ public final class PlanningCheck {
                 if (Planet.latitude(s) * Planet.latitude(b) > 0.0 && (a == null || SphereMath.distance(s, b) < SphereMath.distance(a, b))) a = s;
             }
             if (a == null || SphereMath.distance(a, b) > 9000.0) continue;
-            car = vehicles.traffic(1, null, a, b, new Random(attempt), () -> arrived[0] = true);
+            car = vehicles.traffic(1, null, a, b, attempt, () -> arrived[0] = true);
             from = a;
             to = b;
         }
@@ -462,7 +462,7 @@ public final class PlanningCheck {
             SpherePosition before = car.position;
             float speedBefore = car.speed;
             int legBefore = car.next;
-            vehicles.update(all, dt, viewer);
+            vehicles.update(all, dt, p -> SphereMath.distance(viewer, p) > Vehicles.OUT_OF_SIGHT);
             seconds += dt;
             double moved = SphereMath.distance(before, car.position);
             // (a step that only moves on to the next point of its way doesn't move it)

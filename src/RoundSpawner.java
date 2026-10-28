@@ -163,11 +163,12 @@ final class RoundSpawner extends GamePart {
             spawn = standingClear(spawn);
             settleUntil = System.nanoTime() * 1e-9 + SETTLE_SECONDS;
         }
-        // Multiplayer (M11): side by side, 119-A on the left and 119-B on the right as seen
+        // Multiplayer (M11): side by side, the host on the left and the joiner on the right as seen
         // facing down the stairs, both still facing down them (from the same shared spot)
         if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
         game.moveToLocation(spawn);
-        // (each round starts with the view as usual)
+        // (each round starts with the view as usual, and nothing in hand, whatever was out as the last ended)
+        game.dropItems();
         game.zoomWanted = 1f;
         game.zoom = 1f;
         game.applyProjection();
@@ -209,7 +210,7 @@ final class RoundSpawner extends GamePart {
 
     /**
      * Multiplayer's spawn for this player from the shared one: SIDE_OFFSET to the left for
-     * 119-A, to the right for 119-B. Headings turn from east towards south (clockwise seen from
+     * the host, to the right for the joiner. Headings turn from east towards south (clockwise seen from
      * above, D10), so the left of heading h is h - pi/2. The heading is carried along, so both
      * still face exactly the same way.
      */

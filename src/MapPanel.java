@@ -174,8 +174,11 @@ public class MapPanel extends JPanel {
     private float slamProgress = 0.0f;
     private float currentScoreScale = 1.0f;
     
-    private static final long LINGER_DURATION_MS = 500; 
-    private static final long SLAM_DURATION_MS = 250;   
+    private static final long LINGER_DURATION_MS = 500;
+    private static final long SLAM_DURATION_MS = 250;
+    // Multiplayer (M58): how long the round's winner stays written over the map before flying
+    // up to their circle on the score panel, and how long it takes to get there
+    private static final long WINNER_LINGER_MS = 2200, WINNER_SLAM_MS = 450;
 
     private int visualMapX = 0;
     private int visualMapY = 0;
@@ -596,7 +599,7 @@ public class MapPanel extends JPanel {
                     repaint();
                     return;
                 }
-                if (zoom <= 1.0f) return;
+                if (zoom <= minZoom()) return;
                 // The point grabbed stays under the pointer, at the same zoom
                 setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.MOVE_CURSOR));
                 float across = currentMapSize * zoom;
@@ -880,18 +883,18 @@ public class MapPanel extends JPanel {
         }
 
         float cursorU= viewLeft() + fractionX / zoom;
-        float cursorV = viewTop() + fractionY * MapProjection.aspect() / zoom;
+        float cursorV = viewTop() + fractionY * boxAspect() / zoom;
         float newZoom = zoom * (float) Math.pow(ZOOM_STEP, -e.getPreciseWheelRotation());
-        zoom = Math.max(1.0f, Math.min(MAX_ZOOM, newZoom));
+        zoom = Math.max(minZoom(), Math.min(MAX_ZOOM, newZoom));
 
         float halfView = 0.5f / zoom;
         viewCentreU = clampCentre(cursorU - fractionX / zoom + halfView);
-        viewCentreV = clampCentreV(cursorV - fractionY * MapProjection.aspect() / zoom + halfView * MapProjection.aspect());
+        viewCentreV = clampCentreV(cursorV - fractionY * boxAspect() / zoom + halfView * boxAspect());
         repaint();
     }
 
     private void resetZoom() {
-        zoom = 1.0f;
+        zoom = minZoom();
         viewCentreU = 0.5f;
         viewCentreV = 0.5f;
     }
@@ -908,14 +911,16 @@ public class MapPanel extends JPanel {
             repaint();
             return;
         }
-        zoom = Math.max(1.0f, Math.min(MAX_ZOOM, magnification));
+        zoom = Math.max(minZoom(), Math.min(MAX_ZOOM, magnification));
         viewCentreU = clampCentre(u);
         viewCentreV = clampCentreV(v);
         repaint();
     }
 
+    /** The view's centre across, kept so the view stays on the chart (or the chart centred, when it's all in view). */
     private float clampCentre(float centre) {
         float halfView = 0.5f / zoom;
+        if (halfView >= 0.5f) return 0.5f;
         return Math.max(halfView, Math.min(1.0f - halfView, centre));
     }
 
@@ -929,8 +934,33 @@ public class MapPanel extends JPanel {
         return Math.round(currentMapSize * MapProjection.aspect());
     }
 
+    /** The map's box's height over its width: the chart's own, but squarer for the results (see REVEAL_ASPECT). */
+    private float boxAspect() {
+        return isFullScreenReveal ? REVEAL_ASPECT : MapProjection.aspect();
+    }
+
+    /**
+     * The flat chart's least zoom: 1 fits its width to the box, and where the box is relatively
+     * shorter than the chart (the results') it's zoomed out further so its height fits too,
+     * the chart centred in the box with bars beside it.
+     */
+    private float minZoom() {
+        return Math.min(1.0f, boxAspect() / MapProjection.aspect());
+    }
+
+    /** Where the flat chart is on screen, cut to the map's box (all of the box once it's zoomed in past the bars). */
+    private Rectangle chartBounds(int mapX, int mapY) {
+        float span = zoom * currentMapSize;
+        float top = 0.5f - 0.5f * MapProjection.aspect();
+        int left = Math.round(mapX - viewLeft() * span), upper = Math.round(mapY + (top - viewTop()) * span);
+        Rectangle chart = new Rectangle(left, upper, Math.round(span), Math.round(MapProjection.aspect() * span));
+        return chart.intersection(new Rectangle(mapX, mapY, currentMapSize, mapHeight()));
+    }
+
+    /** The view's centre down, kept so the view stays on the chart (or the chart centred, when it's all in view). */
     private float clampCentreV(float centre) {
-        float halfView = 0.5f * MapProjection.aspect() / zoom;
+        float halfView = 0.5f * boxAspect() / zoom;
+        if (halfView >= 0.5f * MapProjection.aspect()) return 0.5f;
         float top = 0.5f - 0.5f * MapProjection.aspect(), bottom = 0.5f + 0.5f * MapProjection.aspect();
         return Math.max(top + halfView, Math.min(bottom - halfView, centre));
     }
@@ -940,7 +970,7 @@ public class MapPanel extends JPanel {
     }
 
     private float viewTop() {
-        return viewCentreV - 0.5f * MapProjection.aspect() / zoom;
+        return viewCentreV - 0.5f * boxAspect() / zoom;
     }
 
     // Conversions between core map pixels (the mapImage grid) and screen pixels, respecting the zoom
@@ -1389,13 +1419,13 @@ public class MapPanel extends JPanel {
         partnerPin = null;
         Multiplayer session = Multiplayer.active();
         if (session != null && gameHUD != null) {
-            // Multiplayer: the guess goes to the partner (with this quarter's productivity, this
-            // guess included: what the quarter's verdict compares), and the reveal waits for theirs
+            // Multiplayer: the guess goes to the partner (with how far it was: the closer wins the
+            // round, M58), and the reveal waits for theirs
             calculateAndApplyScore();
             int round = gameHUD.getRound();
-            // (an unguessed round goes as a guess with no place: NaN)
+            // (an unguessed round goes as a guess with no place and no distance: NaN)
             session.sendGuess(new Multiplayer.Guess(round, pin == null ? Double.NaN : pin.x(), pin == null ? Double.NaN : pin.y(),
-                    pin == null ? Double.NaN : pin.z(), targetRoundScore, gameHUD.getProductivity() + targetRoundScore));
+                    pin == null ? Double.NaN : pin.z(), roundDistance));
             setUpReveal();
             currentPhase = RevealPhase.WAITING_FOR_PARTNER;
             if (partnerWait != null) partnerWait.stop();
@@ -1543,7 +1573,7 @@ public class MapPanel extends JPanel {
                 long elapsed = System.currentTimeMillis() - countUpStartTime[0];
                 float t = (float) elapsed / COUNT_UP_DURATION_MS;
 
-                if (t >= 1.0f) {
+                if (t >= 1.0f || Multiplayer.isActive()) {
                     currentDisplayScore = targetRoundScore;
                     currentPhase = RevealPhase.LINGER;
                     phaseStartTime = System.currentTimeMillis();
@@ -1554,14 +1584,14 @@ public class MapPanel extends JPanel {
             } 
             else if (currentPhase == RevealPhase.LINGER) {
                 long elapsed = System.currentTimeMillis() - phaseStartTime;
-                if (elapsed >= LINGER_DURATION_MS) {
+                if (elapsed >= (Multiplayer.isActive() ? WINNER_LINGER_MS : LINGER_DURATION_MS)) {
                     currentPhase = RevealPhase.SLAM_TO_HUD;
                     phaseStartTime = System.currentTimeMillis();
                 }
             } 
             else if (currentPhase == RevealPhase.SLAM_TO_HUD) {
                 long elapsed = System.currentTimeMillis() - phaseStartTime;
-                float t = (float) elapsed / SLAM_DURATION_MS;
+                float t = (float) elapsed / (Multiplayer.isActive() ? WINNER_SLAM_MS : SLAM_DURATION_MS);
                 
                 if (t >= 1.0f) {
                     t = 1.0f;
@@ -1742,6 +1772,10 @@ public class MapPanel extends JPanel {
                 if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
                 g2d.setClip(frameClip);
             } else {
+            // (the bars beside the chart, where it's zoomed out to fit the box's height)
+            g2d.setColor(baseDarkGrey);
+            g2d.fillRect(mapX, mapY, currentMapSize, mapHeight());
+            g2d.clip(chartBounds(mapX, mapY));
             Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
             g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             drawWholeMap(g2d, mapSource, mapX, mapY);
@@ -1766,7 +1800,7 @@ public class MapPanel extends JPanel {
             g2d.setClip(frameClip);
             }
 
-            float shownZoom = globeShown() ? (float) activeGlobe().zoom() : zoom;
+            float shownZoom = globeShown() ? (float) activeGlobe().zoom() : zoom / minZoom();
             if (isLarge || isFullScreenReveal) drawToggle(g2d);
             if (shownZoom > 1.01f) {
                 String zoomLabel = String.format("%.1fx", shownZoom);
@@ -1969,7 +2003,7 @@ public class MapPanel extends JPanel {
                 // (multiplayer: this player's own pin named too, with "(You)")
                 Multiplayer pinSession = Multiplayer.active();
                 if (isFullScreenReveal && pinShown && pinSession != null && currentPhase != RevealPhase.WAITING_FOR_PARTNER) {
-                    drawPinLabel(g2d, "Employee " + pinSession.localLabel() + " (You)", displayPinX, displayPinY, pinLength, headDiameter,
+                    drawPinLabel(g2d, pinSession.localName() + " (You)", displayPinX, displayPinY, pinLength, headDiameter,
                             brighter(ownColour()));
                 }
 
@@ -2019,9 +2053,11 @@ public class MapPanel extends JPanel {
                 if (resultsShown()) drawReckoning(g2d, mapX, mapY);
                 if (currentPhase == RevealPhase.WAITING_FOR_PARTNER) drawWaitingForPartner(g2d, mapX, mapY);
 
-                if (shouldDrawScoreText) {
+                if (shouldDrawScoreText && Multiplayer.isActive()) {
+                    drawRoundWinner(g2d, mapX, mapY);
+                } else if (shouldDrawScoreText) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
-                    float baseBubbleFontSize = currentMapSize * 0.15f; 
+                    float baseBubbleFontSize = currentMapSize * 0.15f;  
                     float dynamicFontSize = baseBubbleFontSize * currentScoreScale;
                     
                     if (dynamicFontSize > 2f) {
@@ -2132,7 +2168,7 @@ public class MapPanel extends JPanel {
         if (isFullScreenReveal) {
             size = revealSize(width, height);
         } else if (isLarge) {
-            size = Math.min((int) (height * 0.60f / MapProjection.aspect()), (int) (width * 0.55f));
+            size = Math.min(largeMapSize(height), (int) (width * 0.55f));
         } else {
             return;
         }
@@ -2141,6 +2177,15 @@ public class MapPanel extends JPanel {
         updateGeometryLayouts();
         repaint();
         if (onSizeChanged != null) onSizeChanged.run();
+    }
+
+    /**
+     * The enlarged map's width in a window this tall: its top where it always was, three fifths
+     * of the way up, though it now stands on the message strip rather than the window's bottom
+     * (so the animal or plant shown above it has as much room as ever).
+     */
+    private static int largeMapSize(int height) {
+        return Math.max(1, (int) ((height * 0.60f - XenoGuesser.messageStripHeight(height)) / MapProjection.aspect()));
     }
 
     public void toggleSize() {
@@ -2167,7 +2212,7 @@ public class MapPanel extends JPanel {
         int parentHeight = getParent() != null ? getParent().getHeight() : 900;
         currentMapSize = switch (size) {
             case SMALL -> 210;
-            case LARGE -> Math.min((int) (parentHeight * 0.60f / MapProjection.aspect()),
+            case LARGE -> Math.min(largeMapSize(parentHeight),
                     getParent() != null ? (int) (getParent().getWidth() * 0.55f) : 900);
         };
         if (!isLarge) resetZoom();
@@ -2359,7 +2404,7 @@ public class MapPanel extends JPanel {
         if (renderer == null || across <= wholeDetail * 1.1f) return false;
         int level = Math.max(1, Math.min(8, (int) Math.ceil(Math.log(across / MapTiles.SIZE) / Math.log(2))));
         int n = 1 << level;
-        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + MapProjection.aspect() / zoom;
+        float u0 = viewLeft(), v0 = viewTop(), u1 = u0 + 1f / zoom, v1 = v0 + boxAspect() / zoom;
         int tx0 = Math.max(0, (int) Math.floor(u0 * n)), tx1 = Math.min(n - 1, (int) Math.floor(u1 * n));
         int ty0 = Math.max(0, (int) Math.floor(v0 * n)), ty1 = Math.min(n - 1, (int) Math.floor(v1 * n));
         for (int ty = ty0; ty <= ty1; ty++) {
@@ -2483,11 +2528,22 @@ public class MapPanel extends JPanel {
      */
     private String paidLine(Multiplayer session, int points, int cash) {
         if (session == null) return String.format("Cash: ($%,d salary + 1/2 x $%,d points) = +$%,d", GameHUD.SALARY, points, cash);
-        if (partnerGuess == null) return "Shop: the round's loser takes one";
-        int theirs = partnerGuess.score();
-        return points > theirs ? "You won the round: no shop pick"
-                : points < theirs ? "You lost the round: take one from the shop"
-                : "A level round: both take one from the shop";
+        if (partnerGuess == null) return "Shop: the round's loser takes an upgrade";
+        Multiplayer.Role winner = roundWinner(session);
+        return winner == session.role ? "You won the round: no upgrade this time"
+                : winner != null ? "You lost the round: take an upgrade from the shop"
+                : "A level round: both take an upgrade from the shop";
+    }
+
+    /** Multiplayer: who won this round (the closer guess, M58), or null for a level one or before the partner's guess is in. */
+    private Multiplayer.Role roundWinner(Multiplayer session) {
+        if (partnerGuess == null || gameHUD == null) return null;
+        return MultiplayerScore.of(session).roundWinner(gameHUD.getRound());
+    }
+
+    /** A guess's distance for the reckoning, or that it wasn't made. */
+    private static String guessLine(String who, double distance) {
+        return Double.isNaN(distance) ? who + ": didn't guess in time" : who + ": " + distanceText(distance);
     }
 
     private void drawReckoning(Graphics2D g2d, int mapX, int mapY) {
@@ -2499,49 +2555,25 @@ public class MapPanel extends JPanel {
             paidLine(session, points, cash)
         };
         Color[] colours = { Color.WHITE, new Color(150, 220, 255), new Color(120, 230, 140) };
-        if (pin == null || (session != null && partnerGuess != null && partnerPin == null)) {
-            // A round gone unguessed (this player's, the partner's or both): what was guessed, if anything
+        if (session != null) {
+            // Multiplayer (M58): each player's distance on a line of their own, named in their
+            // colour (who won is written large over the map), then who takes from the shop
+            double theirDistance = partnerPin == null ? Double.NaN : SphereMath.angle(partnerPin, goal) * Planet.radius();
             List<String> said = new ArrayList<>();
             List<Color> shades = new ArrayList<>();
-            if (pin == null) {
-                said.add("You didn't guess in time");
-                shades.add(new Color(245, 105, 90));
-            } else {
-                said.add(String.format("You: %s, +%,d productivity", distanceText(roundDistance), points));
-                shades.add(session != null ? brighter(ownColour()) : Color.WHITE);
-            }
-            if (session != null && partnerGuess != null) {
-                if (partnerPin == null) {
-                    said.add("Employee " + session.remoteLabel() + " didn't guess in time");
-                    shades.add(brighter(partnerColour()));
-                } else {
-                    double theirDistance = SphereMath.angle(partnerPin, goal) * Planet.radius();
-                    said.add(String.format("Employee %s: %s, +%,d productivity", session.remoteLabel(), distanceText(theirDistance), partnerGuess.score()));
-                    shades.add(brighter(partnerColour()));
-                }
+            said.add(guessLine(session.localName() + " (You)", pin == null ? Double.NaN : roundDistance));
+            shades.add(brighter(ownColour()));
+            if (partnerGuess != null) {
+                said.add(guessLine(session.remoteName(), theirDistance));
+                shades.add(brighter(partnerColour()));
             }
             said.add(paidLine(session, points, cash));
             shades.add(new Color(120, 230, 140));
             lines = said.toArray(new String[0]);
             colours = shades.toArray(new Color[0]);
-        }
-        else if (partnerGuess != null && partnerPin != null && session != null) {
-            // Multiplayer: both players' guesses, each named in their colour
-            double theirDistance = SphereMath.angle(partnerPin, goal) * Planet.radius();
-            // ...and who was closer, plainly: green if it was this player, red if the partner
-            double apart = Math.abs(roundDistance - theirDistance);
-            String closer = roundDistance < theirDistance ? "You were closer, by " + distanceText(apart)
-                    : theirDistance < roundDistance ? "Employee " + session.remoteLabel() + " was closer, by " + distanceText(apart)
-                    : "You were both just as close";
-            Color closerColour = roundDistance < theirDistance ? new Color(110, 225, 130)
-                    : theirDistance < roundDistance ? new Color(245, 105, 90) : HudStyle.VALUE;
-            lines = new String[] {
-                closer,
-                String.format("Employee %s (You): %s, +%,d productivity", session.localLabel(), distanceText(roundDistance), points),
-                String.format("Employee %s: %s, +%,d productivity", session.remoteLabel(), distanceText(theirDistance), partnerGuess.score()),
-                paidLine(session, points, cash)
-            };
-            colours = new Color[] { closerColour, brighter(ownColour()), brighter(partnerColour()), new Color(120, 230, 140) };
+        } else if (pin == null) {
+            lines = new String[] { "You didn't guess in time", paidLine(null, points, cash) };
+            colours = new Color[] { new Color(245, 105, 90), new Color(120, 230, 140) };
         }
         Font font = HudStyle.font(Font.BOLD, 15f);
         g2d.setFont(font);
@@ -2561,20 +2593,60 @@ public class MapPanel extends JPanel {
         }
     }
 
-    /** Multiplayer: this player's colour (M6), for their pin and line; null in singleplayer. */
+    /** Multiplayer: this player's suit colour (M6, M58), for their pin and line; null in singleplayer. */
     private static Color ownColour() {
         Multiplayer session = Multiplayer.active();
-        return session == null ? null : colour(session.role.trimColour());
+        return session == null ? null : session.suit(session.role).awt();
     }
 
-    /** Multiplayer: the partner's colour, for their pin and line. */
+    /** Multiplayer: the partner's suit colour, for their pin and line. */
     private static Color partnerColour() {
         Multiplayer session = Multiplayer.active();
-        return session == null ? Color.WHITE : colour(session.role.other().trimColour());
+        return session == null ? Color.WHITE : session.suit(session.role.other()).awt();
     }
 
-    private static Color colour(float[] rgb) {
-        return new Color(rgb[0], rgb[1], rgb[2]);
+    /**
+     * Multiplayer (M58): the round's winner written large over the map in their colour, as the
+     * score is in singleplayer ("YOU WIN THE ROUND!", "ALEX WINS THE ROUND!"), then flying up to
+     * the circle it fills on the score panel; a level round says so and shrinks away where it is.
+     */
+    private void drawRoundWinner(Graphics2D g2d, int mapX, int mapY) {
+        Multiplayer session = Multiplayer.active();
+        if (session == null || partnerGuess == null) return;
+        Multiplayer.Role winner = roundWinner(session);
+        String text = winner == null ? "LEVEL ROUND!"
+                : winner == session.role ? "YOU WIN THE ROUND!" : session.remoteName().toUpperCase(java.util.Locale.ROOT) + " WINS THE ROUND!";
+        Color fill = winner == null ? Color.WHITE : brighter(session.suit(winner).awt());
+        // As large as fits across the map
+        float size = currentMapSize * 0.11f;
+        g2d.setFont(new Font("Arial Black", Font.BOLD, Math.round(size)));
+        float across = g2d.getFontMetrics().stringWidth(text);
+        if (across > currentMapSize * 0.92f) size *= currentMapSize * 0.92f / across;
+        float shown = size * currentScoreScale;
+        if (shown <= 2f) return;
+        g2d.setFont(new Font("Arial Black", Font.BOLD, Math.round(shown)));
+        FontMetrics fm = g2d.getFontMetrics();
+        int textW = fm.stringWidth(text), textH = fm.getAscent();
+        int centreX = mapX + currentMapSize / 2, centreY = mapY + mapHeight() / 2;
+        // Where it flies to: the winner's next circle (their row: this player's on top)
+        int targetX = centreX, targetY = centreY;
+        if (winner != null && gameHUD != null) {
+            int circle = Math.min(MultiplayerScore.ROUNDS_TO_WIN - 1, gameHUD.roundsWon(winner) - (scoreBanked ? 1 : 0));
+            targetX = -getX() + HudStyle.HUD_MARGIN + HudStyle.CIRCLES_X + circle * HudStyle.CIRCLE_STEP;
+            targetY = -getY() + HudStyle.HUD_MARGIN + HudStyle.CIRCLES_Y + (winner == session.role ? 0 : HudStyle.CIRCLE_ROW);
+        }
+        int drawX = Math.round(centreX + (targetX - centreX) * slamProgress) - textW / 2;
+        int drawY = Math.round(centreY + (targetY - centreY) * slamProgress) + textH / 2;
+        // Bubble writing: a thick dark outline round the colour
+        int outline = Math.max(1, Math.round(Math.max(3f, size * 0.09f) * currentScoreScale));
+        g2d.setColor(new Color(30, 30, 34, 235));
+        for (int dx = -outline; dx <= outline; dx++) {
+            for (int dy = -outline; dy <= outline; dy++) {
+                if (dx * dx + dy * dy <= outline * outline) g2d.drawString(text, drawX + dx, drawY + dy);
+            }
+        }
+        g2d.setColor(fill);
+        g2d.drawString(text, drawX, drawY);
     }
 
     /** A player's colour lifted towards white, to read as text on the dark panel. */
@@ -2582,7 +2654,6 @@ public class MapPanel extends JPanel {
         return new Color((c.getRed() + 255 * 2) / 3, (c.getGreen() + 255 * 2) / 3, (c.getBlue() + 255 * 2) / 3);
     }
 
-    /** The partner's pin (multiplayer), as this player's but in their colour, labelled with their employee number. */
     /**
      * The last round's marker: a ring where its answer was, tagged "Last round" below it. A
      * note left there in that round (notes are pinned at the answer) hangs above the same
@@ -2630,6 +2701,7 @@ public class MapPanel extends JPanel {
         g2d.setClip(clip);
     }
 
+    /** The partner's pin (multiplayer), as this player's but in their colour, labelled with their name. */
     private void drawPartnerPin(Graphics2D g2d, int mapX, int mapY, int pinLength, int headDiameter) {
         double[] p = screenOf(partnerPin, mapX, mapY);
         if (p[2] < 0.0) return;
@@ -2637,10 +2709,10 @@ public class MapPanel extends JPanel {
         MapMarkers.pin(g2d, x, y, partnerColour());
         Multiplayer session = Multiplayer.active();
         if (session == null) return;
-        drawPinLabel(g2d, "Employee " + session.remoteLabel(), x, y, pinLength, headDiameter, brighter(partnerColour()));
+        drawPinLabel(g2d, session.remoteName(), x, y, pinLength, headDiameter, brighter(partnerColour()));
     }
 
-    /** A pin's name ("Employee 119-A (You)") in a dark tag beside its head, in the player's colour. */
+    /** A pin's name ("Alex (You)") in a dark tag beside its head, in the player's colour. */
     private static void drawPinLabel(Graphics2D g2d, String label, int x, int y, int pinLength, int headDiameter, Color colour) {
         float size = 12f;
         float w = HudStyle.labelWidth(g2d, label, size);
@@ -2654,11 +2726,11 @@ public class MapPanel extends JPanel {
     private void drawWaitingForPartner(Graphics2D g2d, int mapX, int mapY) {
         Multiplayer session = Multiplayer.active();
         if (session == null) return;
-        String text = "Waiting for Player " + session.remoteLabel() + " to make their guess" + ".".repeat((int) (System.currentTimeMillis() / 400 % 4));
+        String text = "Waiting for " + session.remoteName() + " to make their guess" + ".".repeat((int) (System.currentTimeMillis() / 400 % 4));
         Font font = HudStyle.font(Font.BOLD, 19f);
         g2d.setFont(font);
         FontMetrics fm = g2d.getFontMetrics();
-        int boxW = fm.stringWidth("Waiting for Player 119-A to make their guess...") + 60, boxH = 74;
+        int boxW = fm.stringWidth("Waiting for " + session.remoteName() + " to make their guess...") + 60, boxH = 74;
         int x = mapX + (currentMapSize - boxW) / 2, y = mapY + mapHeight() - boxH - 24;
         HudStyle.smooth(g2d);
         HudStyle.panel(g2d, x, y, boxW, boxH, HudStyle.GLASS);

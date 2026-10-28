@@ -13,6 +13,7 @@ import java.util.Locale;
  *   java -cp "target/classes;lib/steamworks4j-1.10.0.jar" MultiplayerCheck host
  *   java -cp "target/classes;lib/steamworks4j-1.10.0.jar" MultiplayerCheck join KXQPB
  * "host" alone on one PC with Steam checks that Steam starts and a room opens with a code.
+ * Matchmaking: run "match" (or "ranked") in both, in either order or at once, instead of host and join.
  * Exit code 1 if the room couldn't be opened or joined, or the partner's messages didn't all arrive.
  */
 public final class MultiplayerCheck {
@@ -25,8 +26,10 @@ public final class MultiplayerCheck {
 
     public static void main(String[] args) throws Exception {
         boolean hosting = args.length > 0 && args[0].equalsIgnoreCase("host");
-        if (!hosting && (args.length < 2 || !args[0].equalsIgnoreCase("join"))) {
-            System.out.println("Usage: MultiplayerCheck host | join CODE");
+        // Matchmaking (M59): two processes run "match" (or "ranked") and find each other; who hosts is settled then
+        boolean matching = args.length > 0 && (args[0].equalsIgnoreCase("match") || args[0].equalsIgnoreCase("ranked"));
+        if (!hosting && !matching && (args.length < 2 || !args[0].equalsIgnoreCase("join"))) {
+            System.out.println("Usage: MultiplayerCheck host | join CODE | match | ranked");
             System.exit(2);
         }
 
@@ -37,10 +40,16 @@ public final class MultiplayerCheck {
             }
 
             @Override
+            public void matched(Multiplayer.Role role) {
+                System.out.println("[CHECK] Matched as the " + role);
+            }
+
+            @Override
             public void ready() {
-                System.out.println("[CHECK] Ready: Employee " + session.localLabel() + " with Employee "
-                        + session.remoteLabel() + ", world seed " + session.worldSeed()
-                        + ", " + session.gameMode() + ", " + session.mapKind());
+                System.out.println("[CHECK] Ready: " + session.localName() + " (" + session.role + ") with "
+                        + session.remoteName() + " (" + session.suit(session.role.other()).label + "), world seed " + session.worldSeed()
+                        + ", " + session.gameMode() + ", " + session.mapKind()
+                        + (session.isRanked() ? ", ranked: " + session.localRating() + " against " + session.remoteRating() : ""));
                 sendEverything(session);
             }
 
@@ -57,12 +66,14 @@ public final class MultiplayerCheck {
             }
         };
 
-        session = hosting
+        session = matching
+                ? Multiplayer.matchmake(args[0].equalsIgnoreCase("ranked"), System.currentTimeMillis(), GameMode.current(), MapKind.current(), listener)
+                : hosting
                 ? Multiplayer.host(System.currentTimeMillis(), GameMode.current(), MapKind.current(), listener)
                 : Multiplayer.join(args[1], listener);
 
-        // Wait for the partner (hosting waits up to two minutes), then play for a few seconds
-        long deadline = System.currentTimeMillis() + (hosting ? 120_000 : 30_000);
+        // Wait for the partner (hosting and matchmaking wait up to two minutes), then play for a few seconds
+        long deadline = System.currentTimeMillis() + (hosting || matching ? 120_000 : 30_000);
         while (!session.isReady() && !failed && System.currentTimeMillis() < deadline) Thread.sleep(50);
         if (!session.isReady()) {
             System.out.println("[CHECK] " + (failed ? "Gave up." : "Nobody joined in time."));
@@ -91,14 +102,17 @@ public final class MultiplayerCheck {
         System.exit(allHeard ? 0 : 1);
     }
 
+    // A stage id to send and expect back (any will do)
+    private static final int STAGE = 101;
+
     private static void sendEverything(Multiplayer s) {
         s.sendWorldReady();
         s.sendBegin();
         boolean host = s.role == Multiplayer.Role.HOST;
-        s.sendGuess(new Multiplayer.Guess(1, 0.6, host ? 0.8 : -0.8, 0, host ? 4321 : 1234, host ? 4321 : 1234));
+        s.sendGuess(new Multiplayer.Guess(1, 0.6, host ? 0.8 : -0.8, 0, host ? 4321.5 : 1234.5));
         s.sendShopDone(1);
         s.sendRoundBuilt(2);
-        s.sendStageDone(Multiplayer.STAGE_QUARTER_END + 1);
+        s.sendStageDone(STAGE);
         if (host) s.sendAlphabets(new byte[200_000]);
     }
 
@@ -108,11 +122,11 @@ public final class MultiplayerCheck {
         Multiplayer.RemotePoses poses = s.remotePoses();
         byte[] alphabets = s.remoteAlphabets();
         boolean wantAlphabets = s.role == Multiplayer.Role.JOIN;
-        System.out.println("[CHECK] From Employee " + s.remoteLabel() + ":");
+        System.out.println("[CHECK] From " + s.remoteName() + ":");
         System.out.println("[CHECK]   WORLD_READY " + s.remoteWorldReady() + ", BEGIN " + s.remoteBegun());
         System.out.println("[CHECK]   GUESS round 1: " + guess);
         System.out.println("[CHECK]   SHOP_DONE 1 " + s.remoteShopDone(1) + ", ROUND_BUILT 2 " + s.remoteRoundBuilt(2)
-                + ", STAGE_DONE " + (Multiplayer.STAGE_QUARTER_END + 1) + " " + s.remoteStageDone(Multiplayer.STAGE_QUARTER_END + 1));
+                + ", STAGE_DONE " + STAGE + " " + s.remoteStageDone(STAGE));
         if (wantAlphabets) System.out.println("[CHECK]   ALPHABETS " + (alphabets == null ? "none" : alphabets.length + " bytes"));
         if (poses.latest() != null) {
             Multiplayer.PoseSample a = poses.previous(), b = poses.latest();
@@ -122,7 +136,7 @@ public final class MultiplayerCheck {
             System.out.println("[CHECK]   no POSE");
         }
         return s.remoteWorldReady() && s.remoteBegun() && guess != null && s.remoteShopDone(1)
-                && s.remoteRoundBuilt(2) && s.remoteStageDone(Multiplayer.STAGE_QUARTER_END + 1)
+                && s.remoteRoundBuilt(2) && s.remoteStageDone(STAGE)
                 && poses.latest() != null && poses.latest().seq() >= 10
                 && (!wantAlphabets || (alphabets != null && alphabets.length == 200_000));
     }

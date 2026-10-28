@@ -97,7 +97,7 @@ public final class WritingSystems {
     public static void receive(Multiplayer session) throws IOException, InterruptedException {
         byte[] zip;
         while ((zip = session.remoteAlphabets()) == null) {
-            if (session.isClosed()) throw new IOException("Employee " + session.remoteLabel() + " disconnected");
+            if (session.isClosed()) throw new IOException(session.remoteName() + " disconnected");
             Thread.sleep(50);
         }
         // (a job from an earlier, cancelled Host game may still be writing the folder; and once

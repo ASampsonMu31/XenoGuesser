@@ -2,7 +2,8 @@ import java.nio.ByteBuffer;
 
 /**
  * How the two players' games reach each other: a room with a code that one player hosts and
- * the other joins, and messages sent between them once both are in it. Two kinds: Steam's
+ * the other joins (or one found by matchmaking, where who hosts is settled by who was waiting),
+ * and messages sent between them once both are in it. Two kinds: Steam's
  * lobbies and peer-to-peer messages (SteamTransport, the real thing), and a socket on this PC
  * (LocalTransport) so two game windows on one PC can play together while developing, since
  * Steam won't run two accounts on one PC.
@@ -18,6 +19,14 @@ public interface MultiplayerTransport {
     interface Listener {
         /** The room is open with this code (host only), waiting for the partner. Swing thread. */
         void roomCode(String code);
+
+        /**
+         * Matchmaking: an opponent's been found and this player is the host (true) or the joiner;
+         * connected() follows. On the networking thread (just before the partner's first message
+         * can arrive), so the session knows its role in time to read it.
+         */
+        default void matched(boolean host) {
+        }
 
         /** The two players are in the same room and can send messages. Swing thread. */
         void connected();
@@ -50,6 +59,13 @@ public interface MultiplayerTransport {
 
     /** Joins the room with this code (already upper-cased and checked); connected() once in. */
     void join(String code);
+
+    /**
+     * Matchmaking, without a code: joins a player already waiting in the casual or the ranked
+     * queue (never the other; ranked ones nearest this rating first), or else waits to be
+     * joined. matched() says which this player turned out to be, then connected().
+     */
+    void matchmake(boolean ranked, int rating);
 
     /**
      * Sends a message to the partner (its bytes from position to limit, copied before this
