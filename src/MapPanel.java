@@ -2163,7 +2163,7 @@ public class MapPanel extends JPanel {
         if (isFullScreenReveal) {
             size = revealSize(width, height);
         } else if (isLarge) {
-            size = Math.min((int) (height * 0.60f / MapProjection.aspect()), (int) (width * 0.55f));
+            size = Math.min(largeMapSize(height), (int) (width * 0.55f));
         } else {
             return;
         }
@@ -2172,6 +2172,15 @@ public class MapPanel extends JPanel {
         updateGeometryLayouts();
         repaint();
         if (onSizeChanged != null) onSizeChanged.run();
+    }
+
+    /**
+     * The enlarged map's width in a window this tall: its top where it always was, three fifths
+     * of the way up, though it now stands on the message strip rather than the window's bottom
+     * (so the animal or plant shown above it has as much room as ever).
+     */
+    private static int largeMapSize(int height) {
+        return Math.max(1, (int) ((height * 0.60f - XenoGuesser.messageStripHeight(height)) / MapProjection.aspect()));
     }
 
     public void toggleSize() {
@@ -2198,7 +2207,7 @@ public class MapPanel extends JPanel {
         int parentHeight = getParent() != null ? getParent().getHeight() : 900;
         currentMapSize = switch (size) {
             case SMALL -> 210;
-            case LARGE -> Math.min((int) (parentHeight * 0.60f / MapProjection.aspect()),
+            case LARGE -> Math.min(largeMapSize(parentHeight),
                     getParent() != null ? (int) (getParent().getWidth() * 0.55f) : 900);
         };
         if (!isLarge) resetZoom();

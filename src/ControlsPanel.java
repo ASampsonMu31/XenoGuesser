@@ -23,11 +23,12 @@ public class ControlsPanel extends JComponent {
         { "M", "Expand / contract the map" },
         { "Scroll", "Zoom the map" },
         { "Click", "Place your marker on the enlarged map" },
-        { "1 2 3 4", "Use gadgets" },
+        { "Middle mouse", "Take out / put away gadgets" },
+        { "Scroll", "Switch gadget (while one's out)" },
         { "Esc", "Settings" },
         { "Enter", "Skip a message" },
     };
-    public static final int W = 560, H = 506;
+    public static final int W = 560, H = 542;
 
     private final Rectangle button = new Rectangle();
     private boolean hovered;

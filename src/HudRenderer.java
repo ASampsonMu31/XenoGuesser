@@ -17,11 +17,14 @@ final class HudRenderer extends GamePart {
     final HudOverlay hud = new HudOverlay();
 
     private final DiagnosticsPanel diagnostics = new DiagnosticsPanel();
-    private int hudScoreVersion = -1, hudItemsVersion = -1, hudStaminaStep = -1;
+    private int hudScoreVersion = -1, hudItemsVersion = -1, hudHeldItem = -2, hudStaminaStep = -1;
 
     private long hudClockTenth = -1L;
 
     private Achievements.Achievement hudToast;
+
+    // How far the inventory stands from the window's left edge and from the message strip below it
+    private static final int INVENTORY_GAP = 4;
 
     // Under this long left on the round's clock, the screen's edges pulse red (M45)
     private static final long LOW_CLOCK_MS = 5000L;
@@ -97,21 +100,42 @@ final class HudRenderer extends GamePart {
             hud.setEdgeGlow(0f);
         }
 
-        // The inventory: only what the player has bought, and nothing at all until they've bought something
+        // The inventory: only what the player has bought, and nothing at all until they've bought
+        // something, the item in hand lit up; and above it, how to take items out and switch them
         java.util.List<HudStyle.Item> items = game.inventoryItems();
-        if (rescaled || game.itemsVersion != hudItemsVersion || !hud.has("inventory")) {
+        int held = game.heldItem();
+        if (rescaled || game.itemsVersion != hudItemsVersion || held != hudHeldItem || !hud.has("inventory")) {
             hudItemsVersion = game.itemsVersion;
+            hudHeldItem = held;
             int h = HudStyle.inventoryHeight(Math.max(1, items.size()));
             BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
-            HudStyle.paintInventory(g[0], items);
+            HudStyle.paintInventory(g[0], items, held);
             g[0].dispose();
-            hud.put("inventory", image, margin, 0);
+            hud.put("inventory", image, 0, 0);
+            String[] keys = held < 0 ? new String[] { "Middle mouse", "Use gadgets" }
+                    : new String[] { "Scroll", "Switch", "Middle mouse", "Put away" };
+            BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
+            java.awt.Graphics2D pg = probe.createGraphics();
+            HudStyle.smooth(pg);
+            int w = HudStyle.hintWidth(pg, keys);
+            pg.dispose();
+            BufferedImage hint = HudStyle.canvas(w, HudStyle.HINT_H, scale, g);
+            HudStyle.paintHint(g[0], w, keys);
+            g[0].dispose();
+            hud.put("inventoryHint", hint, 0, 0);
         }
         hud.setVisible("inventory", !items.isEmpty());
-        // (kept at the bottom however the window is resized)
+        if (hud.has("inventoryHint")) hud.setVisible("inventoryHint", !items.isEmpty() && !GameClock.isPaused());
+        // (kept at the bottom however the window is resized, clear of the message strip along it)
         if (hud.has("inventory")) {
             int h = Math.round(HudStyle.inventoryHeight(Math.max(1, items.size())) * scale);
-            hud.move("inventory", margin, game.screenHeight - h - margin);
+            java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
+            int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * scale);
+            // (tucked into the corner, just clear of the window's edge and the strip)
+            int gap = Math.round(INVENTORY_GAP * scale);
+            int top = game.screenHeight - h - gap - strip;
+            hud.move("inventory", gap, top);
+            hud.move("inventoryHint", gap, top - Math.round((HudStyle.HINT_H + 6) * scale));
         }
 
         if (game.minimap != null) {

@@ -504,9 +504,18 @@ glEventListener.setGameHUD(gameHUD);
     minimap.setOnProceedToShop(this::afterResults);
     minimap.setProceedLabel(() -> gameHUD.isQuarterEnd() ? "End of Quarter" : "Proceed to Shop");
 
-    // The mouse wheel (and a touchpad's pinch, which comes as one) zooms the view where the game mode allows it
+    // The mouse wheel (and a touchpad's pinch, which comes as one) switches the gadget in hand,
+    // down the inventory or up it; with none out it zooms the view where the game mode allows it
     canvas.addMouseWheelListener(e -> {
-      if (inGame && mouseCaptured) glEventListener.zoomBy(e.getPreciseWheelRotation());
+      if (!inGame || !mouseCaptured) return;
+      if (!glEventListener.scrollItems(e.getWheelRotation())) glEventListener.zoomBy(e.getPreciseWheelRotation());
+    });
+    // The middle mouse button takes the gadgets out (the first in the inventory) or puts them away
+    canvas.addMouseListener(new java.awt.event.MouseAdapter() {
+      @Override
+      public void mousePressed(MouseEvent e) {
+        if (e.getButton() == MouseEvent.BUTTON2 && inGame && mouseCaptured) glEventListener.toggleItems();
+      }
     });
     installControls();
 
@@ -728,7 +737,7 @@ glEventListener.setGameHUD(gameHUD);
 
   /**
    * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, M enlarges
-   * or shrinks the map, C uses the compass and Esc opens the settings. Mouse
+   * or shrinks the map and Esc opens the settings (the gadgets are the mouse's: see buildGameWindow). Mouse
    * movement anywhere in the window turns the view while the game has the mouse.
    */
   private void installControls() {
@@ -760,19 +769,6 @@ glEventListener.setGameHUD(gameHUD);
             // X: the controls on offer skipped
             case KeyEvent.VK_X: if (controlsOffered) withdrawControls(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
-            // The inventory: each item by its number
-            case KeyEvent.VK_1: case KeyEvent.VK_NUMPAD1:
-              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(0);
-              break;
-            case KeyEvent.VK_2: case KeyEvent.VK_NUMPAD2:
-              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(1);
-              break;
-            case KeyEvent.VK_3: case KeyEvent.VK_NUMPAD3:
-              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(2);
-              break;
-            case KeyEvent.VK_4: case KeyEvent.VK_NUMPAD4:
-              if (!minimap.isFullScreenRevealMode()) glEventListener.useItem(3);
-              break;
             default: break;
           }
         }
@@ -838,7 +834,15 @@ glEventListener.setGameHUD(gameHUD);
   // A message from Xenocorp played during a round, its words along the bottom over everything
   private MessageStrip messageStrip;
 
-  /** Plays a message from Xenocorp over the game, its words scrolling along the bottom (above the map) until it's said. */
+  /**
+   * The height of the strip a message's words scroll along at the bottom of a window this tall
+   * (the map and the inventory stand above it, so it never covers them).
+   */
+  static int messageStripHeight(int paneHeight) {
+    return Math.max(44, paneHeight / 20);
+  }
+
+  /** Plays a message from Xenocorp over the game, its words scrolling along the bottom (under the map) until it's said. */
   void showMessage(TransmissionMessage message) {
     showMessage(message, null);
   }
@@ -1488,7 +1492,7 @@ glEventListener.setGameHUD(gameHUD);
     if (shopPanel != null) shopPanel.setBounds(0, top, paneWidth, paneHeight);
     if (quarterPanel != null) quarterPanel.setBounds(0, top, paneWidth, paneHeight);
     if (messageStrip != null) {
-      int stripH = Math.max(44, paneHeight / 20);
+      int stripH = messageStripHeight(paneHeight);
       messageStrip.setBounds(0, top + paneHeight - stripH, paneWidth, stripH);
     }
     if (controlsPanel != null) controlsPanel.setBounds(0, top, paneWidth, paneHeight);
@@ -1615,7 +1619,9 @@ glEventListener.setGameHUD(gameHUD);
     if (minimap.isFullScreenRevealMode()) {
         minimap.setBounds((w - panelWidth) / 2, (h - panelHeight) / 2, panelWidth, panelHeight);
     } else {
-        minimap.setBounds(w - panelWidth, h - panelHeight - 2, panelWidth, panelHeight + 2);
+        // (above the message strip along the bottom)
+        int strip = messageStripHeight(h - contentTop);
+        minimap.setBounds(w - panelWidth, h - panelHeight - 2 - strip, panelWidth, panelHeight + 2);
     }
     // The map's tick boxes, to its left while it's enlarged
     MapLayersPanel layers = minimap.getLayersPanel();

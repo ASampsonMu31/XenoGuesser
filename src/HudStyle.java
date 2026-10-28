@@ -455,8 +455,8 @@ public final class HudStyle {
 
     // ------------------------------------------------------------------ Inventory
 
-    /** Something the player carries: its name, the key that uses it and a way to draw its icon. */
-    public record Item(String name, String key, IconPainter icon) {
+    /** Something the player carries: its name and a way to draw its icon. */
+    public record Item(String name, IconPainter icon) {
     }
 
     @FunctionalInterface
@@ -464,35 +464,47 @@ public final class HudStyle {
         void paint(Graphics2D g, float x, float y, float size);
     }
 
-    public static final int INVENTORY_W = 236;
+    public static final int INVENTORY_W = 200;
+    // The height of the heading, and of each item's row under it
+    private static final int INVENTORY_HEAD = 28, INVENTORY_ROW = 40;
 
     public static int inventoryHeight(int items) {
-        return 38 + items * 54 + 6;
+        return INVENTORY_HEAD + items * INVENTORY_ROW + 6;
     }
 
-    public static void paintInventory(Graphics2D g, List<Item> items) {
+    /** The inventory, the item in hand (its place in items, or -1 for none) lit up. */
+    public static void paintInventory(Graphics2D g, List<Item> items, int held) {
         int h = inventoryHeight(items.size());
         panel(g, 0, 0, INVENTORY_W, h, GLASS);
-        label(g, "Inventory", 18, 25, 11f, LABEL);
+        label(g, "Inventory", 16, 19, 10f, LABEL);
         g.setColor(new Color(120, 205, 235, 60));
-        g.fill(new java.awt.geom.Rectangle2D.Float(18, 33, INVENTORY_W - 36, 1f));
-        float y = 40;
-        for (Item item : items) {
+        g.fill(new java.awt.geom.Rectangle2D.Float(16, 25, INVENTORY_W - 32, 1f));
+        float y = INVENTORY_HEAD + 2;
+        for (int i = 0; i < items.size(); i++) {
+            Item item = items.get(i);
+            boolean inHand = i == held;
+            // The one in hand on a lit band across the panel
+            if (inHand) {
+                java.awt.geom.RoundRectangle2D band = new java.awt.geom.RoundRectangle2D.Float(10, y, INVENTORY_W - 20, INVENTORY_ROW - 2, 9, 9);
+                g.setColor(new Color(110, 215, 245, 40));
+                g.fill(band);
+                g.setColor(new Color(110, 215, 245, 150));
+                g.setStroke(new BasicStroke(1.2f));
+                g.draw(band);
+            }
             // Icon in its own slot
-            java.awt.geom.RoundRectangle2D slot = new java.awt.geom.RoundRectangle2D.Float(18, y + 3, 44, 44, 8, 8);
-            g.setColor(new Color(255, 255, 255, 14));
+            java.awt.geom.RoundRectangle2D slot = new java.awt.geom.RoundRectangle2D.Float(16, y + 3, 32, 32, 7, 7);
+            g.setColor(new Color(255, 255, 255, inHand ? 30 : 14));
             g.fill(slot);
-            g.setColor(new Color(120, 205, 235, 90));
-            g.setStroke(new BasicStroke(1f));
+            g.setColor(inHand ? ACCENT : new Color(120, 205, 235, 90));
+            g.setStroke(new BasicStroke(inHand ? 1.6f : 1f));
             g.draw(slot);
-            item.icon().paint(g, 21, y + 6, 38);
-            g.setFont(font(Font.BOLD, 16f));
-            g.setColor(VALUE);
-            g.drawString(item.name(), 74, y + 22);
-            label(g, "Use", 74, y + 40, 9.5f, DIM);
-            float useW = labelWidth(g, "Use", 9.5f);
-            keyCap(g, item.key(), 74 + useW + 7, y + 28, 17);
-            y += 54;
+            item.icon().paint(g, 18, y + 5, 28);
+            g.setFont(font(Font.BOLD, 14f));
+            FontMetrics fm = g.getFontMetrics();
+            g.setColor(inHand ? VALUE : new Color(200, 210, 220));
+            g.drawString(item.name(), 58, y + 19 + (fm.getAscent() - fm.getDescent()) / 2f);
+            y += INVENTORY_ROW;
         }
     }
 

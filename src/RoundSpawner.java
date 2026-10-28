@@ -167,7 +167,8 @@ final class RoundSpawner extends GamePart {
         // facing down the stairs, both still facing down them (from the same shared spot)
         if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
         game.moveToLocation(spawn);
-        // (each round starts with the view as usual)
+        // (each round starts with the view as usual, and nothing in hand, whatever was out as the last ended)
+        game.dropItems();
         game.zoomWanted = 1f;
         game.zoom = 1f;
         game.applyProjection();

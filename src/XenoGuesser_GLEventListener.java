@@ -199,7 +199,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // While the game's paused (M46) the view is greyed out altogether: nothing of it to study
     static final float PAUSED_DIM = 1f;
     volatile boolean menuOpen;
-    private volatile boolean compassWanted;
 
     // --- ECOSYSTEM SPAWNING MANAGER DATA ---
     RegionalGenerationManager regionalManager;
@@ -2820,22 +2819,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     /** The player's own body and what they're holding, posed and drawn in the camera's local frame. */
     private void renderPlayerBody(SpherePosition eye, double deltaTime, float[] sunDir, float[] sunColour, Matrix4 localSkyRotation,
                                   String skyTextureKey) {
-        if (compassWanted) {
-            compassWanted = false;
-            playerBody.useCompass();
+        if (gadgetsDropped) {
+            gadgetsDropped = false;
+            playerBody.putAwayAtOnce();
         }
-        if (thermometerWanted) {
-            thermometerWanted = false;
-            playerBody.useThermometer();
-        }
-        if (altimeterWanted) {
-            altimeterWanted = false;
-            playerBody.useAltimeter();
-        }
-        if (kitWanted) {
-            kitWanted = false;
-            playerBody.useKit();
-        }
+        playerBody.hold(heldItem < 0 ? PlayerBody.NO_GADGET : gadgetOf(ownedItems.get(heldItem)));
         playerBody.setReading(temperatureAt(eye));
         // The altimeter reads the height of the ground underfoot (or the road) above the sea, in
         // metres: not the rock or roof stood on, so it agrees with the map
@@ -3061,8 +3049,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     // ------------------------------------------------------------------ what the player has bought
 
-    // The things the player can carry, every one had from the start (in this order, so 1 is the
-    // compass and 4 the kit); and the maps bought in the shop, nothing to begin with: the map's
+    // The things the player can carry, every one had from the start (in this order, so the
+    // compass comes out first and the kit is last); and the maps bought in the shop, nothing to begin with: the map's
     // layers and overlays
     private static final String COMPASS = "Compass", THERMOMETER = "Thermometer", ALTIMETER = "Altimeter", KIT = "Identification kit";
     private static final String[] ITEMS = { COMPASS, THERMOMETER, ALTIMETER, KIT };
@@ -3080,24 +3068,59 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // Bumped when an item is bought, so the inventory is drawn again
     volatile int itemsVersion;
 
-    /** The items the player has, in the order bought (the first used with 1, the next with 2, and so on). */
+    /** Which of the body's gadgets an item is. */
+    private static int gadgetOf(String item) {
+        return switch (item) {
+            case COMPASS -> PlayerBody.GADGET_COMPASS;
+            case THERMOMETER -> PlayerBody.GADGET_THERMOMETER;
+            case ALTIMETER -> PlayerBody.GADGET_ALTIMETER;
+            default -> PlayerBody.GADGET_KIT;
+        };
+    }
+
+    /** The items the player has, in the order bought (the inventory's order, scrolled through top to bottom). */
     List<HudStyle.Item> inventoryItems() {
         List<HudStyle.Item> items = new ArrayList<>();
-        for (String item : ownedItems) {
-            items.add(new HudStyle.Item(item, String.valueOf(items.size() + 1), itemIcon(item)));
-        }
+        for (String item : ownedItems) items.add(new HudStyle.Item(item, itemIcon(item)));
         return items;
     }
 
-    /** A number key: takes out the item in that place in the inventory, if the player has one there (0 for the first). */
+    // The place in the inventory of the item in hand (kept out until put away or scrolled off), or -1 for none
+    private volatile int heldItem = -1;
+    // Set when everything's to be put away at once rather than lowered (a new round)
+    private volatile boolean gadgetsDropped;
+
+    /** The place in the inventory of the item in hand, or -1 for none. */
+    int heldItem() {
+        return heldItem;
+    }
+
+    /** Takes out the item in that place in the inventory (0 for the first) and keeps it out; -1, or a place with nothing, puts it away. */
     public void useItem(int index) {
-        if (index < 0 || index >= ownedItems.size()) return;
-        switch (ownedItems.get(index)) {
-            case COMPASS -> useCompass();
-            case THERMOMETER -> useThermometer();
-            case ALTIMETER -> altimeterWanted = true;
-            default -> kitWanted = true;
-        }
+        heldItem = index >= 0 && index < ownedItems.size() ? index : -1;
+    }
+
+    /** The middle mouse button: takes out the inventory's first item, or puts away the one in hand. */
+    public void toggleItems() {
+        useItem(heldItem < 0 ? 0 : -1);
+    }
+
+    /**
+     * The mouse wheel while an item's in hand: the next item down the inventory (steps above
+     * 0) or up it, round from the last to the first and back. Whether it was taken (nothing in
+     * hand, it's left to zoom the view).
+     */
+    public boolean scrollItems(int steps) {
+        int held = heldItem, count = ownedItems.size();
+        if (held < 0 || count == 0) return false;
+        if (steps != 0) useItem(Math.floorMod(held + steps, count));
+        return true;
+    }
+
+    /** Nothing in hand, everything put away at once rather than lowered (each round starts so). */
+    public void dropItems() {
+        heldItem = -1;
+        gadgetsDropped = true;
     }
 
     // Each plant species' name (see floraName)
@@ -3305,17 +3328,15 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         rainSound.stop();
     }
 
-    /** C: the player takes out the compass and looks at it for a moment. */
+    /** The player takes out the compass and keeps it out. */
     public void useCompass() {
-        compassWanted = true;
+        useItem(ownedItems.indexOf(COMPASS));
     }
 
-    /** 2: the player takes out the thermometer and reads it for a moment. */
+    /** The player takes out the thermometer and keeps it out. */
     public void useThermometer() {
-        thermometerWanted = true;
+        useItem(ownedItems.indexOf(THERMOMETER));
     }
-
-    private volatile boolean thermometerWanted, altimeterWanted, kitWanted;
 
     /**
      * The haze the distance fades into: the sky's colour greyed (as the air's haze greys

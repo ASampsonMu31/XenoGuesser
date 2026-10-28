@@ -380,7 +380,7 @@ final class TrailerDirector extends GamePart {
 
     /**
      * A play shot's cues (do=seconds:action:args;...): w+ / w- (walk), shift+ / shift-, jump,
-     * item:n (take out the inventory's nth item), look:yaw:pitch (turn to that many degrees from
+     * item:n (take out the inventory's nth item and keep it out; -1 puts it away), look:yaw:pitch (turn to that many degrees from
      * the way the shot faces, as a hand on a mouse would). The player starts looking along
      * yaw0=/pitch0=.
      */
