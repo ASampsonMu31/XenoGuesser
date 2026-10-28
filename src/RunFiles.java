@@ -42,6 +42,11 @@ public final class RunFiles {
         new File(ALPHABETS_DIR).mkdirs();
     }
 
+    /** Deletes this run's files now (Quit does, as it ends the process without the exit's own clean-up). */
+    public static void deleteThisRun() {
+        deleteQuietly(RUN);
+    }
+
     /** Deletes the folders of runs whose process is no longer alive. */
     private static void removeStaleRuns() {
         File[] runs = ROOT.toFile().listFiles();

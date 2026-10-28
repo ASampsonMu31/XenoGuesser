@@ -127,7 +127,8 @@ Parts extend `GamePart` (field `game`).
   `LoadingScreen`, `LoadingArt`, `LoadingProgress`, `TransmissionMessage` (with the players' names
   spliced in), `PlanetVoice`, `OxygenBlur`.
 - **Player profile**: `Profile` (username, suit colour, the name's recording), `ProfilePanel`,
-  `NameCheck` (swearing by spelling and sound), `Pronunciation` (spelling to phonemes), `SuitColour`.
+  `NameCheck` (swearing by spelling, sound and spoonerism), `Pronunciation` (a name split into words,
+  said from `assets/text/word_sounds.txt.gz`, made by `tools/word_sounds.py`), `SuitColour`.
 - **Multiplayer**: `Multiplayer` (session, messages), `MultiplayerTransport`, `SteamTransport`,
   `LocalTransport`, `MultiplayerPanel`, `MultiplayerScore` (rounds won), `RemotePlayer`, `TownsfolkSync` (the host's
   people and vehicles sent to the joiner's PC).

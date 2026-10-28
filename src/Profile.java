@@ -105,11 +105,15 @@ public final class Profile {
         });
     }
 
-    /** Where a name's recording is kept: names are letters, digits, _ and - only, so safe as file names. */
+    /**
+     * Where a name's recording is kept: names are letters, digits, _ and - only, so safe as file
+     * names, followed by a hash of how it's said, so a name is said afresh should that change.
+     */
     private static File clip(String who) {
         String local = System.getenv("LOCALAPPDATA");
         File base = local != null ? new File(local, "XenoGuesser") : new File(System.getProperty("user.home"), ".xenoguesser");
-        return new File(new File(base, "names"), who.toLowerCase(java.util.Locale.ROOT) + ".wav");
+        String said = Integer.toHexString(Pronunciation.phonemes(who).hashCode());
+        return new File(new File(base, "names"), who.toLowerCase(java.util.Locale.ROOT) + "-" + said + ".wav");
     }
 
     private static PlanetVoice.Speech read(File file) {

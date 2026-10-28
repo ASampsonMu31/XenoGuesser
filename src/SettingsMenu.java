@@ -12,13 +12,23 @@ import java.awt.event.MouseEvent;
 import java.awt.geom.RoundRectangle2D;
 import javax.swing.JPanel;
 
-/** The settings, opened with Esc during the game: the graphics (Low, Medium or High), the FPS counter, fullscreen or windowed, and the sun's shadows. */
+/**
+ * The settings, opened with Esc during the game: the graphics (Low, Medium or High), the FPS
+ * counter, fullscreen or windowed, and the sun's shadows; Resume, Return to menu (while a game is
+ * loading or being played) and Quit game. In multiplayer, leaving either way first asks whether
+ * the player's sure, as it forfeits the game.
+ */
 public class SettingsMenu extends JPanel {
 
     public static final int W = 440, H = 566;
 
     private final Runnable onResume;
-    private final Runnable onQuit, onDisplayChanged;
+    private final Runnable onQuit, onDisplayChanged, onReturnToMenu;
+    // Whether there's a game to return to the menu from, and whether leaving it forfeits it (multiplayer)
+    private final java.util.function.BooleanSupplier inGame, forfeits;
+    // What's being asked about (leaving to the menu, or quitting), until answered; null when nothing is
+    private Runnable confirming;
+    private String confirmingWord;
     // Opens the controls (M48), as enclosed with January's message
     private Runnable onControls;
     // The graphics: a button for each of Low, Medium and High, along the right of their row
@@ -29,8 +39,11 @@ public class SettingsMenu extends JPanel {
     private final Rectangle diagnosticsRow = new Rectangle(30, 240, W - 60, 52);
     private final Rectangle fullscreenRow = new Rectangle(30, 302, W - 60, 52);
     private final Rectangle controlsRow = new Rectangle(30, 364, W - 60, 52);
-    private final Rectangle resumeButton = new Rectangle(30, 462, (W - 72) / 2, 44);
-    private final Rectangle quitButton = new Rectangle(42 + (W - 72) / 2, 462, (W - 72) / 2, 44);
+    // The buttons: Resume and Quit side by side, or with a game on, Resume and Return to menu, Quit under them
+    private final Rectangle resumeButton = new Rectangle(), returnButton = new Rectangle(), quitButton = new Rectangle();
+    // The question's buttons, while one's being asked
+    private final Rectangle confirmButton = new Rectangle(30, 452, (W - 72) / 2, 44);
+    private final Rectangle cancelButton = new Rectangle(42 + (W - 72) / 2, 452, (W - 72) / 2, 44);
     {
         int bw = 74, gap = 6, right = qualityRow.x + qualityRow.width - 14;
         for (int k = 0; k < qualityButtons.length; k++) {
@@ -51,10 +64,18 @@ public class SettingsMenu extends JPanel {
         this.onControls = onControls;
     }
 
-    public SettingsMenu(Runnable onResume, Runnable onQuit, Runnable onDisplayChanged) {
+    /**
+     * onReturnToMenu leaves the game for the main menu, offered while inGame holds; leaving
+     * either way asks first while forfeits holds.
+     */
+    public SettingsMenu(Runnable onResume, Runnable onQuit, Runnable onDisplayChanged, Runnable onReturnToMenu,
+                        java.util.function.BooleanSupplier inGame, java.util.function.BooleanSupplier forfeits) {
         this.onResume = onResume;
         this.onQuit = onQuit;
         this.onDisplayChanged = onDisplayChanged;
+        this.onReturnToMenu = onReturnToMenu;
+        this.inGame = inGame;
+        this.forfeits = forfeits;
         setOpaque(true);
         setPreferredSize(new Dimension(W, H));
         setSize(W, H);
@@ -62,12 +83,16 @@ public class SettingsMenu extends JPanel {
         MouseAdapter mouse = new MouseAdapter() {
             @Override
             public void mouseMoved(MouseEvent e) {
-                Rectangle over = qualityButtonAt(e.getPoint()) != null ? qualityButtonAt(e.getPoint())
+                layOutButtons();
+                Rectangle over = confirming != null ? (confirmButton.contains(e.getPoint()) ? confirmButton
+                        : cancelButton.contains(e.getPoint()) ? cancelButton : null)
+                        : qualityButtonAt(e.getPoint()) != null ? qualityButtonAt(e.getPoint())
                         : diagnosticsRow.contains(e.getPoint()) ? diagnosticsRow
                         : fullscreenRow.contains(e.getPoint()) ? fullscreenRow
                         : shadowsRow.contains(e.getPoint()) ? shadowsRow
                         : controlsRow.contains(e.getPoint()) ? controlsRow
                         : resumeButton.contains(e.getPoint()) ? resumeButton
+                        : returnButton.contains(e.getPoint()) ? returnButton
                         : quitButton.contains(e.getPoint()) ? quitButton : null;
                 if (over != hovered) {
                     hovered = over;
@@ -85,6 +110,17 @@ public class SettingsMenu extends JPanel {
             @Override
             public void mousePressed(MouseEvent e) {
                 if (e.getButton() != MouseEvent.BUTTON1) return;
+                layOutButtons();
+                // (while a question's asked, only its answers do anything)
+                if (confirming != null) {
+                    Runnable answer = confirming;
+                    if (confirmButton.contains(e.getPoint()) || cancelButton.contains(e.getPoint())) {
+                        confirming = null;
+                        repaint();
+                    }
+                    if (confirmButton.contains(e.getPoint())) answer.run();
+                    return;
+                }
                 Rectangle quality = qualityButtonAt(e.getPoint());
                 if (quality != null) {
                     GameSettings.setQuality(GameSettings.Quality.values()[java.util.Arrays.asList(qualityButtons).indexOf(quality)]);
@@ -103,13 +139,48 @@ public class SettingsMenu extends JPanel {
                     if (onControls != null) onControls.run();
                 } else if (resumeButton.contains(e.getPoint())) {
                     onResume.run();
+                } else if (returnButton.contains(e.getPoint())) {
+                    leave(onReturnToMenu, "Forfeit and leave");
                 } else if (quitButton.contains(e.getPoint())) {
-                    onQuit.run();
+                    leave(onQuit, "Forfeit and quit");
                 }
             }
         };
         addMouseListener(mouse);
         addMouseMotionListener(mouse);
+    }
+
+    /** Leaves (to the menu, or quitting): at once, or in multiplayer once the player's said they're sure (confirm on the button that does it). */
+    private void leave(Runnable action, String confirm) {
+        if (!forfeits.getAsBoolean()) {
+            action.run();
+            return;
+        }
+        confirming = action;
+        confirmingWord = confirm;
+        hovered = null;
+        repaint();
+    }
+
+    /** A question unanswered as the settings close is forgotten. */
+    @Override
+    public void setVisible(boolean visible) {
+        if (!visible) confirming = null;
+        super.setVisible(visible);
+    }
+
+    /** Where the buttons go: Resume and Quit side by side, or with a game on, Return to menu beside Resume and Quit under them. */
+    private void layOutButtons() {
+        int half = (W - 72) / 2;
+        if (inGame.getAsBoolean()) {
+            resumeButton.setBounds(30, 446, half, 44);
+            returnButton.setBounds(42 + half, 446, half, 44);
+            quitButton.setBounds(30, 500, W - 60, 44);
+        } else {
+            resumeButton.setBounds(30, 462, half, 44);
+            returnButton.setBounds(0, 0, 0, 0);
+            quitButton.setBounds(42 + half, 462, half, 44);
+        }
     }
 
     @Override
@@ -143,11 +214,38 @@ public class SettingsMenu extends JPanel {
             g.drawLine(ax - 4, ay - 7, ax + 3, ay);
             g.drawLine(ax + 3, ay, ax - 4, ay + 7);
 
+            layOutButtons();
             paintButton(g, resumeButton, "Resume", true);
+            if (returnButton.width > 0) paintButton(g, returnButton, "Return to menu", false);
             paintButton(g, quitButton, "Quit game", false);
+            if (confirming != null) paintQuestion(g);
         } finally {
             g.dispose();
         }
+    }
+
+    /** Are they sure: the settings dimmed, and over their foot the question and its two answers. */
+    private void paintQuestion(Graphics2D g) {
+        g.setColor(new Color(6, 8, 12, 200));
+        g.fillRect(0, 0, W, H);
+        int top = 340;
+        g.setColor(new Color(24, 28, 36));
+        g.fill(new RoundRectangle2D.Float(18, top, W - 36, H - top - 18, 14, 14));
+        g.setColor(new Color(235, 140, 130));
+        g.setStroke(new BasicStroke(1.4f));
+        g.draw(new RoundRectangle2D.Float(18.5f, top + 0.5f, W - 37, H - top - 19, 14, 14));
+        g.setFont(HudStyle.font(Font.BOLD, 22f));
+        FontMetrics fm = g.getFontMetrics();
+        g.setColor(HudStyle.VALUE);
+        String ask = "Are you sure?";
+        g.drawString(ask, (W - fm.stringWidth(ask)) / 2, top + 46);
+        g.setFont(HudStyle.font(Font.PLAIN, 16f));
+        fm = g.getFontMetrics();
+        g.setColor(new Color(235, 140, 130));
+        String warn = "This forfeits the game.";
+        g.drawString(warn, (W - fm.stringWidth(warn)) / 2, top + 78);
+        paintButton(g, confirmButton, confirmingWord, false);
+        paintButton(g, cancelButton, "Cancel", true);
     }
 
     /** The graphics' row: its name, a button for each choice (the one chosen lit), and what changes when. */

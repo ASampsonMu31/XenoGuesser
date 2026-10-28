@@ -135,7 +135,10 @@ public class XenoGuesser extends JFrame {
       resizers[k] = new WindowResizer(this, edges[k][0], edges[k][1], screenAspect, WindowTitleBar.HEIGHT);
       layeredPane.add(resizers[k], Integer.valueOf(TOP_LAYER + 1));
     }
-    settingsMenu = new SettingsMenu(() -> setSettingsOpen(false), this::shutdownGame, this::applyDisplayMode);
+    settingsMenu = new SettingsMenu(() -> setSettingsOpen(false), this::shutdownGame, this::applyDisplayMode, this::returnToMenu,
+        () -> loadingScreen != null || canvas != null || inGame,
+        // (leaving forfeits a multiplayer game, unless it's already over)
+        () -> Multiplayer.isActive() && !gameOver && (loadingScreen != null || canvas != null || inGame));
     // (the controls over the settings, which come back once they're closed)
     settingsMenu.setOnControls(() -> {
       settingsMenu.setVisible(false);
@@ -1154,7 +1157,23 @@ glEventListener.setGameHUD(gameHUD);
     leaveBeforeTheGame(who + " left. " + reason);
   }
 
-  /** Multiplayer, before the game has begun: gives up the world being made (or made) and goes back to the menu with a notice. */
+  /**
+   * The settings' Return to menu, while a game's loading or being played: it's given up and it's
+   * back to the main menu. In multiplayer it's forfeited (the settings have asked first): the
+   * partner hears this player has left, and wins, or before the game goes back to their menu too.
+   */
+  void returnToMenu() {
+    boolean forfeited = Multiplayer.isActive() && !gameOver;
+    setSettingsOpen(false);
+    if (messageStrip != null) messageStrip.stop();
+    System.out.println(forfeited ? "[MP] Forfeited: back to the menu" : "Back to the menu");
+    leaveBeforeTheGame(forfeited ? "You forfeited the game." : null);
+  }
+
+  /**
+   * Gives up the world being made (or made, or played) and goes back to the menu with a notice
+   * (null for none): multiplayer before the game has begun, or Return to menu.
+   */
   private void leaveBeforeTheGame(String notice) {
     generationRun++;
     gameOver = true;
@@ -1531,25 +1550,79 @@ glEventListener.setGameHUD(gameHUD);
       this.lockedWindowPosition = null;
   }
 
+  // Whether the game's shutting down (Quit, or the window closed), so it's only done once
+  private final java.util.concurrent.atomic.AtomicBoolean shuttingDown = new java.util.concurrent.atomic.AtomicBoolean();
+  // How long each tidying step may take (the 3D view stopping, multiplayer left), and how long
+  // the whole shutdown, before the process is ended regardless
+  private static final long SHUTDOWN_STEP_MS = 1500, SHUTDOWN_GRACE_MS = 5000;
+
+  /**
+   * Quits the game, whatever it's doing (the menu, a world loading, the pod, a round). The window
+   * goes at once; then, from a thread of its own, the settings are saved, the 3D view stopped,
+   * any multiplayer room left (and Steam shut down) and this run's generated files deleted, each
+   * given SHUTDOWN_STEP_MS, and the process ended outright (Runtime.halt). Any step can hang or
+   * crawl (stopping the view waits for the GL thread, which can be deep in a loading step; Steam
+   * can be slow; deleting a world's files can be), and so could an ordinary exit's shutdown hooks
+   * (JOGL's wait on the Swing thread), which left the game running unseen for seconds; halting
+   * skips them, as everything they did is done here or goes with the process. A watchdog halts
+   * after SHUTDOWN_GRACE_MS whatever's still going. (Files left behind are cleared the next time
+   * the game starts: see RunFiles.)
+   */
   void shutdownGame() {
-    new Thread(new Runnable() {
-        @Override
-        public void run() {
-            if (animator != null && animator.isStarted()) {
-                animator.stop();
-            }
-            // Leaves any multiplayer room and shuts Steam down, if multiplayer was ever started
-            Multiplayer.shutdown();
-            SwingUtilities.invokeLater(new Runnable() {
-                @Override
-                public void run() {
-                    if (canvas != null) remove(canvas);
-                    dispose();
-                    System.exit(0);
-                }
-            });
-        }
-    }).start();
+    if (!shuttingDown.compareAndSet(false, true)) return;
+    long began = System.currentTimeMillis();
+    System.out.println("[QUIT] Shutting down at " + began);
+    Thread watchdog = new Thread(() -> {
+      try {
+        Thread.sleep(SHUTDOWN_GRACE_MS);
+      } catch (InterruptedException e) {
+        // Ending now, then
+      }
+      System.err.println("Shutdown took over " + SHUTDOWN_GRACE_MS + " ms: ending the process");
+      Runtime.getRuntime().halt(0);
+    }, "shutdown-watchdog");
+    watchdog.setDaemon(true);
+    watchdog.start();
+    Runnable hide = () -> setVisible(false);
+    if (SwingUtilities.isEventDispatchThread()) hide.run();
+    else SwingUtilities.invokeLater(hide);
+    Thread tidy = new Thread(() -> {
+      try {
+        GameSettings.STORE.flush();
+      } catch (Exception e) {
+        // Settings that can't be saved are lost with the game
+      }
+      FPSAnimator running = animator;
+      if (glEventListener != null) shutdownStep(glEventListener::stopSounds);
+      if (running != null) shutdownStep(() -> {
+        if (running.isStarted()) running.stop();
+      });
+      // Leaves any multiplayer room and shuts Steam down, if multiplayer was ever started
+      shutdownStep(Multiplayer::shutdown);
+      shutdownStep(RunFiles::deleteThisRun);
+      System.out.println("[QUIT] Ending after " + (System.currentTimeMillis() - began) + " ms");
+      System.out.flush();
+      Runtime.getRuntime().halt(0);
+    }, "shutdown");
+    tidy.start();
+  }
+
+  /** A step of the shutdown, given SHUTDOWN_STEP_MS before the shutdown goes on without it. */
+  private static void shutdownStep(Runnable step) {
+    Thread t = new Thread(() -> {
+      try {
+        step.run();
+      } catch (Throwable e) {
+        System.err.println("Shutdown step failed: " + e);
+      }
+    }, "shutdown-step");
+    t.setDaemon(true);
+    t.start();
+    try {
+      t.join(SHUTDOWN_STEP_MS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   public static void updateMinimapBounds(JLayeredPane layeredPane, MapPanel minimap) {

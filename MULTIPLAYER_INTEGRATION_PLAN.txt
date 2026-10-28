@@ -1599,11 +1599,19 @@ LOG
             letters, digits, _ or -; refused if its spelling holds a swear word or slur however it's
             dressed up (digits as letters, ph/ck/c/q as their sounds, repeated letters as one), on
             purpose strictly ("ILoveScunthorpe" is refused), milder words only as a word of their
-            own; or if it sounds like one, from the phonemes it would be said with ("fhukyoo").
-            Pronunciation turns a name's spelling into the voice's phonemes (the NRL letter-to-sound
-            rules with British vowels; numbers as numbers, capitals and vowelless words as letters),
-            and the name's said in Xenocorp's voice as it's saved, kept in
-            %LOCALAPPDATA%/XenoGuesser/names. The messages that said "Employee 119" (singleplayer,
+            own; if a stressed syllable sounds like one, from the phonemes it would be said with
+            ("fhukyoo"); or if swapping the starts of two of its words makes one start with one
+            (spoonerisms: "futhermucker", "ShuckingFit"). Of the 6,000 commonest English words and
+            ~200 first names, about 50 are refused, all by the deliberate strictness (whole rude
+            words, and "medical", "cook", "Hancock" for what's inside them).
+            Pronunciation turns a name into the voice's phonemes: it's split into the likeliest
+            English words (fewest and commonest, by dynamic programming over word frequencies), each
+            said as eSpeak says it, from assets/text/word_sounds.txt.gz (80,000 words, made once by
+            tools/word_sounds.py with piper-tts's eSpeak and wordfreq; the game can't run eSpeak);
+            what's no word goes by the NRL letter-to-sound rules with British vowels; numbers as
+            numbers, capitals and vowelless words as letters. The name's said in Xenocorp's voice as
+            it's saved, kept in %LOCALAPPDATA%/XenoGuesser/names (by name and a hash of its phonemes,
+            so it's said afresh should they change). The messages that said "Employee 119" (singleplayer,
             gift, multiplayer, twice in it: "Good morning, X ... paired with Y") have the name
             spliced into the recording in its place ("self" and "partner" lines in their .txt: the
             frames cut and the transcript's place), shaped and hissed as the planet sentence is;

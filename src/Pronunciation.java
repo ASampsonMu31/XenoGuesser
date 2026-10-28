@@ -1,18 +1,26 @@
+import java.io.BufferedReader;
+import java.io.FileInputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 /**
  * How a player's username is said (M58), as phonemes in the voice's alphabet (eSpeak's IPA,
- * British, stress marked with ˈ before the stressed vowel), worked out from its spelling alone:
- * eSpeak isn't part of the project and names aren't in any dictionary. The name is split into
- * words where its case changes ("ILoveMaps": I, Love, Maps), at digits and at _ or -; numbers
- * are said as numbers, short capitals and words with no vowel as letters ("TJ", "XKCD"), and
- * every other word by English letter-to-sound rules: the US Naval Research Laboratory's (Elovitz
- * et al., 1976), given British vowels and no R after a vowel. Each word is stressed on its first
- * vowel (its second, should the first be a schwa), as most names are. NameCheck uses the same
- * phonemes to hear names that sound like swearing.
+ * British, stress marked with ˈ before the stressed vowel). eSpeak, which the voice is meant to
+ * be given text through, isn't part of the project, so the name's worked out from its spelling.
+ * It's split where its case changes ("ILoveMaps": I, Love, Maps), at digits and at _ or -; numbers
+ * are said as numbers, and short capitals and words with no vowel as letters ("TJ", "XKCD"). Each
+ * other run of letters is split into the English words it most likely holds ("alexthegreat":
+ * alex, the, great), the commoner and fewer the likelier (see segment), and each word said as
+ * eSpeak says it, from WORD_SOUNDS (made by tools/word_sounds.py). Whatever isn't a word is said
+ * by English letter-to-sound rules: the US Naval Research Laboratory's (Elovitz et al., 1976),
+ * given British vowels and no R after a vowel, stressed on its first vowel (its second, should
+ * the first be a schwa), as most names are. NameCheck uses the same phonemes to hear names that
+ * sound like swearing.
  */
 public final class Pronunciation {
 
@@ -25,7 +33,7 @@ public final class Pronunciation {
         for (String word : words(name)) {
             if (Character.isDigit(word.charAt(0))) said.add(number(word));
             else if (spelt(word)) said.add(letters(word));
-            else said.add(stress(word(word.toLowerCase(java.util.Locale.ROOT))));
+            else for (String piece : segment(word.toLowerCase(java.util.Locale.ROOT))) said.add(sound(piece));
         }
         said.removeIf(String::isEmpty);
         return String.join(" ", said);
@@ -50,6 +58,73 @@ public final class Pronunciation {
         }
         if (word.length() > 0) words.add(word.toString());
         return words;
+    }
+
+    // ------------------------------------------------------------------ words
+
+    // The commonest English words, how common (Zipf frequency: log10 of uses per billion words, plus 9), and how eSpeak says each
+    public static final String WORD_SOUNDS = GamePaths.HOME + "assets/text/word_sounds.txt.gz";
+
+    private record Word(float zipf, String phonemes) {
+    }
+
+    /** The words, read the first time they're needed (none, should the file be missing: the rules then say everything). */
+    private static final class Words {
+        static final Map<String, Word> ALL = read();
+
+        private static Map<String, Word> read() {
+            Map<String, Word> words = new HashMap<>();
+            try (BufferedReader in = new BufferedReader(new InputStreamReader(
+                    new GZIPInputStream(new FileInputStream(WORD_SOUNDS)), StandardCharsets.UTF_8))) {
+                for (String line; (line = in.readLine()) != null; ) {
+                    String[] parts = line.split("\t");
+                    if (parts.length == 3) words.put(parts[0], new Word(Integer.parseInt(parts[1]) / 100f, parts[2]));
+                }
+            } catch (Exception e) {
+                System.err.println("Word sounds unavailable: " + e.getMessage());
+            }
+            return words;
+        }
+    }
+
+    // What a split costs (see segment): each word, plus how rare it is (8 less its Zipf
+    // frequency: the commonest words are near 8); each stretch that's no word, plus each letter in it
+    private static final float WORD_COST = 3f, STRETCH_COST = 10f, LETTER_COST = 3f;
+    private static final int LONGEST_WORD = 24;
+
+    /**
+     * Lower-case letters split into the words they most likely are: of every way to cut them
+     * into words and stretches that are no word, the one costing least, which favours fewer and
+     * commoner words and leaves as little as possible to the rules. Found by dynamic programming
+     * over where the cuts go.
+     */
+    static List<String> segment(String letters) {
+        int n = letters.length();
+        float[] best = new float[n + 1];
+        int[] from = new int[n + 1];
+        java.util.Arrays.fill(best, Float.MAX_VALUE);
+        best[0] = 0f;
+        for (int end = 1; end <= n; end++) {
+            for (int start = Math.max(0, end - LONGEST_WORD); start < end; start++) {
+                if (best[start] == Float.MAX_VALUE) continue;
+                Word w = Words.ALL.get(letters.substring(start, end));
+                float cost = w != null ? WORD_COST + 8f - w.zipf : STRETCH_COST + LETTER_COST * (end - start);
+                if (best[start] + cost < best[end]) {
+                    best[end] = best[start] + cost;
+                    from[end] = start;
+                }
+            }
+        }
+        List<String> pieces = new ArrayList<>();
+        for (int end = n; end > 0; end = from[end]) pieces.add(0, letters.substring(from[end], end));
+        return pieces;
+    }
+
+    /** A piece of a name said: as eSpeak says the word, or should it be no word, by the rules (a lone letter as its name). */
+    private static String sound(String piece) {
+        Word w = Words.ALL.get(piece);
+        if (w != null) return w.phonemes;
+        return piece.length() == 1 ? letters(piece) : stress(word(piece));
     }
 
     /** Whether a word is said letter by letter: a letter on its own, two or three capitals, or no vowel to say. */
@@ -358,8 +433,12 @@ public final class Pronunciation {
         return true;
     }
 
-    /** Developer aid: prints the phonemes for each name given. */
+    /** Developer aid: prints how each name given is split into words, and its phonemes. */
     public static void main(String[] args) {
-        for (String name : args) System.out.println(name + "\t" + phonemes(name));
+        for (String name : args) {
+            List<String> pieces = new ArrayList<>();
+            for (String word : words(name)) pieces.add(String.join("|", segment(word.toLowerCase(java.util.Locale.ROOT))));
+            System.out.println(name + "\t" + String.join(" ", pieces) + "\t" + phonemes(name));
+        }
     }
 }

@@ -11,7 +11,8 @@ the startup order, the per-frame render order and the two big classes' parts.
 - `assets/shaders/*.txt` — GLSL (`vs_*`, `fs_*`); `assets/audio`, `assets/art`, `assets/icons`,
   `assets/text`; `models/` — the glyph model (PyTorch) and voice (ONNX).
 - `checks/regression-fingerprints.txt` — the golden output of `RegressionCheck`.
-- `tools/` — `run-checks.sh`, `frame-shots.sh` (see below), `record_message.py`.
+- `tools/` — `run-checks.sh`, `frame-shots.sh` (see below), `record_message.py`, `word_sounds.py`
+  (rebuilds the word pronunciations usernames are said with).
 - `trailer/` — the Steam trailer (an HTML page and its clips); `tools/trailer/` films, records and
   encodes the clips (see its README).
 - `GEODESIC_MIGRATION_PLAN.txt` (decisions `D1`–`D14`) and `MULTIPLAYER_INTEGRATION_PLAN.txt`

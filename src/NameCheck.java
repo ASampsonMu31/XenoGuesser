@@ -15,7 +15,12 @@ import java.util.Locale;
  *              with their double letters, and mild or short ones only as a word of their own
  *              ("BigAss", not "Assassin");
  *   sound    - the phonemes it would be said with (Pronunciation), coarsened (similar vowels as
- *              one, h and y-sounds dropped), so "fhukyoo" is heard for what it is.
+ *              one, h and y-sounds dropped), so "fhukyoo" is heard for what it is; only a
+ *              stressed syllable counts ("significant" ends unstressed, and isn't refused);
+ *   swapped  - spoonerised: the starts (the consonants before the first vowel) of two of the
+ *              words it holds swapped (its words as Pronunciation splits it), and refused if
+ *              either word then starts with one of the worst words, spelt as above
+ *              ("futhermucker", "ShuckingFit").
  */
 public final class NameCheck {
 
@@ -34,20 +39,21 @@ public final class NameCheck {
         "skank", "wanker", "shag", "jerkoff", "pissed", "pisshead", "cumslut", "sperm"
     };
     // Refused anywhere, but only spelt with their double letters (as one letter they're everywhere: "episode")
-    private static final String[] DOUBLED = { "piss", "tits", "jizz", "kkk", "boob" };
+    private static final String[] DOUBLED = { "piss", "tits", "jizz", "boob" };
     // Refused only as a word of their own in the name
     private static final String[] WORDS = {
         "ass", "arse", "sex", "sexy", "cum", "anal", "anus", "rape", "rapist", "raping", "butt", "crap", "damn",
         "fag", "fags", "tit", "hoe", "hoes", "nob", "knob", "bum", "turd", "coon", "chink", "gook", "kike", "wog",
         "homo", "lesbo", "tranny", "bugger", "sod", "paki", "pedo", "boner", "fck", "fk", "wtf", "stfu",
         "kys", "poo", "poop", "milf", "dyke", "slag", "git", "prat", "pillock", "piss", "tits", "balls", "fart",
-        "bj", "willy", "nude"
+        "bj", "willy", "nude", "kkk"
     };
-    // Refused anywhere in the sound of the name: coarsened phonemes (see key), "!x" after one
-    // meaning not where x follows ("country" isn't refused for its first syllable)
+    // Refused anywhere in the sound of the name: coarsened phonemes (see key), ' before the
+    // stressed vowel, "!x" after one meaning not where x follows ("country" isn't refused for its
+    // first syllable)
     private static final String[] SOUNDS = {
-        "fUK", "SIt", "KUnt!r", "KOK", "dIK!t", "twAt", "twOt", "wANK", "wONK", "bIC", "slUt", "prIK", "nIg",
-        "fAg", "pUsI", "bOlUK", "KlIt", "wONKU", "tOsU"
+        "f'UK", "S'It", "K'Unt!r", "K'OK", "d'IK!t", "tw'At", "tw'Ot", "w'ANK", "w'ONK", "b'IC", "sl'Ut", "pr'IK",
+        "n'Ig", "f'Ag", "p'UsY", "b'OlUK", "Kl'It", "t'OsU"
     };
 
     private static final String[] ANYWHERE_SKELETONS = skeletons(ANYWHERE, 1);
@@ -90,8 +96,62 @@ public final class NameCheck {
             }
             String heard = key(Pronunciation.phonemes(read));
             for (String sound : SOUNDS) if (heard(heard, sound)) return true;
+            for (String[] swapped : spoonerisms(read)) {
+                for (String word : swapped) {
+                    String spelt = skeleton(word, 1);
+                    for (String bad : ANYWHERE_SKELETONS) if (spelt.startsWith(bad)) return true;
+                }
+            }
         }
         return false;
+    }
+
+    // The longest a word's start is taken to be when spoonerising ("str", "spr", "thr")
+    private static final int LONGEST_ONSET = 3;
+
+    /**
+     * The name spoonerised, every way there is: for each two of the words it holds (its words
+     * as Pronunciation splits it, lower case), their starts (one to three consonants before the
+     * first vowel, y counting as one) swapped; each as the two words, from the start of each to
+     * the end of the name ("FutherMucker": "mutherfucker" and "fucker").
+     */
+    static List<String[]> spoonerisms(String name) {
+        List<Integer> starts = new ArrayList<>();
+        StringBuilder letters = new StringBuilder();
+        for (String word : Pronunciation.words(name)) {
+            if (!Character.isLetter(word.charAt(0))) continue;
+            for (String piece : Pronunciation.segment(word.toLowerCase(Locale.ROOT))) {
+                starts.add(letters.length());
+                letters.append(piece);
+            }
+        }
+        String all = letters.toString();
+        List<String[]> out = new ArrayList<>();
+        for (int a = 0; a < starts.size(); a++) {
+            int x = starts.get(a), xEnd = onsetEnd(all, x);
+            if (xEnd < 0) continue;
+            for (int b = a + 1; b < starts.size(); b++) {
+                int y = starts.get(b), yEnd = onsetEnd(all, y);
+                if (yEnd < 0 || y < xEnd) continue;
+                String first = all.substring(x, xEnd), second = all.substring(y, yEnd);
+                if (first.equals(second)) continue;
+                String swapped = all.substring(0, x) + second + all.substring(xEnd, y) + first + all.substring(yEnd);
+                int secondAt = y + second.length() - first.length();
+                out.add(new String[] { swapped.substring(x), swapped.substring(secondAt) });
+            }
+        }
+        return out;
+    }
+
+    /** Where a word's start (its consonants before its first vowel) ends, or -1 if it starts with a vowel or too many consonants. */
+    private static int onsetEnd(String letters, int at) {
+        int v = at;
+        while (v < letters.length() && !soundsVowel(letters.charAt(v))) v++;
+        return v > at && v < letters.length() && v - at <= LONGEST_ONSET ? v : -1;
+    }
+
+    private static boolean soundsVowel(char c) {
+        return "aeiouy".indexOf(c) >= 0;
     }
 
     /** The name with its digits read as letters, both ways for 1 (i and l); other characters as they are. */
@@ -160,8 +220,9 @@ public final class NameCheck {
 
     /**
      * Phonemes coarsened to how alike they sound: the short central and back vowels as U, the
-     * i's as I, the o's as O, a as A, the e's as E, k as K, ch as C, sh as S, ng as N, j as J;
-     * stress, length, h and the y-sound left out, and the words run together.
+     * short i as I and the long one as Y, the o's as O, a as A, the e's as E, k as K, ch as C, sh
+     * as S, ng as N, j as J; stress as ' (before the stressed vowel); length, h and the y-sound
+     * left out, and the words run together.
      */
     static String key(String phonemes) {
         StringBuilder b = new StringBuilder();
@@ -180,7 +241,8 @@ public final class NameCheck {
             }
             switch (c) {
                 case 'ʌ', 'ə', 'ɐ', 'ʊ', 'ɜ' -> b.append('U');
-                case 'ɪ', 'i' -> b.append('I');
+                case 'ɪ' -> b.append('I');
+                case 'i' -> b.append('Y');
                 case 'ɒ', 'ɔ', 'ɑ' -> b.append('O');
                 case 'a', 'æ' -> b.append('A');
                 case 'ɛ', 'e' -> b.append('E');
@@ -189,7 +251,8 @@ public final class NameCheck {
                 case 'ŋ' -> b.append('N');
                 case 'ɡ', 'g' -> b.append('g');
                 case 'ɹ' -> b.append('r');
-                case 'ˈ', 'ˌ', 'ː', 'h', 'j', ' ' -> {
+                case 'ˈ', 'ˌ' -> b.append('\'');
+                case 'ː', 'h', 'j', ' ' -> {
                 }
                 default -> b.append(c);
             }
