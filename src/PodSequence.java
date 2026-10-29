@@ -461,7 +461,8 @@ public class PodSequence implements GLEventListener {
         // The way down: what's out of the window, how gravity's felt, and the jolts on the way
         Multiplayer session = multiplayer ? Multiplayer.active() : null;
         if (session != null) session.publishProgress(progress.overallFraction());
-        timeline.step(dt, loadedEverywhere(), readyEverywhere(), space);
+        boolean ready = readyEverywhere();
+        timeline.step(dt, ready ? 0f : progress.secondsLeftAt(loadedEverywhere()), ready, space);
         space.update(dt);
         System.arraycopy(timeline.gravity, 0, physics.gravity, 0, 3);
         for (PodTimeline.Event event = timeline.nextEvent(); event != null; event = timeline.nextEvent()) happened(event);
