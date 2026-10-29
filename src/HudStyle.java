@@ -271,7 +271,7 @@ public final class HudStyle {
 
     /**
      * The score panel in multiplayer (M58): the round being played, and each player (this one
-     * first, "(You)" after their name) with a row of ROUNDS_TO_WIN circles, filled in their suit's
+     * first) with a row of ROUNDS_TO_WIN circles, filled in their suit's
      * colour for each round they've won. No cash: multiplayer's shop is free (the round's loser
      * takes one).
      */
@@ -288,17 +288,17 @@ public final class HudStyle {
         float nameRight = CIRCLES_X - CIRCLE_SIZE / 2f - 12f;
         for (int p = 0; p < 2; p++) {
             float cy = CIRCLES_Y + p * CIRCLE_ROW;
-            // The name as typed ("(You)" after this player's), cut short should it not fit before the circles
+            // The name as typed, cut short should it not fit before the circles
             g.setFont(font(Font.BOLD, 14f));
             FontMetrics fm = g.getFontMetrics();
-            String name = names[p], after = p == 0 ? " (You)" : "";
+            String name = names[p];
             boolean cut = false;
-            while (name.length() > 1 && fm.stringWidth(name + (cut ? "..." : "") + after) > nameRight - 166f) {
+            while (name.length() > 1 && fm.stringWidth(name + (cut ? "..." : "")) > nameRight - 166f) {
                 name = name.substring(0, name.length() - 1);
                 cut = true;
             }
             g.setColor(textColours[p]);
-            g.drawString((cut ? name + "..." : name) + after, 166, cy + 5f);
+            g.drawString(cut ? name + "..." : name, 166, cy + 5f);
             g.setStroke(new BasicStroke(1.6f));
             for (int c = 0; c < MultiplayerScore.ROUNDS_TO_WIN; c++) {
                 float x = CIRCLES_X + c * CIRCLE_STEP - CIRCLE_SIZE / 2f, y = cy - CIRCLE_SIZE / 2f;

@@ -4,15 +4,18 @@ import java.util.Deque;
 /**
  * The landing pod's way down, as the world loads: cruising with the stars streaming past; slowing
  * as the planet's star and then the planet itself grow ahead; swerving past it and swinging round
- * into orbit, the window facing the planet as it turns below, at least once round; let go from the
+ * into orbit, the window facing the planet as it turns below, at least half way round; let go from the
  * ship with a clunk and turned, its top to the planet, on its thrusters, still going round; the
  * roar of the air as it comes in, the window fogging; turned upright again through the fog; coming
  * down; and landing with a jolt.
  *
- * Each stage lasts at least so long (so a quick load is never rushed through) and some end only
- * once the loading's far enough on (the waiting done where it looks natural: cruising, in orbit,
- * coming in through the air; never part way through the approach): the share loaded is the less of this PC's and the
- * partner's, so both players' pods come down together. It lands only once both worlds are
+ * Each stage lasts at least so long and some end only once the loading's near enough its end
+ * that what's left of the way down takes as long as what's left of the loading (the waiting done
+ * where it looks natural: cruising, in orbit, coming in through the air; never part way through
+ * the approach), so the pod's down as the screen reads 100%: the time left is reckoned from the
+ * less of this PC's share loaded and the partner's, so both players' pods come down together. If
+ * the loading gets ahead of the pod anyway (a quick load, or a guess of the time left that was
+ * too long) the rest of the way down is hurried, never skipped. It lands only once both worlds are
  * ready. Each frame it sets what's seen out of the window (PodSpaceView), gravity as it's felt
  * in the cabin, how hard the cabin shakes and how loud each sound is; things that happen once
  * (the clunk, the landing) are queued for PodSequence.
@@ -23,11 +26,17 @@ public class PodTimeline {
 
     enum Event { RELEASED, THRUSTERS, ENTRY, UPRIGHTING, LANDED }
 
-    // How long each stage lasts at least (the approach exactly), and the share loaded it waits for
-    // before ending (the orbit's at least once round: ORBIT_TIME)
+    // How long each stage lasts at least (the approach exactly; the orbit's at least ORBIT_LEAST
+    // radians round, going once round in ORBIT_TIME)
     private static final float CRUISE_TIME = 8f, APPROACH_TIME = 14f, ORBIT_TIME = 20f, RELEASE_TIME = 5f, REENTRY_TIME = 10f,
             UPRIGHT_TIME = 5f, DESCENT_TIME = 3f;
-    private static final float APPROACH_FROM = 0.5f, RELEASE_FROM = 0.8f, UPRIGHT_FROM = 0.97f;
+    private static final float ORBIT_LEAST = (float) Math.PI;
+    // The cruise ends with this many seconds of loading to spare beyond the least the rest takes,
+    // waited out in orbit (so a guess of the time left that's a little short is made up there)
+    private static final float ORBIT_HOLD = 10f;
+    // Hurrying: the rest of the way down goes at most MOST_HURRY times as fast, aiming to be done
+    // as the loading is, or HURRY_WITHIN seconds after it's done; the pace eased in, not jumped to
+    private static final float MOST_HURRY = 3f, HURRY_WITHIN = 1f, HURRY_EASE = 2f;
     // How fast the pod's going while it cruises (for the streaks); in the first part of the
     // approach it drops out of that, the streaks slowing to nothing and the stars, still now,
     // filling in all round as a dome
@@ -64,6 +73,8 @@ public class PodTimeline {
 
     Phase phase = Phase.CRUISE;
     private float inPhase, approach, angle, spin, heading, orbitAngle;
+    // How much faster than usual the pod's going down (1 for not hurried)
+    private float hurry = 1f;
     private final boolean ignoreProgress;
     private final Deque<Event> events = new ArrayDeque<>();
 
@@ -115,17 +126,24 @@ public class PodTimeline {
     }
 
     /**
-     * Moves on by dt: loaded is the share of the world loaded on both PCs (the less of the two),
-     * bothReady whether both worlds are ready.
+     * Moves on by dt: secondsLeft is roughly how long the loading has left on both PCs (the longer
+     * of the two; 0 once both are ready), bothReady whether both worlds are ready.
      */
-    void step(float dt, float loaded, boolean bothReady, PodSpaceView view) {
-        if (ignoreProgress) loaded = 1f;
+    void step(float dt, float secondsLeft, boolean bothReady, PodSpaceView view) {
+        float wanted = 1f;
+        if (ignoreProgress) {
+            secondsLeft = 0f;
+        } else if (phase != Phase.LANDED) {
+            wanted = Math.max(1f, Math.min(MOST_HURRY, leastLeft(inPhase / PACE) / Math.max(secondsLeft, HURRY_WITHIN)));
+        }
+        hurry += (wanted - hurry) * Math.min(1f, dt * HURRY_EASE);
+        dt *= hurry;
         inPhase += dt;
         spin += dt * 0.02f;
         float t = inPhase / PACE;
         switch (phase) {
             case CRUISE -> {
-                if (t >= CRUISE_TIME && loaded >= APPROACH_FROM) next(Phase.APPROACH);
+                if (t >= CRUISE_TIME && secondsLeft <= (after(Phase.CRUISE) + ORBIT_HOLD) * PACE) next(Phase.APPROACH);
             }
             case APPROACH -> {
                 // Steadily, by the clock: never held part way in (the orbit waits on the loading)
@@ -133,14 +151,14 @@ public class PodTimeline {
                 if (approach >= 1f) next(Phase.ORBIT);
             }
             case ORBIT -> {
-                // At least once round, and on round until the loading's caught up
-                if (orbitAngle >= Math.PI * 2.0 && loaded >= RELEASE_FROM) next(Phase.RELEASE);
+                // At least half way round, and on round until what's left of the loading is as long as the rest
+                if (orbitAngle >= ORBIT_LEAST && secondsLeft <= after(Phase.ORBIT) * PACE) next(Phase.RELEASE);
             }
             case RELEASE -> {
                 if (t >= RELEASE_TIME) next(Phase.REENTRY);
             }
             case REENTRY -> {
-                if (t >= REENTRY_TIME && loaded >= UPRIGHT_FROM) next(Phase.UPRIGHT);
+                if (t >= REENTRY_TIME && secondsLeft <= after(Phase.REENTRY) * PACE) next(Phase.UPRIGHT);
             }
             case UPRIGHT -> {
                 if (t >= UPRIGHT_TIME) next(Phase.DESCENT);
@@ -167,6 +185,36 @@ public class PodTimeline {
         }
         pose(t, dt);
         show(t, view);
+    }
+
+    /** The least a stage takes, from its start (the orbit's from the start of its turning round). */
+    private static float least(Phase phase) {
+        return switch (phase) {
+            case CRUISE -> CRUISE_TIME;
+            case APPROACH -> APPROACH_TIME;
+            // (its turning eases in over ORBIT_SETTLE, half as far as at its full rate)
+            case ORBIT -> ORBIT_LEAST / ORBIT_RATE + ORBIT_SETTLE * 0.5f;
+            case RELEASE -> RELEASE_TIME;
+            case REENTRY -> REENTRY_TIME;
+            case UPRIGHT -> UPRIGHT_TIME;
+            case DESCENT -> DESCENT_TIME;
+            case LANDED -> 0f;
+        };
+    }
+
+    /** The least the stages after this one take, down to the landing (seconds, unpaced). */
+    private static float after(Phase phase) {
+        float sum = 0f;
+        for (Phase p : Phase.values()) if (p.ordinal() > phase.ordinal()) sum += least(p);
+        return sum;
+    }
+
+    /** The least the rest of the way down takes from here, t seconds into this stage (seconds, as paced). */
+    private float leastLeft(float t) {
+        float here = phase == Phase.ORBIT
+                ? Math.max(0f, ORBIT_LEAST - orbitAngle) / ORBIT_RATE + Math.max(0f, ORBIT_SETTLE - t) * 0.5f
+                : Math.max(0f, least(phase) - t);
+        return (here + after(phase)) * PACE;
     }
 
     private boolean thrustersFired;

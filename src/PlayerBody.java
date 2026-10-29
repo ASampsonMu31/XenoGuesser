@@ -743,10 +743,10 @@ public class PlayerBody {
             sky.bind(gl);
             shader.setInt(gl, "skyTexture", 2);
         }
-        // A white suit with orange bands and dark grey boots, gloves and pack
+        // A plain white suit (its bands white too), the wearer's colour only on the boots, gloves and packs
         shader.setVec3(gl, "baseColour", new Vector3(0.92f, 0.92f, 0.9f));
         shader.setVec3(gl, "bellyColour", new Vector3(0.88f, 0.88f, 0.86f));
-        shader.setVec3(gl, "accentColour", new Vector3(0.95f, 0.45f, 0.1f));
+        shader.setVec3(gl, "accentColour", new Vector3(0.92f, 0.92f, 0.9f));
         shader.setVec3(gl, "limbColour", new Vector3(0.9f, 0.9f, 0.88f));
         // (the thermometer's glass tube: pale and glossy)
         shader.setVec3(gl, "eyeColour", new Vector3(0.78f, 0.86f, 0.9f));
@@ -823,9 +823,11 @@ public class PlayerBody {
             sky.bind(gl);
             shader.setInt(gl, "skyTexture", 2);
         }
+        // A plain white suit: the bands are the suit's white too (orange, they read as a belt and
+        // pants whatever the wearer's colour), which is shown on the packs, collar and boots instead
         shader.setVec3(gl, "baseColour", new Vector3(0.92f, 0.92f, 0.9f));
         shader.setVec3(gl, "bellyColour", new Vector3(0.88f, 0.88f, 0.86f));
-        shader.setVec3(gl, "accentColour", new Vector3(0.95f, 0.45f, 0.1f));
+        shader.setVec3(gl, "accentColour", new Vector3(0.92f, 0.92f, 0.9f));
         shader.setVec3(gl, "limbColour", new Vector3(0.9f, 0.9f, 0.88f));
         // The visor: dark, gold-tinted and glossy, as on the loading screen's spaceman
         shader.setVec3(gl, "eyeColour", new Vector3(0.12f, 0.09f, 0.03f));

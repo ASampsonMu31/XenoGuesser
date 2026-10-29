@@ -20,7 +20,8 @@ import javax.swing.SwingUtilities;
  * every test would need two machines. The host listens on 127.0.0.1:27999 and the joiner
  * connects to it; the room code is made and shown like Steam's but not checked, since there
  * can only be one room on the PC. Matchmaking has a port for each queue (28000 casual, 28001
- * ranked): a window joins one already listening there, or else listens there itself.
+ * ranked): a window joins one already listening there, or else listens there itself, whatever
+ * game modes and maps each ticked (the host then plays its own should they share none).
  *
  * Both kinds of message go over the one TCP connection, each as its length then its bytes, so
  * "unreliable" ones always arrive here. -Dxenoguesser.mpdrop=0.3 throws away that share of the
@@ -76,7 +77,8 @@ public final class LocalTransport implements MultiplayerTransport {
     }
 
     @Override
-    public void matchmake(boolean ranked, int rating) {
+    public void matchmake(boolean ranked, int rating, int modes, int maps) {
+        // (the modes and maps ticked aren't compared here: anyone in the queue's port is matched)
         tasks.offer(() -> findMatch(ranked ? RANKED_PORT : CASUAL_PORT));
     }
 

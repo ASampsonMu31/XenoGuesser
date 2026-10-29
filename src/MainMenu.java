@@ -21,11 +21,11 @@ import javax.swing.JComponent;
 /**
  * The title screen: a view of a landing pod on an alien world (a frame of the game itself),
  * the game's name and its options on the left, and the player's spaceman on the right, who
- * can be turned round by dragging. Play Singleplayer starts loading a world; beside it, the
- * game mode to play it in (see GameMode) and the kind of map (see MapKind), each one of a few
- * like radio buttons. Play Multiplayer opens the multiplayer panel over the menu (see
- * MultiplayerPanel), which dims it until the panel is closed (unchoose()); the player's name and
- * suit colour, at the top right, open their profile the same way (see ProfilePanel, M58).
+ * can be turned round by dragging. Play Singleplayer opens the choice of game mode and map over
+ * the menu (see SingleplayerPanel), and Play Multiplayer the multiplayer panel (see
+ * MultiplayerPanel), either dimming it until the panel is closed (unchoose()); the player's name
+ * and suit colour, at the top right, open their profile the same way (see ProfilePanel, M58).
+ * Under the buttons, the graphics and shadows, each one of a few like radio buttons.
  */
 public class MainMenu extends JComponent {
 
@@ -57,9 +57,7 @@ public class MainMenu extends JComponent {
 
     private final Rectangle singleButton = new Rectangle(), multiButton = new Rectangle(), quitButton = new Rectangle();
     private final Rectangle profileButton = new Rectangle();
-    // The game modes' buttons, beside Play Singleplayer, in GameMode's order; the kinds of map's below, in MapKind's
-    private final Rectangle[] modeButtons = new Rectangle[GameMode.values().length], mapButtons = new Rectangle[MapKind.values().length];
-    // ...and the graphics' (see GameSettings.Quality) and the shadows' (off, on) below those
+    // The graphics' buttons (see GameSettings.Quality) and the shadows' (off, on) below them
     private final Rectangle[] qualityButtons = new Rectangle[GameSettings.Quality.values().length], shadowButtons = new Rectangle[2];
     private Rectangle hovered;
     private boolean chosen;
@@ -84,8 +82,6 @@ public class MainMenu extends JComponent {
         this.onQuit = onQuit;
         this.onProfile = onProfile;
         setOpaque(true);
-        for (int m = 0; m < modeButtons.length; m++) modeButtons[m] = new Rectangle();
-        for (int m = 0; m < mapButtons.length; m++) mapButtons[m] = new Rectangle();
         for (int m = 0; m < qualityButtons.length; m++) qualityButtons[m] = new Rectangle();
         for (int m = 0; m < shadowButtons.length; m++) shadowButtons[m] = new Rectangle();
         for (int a = 0; a < achievementRows.length; a++) achievementRows[a] = new Rectangle();
@@ -118,13 +114,6 @@ public class MainMenu extends JComponent {
                 } else if (profileButton.contains(e.getPoint())) {
                     chosen = true;
                     onProfile.run();
-                } else if (choiceAt(modeButtons, e.getX(), e.getY()) >= 0) {
-                    // (one mode at a time: choosing one unticks the others)
-                    GameMode.choose(GameMode.values()[choiceAt(modeButtons, e.getX(), e.getY())]);
-                    repaint();
-                } else if (choiceAt(mapButtons, e.getX(), e.getY()) >= 0) {
-                    MapKind.choose(MapKind.values()[choiceAt(mapButtons, e.getX(), e.getY())]);
-                    repaint();
                 } else if (choiceAt(qualityButtons, e.getX(), e.getY()) >= 0) {
                     // (the shadows go on or off with the graphics, as in the settings)
                     GameSettings.setQuality(GameSettings.Quality.values()[choiceAt(qualityButtons, e.getX(), e.getY())]);
@@ -155,7 +144,6 @@ public class MainMenu extends JComponent {
 
             @Override
             public void mouseMoved(MouseEvent e) {
-                int mode = choiceAt(modeButtons, e.getX(), e.getY()), map = choiceAt(mapButtons, e.getX(), e.getY());
                 int quality = choiceAt(qualityButtons, e.getX(), e.getY()), shadow = choiceAt(shadowButtons, e.getX(), e.getY());
                 int achievement = choiceAt(achievementRows, e.getX(), e.getY());
                 Rectangle over = confirming ? (confirmReset.contains(e.getPoint()) ? confirmReset : cancelReset.contains(e.getPoint()) ? cancelReset : null)
@@ -165,7 +153,6 @@ public class MainMenu extends JComponent {
                         : multiButton.contains(e.getPoint()) ? multiButton
                         : quitButton.contains(e.getPoint()) ? quitButton
                         : profileButton.contains(e.getPoint()) ? profileButton
-                        : mode >= 0 ? modeButtons[mode] : map >= 0 ? mapButtons[map]
                         : quality >= 0 ? qualityButtons[quality] : shadow >= 0 ? shadowButtons[shadow] : null;
                 if (over != hovered) {
                     hovered = over;
@@ -275,15 +262,13 @@ public class MainMenu extends JComponent {
         paintTitle(g, left, 250 * unit, unit);
 
         float bw = 420 * unit, bh = 64 * unit, gap = 18 * unit;
-        // (high enough for the settings' four rows and Quit to fit below)
+        // (high enough for the settings' rows and Quit to fit below)
         float top = 440 * unit;
         singleButton.setBounds(Math.round(left), Math.round(top), Math.round(bw), Math.round(bh));
         multiButton.setBounds(Math.round(left), Math.round(top + bh + gap), Math.round(bw), Math.round(bh));
         paintButton(g, singleButton, "Play Singleplayer", null, true, true, unit);
-        // The expedition's settings below the play buttons, and Quit below them
-        String[] modes = java.util.Arrays.stream(GameMode.values()).map(m -> m.label).toArray(String[]::new);
-        String[] maps = java.util.Arrays.stream(MapKind.values()).map(m -> m.label).toArray(String[]::new);
-        float settingsHeight = paintSettings(g, modes, maps, left, top + (bh + gap) * 2, bw, unit);
+        // The graphics settings below the play buttons, and Quit below them
+        float settingsHeight = paintSettings(g, left, top + (bh + gap) * 2, bw, unit);
         quitButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 2 + settingsHeight + gap * 1.5f), Math.round(bw * 0.55f), Math.round(bh * 0.8f));
         paintButton(g, multiButton, "Play Multiplayer", null, true, false, unit);
         paintButton(g, quitButton, "Quit", null, true, false, unit);
@@ -479,28 +464,25 @@ public class MainMenu extends JComponent {
     private static final float SETTINGS_PAD = 26f, SETTINGS_ROW = 46f, SETTINGS_ROW_TITLE = 30f;
 
     /**
-     * The game's settings on a panel of their own (the game's standard panel, see HudStyle.panel),
-     * from x, y: its heading, then the game mode, the kind of map, the graphics and the shadows,
-     * each a row of choices like radio buttons, set apart from the buttons beside it so they belong to neither.
+     * The graphics settings on a panel of their own (the game's standard panel, see
+     * HudStyle.panel) at (x, y), at least leastWidth wide: its heading, then the graphics and the
+     * shadows, each a row of choices like radio buttons, set apart from the buttons beside it so
+     * they belong to neither. Returns its height.
      */
-    /** The expedition settings' panel at (x, y), at least leastWidth wide; returns its height. */
-    private float paintSettings(Graphics2D g, String[] modes, String[] maps, float x, float y, float leastWidth, float unit) {
+    private float paintSettings(Graphics2D g, float x, float y, float leastWidth, float unit) {
         float pad = SETTINGS_PAD * unit, row = SETTINGS_ROW * unit, rowTitle = SETTINGS_ROW_TITLE * unit;
         float headingHeight = 40 * unit;
         String[] qualities = java.util.Arrays.stream(GameSettings.Quality.values()).map(q -> q.label).toArray(String[]::new);
         String[] shadows = { "Off", "On" };
-        float width = Math.max(leastWidth, Math.max(Math.max(rowWidth(g, modes, row, unit), rowWidth(g, maps, row, unit)),
-                rowWidth(g, qualities, row, unit)) + pad * 2);
-        float height = pad + headingHeight + (rowTitle + row) * 4 + pad * 0.6f;
+        float width = Math.max(leastWidth, rowWidth(g, qualities, row, unit) + pad * 2);
+        float height = pad + headingHeight + (rowTitle + row) * 2 + pad * 0.6f;
         HudStyle.panel(g, x, y, width, height, HudStyle.GLASS);
-        HudStyle.label(g, "Expedition settings", x + pad, y + pad + 12 * unit, 15 * unit, HudStyle.VALUE);
+        HudStyle.label(g, "Graphics settings", x + pad, y + pad + 12 * unit, 15 * unit, HudStyle.VALUE);
         g.setColor(new Color(120, 205, 235, 70));
         g.fill(new java.awt.geom.Rectangle2D.Float(x + pad, y + pad + 24 * unit, width - pad * 2, Math.max(1f, unit)));
         float rowTop = y + pad + headingHeight + rowTitle;
-        paintChoices(g, "Game mode", modes, GameMode.current().ordinal(), modeButtons, x + pad, rowTop, row, unit);
-        paintChoices(g, "Map", maps, MapKind.current().ordinal(), mapButtons, x + pad, rowTop + row + rowTitle, row, unit);
-        paintChoices(g, "Graphics", qualities, GameSettings.quality().ordinal(), qualityButtons, x + pad, rowTop + (row + rowTitle) * 2, row, unit);
-        paintChoices(g, "Shadows", shadows, GameSettings.shadows() ? 1 : 0, shadowButtons, x + pad, rowTop + (row + rowTitle) * 3, row, unit);
+        paintChoices(g, "Graphics", qualities, GameSettings.quality().ordinal(), qualityButtons, x + pad, rowTop, row, unit);
+        paintChoices(g, "Shadows", shadows, GameSettings.shadows() ? 1 : 0, shadowButtons, x + pad, rowTop + row + rowTitle, row, unit);
         return height;
     }
 

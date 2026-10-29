@@ -62,10 +62,11 @@ public interface MultiplayerTransport {
 
     /**
      * Matchmaking, without a code: joins a player already waiting in the casual or the ranked
-     * queue (never the other; ranked ones nearest this rating first), or else waits to be
-     * joined. matched() says which this player turned out to be, then connected().
+     * queue (never the other; ranked ones nearest this rating first) who ticked at least one of
+     * these game modes and one of these maps (bit n: values()[n]), or else waits to be joined.
+     * matched() says which this player turned out to be, then connected().
      */
-    void matchmake(boolean ranked, int rating);
+    void matchmake(boolean ranked, int rating, int modes, int maps);
 
     /**
      * Sends a message to the partner (its bytes from position to limit, copied before this

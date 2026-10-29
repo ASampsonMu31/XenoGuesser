@@ -146,6 +146,11 @@ public final class LoadingProgress {
         return finished ? 0f : (1f - overallFraction()) * totalExpectedMillis / 1000f;
     }
 
+    /** Rough seconds remaining with the given share loaded, by this PC's expected total (the partner's share too, in multiplayer). */
+    public float secondsLeftAt(float fraction) {
+        return (1f - fraction) * totalExpectedMillis / 1000f;
+    }
+
     private void closeCurrentStage() {
         if (current == null) return;
         long ms = (System.nanoTime() - stageStartNanos) / 1_000_000;

@@ -27,21 +27,25 @@ import javax.swing.Timer;
  * these states:
  *   CHOOSE    - Play with a friend, Find a match, Back.
  *   FRIEND    - Host game, Join game, Back.
- *   MATCH     - the Casual / Ranked switch (remembered), this player's rating, Find match, Back.
+ *   HOST_SETUP - the host's game mode and map, one of each (as radio buttons); Host game, Back.
+ *   MATCH     - the Casual / Ranked switch (remembered), this player's rating, the game modes
+ *               and maps they'll play (tick boxes, any number of each, remembered: see
+ *               Expedition), Find match, Back.
  *   SEARCHING - "Finding an opponent..." and how long it's been; Cancel.
  *   HOSTING   - "Starting room...", then the code in large letters, waiting for the partner; Cancel.
  *   JOIN      - five boxes for the code (typed: letters, Backspace, Enter joins, Esc goes back,
  *               Ctrl+V pastes); Join (once all five are in) and Back.
  *   JOINING   - "Looking for room KXQPB...", then "Joining room..." once in it.
- *   CONNECTED - "Sam connected" / "Connected to Alex" (the partner's name) for a moment, then
- *               onReady runs (the game goes on to the loading screen).
+ *   CONNECTED - "Sam connected" / "Connected to Alex" (the partner's name) and the game mode
+ *               and map to be played, for a moment, then onReady runs (the game goes on to the
+ *               loading screen).
  *   ERROR     - why it didn't work (no room, Steam not running, partner left, different
  *               versions); Back.
  * The panel takes the keyboard while it's up, so typing a code never reaches the game's keys.
  */
 public class MultiplayerPanel extends JComponent {
 
-    private enum State { CHOOSE, FRIEND, MATCH, SEARCHING, HOSTING, JOIN, JOINING, CONNECTED, ERROR }
+    private enum State { CHOOSE, FRIEND, HOST_SETUP, MATCH, SEARCHING, HOSTING, JOIN, JOINING, CONNECTED, ERROR }
 
     // How long "connected" shows before the loading screen (longer with a warning to read)
     private static final int CONNECTED_MS = 1500, CONNECTED_WARNING_MS = 4000;
@@ -173,7 +177,7 @@ public class MultiplayerPanel extends JComponent {
     private void findMatch() {
         state = State.SEARCHING;
         searchStartedAt = System.currentTimeMillis();
-        session = Multiplayer.matchmake(ranked, hostSeed.getAsLong(), GameMode.current(), MapKind.current(), sessionListener);
+        session = Multiplayer.matchmake(ranked, hostSeed.getAsLong(), Expedition.matchModes(), Expedition.matchMaps(), sessionListener);
         repaint();
     }
 
@@ -234,6 +238,10 @@ public class MultiplayerPanel extends JComponent {
             case FRIEND, MATCH -> {
                 if (code == KeyEvent.VK_ESCAPE) show(State.CHOOSE);
                 else if (state == State.MATCH && code == KeyEvent.VK_ENTER) findMatch();
+            }
+            case HOST_SETUP -> {
+                if (code == KeyEvent.VK_ESCAPE) show(State.FRIEND);
+                else if (code == KeyEvent.VK_ENTER) hostGame();
             }
             case JOIN -> {
                 if (code == KeyEvent.VK_ESCAPE) {
@@ -394,12 +402,23 @@ public class MultiplayerPanel extends JComponent {
                 y = heading(g, "Play with a friend", x, y, unit);
                 y = paragraph(g, "Host a game and share its room code with your partner, or join theirs with the code they give you.",
                         x, y, inner, unit);
-                y = paragraph(g, "The host's expedition settings are used: " + GameMode.current().label + ", "
-                        + MapKind.current().label + " map. Games with a friend are never ranked.", x, y + 4 * unit, inner, unit, HudStyle.LABEL);
+                y = paragraph(g, "The host chooses the game mode and map. Games with a friend are never ranked.", x, y + 4 * unit, inner, unit, HudStyle.LABEL);
                 y += 26 * unit;
-                y = button(g, "Host game", true, true, this::hostGame, x, y, inner, unit);
+                y = button(g, "Host game", true, true, () -> show(State.HOST_SETUP), x, y, inner, unit);
                 y = button(g, "Join game", true, false, this::showJoin, x, y, inner, unit);
                 y = backButton(g, "Back", () -> show(State.CHOOSE), x, y + 10 * unit, unit);
+            }
+            case HOST_SETUP -> {
+                y = heading(g, "Host a game", x, y, unit);
+                y = paragraph(g, "Choose the game mode and map. Your partner plays the same; you'll get the room code to give them next.",
+                        x, y, inner, unit);
+                y = choiceRow(g, "Game mode", modeLabels(), m -> GameMode.current().ordinal() == m, false,
+                        m -> GameMode.choose(GameMode.values()[m]), x, y + 34 * unit, inner, unit);
+                y = choiceRow(g, "Map", mapLabels(), m -> MapKind.current().ordinal() == m, false,
+                        m -> MapKind.choose(MapKind.values()[m]), x, y + 30 * unit, inner, unit);
+                y += 30 * unit;
+                y = button(g, "Host game", true, true, this::hostGame, x, y, inner, unit);
+                y = backButton(g, "Back", () -> show(State.FRIEND), x, y + 10 * unit, unit);
             }
             case MATCH -> {
                 y = heading(g, "Find a match", x, y, unit);
@@ -414,8 +433,13 @@ public class MultiplayerPanel extends JComponent {
                     y = paragraph(g, "A casual game against whoever else is looking: your rating isn't changed. You're only "
                             + "matched with players also looking for a casual game.", x, y, inner, unit);
                 }
-                y = paragraph(g, "Whoever's matched as host chooses the expedition: their game mode and map are played.",
-                        x, y + 4 * unit, inner, unit, HudStyle.LABEL);
+                int modes = Expedition.matchModes(), maps = Expedition.matchMaps();
+                y = choiceRow(g, "Game modes", modeLabels(), m -> (modes & (1 << m)) != 0, true,
+                        m -> Expedition.toggleMatchMode(GameMode.values()[m]), x, y + 34 * unit, inner, unit);
+                y = choiceRow(g, "Maps", mapLabels(), m -> (maps & (1 << m)) != 0, true,
+                        m -> Expedition.toggleMatchMap(MapKind.values()[m]), x, y + 30 * unit, inner, unit);
+                y = paragraph(g, "Tick every game mode and map you'll play. You're only matched with players who ticked one of "
+                        + "each too, and play one of those you share, at random.", x, y + 40 * unit, inner, unit, HudStyle.LABEL);
                 y += 26 * unit;
                 y = button(g, ranked ? "Find ranked match" : "Find casual match", true, true, this::findMatch, x, y, inner, unit);
                 y = backButton(g, "Back", () -> show(State.CHOOSE), x, y + 10 * unit, unit);
@@ -476,6 +500,9 @@ public class MultiplayerPanel extends JComponent {
                 } else {
                     y = heading(g, host ? partner + " connected" : "Connected to " + partner, x, y, unit);
                 }
+                if (session != null && session.gameMode() != null && session.mapKind() != null) {
+                    y = paragraph(g, session.gameMode().label + "  \u00b7  " + session.mapKind().label + " map", x, y + 4 * unit, inner, unit, Color.WHITE);
+                }
                 y = paragraph(g, "Preparing for planetfall" + dots(), x, y, inner, unit, HudStyle.ACCENT);
                 String warning = javaWarning();
                 if (warning != null) y = paragraph(g, warning, x, y + 8 * unit, inner, unit, HudStyle.GOLD);
@@ -530,6 +557,37 @@ public class MultiplayerPanel extends JComponent {
         boolean over = addButton(r, on, action);
         HudStyle.button(g, r, text, null, on, primary, over, unit);
         return y + (64 + 18) * unit;
+    }
+
+    /**
+     * A row of choices of game mode or map under its title (from x, the title's baseline at y),
+     * each one's button (radio buttons, or tick boxes where ticks) chosen where chosen holds for
+     * its index, choosing it (or ticking it) with choose; returns the bottom of the row.
+     */
+    private float choiceRow(Graphics2D g, String title, String[] labels, java.util.function.IntPredicate chosen, boolean ticks,
+                            java.util.function.IntConsumer choose, float x, float y, float width, float unit) {
+        HudStyle.label(g, title, x + 2 * unit, y, 12 * unit, HudStyle.ACCENT);
+        float h = 46 * unit, top = y + 12 * unit, gap = 10 * unit, at = x;
+        for (int m = 0; m < labels.length; m++) {
+            float w = Expedition.choiceWidth(g, labels[m], h, unit);
+            Rectangle r = new Rectangle(Math.round(at), Math.round(top), Math.round(w), Math.round(h));
+            int index = m;
+            boolean over = addButton(r, true, () -> {
+                choose.accept(index);
+                repaint();
+            });
+            Expedition.paintChoice(g, r, labels[m], chosen.test(m), ticks, over, unit);
+            at += w + gap;
+        }
+        return top + h;
+    }
+
+    private static String[] modeLabels() {
+        return java.util.Arrays.stream(GameMode.values()).map(m -> m.label).toArray(String[]::new);
+    }
+
+    private static String[] mapLabels() {
+        return java.util.Arrays.stream(MapKind.values()).map(m -> m.label).toArray(String[]::new);
     }
 
     /** The smaller Back / Cancel button, as the main menu's Quit, its top at y; returns its bottom. */

@@ -198,7 +198,6 @@ public final class LoadingArt {
             SoftwareRenderer.SurfaceShader trim = lit(lights, eye, 0.35f, 0f, flat(TRIM_GREY[0], TRIM_GREY[1], TRIM_GREY[2]));
             SoftwareRenderer.SurfaceShader colouredTrim = lit(lights, eye, 0.35f, 0f, flat(trimColour[0], trimColour[1], trimColour[2]));
             SoftwareRenderer.SurfaceShader visor = lit(lights, eye, 2.5f, 0f, flat(0.12f, 0.09f, 0.03f));
-            SoftwareRenderer.SurfaceShader stripe = lit(lights, eye, 0.2f, 0f, flat(0.9f, 0.4f, 0.08f));
             SoftwareRenderer.SurfaceShader shell = lit(lights, eye, 1.2f, 0f, flat(0.9f, 0.9f, 0.9f));
             for (int i = 0; i + 2 < indices.length; i += 3) {
                 float[][] tri = new float[3][];
@@ -220,11 +219,6 @@ public final class LoadingArt {
                     case OrganismMesh.PART_SKIN -> shell;
                     default -> suit;
                 };
-                // An orange band round the middle of the torso, as the suit wears in the game
-                if (part == OrganismMesh.PART_BODY && Math.round(vertices[indices[i] * OrganismMesh.STRIDE + 8]) == 0) {
-                    float v = vertices[indices[i] * OrganismMesh.STRIDE + 7];
-                    if (v > 0.5f && v < 0.58f) shader = stripe;
-                }
                 r.triangle(tri[0], tri[1], tri[2], shader);
             }
             sheet.getGraphics().drawImage(r.image(), (frame % FRAME_COLUMNS) * FRAME_WIDTH, (frame / FRAME_COLUMNS) * FRAME_HEIGHT, null);

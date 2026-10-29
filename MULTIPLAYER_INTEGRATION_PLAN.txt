@@ -1639,3 +1639,16 @@ LOG
             a connection lost or gone quiet can't say whose doing it was (each PC sees the other
             go), so it counts for neither. The game's end shows the rating's move.
             PROTOCOL_VERSION 5. MultiplayerCheck match | ranked; -Dxenoguesser.mpauto=match | ranked.
+2026-10-28  M60 (user). Choosing the game mode and map moves off the main menu. Play
+            Singleplayer opens SingleplayerPanel: a grid of every game mode and map, each square
+            saying whether that game's been won (its achievement), and Start. A friend's host
+            chooses the mode and map (one of each) after Host game, before the room code. In
+            matchmaking they're tick boxes, any number of each (Expedition, remembered with the
+            settings): a Steam lobby carries its owner's ticks ("modes", "maps": bit n is
+            values()[n]) and a player only joins, or moves to, a lobby whose owner ticked a mode
+            and a map they did (checked on the lobby list, as Steam can't compare sets).
+            LocalTransport doesn't compare them. HELLO ends with the joiner's ticks; a matchmade
+            host plays one mode and one map of those both ticked, at random, and sends them in
+            START as before (its own should they share none). The loading screen and the pod show
+            the game at the top (singleplayer, friends, or matchmaking casual or ranked, and its
+            mode and map), and so do the settings. PROTOCOL_VERSION 6.

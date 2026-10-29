@@ -24,9 +24,10 @@ import javax.swing.SwingUtilities;
  * have met (the one who was waiting): until then role is null.
  *
  * The handshake: the joiner enters the room and says HELLO (with its player's name and suit,
- * whether it's in the ranked queue and its rating); the host answers with START (its world
- * seed, game mode and map kind, which the joiner adopts, and its player's name, suit, ranked
- * and rating); the joiner answers START_ACK.
+ * whether it's in the ranked queue and its rating, and for matchmaking the game modes and maps
+ * it ticked); the host answers with START (its world seed, game mode and map kind, which the
+ * joiner adopts: in matchmaking one of each both players ticked, at random; and its player's
+ * name, suit, ranked and rating); the joiner answers START_ACK.
  * Each side's Listener hears ready() when its half is done. After that the game's screens send
  * their messages through the send methods and read what has come from the partner here.
  *
@@ -38,7 +39,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 5;
+    public static final int PROTOCOL_VERSION = 6;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -168,6 +169,9 @@ public final class Multiplayer {
     private volatile long worldSeed;
     private volatile GameMode gameMode;
     private volatile MapKind mapKind;
+    // Matchmaking: the game modes and maps this player ticked (bit n: values()[n]); a matchmade
+    // host plays one of each both ticked, chosen when the joiner's HELLO says theirs
+    private int matchModes = Expedition.ALL_MODES, matchMaps = Expedition.ALL_MAPS;
     private volatile boolean inRoom;
     // In the game itself, where poses come 5 times a second: SILENCE_MS without a word from the
     // partner means they're gone (pulled cable, crash), as if they'd left
@@ -237,15 +241,17 @@ public final class Multiplayer {
 
     /**
      * Matchmaking (M59): finds an opponent in the casual or the ranked queue (never one in the
-     * other), and the Listener hears matched() with which player this is. Should it be the
-     * host, the world is this seed, mode and map; a joiner takes the host's.
+     * other) who ticked at least one of these game modes and one of these maps (bit n:
+     * values()[n]), and the Listener hears matched() with which player this is. Should it be the
+     * host, the world is this seed, and the game one of the modes and maps both ticked, at
+     * random; a joiner takes the host's.
      */
-    public static Multiplayer matchmake(boolean ranked, long worldSeed, GameMode gameMode, MapKind mapKind, Listener listener) {
+    public static Multiplayer matchmake(boolean ranked, long worldSeed, int modes, int maps, Listener listener) {
         Multiplayer session = open(null, ranked, listener);
         session.worldSeed = worldSeed;
-        session.gameMode = gameMode;
-        session.mapKind = mapKind;
-        transport.matchmake(ranked, session.localRating);
+        session.matchModes = modes;
+        session.matchMaps = maps;
+        transport.matchmake(ranked, session.localRating, modes, maps);
         return session;
     }
 
@@ -629,11 +635,12 @@ public final class Multiplayer {
 
     private void sendHello() {
         byte[] java = javaVersion(), name = localName.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer m = message(HELLO, 4 + 2 + java.length + 2 + name.length + 1 + 1 + 4).putInt(PROTOCOL_VERSION);
+        ByteBuffer m = message(HELLO, 4 + 2 + java.length + 2 + name.length + 1 + 1 + 4 + 1 + 1).putInt(PROTOCOL_VERSION);
         putString(m, java);
         putString(m, name);
         m.put((byte) localSuit.ordinal());
         m.put((byte) (rankedQueue ? 1 : 0)).putInt(localRating);
+        m.put((byte) matchModes).put((byte) matchMaps);
         send(m, true);
     }
 
@@ -755,10 +762,20 @@ public final class Multiplayer {
                 // (an older game's ends before whether it's ranked: its version is turned down below)
                 boolean ranked = m.hasRemaining() && m.get() != 0;
                 int rating = m.hasRemaining() ? m.getInt() : Rating.START;
+                int modes = m.hasRemaining() ? m.get() & 0xFF : Expedition.ALL_MODES;
+                int maps = m.hasRemaining() ? m.get() & 0xFF : Expedition.ALL_MAPS;
                 if (m.hasRemaining() || !expect(Role.HOST, "HELLO")) return false;
                 remoteJavaVersion = java;
                 meetPartner(name, suit);
                 meetRival(ranked, rating);
+                // Matchmade: the game's one of the modes and maps both ticked, at random (M59)
+                if (matchmade) {
+                    java.util.Random random = new java.util.Random();
+                    gameMode = Expedition.pickMode(matchModes, modes, random);
+                    mapKind = Expedition.pickMap(matchMaps, maps, random);
+                    System.out.println("[MP] Matched game: " + gameMode + ", " + mapKind + " (of modes " + Integer.toBinaryString(matchModes & modes)
+                            + ", maps " + Integer.toBinaryString(matchMaps & maps) + " both ticked)");
+                }
                 // The joiner checks the version too, so START goes even when it differs
                 sendStart();
                 if (!versionsMatch(version, java)) return false;

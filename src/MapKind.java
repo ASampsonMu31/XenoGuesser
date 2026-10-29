@@ -1,7 +1,8 @@
 /**
- * Where on the world the player is set down each round, chosen on the title screen before a
- * game starts: out in the country (beside dirt tracks far from towns and houses, up in the hills
- * and mountains where it can be), anywhere along the roads as usual, or in town among the houses.
+ * Where on the world the player is set down each round, chosen before a game starts (see
+ * SingleplayerPanel and MultiplayerPanel): out in the country (beside dirt tracks far from
+ * towns and houses, up in the hills and mountains where it can be), anywhere along the roads as
+ * usual, or in town among the houses.
  * The shop's maps of what people have built (roads, buildings, shops, wealth, nations) are cheaper
  * in the country, where they're less use, and dearer in town, where they give the place away.
  */
@@ -10,7 +11,7 @@ public enum MapKind {
     BALANCED("Balanced", 1.0f),
     URBAN("Urban", 1.6f);
 
-    // The game's map: the one chosen on the title screen (one only, as with radio buttons)
+    // The game's map: the one chosen before the game (or, matchmade, picked from those both players ticked)
     private static volatile MapKind current = BALANCED;
 
     public final String label;

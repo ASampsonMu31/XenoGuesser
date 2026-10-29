@@ -154,7 +154,7 @@ public class GameHUD extends JPanel {
         MultiplayerScore score = multiplayer;
         Multiplayer s = session;
         if (score != null && s != null) {
-            // Both players, this one on top marked "(You)", each with their rounds won
+            // Both players, this one on top, each with their rounds won
             Multiplayer.Role a = s.role, b = s.role.other();
             HudStyle.paintMultiplayerScorePanel(g, currentRound, new String[] { s.name(a), s.name(b) },
                     new java.awt.Color[] { s.suit(a).awt(), s.suit(b).awt() }, new java.awt.Color[] { textColour(s.suit(a)), textColour(s.suit(b)) },

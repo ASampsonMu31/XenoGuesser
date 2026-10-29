@@ -167,6 +167,11 @@ public class LoadingScreen extends JComponent {
             g.fillRect(0, 0, w, h);
             HudStyle.smooth(g);
             HudStyle.label(g, "Starting up", w / 2f - HudStyle.labelWidth(g, "Starting up", 14f) / 2f, h * 0.55f, 14f, new Color(110, 255, 150, 200));
+            // The game loading at the top (and once the pod's in view, over it: see PodSequence)
+            Graphics2D banner = (Graphics2D) g.create();
+            banner.translate((w - Expedition.bannerSize(banner).width) / 2, HudStyle.HUD_MARGIN);
+            Expedition.paintBanner(banner);
+            banner.dispose();
         } else if (message != null) {
             drawTicker(g, w, h);
         } else {
