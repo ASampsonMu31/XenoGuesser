@@ -29,20 +29,20 @@ final class MapOverlays extends GamePart {
     private volatile BirdsEyeMaps birdsEyeMaps;
 
     /**
-     * A nation's name in its own writing, as the map shows it: two to four of its letters
-     * (the same each time for the same world) in white with a dark edge, laid out in its
-     * direction of writing. Null if its letters can't be read.
+     * A nation's name in its own writing, as the languages map shows it: four to six of its
+     * letters (the same each time for the same world), each cell pixels tall, in white with a
+     * dark edge, laid out in its direction of writing. Null if its letters can't be read.
      */
-    private BufferedImage nationNameImage(int nationId) {
+    private BufferedImage nationNameImage(int nationId, int cell) {
         int alphabetId = game.infraManager.scripts().alphabet(nationId);
         java.io.File dir = new java.io.File(RunFiles.ALPHABETS_DIR, "alphabet" + alphabetId);
         java.io.File[] files = dir.listFiles((d, name) -> name.startsWith("glyph_") && name.endsWith(".png"));
         if (files == null || files.length < 2) return null;
         java.util.Random rand = new java.util.Random(game.worldSeed * 131L + nationId * 7919L);
-        int letters = 2 + rand.nextInt(3);
+        int letters = 4 + rand.nextInt(3);
         int direction = game.infraManager.scripts().direction(nationId);
         boolean vertical = direction >= 2, backwards = direction == 1 || direction == 3;
-        int cell = MapPanel.NATION_NAME_GLYPH, pad = 3, step = cell - 2;
+        int pad = Math.max(3, cell / 9), step = cell - Math.max(2, cell / 14), edge = Math.max(2, cell / 14);
         int width = (vertical ? cell : step * (letters - 1) + cell) + pad * 2;
         int height = (vertical ? step * (letters - 1) + cell : cell) + pad * 2;
         // The letters' ink, then a dark edge round it and the ink in white on top
@@ -72,14 +72,14 @@ final class MapOverlays extends GamePart {
                     image.setRGB(x, y, 0xFFFAF8F0);
                     continue;
                 }
-                boolean edge = false;
-                for (int dy = -2; dy <= 2 && !edge; dy++) {
-                    for (int dx = -2; dx <= 2 && !edge; dx++) {
+                boolean rim = false;
+                for (int dy = -edge; dy <= edge && !rim; dy++) {
+                    for (int dx = -edge; dx <= edge && !rim; dx++) {
                         int nx = x + dx, ny = y + dy;
-                        edge = nx >= 0 && ny >= 0 && nx < width && ny < height && ink[ny * width + nx];
+                        rim = nx >= 0 && ny >= 0 && nx < width && ny < height && ink[ny * width + nx];
                     }
                 }
-                if (edge) image.setRGB(x, y, 0xD8141218);
+                if (rim) image.setRGB(x, y, 0xD8141218);
             }
         }
         return image;
@@ -103,14 +103,12 @@ final class MapOverlays extends GamePart {
 
             
 
-            // The nations' names, in their own writing, where their largest land is, with their flags
+            // The nations' flags (the flags map), where their largest land is and on their islands
             List<NationLabel> labels = new ArrayList<>();
             Map<Integer, BufferedImage> flags = new HashMap<>();
             for (float[] place : maps.nationLabelPlaces(game.nationManager)) {
-                int nation = (int) place[0];
-                BufferedImage name = nationNameImage(nation);
-                BufferedImage flag = flags.computeIfAbsent(nation, game.infraManager::flagImage);
-                if (name != null) labels.add(new NationLabel(name, place[1], place[2], place[4] > 0.5f, flag));
+                BufferedImage flag = flags.computeIfAbsent((int) place[0], game.infraManager::flagImage);
+                if (flag != null) labels.add(new NationLabel(place[1], place[2], place[4] > 0.5f, flag));
             }
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (game.minimap != null) game.minimap.setNationLabels(labels);
@@ -120,7 +118,7 @@ final class MapOverlays extends GamePart {
             // region big enough, the biggest regions' first should they crowd (see spaceOut)
             java.util.Map<FactorName, List<MapPicture>> pictures = new java.util.EnumMap<>(FactorName.class);
             java.util.Map<FactorName, BirdsEyeMaps.DesignRegions> regions = new java.util.EnumMap<>(FactorName.class);
-            for (FactorName f : List.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES, FactorName.ARCHITECTURE)) {
+            for (FactorName f : List.of(FactorName.LANGUAGES, FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES, FactorName.ARCHITECTURE)) {
                 BirdsEyeMaps.DesignRegions found = maps.designRegions(game.nationManager, designKey(f));
                 regions.put(f, found);
                 Map<Integer, BufferedImage[]> drawn = new HashMap<>();
@@ -130,11 +128,14 @@ final class MapOverlays extends GamePart {
                     BufferedImage[] picture = drawn.computeIfAbsent(key, k -> new BufferedImage[] {
                             designPicture(f, nation, k, MAP_PICTURE_HEIGHT), detailed(f) ? designPicture(f, nation, k, DETAIL_PICTURE_HEIGHT) : null });
                     if (picture[0] == null) continue;
-                    placed.add((picture[1] == null ? new MapPicture(picture[0], place[2], place[3])
+                    MapPicture p = (picture[1] == null ? new MapPicture(picture[0], place[2], place[3])
                             : MapPicture.withDetail(picture[0], place[2], place[3], f.label().replaceAll("s$", ""), picture[1]))
-                            .ringed(BirdsEyeMaps.regionColour(key)));
+                            .ringed(BirdsEyeMaps.regionColour(key));
+                    placed.add(f == FactorName.LANGUAGES ? p.written() : p);
                 }
-                pictures.put(f, spaceOut(placed));
+                // (the names are writing, a line long and short: they make room for each other as
+                // they're drawn instead, see MapPanel.drawMapPictures)
+                pictures.put(f, f == FactorName.LANGUAGES ? placed : spaceOut(placed));
             }
             pictureRegions = regions;
             mapPictures = pictures;
@@ -240,7 +241,8 @@ final class MapOverlays extends GamePart {
     private void checkCollections() {
         if (Dev.flag("xenoguesser.unlockall")) return;
         boolean infrastructure = ownedLayers.contains(MapPanel.Layer.BUILDINGS) && ownedLayers.contains(MapPanel.Layer.SHOPS);
-        for (FactorName f : PICTURE_MAPS) infrastructure &= ownedOverlays.contains(MapOverlay.of(f));
+        // (the nations' names aren't anything built)
+        for (FactorName f : PICTURE_MAPS) infrastructure &= f == FactorName.LANGUAGES || ownedOverlays.contains(MapOverlay.of(f));
         if (infrastructure) Achievements.unlock(Achievements.Achievement.INFRASTRUCTURE_EXPERT);
         boolean flora = true, fauna = game.organismManager.speciesCount() > 0;
         for (int s = 0; s < game.NUM_SPECIES; s++) flora &= ownedOverlays.contains(new MapOverlay(FactorName.FLORA, s));
@@ -278,7 +280,7 @@ final class MapOverlays extends GamePart {
         }, this::choiceIcon);
     }
 
-    /** A map's price factor: for one of what people have built (roads, buildings, shops, wealth, nations), as the kind of map makes it (see MapKind). */
+    /** A map's price factor: for one of what people have built (roads, buildings, shops, wealth, flags, names), as the kind of map makes it (see MapKind). */
     private static float builtPriceFactor(boolean built) {
         return built ? MapKind.current().builtPriceFactor : 1f;
     }
@@ -316,7 +318,7 @@ final class MapOverlays extends GamePart {
                 String kind = plant ? "Plant heatmap" : animal ? "Animal heatmap" : PICTURE_MAPS.contains(o.factor()) ? "Map" : "Heatmap";
                 deck.add(new ShopPanel.Card(name, kind, choiceIcon(name), null, describe(descriptions, key, name),
                         ShopPanel.price(round, pay, plant || animal || rock ? ShopPanel.SPECIES_PRICE_FACTOR
-                                : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.NATIONS || PICTURE_MAPS.contains(o.factor())), rand), () -> {
+                                : builtPriceFactor(o.factor() == FactorName.WEALTH || o.factor() == FactorName.FLAGS || PICTURE_MAPS.contains(o.factor())), rand), () -> {
                     ownedOverlays.add(o);
                     refreshMapChoices();
                 }));
@@ -352,8 +354,8 @@ final class MapOverlays extends GamePart {
     private java.util.LinkedHashMap<String, List<MapOverlay>> overlayGroups() {
         java.util.LinkedHashMap<String, List<MapOverlay>> groups = new java.util.LinkedHashMap<>();
         List<MapOverlay> top = new ArrayList<>();
-        for (FactorName f : new FactorName[] { FactorName.TEMPERATURE, FactorName.RAINFALL, FactorName.SOIL_COLOUR, FactorName.WEALTH, FactorName.NATIONS,
-                FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES, FactorName.ARCHITECTURE, FactorName.LANDMARKS }) {
+        for (FactorName f : new FactorName[] { FactorName.TEMPERATURE, FactorName.RAINFALL, FactorName.SOIL_COLOUR, FactorName.WEALTH, FactorName.FLAGS,
+                FactorName.LANGUAGES, FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES, FactorName.ARCHITECTURE, FactorName.LANDMARKS }) {
             top.add(MapOverlay.of(f));
         }
         groups.put("", top);
@@ -386,11 +388,11 @@ final class MapOverlays extends GamePart {
     private final Map<String, java.awt.Image> choiceIcons = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** The icon for one of the map's choices, by its name (a layer's or an overlay's); null if none. */
-    // The maps of pictures rather than colours: each bollard, road markings, utility pole or
-    // architecture stood in each region it's built, the regions edged (see BirdsEyeMaps.designRegions),
+    // The maps of pictures rather than colours: each nation's name in its own writing, and each
+    // bollard, road markings, utility pole or architecture stood in each region it's built, the regions edged (see BirdsEyeMaps.designRegions),
     // over the plain map or a heatmap (see chooseGradient); their
     // pictures ({picture, worldX, worldZ}), once drawn, and how tall
-    static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES,
+    static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.LANGUAGES, FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES,
             FactorName.ARCHITECTURE, FactorName.LANDMARKS);
 
     private volatile java.util.Map<FactorName, List<MapPicture>> mapPictures = java.util.Map.of();
@@ -406,11 +408,15 @@ final class MapOverlays extends GamePart {
     // How tall the bollards' and poles' larger pictures are (shown in a popup when the pointer is over theirs on the map)
     private static final int DETAIL_PICTURE_HEIGHT = 420;
 
+    // How tall a letter of a nation's name is drawn for the languages map, and for its popup
+    private static final int NAME_LETTER = MapPanel.NATION_NAME_GLYPH, DETAIL_NAME_LETTER = 84;
+
     // The picture maps' regions' edges (see BirdsEyeMaps.designRegions), once drawn
     private volatile java.util.Map<FactorName, BirdsEyeMaps.DesignRegions> pictureRegions = java.util.Map.of();
 
     /**
-     * What a picture map's regions go by at a place in a nation: the bollard's or pole's design
+     * What a picture map's regions go by at a place in a nation: the nation itself (the languages
+     * map, every border drawn); the bollard's or pole's design
      * (the same in every nation building it); the road markings' bloc (the lowest of the numbers of
      * the nations marking their roads alike); the architecture and nation together (each nation's
      * house is its own, whatever the architecture). -1 for none.
@@ -419,6 +425,7 @@ final class MapOverlays extends GamePart {
         InfrastructureManager infra = game.infraManager;
         int nations = infra.roadLineStyles.size();
         return switch (f) {
+            case LANGUAGES -> (nation, place) -> nation >= 1 ? nation : -1;
             case BOLLARDS -> infra.bollardWorld.designs()::designAt;
             case UTILITY_POLES -> infra.poleWorld.designs()::designAt;
             case ROAD_LINES -> {
@@ -441,6 +448,7 @@ final class MapOverlays extends GamePart {
     private BufferedImage designPicture(FactorName f, int nation, int key, int height) {
         InfrastructureManager infra = game.infraManager;
         return switch (f) {
+            case LANGUAGES -> nationNameImage(nation, height == DETAIL_PICTURE_HEIGHT ? DETAIL_NAME_LETTER : NAME_LETTER);
             case BOLLARDS -> infra.bollardWorld.design(nation, key).picture(height);
             case UTILITY_POLES -> infra.poleWorld.design(nation, key).picture(height);
             case ROAD_LINES -> infra.roadLineStyle(nation) == null ? null : infra.roadLineStyle(nation).picture(height, RoadPath.RoadClass.STREET.width);
@@ -448,9 +456,9 @@ final class MapOverlays extends GamePart {
         };
     }
 
-    /** Whether a picture map's pictures have larger ones, shown when the pointer is over them: the bollards' and poles' (small on the map). */
+    /** Whether a picture map's pictures have larger ones, shown when the pointer is over them: the names', bollards' and poles' (small on the map). */
     private static boolean detailed(FactorName f) {
-        return f == FactorName.BOLLARDS || f == FactorName.UTILITY_POLES;
+        return f == FactorName.LANGUAGES || f == FactorName.BOLLARDS || f == FactorName.UTILITY_POLES;
     }
 
     // How far apart (a share of the map's width) two pictures' feet stand at least, up; across,
@@ -506,7 +514,8 @@ final class MapOverlays extends GamePart {
             case "Soil colour" -> "soil";
             case "Rocks", "Rock frequency", "Rock size" -> "rocks";
             case "Wealth" -> "wealth";
-            case "Nations" -> "nations";
+            case "Flags" -> "nations";
+            case "Languages" -> "languages";
             // (the maps of pictures: the same icon every game, whatever this world's designs)
             case "Bollards" -> "bollards";
             case "Road lines" -> "road_lines";
@@ -536,9 +545,9 @@ final class MapOverlays extends GamePart {
     /** Shows one of the maps of pictures over the map (and whatever heatmap's on it), or none. */
     public void choosePictureMap(FactorName factor) {
         currentPictureMap = factor;
-        // (the maps of pictures and the nations' names would crowd each other in the middle of
-        // each country, as in chooseGradient: so choosing one of them puts the nations away)
-        if (factor != null && currentDebugFactor != null && currentDebugFactor.factor() == FactorName.NATIONS) {
+        // (the maps of pictures and the nations' flags would crowd each other in the middle of
+        // each country, as in chooseGradient: so choosing one of them puts the flags away)
+        if (factor != null && currentDebugFactor != null && currentDebugFactor.factor() == FactorName.FLAGS) {
             chooseGradient(null);
             refreshMapChoices();
         }
@@ -553,9 +562,9 @@ final class MapOverlays extends GamePart {
             return;
         }
         currentDebugFactor = factorName;
-        // (the nations' names go in the middle of each country, as the maps of pictures do: so
-        // choosing the nations puts any of those away)
-        if (factorName != null && factorName.factor() == FactorName.NATIONS && currentPictureMap != null) {
+        // (the nations' flags go in the middle of each country, as the maps of pictures do: so
+        // choosing the flags puts any of those away)
+        if (factorName != null && factorName.factor() == FactorName.FLAGS && currentPictureMap != null) {
             choosePictureMap(null);
             refreshMapChoices();
         }
@@ -599,7 +608,7 @@ final class MapOverlays extends GamePart {
         }
         BufferedImage ready = gradientCache.get(factorName);
         if (ready != null) {
-            game.minimap.setOverlay(ready, overlayLabel(factorName), factor == FactorName.NATIONS);
+            game.minimap.setOverlay(ready, overlayLabel(factorName), factor == FactorName.FLAGS);
             return;
         }
         // (its tiles once the overlay itself is ready)
@@ -608,7 +617,7 @@ final class MapOverlays extends GamePart {
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (currentDebugFactor == factorName && composed != null) {
                     game.minimap.setOverlayTiles(overlayTiles(factorName), overlayLabel(factorName));
-                    game.minimap.setOverlay(composed, overlayLabel(factorName), factor == FactorName.NATIONS);
+                    game.minimap.setOverlay(composed, overlayLabel(factorName), factor == FactorName.FLAGS);
                 }
             });
         }, "gradient-map");
@@ -655,7 +664,7 @@ final class MapOverlays extends GamePart {
     private MapTiles.Renderer overlayTiles(MapOverlay factorName) {
         BirdsEyeMaps maps = birdsEyeMaps;
         if (factorName == null || maps == null) return null;
-        if (factorName.factor() == FactorName.NATIONS) return maps.nationTiles(game.nationManager);
+        if (factorName.factor() == FactorName.FLAGS) return maps.nationTiles(game.nationManager);
         BufferedImage raw = rawOverlays.get(factorName);
         return raw == null ? null : maps.overlayTiles(raw, game.PHYSICAL_CHUNK_SIZE);
     }
@@ -669,7 +678,7 @@ final class MapOverlays extends GamePart {
         if (game.minimap == null || PICTURE_MAPS.contains(overlay.factor())) return null;
         return gradientCache.computeIfAbsent(overlay, o -> {
             FactorName f = o.factor();
-            if (f == FactorName.NATIONS) {
+            if (f == FactorName.FLAGS) {
                 // Each nation filled in its own colour, chosen to stand apart from all the others,
                 // drawn sharp enough for its borders to stay smooth when zoomed in
                 BirdsEyeMaps maps = birdsEyeMaps;

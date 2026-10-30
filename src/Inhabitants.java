@@ -1452,7 +1452,7 @@ public class Inhabitants {
         p.belly = rand.nextFloat() < 0.5f ? new float[] { p.top[0] * 0.9f, p.top[1] * 0.9f, p.top[2] * 0.9f } : jitter(p.accent, rand, 0.05f);
         p.bottom = jitter(p.bottom, rand, 0.05f);
         // The flag on their chest, more often the prouder their nation
-        p.flag = rand.nextFloat() < infrastructure.patriotismOf(nationId) * 0.22f;
+        p.flag = rand.nextFloat() < infrastructure.patriotismOf(nationId) * 0.12f;
         // Their face, ears and hair
         p.face = rand.nextInt(FACES);
         p.earVariant = rand.nextFloat() < 0.15f ? 3 : rand.nextInt(3);

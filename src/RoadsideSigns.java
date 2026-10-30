@@ -141,13 +141,13 @@ final class RoadsideSigns extends InfraPart {
             if (rand.nextFloat() < 0.55f) kinds.add(InfrastructureObject.PICTURE_MAP);
             if (rand.nextFloat() < 0.65f) kinds.add(InfrastructureObject.PICTURE_ADVERT);
             if (rand.nextFloat() < 0.45f) kinds.add(InfrastructureObject.PICTURE_PRODUCT);
-            if (rand.nextFloat() < 0.1f * patriotism) kinds.add(InfrastructureObject.PICTURE_FLAG);
+            if (rand.nextFloat() < 0.05f * patriotism) kinds.add(InfrastructureObject.PICTURE_FLAG);
             if (kinds.isEmpty()) kinds.add(rand.nextBoolean() ? InfrastructureObject.PICTURE_ADVERT : InfrastructureObject.PICTURE_PRODUCT);
         } else {
             float roll = rand.nextFloat();
             int count = roll < 0.45f ? 0 : roll < 0.8f ? 1 : roll < 0.95f ? 2 : 3;
             for (int i = 0; i < count; i++) {
-                float flagWeight = 0.3f * patriotism;
+                float flagWeight = 0.15f * patriotism;
                 boolean hasMap = kinds.contains(InfrastructureObject.PICTURE_MAP);
                 float mapWeight = hasMap ? 0f : 0.3f;
                 float total = flagWeight + mapWeight + 0.25f + 0.18f + 0.07f;

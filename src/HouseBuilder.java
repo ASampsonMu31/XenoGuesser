@@ -88,7 +88,7 @@ final class HouseBuilder extends InfraPart {
         }
         // Now and then a flag flies from a short pole above the door, more often in town
         float urbanness = infra.settlementManager.getUrbanness(house.frame.origin());
-        if (new Random(house.seed ^ 0xF1A6L).nextFloat() < infra.patriotismOf(house.nationId) * (0.1f + 0.3f * urbanness)) {
+        if (new Random(house.seed ^ 0xF1A6L).nextFloat() < infra.patriotismOf(house.nationId) * (0.05f + 0.2f * urbanness)) {
             wallFlag(batch, house, front, house.doorBase + style.doorHeight * scale + 3.5f);
         }
         if (style.tower) infra.houseDressing.dressTower(batch, house, style, walls, arch, dress);
