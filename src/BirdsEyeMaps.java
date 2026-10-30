@@ -224,7 +224,7 @@ public class BirdsEyeMaps {
      */
     // The smallest island (in label grid cells, each a few hundred units across) given its own small name
     private static final int MIN_NAMED_ISLAND_CELLS = 12;
-    // The grid on the map the nations' land is worked out on for their names
+    // The grid on the map the nations' land is worked out on for their flags
     private static final int LABEL_GRID = 384;
 
     public List<float[]> nationLabelPlaces(NationGenerationManager nations) {
@@ -349,7 +349,7 @@ public class BirdsEyeMaps {
     }
 
     /**
-     * The nations overlay: each nation's land filled in its own colour, the sea as on the
+     * The flags overlay: each nation's land filled in its own colour, the sea as on the
      * plain map, at the detail resolution so the borders stay smooth however far the map is
      * zoomed. Rows are worked out side by side.
      */

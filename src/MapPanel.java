@@ -80,10 +80,10 @@ public class MapPanel extends JPanel {
     // Each layer's {overview, detail} images (transparent), once drawn, and which are ticked
     private final java.util.Map<Layer, BufferedImage[]> layerImages = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.Set<Layer> shownLayers = java.util.Collections.synchronizedSet(java.util.EnumSet.noneOf(Layer.class));
-    // Where each nation's names go (u, v: 0..1 across the map image)
+    // Where each nation's flags go (u, v: 0..1 across the map image)
     private volatile List<NationLabel> nationLabels = List.of();
-    // Whether the nations' names are written over the map (with the nations overlay)
-    private volatile boolean showNationNames;
+    // Whether the nations' flags are stood on the map (with the flags overlay)
+    private volatile boolean showFlags;
     // Pictures stood on the plain map instead of an overlay's colours (the bollard map: each
     // region's bollard on its land), each at its u, v; null when none
     private volatile List<MapPicture> mapPictures;
@@ -1047,8 +1047,8 @@ public class MapPanel extends JPanel {
 
     /**
      * Colours the land with an overlay already composed by composeOverlay (the sea staying as
-     * it is), or with nothing but the plain map given null; with the nations' names written
-     * over it if asked.
+     * it is), or with nothing but the plain map given null; with the nations' flags stood on
+     * it if asked.
      */
     // The overlay's key: its colours from lowest to highest (four, evenly spaced) and the values
     // at its low end, middle and high end, with units; null for none
@@ -1084,10 +1084,10 @@ public class MapPanel extends JPanel {
         repaint();
     }
 
-    public void setOverlay(BufferedImage composed, String name, boolean nationNames) {
+    public void setOverlay(BufferedImage composed, String name, boolean flags) {
         this.gradientImage = composed;
         this.gradientName = composed != null ? name : null;
-        this.showNationNames = composed != null && nationNames;
+        this.showFlags = composed != null && flags;
         repaint();
     }
 
@@ -1307,29 +1307,39 @@ public class MapPanel extends JPanel {
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
         MapPicture hovered = hoveredLandmark;
         List<java.util.Map.Entry<java.awt.Rectangle, MapPicture>> marks = new ArrayList<>();
+        // (a nation's name is writing: drawn at a letter's height on the map, a smaller island's
+        // name left out where it would cover a bigger one's, the biggest regions' coming first)
+        float letter = currentMapSize < 300 ? 11f : Math.min(22f, 15f + zoom * 0.8f);
+        List<java.awt.Rectangle> written = new ArrayList<>();
         for (MapPicture p : pictures) {
             BufferedImage picture = p.picture();
-            int w = Math.round(picture.getWidth() * tall / (float) picture.getHeight());
+            int high = p.writing() ? Math.round(picture.getHeight() * letter / NATION_NAME_GLYPH) : tall;
+            int w = Math.round(picture.getWidth() * high / (float) picture.getHeight());
             for (int copy = -1; copy <= 1; copy++) {
                 float[] at = uvScreen(p.x(), p.z(), copy, mapX, mapY);
                 if (at == null) continue;
                 int middleX = Math.round(at[0]), middleY = Math.round(at[1]);
                 if (middleX < mapX || middleX >= mapX + currentMapSize || middleY < mapY || middleY >= mapY + mapHeight()) continue;
-                int x = middleX - w / 2, y = middleY - tall / 2;
-                // (on a soft backing, so it reads on any land; lighter under the pointer)
+                int x = middleX - w / 2, y = middleY - high / 2;
+                java.awt.Rectangle box = new java.awt.Rectangle(x - 4, y - 3, w + 8, high + 6);
+                if (p.writing()) {
+                    if (written.stream().anyMatch(box::intersects)) continue;
+                    written.add(box);
+                }
+                // (on a soft backing, so it reads on any land; lighter under the pointer; the
+                // white writing on a dark one)
                 boolean over = p == hovered;
-                g2d.setColor(over ? new Color(255, 255, 250, 210) : new Color(245, 245, 240, 120));
-                g2d.fillRoundRect(x - 4, y - 3, w + 8, tall + 6, 10, 10);
+                g2d.setColor(p.writing() ? new Color(40, 40, 44, over ? 220 : 160) : over ? new Color(255, 255, 250, 210) : new Color(245, 245, 240, 120));
+                g2d.fillRoundRect(x - 4, y - 3, w + 8, high + 6, 10, 10);
                 // (ringed in its region's outline colour, if it has one, to match it to its region's islands)
                 if (p.ring() != null) {
                     Stroke stroke = g2d.getStroke();
                     g2d.setStroke(new BasicStroke(2.5f));
                     g2d.setColor(p.ring());
-                    g2d.drawRoundRect(x - 4, y - 3, w + 8, tall + 6, 10, 10);
+                    g2d.drawRoundRect(x - 4, y - 3, w + 8, high + 6, 10, 10);
                     g2d.setStroke(stroke);
                 }
-                g2d.drawImage(picture, x, y, w, tall, null);
-                java.awt.Rectangle box = new java.awt.Rectangle(x - 4, y - 3, w + 8, tall + 6);
+                g2d.drawImage(picture, x, y, w, high, null);
                 if (p.detail() != null) marks.add(java.util.Map.entry(box, p));
             }
         }
@@ -1421,7 +1431,7 @@ public class MapPanel extends JPanel {
         return shownLayers.contains(layer);
     }
 
-    /** Where the nations' names are written, each at its world x, z. */
+    /** Where the nations' flags stand, each at its world x, z. */
     public void setNationLabels(List<NationLabel> labels) {
         List<NationLabel> placed = new ArrayList<>();
         for (NationLabel label : labels) {
@@ -1830,7 +1840,7 @@ public class MapPanel extends JPanel {
                 shown.setTexture(wrap);
                 prepareGlobeDetail(shown, plain, wrap.getWidth());
                 shown.paint(g2d, mapX, mapY, currentMapSize, mapHeight());
-                if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
+                if (showFlags && !plain) drawNationFlags(g2d, mapX, mapY);
                 List<MapPicture> pictures = mapPictures;
                 if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
                 g2d.setClip(frameClip);
@@ -1862,7 +1872,7 @@ public class MapPanel extends JPanel {
             tiles.endFrame();
             if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
             drawGraticule(g2d, mapX, mapY);
-            if (showNationNames && !plain) drawNationNames(g2d, mapX, mapY);
+            if (showFlags && !plain) drawNationFlags(g2d, mapX, mapY);
             List<MapPicture> pictures = mapPictures;
             if (pictures != null && !plain) drawMapPictures(g2d, mapX, mapY, pictures);
             g2d.setClip(frameClip);
@@ -2494,71 +2504,41 @@ public class MapPanel extends JPanel {
     }
 
     /**
-     * Each nation's name, in its own writing, over the middle of its largest land, all at one
-     * size; and smaller on each of its islands once the map is zoomed in, at a size readable
-     * for the zoom. Written again a map's width away near the join.
+     * Each nation's flag over the middle of its largest land, all at one size; and smaller on
+     * each of its islands once the map is zoomed in, growing with the zoom. Stood again a map's
+     * width away near the join.
      */
-    private void drawNationNames(Graphics2D g2d, int mapX, int mapY) {
-        float span = zoom * currentMapSize;
-        float originX = mapX - viewLeft() * span, originY = mapY - viewTop() * span;
-        // Islands' names only once zoomed in, growing with the zoom to stay readable
+    private void drawNationFlags(Graphics2D g2d, int mapX, int mapY) {
         boolean islands = zoom >= 1.8f;
         Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        // Main names first; a small one is left out where it would overlap another name
+        // Main flags first; a small one is left out where it would overlap another
         List<Rectangle> taken = new ArrayList<>();
         List<NationLabel> ordered = new ArrayList<>(nationLabels);
         ordered.sort((a, b) -> Boolean.compare(b.main(), a.main()));
         for (NationLabel label : ordered) {
             boolean main = label.main();
             if (!main && !islands) continue;
-            BufferedImage name = label.name();
-            // The glyphs' height on screen
-            float glyph = main ? (currentMapSize < 300 ? 11f : 17f) : Math.min(14f, 6f + zoom * 1.5f);
-            float scale = glyph / NATION_NAME_GLYPH;
-            int w = Math.round(name.getWidth() * scale), h = Math.round(name.getHeight() * scale);
+            BufferedImage flag = label.flag();
+            int flagH = main ? (currentMapSize < 300 ? 16 : 28) : Math.round(Math.min(22f, 8f + zoom * 2f));
+            int flagW = Math.round(flagH * flag.getWidth() / (float) flag.getHeight());
             for (int copy = -1; copy <= 1; copy++) {
                 float[] at = uvScreen(label.x(), label.z(), copy, mapX, mapY);
                 if (at == null) continue;
-                int x = Math.round(at[0] - w * 0.5f);
-                int y = Math.round(at[1] - h * 0.5f);
-                // Only the copy whose middle is on the map; partly off the edge, it's slid back
-                // on so it can be read whole
-                int middleX = x + w / 2, middleY = y + h / 2;
+                int middleX = Math.round(at[0]), middleY = Math.round(at[1]);
                 if (middleX < mapX || middleX >= mapX + currentMapSize || middleY < mapY || middleY >= mapY + mapHeight()) continue;
-                int pad0 = 6;
-                x = Math.max(mapX + pad0, Math.min(mapX + currentMapSize - w - pad0, x));
-                y = Math.max(mapY + pad0, Math.min(mapY + mapHeight() - h - pad0, y));
-                int pad = Math.max(3, Math.round(glyph * 0.3f));
-                // The nation's flag over its main name (under it, should it not fit above); beside
-                // it instead where the name's written downwards (taller than it's wide)
-                BufferedImage flag = main ? label.flag() : null;
-                int flagH = Math.round(glyph * 1.7f), flagW = flag == null ? 0 : Math.round(flagH * flag.getWidth() / (float) flag.getHeight());
-                int flagX, flagY;
-                if (h > w) {
-                    flagX = x - pad - 4 - flagW;
-                    if (flagX < mapX + 2) flagX = x + w + pad + 4;
-                    flagY = y + (h - flagH) / 2;
-                } else {
-                    flagX = x + (w - flagW) / 2;
-                    flagY = y - pad - 4 - flagH;
-                    if (flagY < mapY + 2) flagY = y + h + pad + 4;
-                }
-                Rectangle box = new Rectangle(x - 5, y - 5, w + 10, h + 10);
-                if (flag != null) box.add(new Rectangle(flagX - 2, flagY - 2, flagW + 4, flagH + 4));
+                // (partly off the edge, it's slid back on so it's seen whole)
+                int x = Math.max(mapX + 4, Math.min(mapX + currentMapSize - flagW - 4, middleX - flagW / 2));
+                int y = Math.max(mapY + 4, Math.min(mapY + mapHeight() - flagH - 4, middleY - flagH / 2));
+                Rectangle box = new Rectangle(x - 3, y - 3, flagW + 6, flagH + 6);
                 if (!main && taken.stream().anyMatch(box::intersects)) continue;
                 taken.add(box);
-                if (flag != null) {
-                    g2d.drawImage(flag, flagX, flagY, flagW, flagH, null);
-                    g2d.setColor(new Color(30, 30, 34, 200));
-                    g2d.drawRect(flagX, flagY, flagW - 1, flagH - 1);
-                }
-                Object oldAntialias = g2d.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
-                g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2d.setColor(new Color(40, 40, 44, 150));
-                g2d.fillRoundRect(x - pad, y - pad, w + pad * 2, h + pad * 2, pad * 2, pad * 2);
-                if (oldAntialias != null) g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAntialias);
-                g2d.drawImage(name, x, y, w, h, null);
+                // (a soft shadow under it, so it stands off its own colour on the land)
+                g2d.setColor(new Color(0, 0, 0, 90));
+                g2d.fillRect(x + 2, y + 2, flagW, flagH);
+                g2d.drawImage(flag, x, y, flagW, flagH, null);
+                g2d.setColor(new Color(30, 30, 34, 220));
+                g2d.drawRect(x, y, flagW - 1, flagH - 1);
             }
         }
         if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
@@ -2815,6 +2795,6 @@ public class MapPanel extends JPanel {
         g2d.drawString(text, x + 28, y + 54);
     }
 
-    // The height of one glyph in a nation-name image, in its pixels
+    // The height of one letter in a nation's name as the languages map draws it (see MapOverlays.nationNameImage), in its pixels
     public static final int NATION_NAME_GLYPH = 28;
 }

@@ -199,6 +199,8 @@ final class DevTestRun {
           }
           break;
         }
+        // bigmap: the map enlarged, as M does, a moment in
+        case "bigmap": XenoGuesser.later(1200, () -> app.minimap.toggleSize()); break;
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
         case "zoom": {
           String[] at = Dev.property("xenoguesser.mapzoomat", "0.5,0.5").split(",");

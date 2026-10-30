@@ -373,9 +373,11 @@ public class InfrastructureManager extends InfraGeometry {
             shopColours.put(n, colours);
         }
         for (int n = 1; n <= numNations; n++) {
-            // Most nations are fairly reserved; a few fly flags everywhere
-            float roll = new Random(seed * 53L + n * 977L).nextFloat();
-            patriotism.put(n, 0.05f + 0.95f * (float) Math.pow(roll, 1.4));
+            // Most nations are reserved about their flag, many hardly fly it at all, and the odd
+            // one flies it everywhere: spread wide on a log scale round a low middle (about a
+            // third under a twentieth, one in seven over a half, one in thirteen at the most)
+            double roll = new Random(seed * 53L + n * 977L).nextGaussian();
+            patriotism.put(n, (float) Math.max(0.005, Math.min(1.0, 0.1 * Math.exp(1.6 * roll))));
             posterKeenness.put(n, 0.3f + 0.7f * new Random(seed * 59L + n * 613L).nextFloat());
         }
         // The wind that every flag in this world flies in
@@ -1466,7 +1468,7 @@ public class InfrastructureManager extends InfraGeometry {
                 // In town, a tall flagpole at the front corner of some plots
                 float urban = settlementManager.getUrbanness(house.frame.origin());
                 Random poleRand = new Random(house.seed ^ 0x9013L);
-                if (urban > 0.25f && poleRand.nextFloat() < patriotismOf(house.nationId) * 0.45f * urban) {
+                if (urban > 0.25f && poleRand.nextFloat() < patriotismOf(house.nationId) * 0.3f * urban) {
                     float side = house.drivewaySide != 0 ? -house.drivewaySide : poleRand.nextBoolean() ? 1f : -1f;
                     float px = side > 0 ? house.plotMaxX - 4f : house.plotMinX + 4f, pz = house.plotMaxZ - 4f;
                     SpherePosition at = world(house, px, 0f, pz);

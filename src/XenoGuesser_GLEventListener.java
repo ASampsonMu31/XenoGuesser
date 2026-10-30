@@ -305,7 +305,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.PHYSICAL_CHUNK_SIZE = physicalChunkSize;
         this.TOTAL_REGION_WIDTH = totalRegionWidth;
         this.IS_DEBUG_MODE_ACTIVE = isDebugModeActive;
-        // Developer aid: -Dxenoguesser.minimap=NATIONS,ROADS,CONTOURS starts with that gradient
+        // Developer aid: -Dxenoguesser.minimap=FLAGS,ROADS,CONTOURS starts with that gradient
         // map chosen and those layers ticked
         mapOverlays.currentDebugFactor = null;
         String startingMap = Dev.property("xenoguesser.minimap");
