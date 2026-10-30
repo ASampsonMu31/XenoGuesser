@@ -177,10 +177,18 @@ public class RegionalGenerationManager {
      * hotStretch (1 the same either side; more for a species that copes with the heat).
      */
     public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation, float hotStretch) {
+        return createTemperaturePreference(optimalTemp, standardDeviation, hotStretch, 1.0f);
+    }
+
+    /**
+     * A preference for a temperature, its tolerance of hotter places stretched by hotStretch and
+     * of colder ones by coldStretch (more for a species that copes with the cold).
+     */
+    public RegionalFactor createTemperaturePreference(float optimalTemp, float standardDeviation, float hotStretch, float coldStretch) {
         return new RegionalFactor(1.0f, d -> {
             float currentTemp = this.temperatureMap.evaluate(d);
             float diff = currentTemp - optimalTemp;
-            float spread = diff > 0f ? standardDeviation * hotStretch : standardDeviation;
+            float spread = standardDeviation * (diff > 0f ? hotStretch : coldStretch);
             double exponent = -(diff * diff) / (2.0 * spread * spread);
             return (float) Math.exp(exponent);
         });

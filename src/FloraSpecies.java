@@ -18,8 +18,9 @@ final class FloraSpecies extends GamePart {
     /**
      * The plant species of this world (four trees, four shrubs): each one's growth, colours,
      * form and markings, and where it grows (its climate, its home region and its abundance).
+     * One of them likes the cold, its heartland the coldest of the land points.
      */
-    void createFloraSpecies() {
+    void createFloraSpecies(List<GeodesicChunkGrid.Direction> land) {
         // --- SEEDED DYNAMIC SPECIES GENERATION PIPELINE ---
         game.speciesConfigs = new SpeciesConfig[game.NUM_SPECIES];
         
@@ -29,6 +30,10 @@ final class FloraSpecies extends GamePart {
         // Each species' form, from a stream of its own (so the rest of each species is as it was):
         // the trees all different forms, and the shrubs
         Flora.Design.Form[][] forms = plantForms(new Random(game.worldSeed * 0x9E3779B97F4A7C15L + 77L));
+        // The one that likes the cold (as cold as this world's polar lands, however cold they are),
+        // so they have a plant of their own to go by rather than only the thin edge of milder ones
+        int coldLover = new Random(game.worldSeed * 5903L + 11L).nextInt(game.NUM_SPECIES);
+        float coldest = coldestLand(land);
 
         for (int s = 0; s < game.NUM_SPECIES; s++) {
             boolean isTree = (s < 4); // First 4 are Trees, last 4 are Shrubs
@@ -76,8 +81,8 @@ final class FloraSpecies extends GamePart {
                 baseBAngle  = 30.0f + speciesSeeder.nextFloat() * 30.0f; // Wide bushy dispersion
                 varBAngle   = 10.0f + speciesSeeder.nextFloat() * 20.0f;
                 
-                // Ecological layout: Prefer warmer/different niches than trees
-                tempMean    = 0.4f + speciesSeeder.nextFloat() * 0.5f;
+                // Ecological layout: Prefer warmer/different niches than trees (though some cool ones)
+                tempMean    = 0.3f + speciesSeeder.nextFloat() * 0.6f;
                 tempStdDev  = 0.15f + speciesSeeder.nextFloat() * 0.2f;
                 baseAbundance = (0.04f + speciesSeeder.nextFloat() * 0.16f) * 2.5f; // (common: 2.5 times what they were)
             }
@@ -156,7 +161,10 @@ final class FloraSpecies extends GamePart {
             SpeciesConfig sc = game.speciesConfigs[s];
             // Some shrubs cope with the heat better than the cold (from a Random of their own, so the rest is as it was)
             if (!isTree) sc.tempHotStretch = OrganismSpecies.heatHardiness(new Random(game.worldSeed * 3301L + s));
-            sc.tempFactor = game.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev, sc.tempHotStretch);
+            // ...and some (trees or shrubs) with the cold, so the polar lands aren't bare
+            if (s == coldLover) sc.tempMean = coldest;
+            sc.tempColdStretch = OrganismSpecies.coldHardiness(new Random(game.worldSeed * 4409L + s));
+            sc.tempFactor = game.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev, sc.tempHotStretch, sc.tempColdStretch);
             sc.patchNoiseFactor = game.regionalManager.createNoiseMap(sc.patchNoiseScale);
             // ...and only in its home region, as the animals (see OrganismSpecies): a plant suited
             // to the cold north needn't grow in the cold south too
@@ -164,6 +172,18 @@ final class FloraSpecies extends GamePart {
                     + new Random(game.worldSeed * 613L + s).nextFloat() * OrganismSpecies.HOME_SCALE_RANGE);
             sc.abundanceFactor = plantAbundance(sc, home, OrganismSpecies.homeStrength(new Random(game.worldSeed * 1993L + s)));
         }
+    }
+
+    // The share of the land colder than the cold-loving plant likes best
+    private static final float COLD_LAND_SHARE = 0.04f;
+
+    /** The temperature COLD_LAND_SHARE of the land points are colder than. */
+    private float coldestLand(List<GeodesicChunkGrid.Direction> land) {
+        if (land.isEmpty()) return 0f;
+        float[] temperatures = new float[land.size()];
+        for (int i = 0; i < temperatures.length; i++) temperatures[i] = game.regionalManager.temperatureMap.evaluate(land.get(i));
+        java.util.Arrays.sort(temperatures);
+        return temperatures[(int) (COLD_LAND_SHARE * (temperatures.length - 1))];
     }
 
     /**
@@ -257,11 +277,11 @@ final class FloraSpecies extends GamePart {
         SpeciesConfig sc = game.speciesConfigs[s];
         Random r = new Random(game.worldSeed * 4241L + s * 7717L + attempt * 1_000_003L);
         boolean tree = s < 4;
-        sc.tempMean = tree ? 0.1f + r.nextFloat() * 0.6f : 0.4f + r.nextFloat() * 0.5f;
+        sc.tempMean = tree ? 0.1f + r.nextFloat() * 0.6f : 0.3f + r.nextFloat() * 0.6f;
         // (a little more tolerant each time, so a fussy species finds somewhere)
         sc.tempStdDev = (tree ? 0.2f + r.nextFloat() * 0.2f : 0.15f + r.nextFloat() * 0.2f) + attempt * 0.01f;
         long salt = (game.worldSeed * 17L + s) * 64L + attempt;
-        sc.tempFactor = game.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev, sc.tempHotStretch);
+        sc.tempFactor = game.regionalManager.createTemperaturePreference(sc.tempMean, sc.tempStdDev, sc.tempHotStretch, sc.tempColdStretch);
         sc.patchNoiseFactor = game.regionalManager.createNoiseMap(sc.patchNoiseScale, salt * 2L);
         RegionalFactor home = game.regionalManager.createNoiseMap(OrganismSpecies.HOME_SCALE_LOW + r.nextFloat() * OrganismSpecies.HOME_SCALE_RANGE, salt * 2L + 1L);
         sc.abundanceFactor = plantAbundance(sc, home, OrganismSpecies.homeStrength(r));

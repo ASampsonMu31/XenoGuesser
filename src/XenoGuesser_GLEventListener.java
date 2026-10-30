@@ -372,10 +372,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             .addFactor(this.leafColourNoiseFactor, 0.3f)
             .build();
 
-        floraSpecies.createFloraSpecies();
+        // (the land points first: one plant is suited to the coldest of them)
+        landPoints = SpeciesRange.land(worldNoise, seaLevelHeight);
+        floraSpecies.createFloraSpecies(landPoints);
 
         // Each plant's range (see SpeciesRange): spawning and its heatmap both follow it
-        landPoints = SpeciesRange.land(worldNoise, seaLevelHeight);
         floraSpecies.floraRanges = floraSpecies.floraRanges(landPoints);
 
         // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
