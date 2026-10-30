@@ -115,46 +115,38 @@ final class MapOverlays extends GamePart {
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (game.minimap != null) game.minimap.setNationLabels(labels);
             });
-            // The picture maps' pictures: each nation's bollard, road markings or utility pole where
-            // its main land's name goes
+            // The picture maps: where each design is built, region by region (whatever the
+            // nations: see BirdsEyeMaps.designRegions), edged, with its picture well inside each
+            // region big enough, the biggest regions' first should they crowd (see spaceOut)
             java.util.Map<FactorName, List<MapPicture>> pictures = new java.util.EnumMap<>(FactorName.class);
-            for (FactorName f : PICTURE_MAPS) pictures.put(f, new ArrayList<>());
-            // (a nation building more than one bollard or pole: its main one where its name goes,
-            // each other one part way towards the neighbour whose it is, on the side it's built)
-            java.util.Map<Integer, float[]> middles = new HashMap<>();
-            for (float[] place : maps.nationLabelPlaces(game.nationManager)) if (place[4] > 0.5f) middles.put((int) place[0], place);
-            List<MapPicture> architectureMain = new ArrayList<>(), architectureOthers = new ArrayList<>();
-            for (float[] place : middles.values()) {
-                int nation = (int) place[0];
-                for (NationDesign<BollardStyle> design : game.infraManager.bollardDesigns(nation)) {
-                    float[] at = towardsNeighbour(place, middles.get(design.from()));
-                    pictures.get(FactorName.BOLLARDS).add(new MapPicture(design.design().picture(MAP_PICTURE_HEIGHT), at[0], at[1]));
+            java.util.Map<FactorName, BirdsEyeMaps.DesignRegions> regions = new java.util.EnumMap<>(FactorName.class);
+            for (FactorName f : List.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES, FactorName.ARCHITECTURE)) {
+                BirdsEyeMaps.DesignRegions found = maps.designRegions(game.nationManager, designKey(f));
+                regions.put(f, found);
+                Map<Integer, BufferedImage[]> drawn = new HashMap<>();
+                List<MapPicture> placed = new ArrayList<>();
+                for (float[] place : found.places()) {
+                    int key = (int) place[0], nation = (int) place[1];
+                    BufferedImage[] picture = drawn.computeIfAbsent(key, k -> new BufferedImage[] {
+                            designPicture(f, nation, k, MAP_PICTURE_HEIGHT), detailed(f) ? designPicture(f, nation, k, DETAIL_PICTURE_HEIGHT) : null });
+                    if (picture[0] == null) continue;
+                    placed.add((picture[1] == null ? new MapPicture(picture[0], place[2], place[3])
+                            : MapPicture.withDetail(picture[0], place[2], place[3], f.label().replaceAll("s$", ""), picture[1]))
+                            .ringed(BirdsEyeMaps.regionColour(key)));
                 }
-                RoadLineStyle lines = game.infraManager.roadLineStyle(nation);
-                if (lines != null) pictures.get(FactorName.ROAD_LINES).add(new MapPicture(lines.picture(MAP_PICTURE_HEIGHT, RoadPath.RoadClass.STREET.width), place[1], place[2]));
-                for (NationDesign<UtilityPoleStyle> design : game.infraManager.poleDesigns(nation)) {
-                    float[] at = towardsNeighbour(place, middles.get(design.from()));
-                    pictures.get(FactorName.UTILITY_POLES).add(new MapPicture(design.design().picture(MAP_PICTURE_HEIGHT), at[0], at[1]));
-                }
-                // (and a nation's province, with its own take on the nation's architecture, in the
-                // middle of the province: gathered first, then thinned out, see spaceOut)
-                for (InfrastructureManager.ArchitecturePicture design : game.infraManager.architecturePictures(nation, MAP_PICTURE_HEIGHT)) {
-                    float[] at;
-                    if (design.from() < 0) {
-                        double[] spot = design.spot();
-                        double[] map = MapProjection.toMap(new GeodesicChunkGrid.Direction(spot[0], spot[1], spot[2]));
-                        at = new float[] { (float) map[0], (float) map[1] };
-                    } else {
-                        at = towardsNeighbour(place, middles.get(design.from()));
-                    }
-                    (design.from() == 0 ? architectureMain : architectureOthers).add(new MapPicture(design.picture(), at[0], at[1]));
-                }
+                pictures.put(f, spaceOut(placed));
             }
-            pictures.get(FactorName.ARCHITECTURE).addAll(spaceOut(architectureMain, architectureOthers));
+            pictureRegions = regions;
             mapPictures = pictures;
             // (a picture map already chosen gets its pictures now)
             javax.swing.SwingUtilities.invokeLater(() -> {
                 if (game.minimap != null && currentPictureMap != null) choosePictureMap(currentPictureMap);
+                // Developer aid: -Dxenoguesser.heatmap=<its label> shows that heatmap, and
+                // -Dxenoguesser.picturemap=<its label> that picture map, once they're ready
+                String heatmap = Dev.property("xenoguesser.heatmap");
+                for (MapOverlay o : allOverlays()) if (game.minimap != null && overlayLabel(o).equalsIgnoreCase(heatmap)) chooseGradient(o);
+                String wanted = Dev.property("xenoguesser.picturemap");
+                for (FactorName f : PICTURE_MAPS) if (game.minimap != null && f.label().equalsIgnoreCase(wanted)) choosePictureMap(f);
             });
             // Drawn in tiles when zoomed in close
             java.util.Map<MapPanel.Layer, MapTiles.Renderer> layerTiles = new java.util.EnumMap<>(java.util.Map.of(
@@ -394,8 +386,9 @@ final class MapOverlays extends GamePart {
     private final Map<String, java.awt.Image> choiceIcons = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** The icon for one of the map's choices, by its name (a layer's or an overlay's); null if none. */
-    // The maps of pictures rather than colours: each nation's bollard, road markings or utility
-    // pole stood on its main land, over the plain map, no borders (see chooseGradient); their
+    // The maps of pictures rather than colours: each bollard, road markings, utility pole or
+    // architecture stood in each region it's built, the regions edged (see BirdsEyeMaps.designRegions),
+    // over the plain map or a heatmap (see chooseGradient); their
     // pictures ({picture, worldX, worldZ}), once drawn, and how tall
     static final java.util.Set<FactorName> PICTURE_MAPS = java.util.EnumSet.of(FactorName.BOLLARDS, FactorName.ROAD_LINES, FactorName.UTILITY_POLES,
             FactorName.ARCHITECTURE, FactorName.LANDMARKS);
@@ -410,46 +403,80 @@ final class MapOverlays extends GamePart {
     // How tall the landmarks' pictures are (shown in their popups on the map)
     private static final int LANDMARK_PICTURE_HEIGHT = 220;
 
+    // How tall the bollards' and poles' larger pictures are (shown in a popup when the pointer is over theirs on the map)
+    private static final int DETAIL_PICTURE_HEIGHT = 420;
+
+    // The picture maps' regions' edges (see BirdsEyeMaps.designRegions), once drawn
+    private volatile java.util.Map<FactorName, BirdsEyeMaps.DesignRegions> pictureRegions = java.util.Map.of();
+
     /**
-     * Where on the map a nation's design is pictured, {worldX, worldZ}: its middle (where its
-     * name goes) for its main one; for a neighbour's, 45% of the way towards that neighbour's
-     * middle (not across the map's join, where the way round is the short one), on the side of the
-     * nation it's built.
+     * What a picture map's regions go by at a place in a nation: the bollard's or pole's design
+     * (the same in every nation building it); the road markings' bloc (the lowest of the numbers of
+     * the nations marking their roads alike); the architecture and nation together (each nation's
+     * house is its own, whatever the architecture). -1 for none.
      */
-    private float[] towardsNeighbour(float[] own, float[] neighbour) {
-        if (neighbour == null) return new float[] { own[1], own[2] };
-        float dx = neighbour[1] - own[1], dz = neighbour[2] - own[2];
-        if (Math.abs(dx) > game.TOTAL_REGION_WIDTH * 0.5f) return new float[] { own[1] + Math.signum(-dx) * 1500f, own[2] + dz * 0.45f };
-        return new float[] { own[1] + dx * 0.45f, own[2] + dz * 0.45f };
+    private BirdsEyeMaps.DesignAt designKey(FactorName f) {
+        InfrastructureManager infra = game.infraManager;
+        int nations = infra.roadLineStyles.size();
+        return switch (f) {
+            case BOLLARDS -> infra.bollardWorld.designs()::designAt;
+            case UTILITY_POLES -> infra.poleWorld.designs()::designAt;
+            case ROAD_LINES -> {
+                int[] bloc = new int[nations + 1];
+                java.util.Arrays.fill(bloc, -1);
+                for (int n = 1; n <= nations; n++) {
+                    RoadLineStyle lines = infra.roadLineStyle(n);
+                    for (int m = 1; m <= n && lines != null && bloc[n] < 0; m++) if (infra.roadLineStyle(m) == lines) bloc[n] = m;
+                }
+                yield (nation, place) -> nation >= 1 && nation <= nations ? bloc[nation] : -1;
+            }
+            default -> (nation, place) -> {
+                int design = infra.architectureWorld.at(nation, place);
+                return design < 0 ? -1 : design * (nations + 1) + nation;
+            };
+        };
     }
 
-    // How far apart (shares of the map's width, across and up) the architecture map's pictures
-    // stand: they're wide, so further apart across than up
-    private static final float PICTURE_GAP_ACROSS = 0.13f, PICTURE_GAP_UP = 0.08f;
+    /** A picture map's picture for one of its keys (see designKey), as built in a nation there, height pixels tall; null for none. */
+    private BufferedImage designPicture(FactorName f, int nation, int key, int height) {
+        InfrastructureManager infra = game.infraManager;
+        return switch (f) {
+            case BOLLARDS -> infra.bollardWorld.design(nation, key).picture(height);
+            case UTILITY_POLES -> infra.poleWorld.design(nation, key).picture(height);
+            case ROAD_LINES -> infra.roadLineStyle(nation) == null ? null : infra.roadLineStyle(nation).picture(height, RoadPath.RoadClass.STREET.width);
+            default -> infra.architecturePicture(nation, key / (infra.roadLineStyles.size() + 1), height);
+        };
+    }
+
+    /** Whether a picture map's pictures have larger ones, shown when the pointer is over them: the bollards' and poles' (small on the map). */
+    private static boolean detailed(FactorName f) {
+        return f == FactorName.BOLLARDS || f == FactorName.UTILITY_POLES;
+    }
+
+    // How far apart (a share of the map's width) two pictures' feet stand at least, up; across,
+    // that much again for each picture's width over its height (wide ones further apart)
+    private static final float PICTURE_GAP = 0.085f;
 
     /**
-     * Thins out pictures so they don't crowd together on the map: the
-     * main ones first, each kept unless it's on top of one already kept (closer than half the
-     * gap), then the others (neighbours' designs, provinces') only where they're a whole gap clear
-     * of every one kept. (Across the map's join, the short way round.)
+     * Thins out pictures so they don't crowd together on the map: in order (the biggest regions'
+     * first), each kept unless it's on top of one already kept. (Across the map's join, the
+     * short way round.)
      */
-    private List<MapPicture> spaceOut(List<MapPicture> main, List<MapPicture> others) {
+    private List<MapPicture> spaceOut(List<MapPicture> pictures) {
         List<MapPicture> kept = new ArrayList<>();
-        for (int pass = 0; pass < 2; pass++) {
-            float gap = pass == 0 ? 0.5f : 1f;
-            for (MapPicture p : pass == 0 ? main : others) {
-                boolean clear = true;
-                for (MapPicture k : kept) {
-                    float dx = Math.abs(p.x() - k.x()), dz = Math.abs(p.z() - k.z());
-                    dx = Math.min(dx, game.TOTAL_REGION_WIDTH - dx);
-                    float ex = dx / (PICTURE_GAP_ACROSS * gap * game.TOTAL_REGION_WIDTH), ez = dz / (PICTURE_GAP_UP * gap * game.TOTAL_REGION_WIDTH);
-                    if (ex * ex + ez * ez < 1f) {
-                        clear = false;
-                        break;
-                    }
+        for (MapPicture p : pictures) {
+            boolean clear = true;
+            for (MapPicture k : kept) {
+                float dx = Math.abs(p.x() - k.x()), dz = Math.abs(p.z() - k.z());
+                dx = Math.min(dx, game.TOTAL_REGION_WIDTH - dx);
+                float wide = 0.5f * (p.picture().getWidth() / (float) p.picture().getHeight() + k.picture().getWidth() / (float) k.picture().getHeight());
+                float ex = dx / (PICTURE_GAP * wide * game.TOTAL_REGION_WIDTH), ez = dz / (PICTURE_GAP * game.TOTAL_REGION_WIDTH);
+                if (ex * ex + ez * ez < 1f) {
+                    clear = false;
+                    break;
                 }
-                if (clear) kept.add(p);
             }
+            if (clear) kept.add(p);
         }
         return kept;
     }
@@ -515,7 +542,8 @@ final class MapOverlays extends GamePart {
             chooseGradient(null);
             refreshMapChoices();
         }
-        game.minimap.setPictureOverlay(factor == null ? null : factor.label(), factor == null ? null : picturesOf(factor));
+        game.minimap.setPictureOverlay(factor == null ? null : factor.label(), factor == null ? null : picturesOf(factor),
+                factor == null ? null : pictureRegions.get(factor));
     }
 
     public void chooseGradient(MapOverlay factorName) {

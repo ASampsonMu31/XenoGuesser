@@ -147,26 +147,6 @@ public final class ArchitectureStyle {
             return styles.length;
         }
 
-        /**
-         * A nation's designs, each {index (see style), the neighbour it's from (0 for its main
-         * one, -1 for its province's)}; for its province's, a third: a direction {x, y, z} in the
-         * middle of the province.
-         */
-        public List<Object[]> designsOf(int nation) {
-            List<Object[]> list = new ArrayList<>();
-            int[] mine = designs.designsOf(nation), from = designs.fromNationsOf(nation);
-            for (int k = 0; k < mine.length; k++) {
-                list.add(new Object[] { mine[k], from[k] });
-                if (k == 0 && nation < axis.length && axis[nation] != null) {
-                    double[] c = kinship.centre(nation);
-                    double t = reach[nation] * 2.2;
-                    double[] spot = { c[0] + axis[nation][0] * t, c[1] + axis[nation][1] * t, c[2] + axis[nation][2] * t };
-                    list.add(new Object[] { poolSize + nation - 1, -1, spot });
-                }
-            }
-            return list;
-        }
-
         public String summary() {
             int provinces = 0;
             for (int i = poolSize; i < styles.length; i++) if (styles[i] != null) provinces++;

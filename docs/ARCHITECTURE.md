@@ -78,7 +78,7 @@ mesh primitives, float[3] vector maths, shared constants). The manager also exte
 | `RoadsideSigns` | House and roadside signs, their text and pictures (`SignMap`) |
 | `InfraMaterials` | Materials by part name (`"wall_variant3"`, `"orn@2"`, `"bollard#1"`...) |
 | `InfraViewpoints` | Developer views (`viewpoints()`) |
-| Data | `RoadSegment`, `House`, `NationBatch`, `Bridge`, `BridgeKind`, `Crossing`, `HouseWall`, `RoofOutline`; public nested `Shop`, `Doorway`, `Kerb`, `TrafficLight`, `Guard`, `ArchitecturePicture` |
+| Data | `RoadSegment`, `House`, `NationBatch`, `Bridge`, `BridgeKind`, `Crossing`, `HouseWall`, `RoofOutline`; public nested `Shop`, `Doorway`, `Kerb`, `TrafficLight`, `Guard` |
 
 ### `XenoGuesser_GLEventListener` (the running 3D game) — facade, GL state, loading, render
 
