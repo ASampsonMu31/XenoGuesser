@@ -236,6 +236,50 @@ final class RoundSpawner extends GamePart {
         return spawn;
     }
 
+    // Returning to the pod (R): how far apart the places tried beside the stairs' spawn are, how
+    // far down the stairs and out past their foot to look at most, and how far in from the
+    // stairs' rails a player's edge keeps
+    private static final double RETURN_STEP = 1.5, RETURN_OUT = 60.0, RAIL_GAP = 1.0;
+
+    /**
+     * R: the player back where the round started them, on the pod's stairs facing down them (in
+     * multiplayer, on their own side). If something's there (the partner, say) they're put
+     * beside it across the stairs, or failing that further down them and out past their foot,
+     * at the nearest place they'd be clear.
+     */
+    void returnToPod() {
+        SphereFrame pod = game.landingPod.frame();
+        if (pod == null) return;
+        SpherePosition stairs = pod.toWorld(0.0, 0.0, LandingPod.SPAWN_DISTANCE);
+        Viewpoint spawn = new Viewpoint(stairs, SphereMath.heading(stairs, pod.toWorld(0.0, 0.0, LandingPod.SPAWN_DISTANCE + 50.0)));
+        if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
+        double across = pod.toLocal(spawn.place())[0];
+        double halfWidth = (Multiplayer.isActive() ? LandingPod.MULTIPLAYER_STAIR_WIDTH : LandingPod.STAIR_WIDTH) * 0.5;
+        double reach = Math.max(0.0, halfWidth - XenoGuesser_GLEventListener.PLAYER_RADIUS - RAIL_GAP);
+        for (double out = 0.0; out <= RETURN_OUT; out += RETURN_STEP * 4.0) {
+            // (nearest the spawn first, alternately to either side of it)
+            for (int k = 0; k <= 2 * (int) Math.ceil(2.0 * reach / RETURN_STEP); k++) {
+                double x = across + RETURN_STEP * ((k + 1) / 2) * (k % 2 == 0 ? 1 : -1);
+                if (Math.abs(x) > reach + 1e-9) continue;
+                SpherePosition p = pod.toWorld(x, 0.0, LandingPod.SPAWN_DISTANCE + out);
+                if (returnBlocked(p)) continue;
+                game.moveToLocation(new Viewpoint(p, SphereMath.carryHeading(spawn.place(), p, spawn.heading())));
+                return;
+            }
+        }
+        game.moveToLocation(spawn);
+    }
+
+    /** Whether the player standing at a place would be in something solid or in the partner. */
+    private boolean returnBlocked(SpherePosition p) {
+        SpherePosition place = SphereMath.atAltitude(p, 0.0);
+        SpherePosition eye = SphereMath.atAltitude(place, game.groundHeightAt(place) + game.playerEyeHeight);
+        double r = XenoGuesser_GLEventListener.PLAYER_RADIUS;
+        if (Multiplayer.isActive() && game.partner.hasPose()
+                && SphereMath.distance(eye, game.partner.eye()) < 2.0 * r + RETURN_STEP) return true;
+        return game.geodesicCollision.blocked(eye, r, XenoGuesser_GLEventListener.PLAYER, 0.0);
+    }
+
     /** For a while after landing, puts a player who can't move back towards the pod if they're in something solid. */
     void settleClear() {
         if (System.nanoTime() * 1e-9 > settleUntil || game.landingPod.frame() == null) return;

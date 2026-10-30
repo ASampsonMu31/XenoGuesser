@@ -31,6 +31,9 @@ final class HudRenderer extends GamePart {
 
     private float hudScale = -1f;
 
+    // The "Returning to spawn..." panel's size
+    private static final int RETURNING_W = 260, RETURNING_H = 44;
+
     private MapPanel.MapSize hudMapSize;
 
     /**
@@ -122,6 +125,27 @@ final class HudRenderer extends GamePart {
             int top = game.screenHeight - h - gap - strip;
             hud.move("inventory", gap, top);
             hud.move("inventoryHint", gap, top - Math.round((HudStyle.HINT_H + 6) * scale));
+        }
+
+        // Returning to the pod (R): said at the bottom in the middle, just above the message strip, until they're there
+        boolean returning = game.playerMotion.returningToPod();
+        if (returning && (rescaled || !hud.has("returning"))) {
+            BufferedImage image = HudStyle.canvas(RETURNING_W, RETURNING_H, scale, g);
+            HudStyle.panel(g[0], 0, 0, RETURNING_W, RETURNING_H, HudStyle.GLASS_SOLID);
+            g[0].setFont(HudStyle.font(java.awt.Font.PLAIN, 17f));
+            java.awt.FontMetrics fm = g[0].getFontMetrics();
+            String text = "Returning to spawn...";
+            g[0].setColor(HudStyle.VALUE);
+            g[0].drawString(text, (RETURNING_W - fm.stringWidth(text)) / 2f, (RETURNING_H + fm.getAscent() - fm.getDescent()) / 2f);
+            g[0].dispose();
+            hud.put("returning", image, 0, 0);
+        }
+        if (hud.has("returning")) {
+            hud.setVisible("returning", returning);
+            java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
+            int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * scale);
+            hud.move("returning", (game.screenWidth - Math.round(RETURNING_W * scale)) / 2,
+                    game.screenHeight - strip - Math.round((RETURNING_H + INVENTORY_GAP) * scale));
         }
 
         if (game.minimap != null) {

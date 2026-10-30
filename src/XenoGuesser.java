@@ -798,7 +798,8 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   /**
-   * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, Tab enlarges
+   * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, R returns to
+   * the pod's stairs, Tab enlarges
    * or shrinks the map, 1 to 4 take out each gadget, 5 puts them away and Esc opens the settings (the
    * wheel works the gadgets as well: see buildGameWindow). Mouse
    * movement anywhere in the window turns the view while the game has the mouse.
@@ -837,6 +838,8 @@ glEventListener.setGameHUD(gameHUD);
             // X: the controls on offer skipped
             case KeyEvent.VK_X: if (controlsOffered) withdrawControls(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
+            // R: back to the pod's stairs
+            case KeyEvent.VK_R: glEventListener.returnToPod(); break;
             default: break;
           }
         }

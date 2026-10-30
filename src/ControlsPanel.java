@@ -20,6 +20,7 @@ public class ControlsPanel extends JComponent {
         { "Shift", "Sprint" },
         { "Mouse", "Look" },
         { "Space", "Jump" },
+        { "R", "Return to spawn" },
         { "Tab", "Expand / contract the map" },
         { "Scroll", "Zoom the map / switch gadget" },
         { "Click", "Place your marker on the enlarged map" },
@@ -28,7 +29,7 @@ public class ControlsPanel extends JComponent {
         { "Esc", "Settings" },
         { "Enter", "Skip a message" },
     };
-    public static final int W = 560, H = 542;
+    public static final int W = 560, H = 578;
 
     private final Rectangle button = new Rectangle();
     private boolean hovered;

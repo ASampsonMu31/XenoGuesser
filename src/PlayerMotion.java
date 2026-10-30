@@ -109,6 +109,10 @@ final class PlayerMotion extends GamePart {
 
     private volatile boolean jumpWanted;
 
+    // How long returning to the pod (R) takes, and when it's due (NaN while not returning)
+    private static final double RETURN_SECONDS = 3.0;
+    private volatile double returnAt = Double.NaN;
+
     boolean airborne;
 
     float jumpHeight, jumpVelocity, airborneEyeY;
@@ -121,6 +125,22 @@ final class PlayerMotion extends GamePart {
         // (not where the game mode keeps the player where they landed: it'd serve no purpose)
         if (!GameMode.current().moving) return;
         jumpWanted = true;
+    }
+
+    /** R: back to the pod's stairs where the round started, after RETURN_SECONDS (where the player can move at all). */
+    public void returnToPod() {
+        if (!GameMode.current().moving || returningToPod()) return;
+        returnAt = System.nanoTime() * 1e-9 + RETURN_SECONDS;
+    }
+
+    /** Whether the player's on their way back to the pod (R), for the HUD to say so. */
+    boolean returningToPod() {
+        return !Double.isNaN(returnAt);
+    }
+
+    /** Forgets any return to the pod under way (a spawn or teleport has moved the player anyway). */
+    void cancelReturn() {
+        returnAt = Double.NaN;
     }
 
     /** How steep the ground is at a place: rise over run. */
@@ -138,6 +158,10 @@ final class PlayerMotion extends GamePart {
      * underfoot, swimming where it's too deep, jumping, and the head's bob as they step.
      */
     void movePlayer(double deltaTime, double elapsedTime) {
+        if (returningToPod() && System.nanoTime() * 1e-9 >= returnAt) {
+            returnAt = Double.NaN;
+            game.roundSpawner.returnToPod();
+        }
         boolean moveW = game.keyboard.w;
         boolean moveS = game.keyboard.s;
         boolean moveA = game.keyboard.a;

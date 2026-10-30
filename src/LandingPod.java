@@ -17,9 +17,10 @@ import java.util.List;
  */
 public class LandingPod {
 
-    // Its bones: the hull (tilted to the ground), the stairs, and each landing leg (stretched or
-    // squashed from its shoulder so its foot meets the ground)
-    private static final int HULL = 0, STAIRS = 1, LEG = 2, BONES = LEG + 4;
+    // Its bones: the hull (tilted to the ground), the stairs, each landing leg (stretched or
+    // squashed from its shoulder so its foot meets the ground), and the beacon's dish (kept level
+    // on its mast's ball joint however the hull leans)
+    private static final int HULL = 0, STAIRS = 1, LEG = 2, DISH = LEG + 4, BONES = DISH + 1;
     // On a slope it leans this share of the way to the ground's angle, no further than this
     private static final float TILT_SHARE = 0.75f, MOST_TILT = (float) Math.toRadians(15.0);
     // Each leg can lengthen or shorten this much (world units) to put its foot on the ground
@@ -34,12 +35,20 @@ public class LandingPod {
     private static final float STAIR_RUN = 5f, STAIR_LENGTH = 20f;
     // How wide the stairs (and the platform at their top) are, and the hatch's dark doorway and
     // metal frame: singleplayer's, and multiplayer's, wide enough for two side by side (M11)
-    private static final float STAIR_WIDTH = 17f, DOOR_WIDTH = 11f, DOOR_FRAME_WIDTH = 13.5f;
+    static final float STAIR_WIDTH = 17f;
+    private static final float DOOR_WIDTH = 11f, DOOR_FRAME_WIDTH = 13.5f;
     public static final float MULTIPLAYER_STAIR_WIDTH = 28f;
     private static final float MULTIPLAYER_DOOR_WIDTH = 16f, MULTIPLAYER_DOOR_FRAME_WIDTH = 19f;
     private static final int STEPS = 4;
     // Where the player starts: on the third step down
     public static final float SPAWN_DISTANCE = PLATFORM_FRONT + STAIR_RUN * 2.5f;
+    // The beacon on the roof: the mast's ball joint (over the hull's middle, as it stands
+    // upright), the dish's depth below its rim and its rim's radius (a paraboloid, so its focus
+    // is DISH_RADIUS^2 / (4 DISH_DEPTH) above its bowl's bottom), how far the bowl stands above
+    // the joint, and so where the dish brings the light together into a ball
+    private static final float JOINT_HEIGHT = HULL_TOP + 5f, DISH_STEM = 2.5f;
+    static final float DISH_RADIUS = 7f, DISH_DEPTH = 2.2f;
+    static final float DISH_RIM = DISH_STEM + DISH_DEPTH, DISH_FOCUS = DISH_STEM + DISH_RADIUS * DISH_RADIUS / (4f * DISH_DEPTH);
     // How far the pod's solid outline reaches from its middle (its feet)
     private static final float KEEP_OUT = 40f;
 
@@ -134,7 +143,7 @@ public class LandingPod {
             b.transform(Affine.multiply(Affine.translation(foot[0], 0f, foot[2]), upright)).part(OrganismMesh.PART_BRASS);
             b.lathe(20, 8, puck(4f, 1.6f));
         }
-        // Manoeuvring thrusters round the shoulder, and an aerial on top
+        // Manoeuvring thrusters round the shoulder
         b.bone(HULL);
         for (int i = 0; i < 4; i++) {
             float a = (float) (i * Math.PI * 0.5);
@@ -144,9 +153,7 @@ public class LandingPod {
             b.transform(Affine.frame(at, new float[] { (float) Math.sin(a), -0.2f, (float) Math.cos(a) }, new float[] { 0f, 1f, 0f }, 1f, 1f, 1f));
             OrganismParts.limb(b, OrganismMesh.PART_TRIM, 3.2f, 1.6f, 1.1f);
         }
-        strut(b, OrganismMesh.PART_METAL, new float[] { 3f, HULL_TOP - 1f, -2f }, new float[] { 3f, HULL_TOP + 14f, -2f }, 0.35f, 0.2f);
-        b.transform(Affine.translation(3f, HULL_TOP + 14f, -2f));
-        OrganismParts.shell(b, OrganismMesh.PART_SKIN, 1.6f, 1.6f, 1.6f, 0.5f, 0, 0f, 1f);
+        beacon(b, upright);
 
         // The stairs, in their own space: from the platform edge (y = PLATFORM_HEIGHT) down to the ground (y = 0)
         b.bone(STAIRS).resetTransform().part(OrganismMesh.PART_METAL);
@@ -169,6 +176,48 @@ public class LandingPod {
         }
         b.resetTransform();
         return b;
+    }
+
+    /**
+     * The beacon on the roof: a turret with a mast and two rams up to a ball joint, leaning with
+     * the hull; on the joint (on its own bone, kept level) a dish facing straight up, with three
+     * struts holding a feed over it, under the focus where its light gathers into a ball.
+     */
+    private static void beacon(OrganismMesh.Builder b, float[] upright) {
+        b.bone(HULL);
+        b.transform(Affine.multiply(Affine.translation(0f, HULL_TOP - 1.5f, 0f), upright)).part(OrganismMesh.PART_TRIM);
+        b.lathe(24, 8, puck(4f, 2.5f));
+        strut(b, OrganismMesh.PART_METAL, new float[] { 0f, HULL_TOP, 0f }, new float[] { 0f, JOINT_HEIGHT, 0f }, 1.1f, 0.8f);
+        for (float side : new float[] { -1f, 1f }) {
+            strut(b, OrganismMesh.PART_BRASS, new float[] { side * 3.2f, HULL_TOP + 0.8f, 0f }, new float[] { side * 0.9f, JOINT_HEIGHT - 1.4f, 0f }, 0.45f, 0.35f);
+        }
+        b.transform(Affine.translation(0f, JOINT_HEIGHT, 0f));
+        OrganismParts.shell(b, OrganismMesh.PART_METAL, 2.8f, 2.8f, 2.8f, 0.5f, 0, 0f, 1f);
+        // The dish, level: a stem from the joint, the bowl, and the feed on its struts
+        b.bone(DISH);
+        strut(b, OrganismMesh.PART_METAL, new float[] { 0f, JOINT_HEIGHT, 0f }, new float[] { 0f, JOINT_HEIGHT + DISH_STEM + 0.3f, 0f }, 0.7f, 0.7f);
+        b.transform(Affine.multiply(Affine.translation(0f, JOINT_HEIGHT + DISH_STEM, 0f), upright)).part(OrganismMesh.PART_BODY);
+        b.lathe(32, 10, (t, out) -> {
+            out[0] = 0f;
+            out[1] = 0f;
+            out[2] = DISH_DEPTH * t * t;
+            out[3] = out[4] = DISH_RADIUS * t;
+        });
+        b.transform(Affine.multiply(Affine.translation(0f, JOINT_HEIGHT + DISH_STEM - 0.25f, 0f), upright)).part(OrganismMesh.PART_METAL);
+        b.lathe(32, 10, (t, out) -> {
+            out[0] = 0f;
+            out[1] = 0f;
+            out[2] = DISH_DEPTH * t * t;
+            out[3] = out[4] = DISH_RADIUS * t;
+        });
+        float feed = JOINT_HEIGHT + DISH_FOCUS - 1.6f;
+        for (int i = 0; i < 3; i++) {
+            float a = (float) (i * Math.PI * 2.0 / 3.0 + Math.PI * 0.5);
+            float[] rim = { (float) Math.sin(a) * DISH_RADIUS * 0.94f, JOINT_HEIGHT + DISH_RIM - 0.1f, (float) Math.cos(a) * DISH_RADIUS * 0.94f };
+            strut(b, OrganismMesh.PART_METAL, rim, new float[] { 0f, feed, 0f }, 0.22f, 0.18f);
+        }
+        b.transform(Affine.multiply(Affine.translation(0f, feed - 0.4f, 0f), upright)).part(OrganismMesh.PART_TRIM);
+        b.lathe(16, 8, puck(0.9f, 0.8f));
     }
 
     // How high the stairs' handrails stand above the treads
@@ -292,6 +341,10 @@ public class LandingPod {
         }
         frame = level.movedTo(SphereMath.atAltitude(centre, ground));
         System.arraycopy(tilt, 0, bones, HULL * 16, 16);
+        // The dish: carried round with the joint as the hull leans, but not turned with it
+        float[] joint = Affine.transformPoint(tilt, 0f, JOINT_HEIGHT, 0f);
+        System.arraycopy(Affine.translation(joint[0], joint[1] - JOINT_HEIGHT, joint[2]), 0, bones, DISH * 16, 16);
+        beaconFocus = frame.toWorld(joint[0], joint[1] + DISH_FOCUS, joint[2]);
         // The stairs: from the platform's edge, as it leans, down to the ground at their foot
         float[] edge = Affine.transformPoint(tilt, 0f, PLATFORM_HEIGHT, PLATFORM_FRONT);
         platformHeight = edge[1];
@@ -304,6 +357,9 @@ public class LandingPod {
         placed = true;
         buildObstacles();
     }
+
+    // Where the beacon's dish brings its light together, in the world
+    private SpherePosition beaconFocus;
 
     // How high the hatch's platform stands above the pod's origin, as it leans
     private float platformHeight = PLATFORM_HEIGHT;
@@ -380,6 +436,11 @@ public class LandingPod {
     /** The pod's own frame: origin under its middle on the ground, local z the way its stairs run. */
     public SphereFrame frame() {
         return frame;
+    }
+
+    /** Where the beacon's dish gathers its light into a ball, in the world, and its beam starts (null before it's placed). */
+    public SpherePosition beaconFocus() {
+        return placed ? beaconFocus : null;
     }
 
     /** The altitude of the ground the pod stands on. */
