@@ -184,6 +184,17 @@ void main() {
     if (useSoilRegions > 0.5) {
         texColor *= texture(soilRegionMap, normalize(aWorldPos)).rgb * 2.0;
 
+        // Sand along the shore: from the water's edge to a little above the waves' reach (the
+        // grass begins there, see BEACH_GRASS_FROM), wandering up and down a little, on the
+        // gentler ground (steep shores stay rock, below), taking a little of the soil's tint
+        if (snowState.x > 0.5) {
+            float aboveSea = length(aWorldPos) - planetRadius - snowClimate.w;
+            float level = dot(normalize(aNormal), normalize(aWorldPos));
+            float beach = (1.0 - smoothstep(12.0, 20.0, aboveSea + (noise3d(aWorldPos * 0.03) - 0.5) * 6.0)) * smoothstep(0.84, 0.94, level);
+            vec3 sand = mix(vec3(0.86, 0.79, 0.62), texColor * 1.6, 0.18) * (0.9 + 0.2 * noise3d(aWorldPos * 0.7));
+            texColor = mix(texColor, sand, beach);
+        }
+
         // Steep slopes are bare cliff: the same stone as the loose rocks, rough and speckled,
         // with fine bedding lines running across it (by height above the datum, wandering only a
         // little) and a few cracks. 3D noise of the place, exact however far it is from the

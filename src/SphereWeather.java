@@ -144,6 +144,18 @@ public final class SphereWeather {
         coverage = -1f;
     }
 
+    /** How wet the day is (as newDay chose it), to put back after a photograph's clear sky (see LandmarkPhotos). */
+    float dayWetness() {
+        return dayWetness;
+    }
+
+    void setDayWetness(float wetness) {
+        dayWetness = wetness;
+        coverage = -1f;
+        // (whatever was falling worked out afresh, from none)
+        intensity = 0f;
+    }
+
     // ------------------------------------------------------------------ the wind circle
 
     /** A place's cloud coordinates {u, v}: along the wind circle and off it, along the ground. */

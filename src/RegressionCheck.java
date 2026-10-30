@@ -90,6 +90,8 @@ public final class RegressionCheck {
         float totalRegionWidth = 150_000f * (0.92f + 0.16f * new Random(SEED * 104_729L + 17L).nextFloat());
         Planet.setWidth(totalRegionWidth);
         float sea = XenoGuesser_GLEventListener.precalculateSeaLevel(SEED, worldNoise);
+        // The land shaped for the natural landmarks, before anything else is worked out from it
+        worldNoise.landforms = Landforms.shape(worldNoise, SEED, sea);
         float joinLand = MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, worldNoise), sea);
         put("world.basics", new Fingerprint().add(totalRegionWidth).add(sea).add(joinLand));
         RegionalGenerationManager climate = new RegionalGenerationManager(SEED, sea);

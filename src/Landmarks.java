@@ -15,9 +15,10 @@ import com.xenoguesser.math.Vector3;
  * from the world's seed so every PC has the same: a great spire in the busiest, richest streets
  * of a few of the richest nations; grand ruins out in the country, each in its region's
  * architecture; and circles of standing stones in the wilds, well away from the towns. The
- * natural ones are found from the land once it's known: the planet's highest summit, its most
- * sheltered bay, its narrowest spit of sand with the sea either side, and the groves where two
- * of its plants grow thickest.
+ * natural ones are found from the land once it's known: the planet's highest summit and the
+ * groves where two of its plants grow thickest; and where the land was shaped for them (see
+ * Landforms), its most sheltered bay with its stacks of rock, a spit of sand built out into the
+ * shallows, and fields of steep pointed hills.
  */
 public final class Landmarks {
 
@@ -246,11 +247,12 @@ public final class Landmarks {
     }
 
     /**
-     * Finds the natural landforms over the land (points spread evenly over it, see
-     * SpeciesRange.land): slow-ish, so done once, in the background.
+     * Finds the natural landforms: the highest summit over the land (points spread evenly over
+     * it, see SpeciesRange.land), and the landforms the land was shaped for (see Landforms), each
+     * where it was shaped.
      */
     public void findLandforms(long seed, List<GeodesicChunkGrid.Direction> land, ToDoubleFunction<SpherePosition> ground, float seaLevel,
-                              java.util.function.ToIntFunction<SpherePosition> nationAt) {
+                              java.util.function.ToIntFunction<SpherePosition> nationAt, Landforms shaped) {
         this.seaLevel = seaLevel;
         long start = System.currentTimeMillis();
         List<Landmark> found = new ArrayList<>(natural);
@@ -274,85 +276,34 @@ public final class Landmarks {
         peak.caption = String.format(java.util.Locale.ROOT, "The planet's highest summit, %,d m above the sea.", Math.round(metres));
         found.add(peak);
 
-        // The coast: land points with the sea near them
-        Random rand = new Random(seed * 337L + 11L);
-        List<SpherePosition> coast = new ArrayList<>();
-        for (int i = 0; i < land.size(); i += 2) {
-            SpherePosition p = SphereMath.atAltitude(land.get(i), 0.0);
-            if (Math.abs(Planet.latitude(p)) > MapProjection.CLIP_LATITUDE * 0.85) continue;
-            SphereFrame f = SphereFrame.at(p);
-            for (int k = 0; k < 6; k++) {
-                double a = Math.PI * 2 * k / 6;
-                if (ground.applyAsDouble(f.toSphere(Math.cos(a) * 900.0, 0.0, Math.sin(a) * 900.0)) < seaLevel) {
-                    coast.add(p);
-                    break;
+        // The bay with its stacks, the spit and the fields of pinnacles, where the land was shaped for them
+        int fields = 0;
+        for (Landforms.Site site : shaped == null ? List.<Landforms.Site>of() : shaped.sites) {
+            Landmark lm = natural(site.kind(), site.place(), nationAt, seed + 2 + found.size(), site.size() * 2.4f, ground, seaLevel);
+            lm.count = site.count();
+            lm.way = site.heading();
+            switch (site.kind()) {
+                case BAY -> {
+                    lm.name = PlanetName.forSeed(seed * 211L + 3L).spelling + " Bay";
+                    lm.caption = String.format(java.util.Locale.ROOT, "A natural harbour, %d%% ringed by land, %d stacks of rock standing sheer from its water.",
+                            Math.round(site.measure() * 100f), site.count());
+                }
+                case SPIT -> {
+                    lm.name = PlanetName.forSeed(seed * 307L + 5L).spelling + " Sands";
+                    lm.caption = String.format(java.util.Locale.ROOT, "A ribbon of sand %d m long, the sea on either side, hooking round at its tip.",
+                            Math.round(site.size() / M));
+                }
+                case PINNACLES -> {
+                    String word = PlanetName.forSeed(seed * 401L + 13L + fields++ * 7919L).spelling;
+                    boolean bySea = site.measure() > 0.5f;
+                    lm.name = "The " + word + (bySea ? " Needles" : " Pinnacles");
+                    lm.caption = bySea ? String.format(java.util.Locale.ROOT, "%d steep spires of rock rising from the shore and out of the sea.", site.count())
+                            : String.format(java.util.Locale.ROOT, "%d steep pointed hills rising sheer out of a level plain.", site.count());
+                }
+                default -> {
                 }
             }
-        }
-        java.util.Collections.shuffle(coast, rand);
-        if (coast.size() > 260) coast = coast.subList(0, 260);
-
-        // The most sheltered bay: open water closed in by land on every side but its mouth
-        Landmark bay = null;
-        float bestShelter = 0f;
-        for (SpherePosition p : coast) {
-            SphereFrame f = SphereFrame.at(p);
-            for (int k = 0; k < 4; k++) {
-                double a = Math.PI * 2 * k / 4 + 0.4;
-                SpherePosition water = f.toSphere(Math.cos(a) * 1500.0, 0.0, Math.sin(a) * 1500.0);
-                if (ground.applyAsDouble(water) > seaLevel - 2f * M) continue;
-                float shelter = shelter(water, ground, seaLevel);
-                if (shelter > bestShelter && clearOf(found, water)) {
-                    bestShelter = shelter;
-                    bay = natural(Landmark.Kind.BAY, water, nationAt, seed + 2, 11000f, ground, seaLevel);
-                }
-            }
-        }
-        if (bay != null && bestShelter >= 0.55f) {
-            bay.name = PlanetName.forSeed(seed * 211L + 3L).spelling + " Bay";
-            bay.caption = String.format(java.util.Locale.ROOT, "A natural harbour, %d%% ringed by land.", Math.round(bestShelter * 100f));
-            found.add(bay);
-        }
-
-        // The finest spit of sand: low land, the sea close on both sides, running on either way
-        Landmark spit = null;
-        float bestSpit = 0f;
-        for (SpherePosition p : coast) {
-            float h = (float) ground.applyAsDouble(p);
-            if (h > seaLevel + 6f * M) continue;
-            SphereFrame f = SphereFrame.at(p);
-            for (int k = 0; k < 4; k++) {
-                double a = Math.PI * k / 4;
-                double ca = Math.cos(a), sa = Math.sin(a);
-                // (sea both ways across it, near...)
-                float across = 0f;
-                for (float d = 150f; d <= 900f; d += 150f) {
-                    boolean left = ground.applyAsDouble(f.toSphere(-sa * d, 0.0, ca * d)) < seaLevel;
-                    boolean right = ground.applyAsDouble(f.toSphere(sa * d, 0.0, -ca * d)) < seaLevel;
-                    if (left && right) {
-                        across = d;
-                        break;
-                    }
-                }
-                if (across == 0f) continue;
-                // (...and low land running on along it)
-                float run = 0f;
-                for (float d = 200f; d <= 2400f; d += 200f) {
-                    float ahead = (float) ground.applyAsDouble(f.toSphere(ca * d, 0.0, sa * d));
-                    if (ahead < seaLevel || ahead > seaLevel + 12f * M) break;
-                    run = d;
-                }
-                float score = run / across;
-                if (run >= 600f && score > bestSpit && clearOf(found, p)) {
-                    bestSpit = score;
-                    spit = natural(Landmark.Kind.SPIT, p, nationAt, seed + 3, 4200f, ground, seaLevel);
-                }
-            }
-        }
-        if (spit != null) {
-            spit.name = PlanetName.forSeed(seed * 307L + 5L).spelling + " Sands";
-            spit.caption = "A long ribbon of sand with the sea on either side.";
-            found.add(spit);
+            found.add(lm);
         }
 
         natural = List.copyOf(found);
@@ -396,30 +347,6 @@ public final class Landmarks {
             else here = better;
         }
         return here;
-    }
-
-    /** How closed in by land a stretch of water is: the share of 24 ways out from it that reach land within a few kilometres. */
-    private static float shelter(SpherePosition water, ToDoubleFunction<SpherePosition> ground, float seaLevel) {
-        SphereFrame f = SphereFrame.at(water);
-        int closed = 0, ways = 24, open = 0, longestOpen = 0;
-        boolean[] shut = new boolean[ways];
-        for (int k = 0; k < ways; k++) {
-            double a = Math.PI * 2 * k / ways;
-            for (double d = 400.0; d <= 5200.0; d += 400.0) {
-                if (ground.applyAsDouble(f.toSphere(Math.cos(a) * d, 0.0, Math.sin(a) * d)) > seaLevel) {
-                    shut[k] = true;
-                    closed++;
-                    break;
-                }
-            }
-        }
-        // (a bay has a mouth: two or more ways out side by side, not a lake shut in all round)
-        for (int k = 0; k < ways * 2; k++) {
-            if (!shut[k % ways]) longestOpen = Math.max(longestOpen, ++open);
-            else open = 0;
-        }
-        if (longestOpen < 2 || closed == ways) return 0f;
-        return closed / (float) ways;
     }
 
     // ------------------------------------------------------------------ names and captions

@@ -92,6 +92,9 @@ public class TerrainMesh {
 
         float height = baseHeight + hillLayer + roughnessLayer + mountainRidges(surface, baseHeight + hillLayer, noise);
         height = flattenLowlands(height, surface, continent, noise);
+        // The natural landmarks' pinnacles, stacks and spit (once they've been worked out from the bare land)
+        Landforms landforms = noise.landforms;
+        if (landforms != null) height = landforms.apply(surface, height);
         // The rivers' channels cut into it (once they've been worked out from the bare land)
         Rivers rivers = noise.rivers;
         return rivers == null || !withRivers ? height : rivers.carve(surface[0], surface[1], surface[2], height);
@@ -377,9 +380,16 @@ public class TerrainMesh {
     /** Builds one merged geodesic terrain patch. */
     public static MeshData buildGeodesicPatchData(GeodesicChunkGrid grid, SpherePosition centre,
             double angularRadius, int segments, PerlinNoise noise) {
+        return buildGeodesicPatchData(grid, centre, angularRadius, segments, noise, null);
+    }
+
+    /** The same, of only the cells within reach that only lets through (those in a photograph's view: see LandmarkPhotos), or all with null. */
+    public static MeshData buildGeodesicPatchData(GeodesicChunkGrid grid, SpherePosition centre,
+            double angularRadius, int segments, PerlinNoise noise, java.util.function.Predicate<GeodesicChunkGrid.Cell> only) {
         if (segments < 1) throw new IllegalArgumentException("A geodesic terrain patch needs at least one segment");
         List<GeodesicChunkGrid.Cell> cells = grid.cellsWithin(
                 new GeodesicChunkGrid.Direction(centre.x(), centre.y(), centre.z()), angularRadius);
+        if (only != null) cells.removeIf(only.negate());
         if (cells.isEmpty()) throw new IllegalStateException("Geodesic terrain patch contains no cells");
 
         // (cells may be cut into different numbers of segments: see segmentsFor)

@@ -30,6 +30,8 @@ public final class PlanningCheck {
         Planet.setWidth(width);
         PerlinNoise noise = new PerlinNoise(seed);
         float sea = XenoGuesser_GLEventListener.precalculateSeaLevel(seed, noise);
+        // The land shaped for the natural landmarks, before anything else is worked out from it
+        noise.landforms = Landforms.shape(noise, seed, sea);
         MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, noise), sea);
         RegionalGenerationManager regional = new RegionalGenerationManager(seed, sea);
         long fieldStart = System.currentTimeMillis();

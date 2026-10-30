@@ -119,7 +119,10 @@ final class HousePlacement extends InfraPart {
         // The plots kept so far, filed at the middle of each plot reaching its corners
         for (House candidate : candidates) {
             SpherePosition centre = world(candidate, candidate.plotCentreLocalX(), 0f, candidate.plotCentreLocalZ());
-            boolean blocked = infra.borderCrossings.straddlesFencedBorder(candidate) || infra.landmarks.covers(centre, candidate.plotRadius() + PLOT_GAP);
+            // (nor on the land shaped for a natural landmark: a spit's sand, a field of pinnacles, see Landforms)
+            Landforms shaped = infra.terrain() == null ? null : infra.terrain().landforms;
+            boolean blocked = infra.borderCrossings.straddlesFencedBorder(candidate) || infra.landmarks.covers(centre, candidate.plotRadius() + PLOT_GAP)
+                    || shaped != null && shaped.covers(centre, candidate.plotRadius() + PLOT_GAP);
             if (!blocked) {
                 for (House other : plotIndex.near(centre, candidate.plotRadius() + PLOT_GAP)) {
                     if (plotsOverlap(candidate, other)) {

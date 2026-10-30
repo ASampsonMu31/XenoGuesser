@@ -21,12 +21,12 @@ Players have a username and suit colour (`Profile`), said in Xenocorp's messages
 | Window, main menu | `XenoGuesser.main` → `XenoGuesser` ctor → `MainMenu` | Swing EDT |
 | Play pressed: pod opens, loading screen | `XenoGuesser.startGame` → `openPod`, `PodSequence`, `LoadingScreen`, `LoadingProgress` | EDT |
 | Writing systems (ML glyphs, slow) | `WritingSystems.generate` → `GlyphGenerator` (DJL/PyTorch, `models/`) | own |
-| Terrain, sea level, map join | `XenoGuesser.generateWorld`: `PerlinNoise`, `TerrainMesh.getLayeredHeight`, `XenoGuesser_GLEventListener.precalculateSeaLevel`, `MapProjection.chooseJoin` | `world-generation` |
+| Terrain, sea level, landforms, map join | `XenoGuesser.generateWorld`: `PerlinNoise`, `TerrainMesh.getLayeredHeight`, `XenoGuesser_GLEventListener.precalculateSeaLevel`, `Landforms.shape` (the natural landmarks' pinnacles, bay stacks and spit, laid on the land), `MapProjection.chooseJoin` | `world-generation` |
 | Climate, rivers | `RegionalGenerationManager`, `Rivers.generate` | world-generation |
-| World layout | `new XenoGuesser_GLEventListener(...)` (constructor): regional factors, `FloraSpecies.createFloraSpecies`, `NationGenerationManager`, `SettlementManager`, `InfrastructureManager` (+ `prepareRoadNetwork`), `Inhabitants`, `OrganismManager`, landmark groves, collision sources, flora/grass `CellStream`s, then `MapOverlays.startBirdsEyeMapRendering` | world-generation (+ `birds-eye-map-renderer`, `utility-poles`, `sign-map-artist`) |
+| World layout | `new XenoGuesser_GLEventListener(...)` (constructor): regional factors, `FloraSpecies.createFloraSpecies`, `NationGenerationManager`, `SettlementManager`, `InfrastructureManager` (+ `prepareRoadNetwork`), `Inhabitants`, `OrganismManager`, natural landmarks (`Landmarks.findGroves`, `findLandforms`), collision sources, flora/grass `CellStream`s, then `MapOverlays.startBirdsEyeMapRendering` | world-generation (+ `birds-eye-map-renderer`, `utility-poles`, `sign-map-artist`) |
 | Textures | `WorldArtGenerator.generate` (+ `InfrastructureManager.textureJobs`) → files in `RunFiles.WORLD_DIR` | `world-art` pool |
 | Map panel, game window | `new MapPanel(...)`, `XenoGuesser.buildGameWindow` | EDT |
-| GL set-up, a step per frame | `XenoGuesser_GLEventListener.display` → `advanceLoading` → `coreSteps`, flora models, `finishSteps`, surroundings built, maps ready, rocks | GL (JOGL `FPSAnimator`) |
+| GL set-up, a step per frame | `XenoGuesser_GLEventListener.display` → `advanceLoading` → `coreSteps`, flora models, `finishSteps`, surroundings built, landmarks photographed (`LandmarkPhotos`), maps ready (+ `MapOverlays.showLandmarks`), rocks | GL (JOGL `FPSAnimator`) |
 | Round starts | `RoundSpawner.spawnPlayerAtRandomLocation`, `XenoGuesser.onWorldReady`/`enterGame` | GL / EDT |
 
 Same seed ⇒ same world on both multiplayer PCs: everything is generated from seeded `Random`s
@@ -96,6 +96,7 @@ Parts extend `GamePart` (field `game`).
 | `SnowCover` | Snow on the ground |
 | `FloraSpecies` | Plant species generation and ranges (`SpeciesConfig`, `SphereFlora`) |
 | `DevShots` | Saved frames, menu picture, sign/vehicle shots, dev viewpoints |
+| `LandmarkPhotos` | Photographs each landmark in the world itself while loading (camera sent to a spot per kind, surroundings built, `photograph` draws it into a picture of its own), for the landmarks' map |
 | `TrailerDirector` | Films the Steam trailer's shots (`-Dxenoguesser.trailer`): finds each place, sets the day, steps the clock a frame at a time and saves frames; made only when filming (see `tools/trailer/README.md`) |
 | Data | `FactorName` (map overlays' factors), `MapOverlay`, `MapPicture`, `NationLabel` |
 
@@ -110,7 +111,7 @@ Parts extend `GamePart` (field `game`).
   globe), `PreviewCard`.
 - **Sphere toolkit**: `Planet`, `SpherePosition`, `SphereMath`, `SphereFrame`, `GeodesicChunkGrid`,
   `CellIndex`, `CellStream`, `SphereRaster`, `GeodesicCollision`, `Viewpoint`, `Camera`.
-- **Terrain, water, sky, weather**: `TerrainMesh`, `PerlinNoise`, `Rivers`, `RiverRenderer`,
+- **Terrain, water, sky, weather**: `TerrainMesh`, `PerlinNoise`, `Landforms`, `Rivers`, `RiverRenderer`,
   `RegionalGenerationManager`, `RegionalFactor`, `SpeciesRange`, `SphereSkyRenderer`,
   `SphereWeather`, `RainSound`, `ShadowMaps`, `RockField`, `WorldPalette`, `ProceduralTextures`,
   `TileableNoise`, `WorldArtGenerator`, `PlanetGlobeTexture`.

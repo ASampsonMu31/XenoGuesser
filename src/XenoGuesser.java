@@ -461,6 +461,8 @@ public class XenoGuesser extends JFrame {
       Planet.setWidth(totalRegionWidth);
       System.out.printf("[PLANET] %.0f units round%n", totalRegionWidth);
       float seaLevelHeight = XenoGuesser_GLEventListener.precalculateSeaLevel(worldSeed, worldNoise);
+      // The land shaped for the natural landmarks, before anything else is worked out from it
+      worldNoise.landforms = Landforms.shape(worldNoise, worldSeed, seaLevelHeight);
       // Where the map's left and right edges join: the meridian crossing the least land
       float joinLand = MapProjection.chooseJoin(d -> TerrainMesh.getLayeredHeight(d, worldNoise), seaLevelHeight);
       System.out.printf("[PLANET] The map's join crosses %.1f%% land%n", joinLand * 100f);

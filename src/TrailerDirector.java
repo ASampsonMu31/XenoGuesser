@@ -186,7 +186,7 @@ final class TrailerDirector extends GamePart {
     }
 
     /**
-     * The shot's place: subject=landmark:SUMMIT (or SPIRE, STONES, RUIN, BAY, SPIT, GROVE; pick=n
+     * The shot's place: subject=landmark:SUMMIT (or SPIRE, STONES, RUIN, BAY, SPIT, GROVE, PINNACLES; pick=n
      * for another of them), subject=pod (a picturesque landing site, the pod put down there),
      * subject=site (an ordinary round's landing site, pod and all), subject=view:herd (any of
      * the developer views, see RoundSpawner.devViewpoint), subject=rugged (a peak standing
