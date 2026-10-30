@@ -1,5 +1,5 @@
 /**
- * The player's body in the world: walking, sprinting (and the stamina it costs), jumping,
+ * The player's body in the world: walking, sprinting, jumping,
  * swimming, kept clear of what's solid and off slopes too steep to climb, standing on the
  * ground, a road's deck or the pod's stairs; the head's bob as they step; and the oxygen's
  * light-headedness once it's been downgraded.
@@ -149,7 +149,7 @@ final class PlayerMotion extends GamePart {
         if (moveA && moveD) { moveA = false; moveD = false; }
         boolean walking = moveW || moveA || moveS || moveD;
         boolean revealing = game.minimap != null && game.minimap.isFullScreenRevealMode();
-        boolean sprinting = updateStamina(deltaTime, walking && !revealing && game.keyboard.shift);
+        boolean sprinting = walking && !revealing && game.keyboard.shift;
         updateOxygen(deltaTime, sprinting, elapsedTime);
 
         SpherePosition sphereBeforeMove = game.camera.getSpherePosition();
@@ -228,38 +228,11 @@ final class PlayerMotion extends GamePart {
     }
     }
 
-    // Holding Shift while walking sprints at SPRINT_SPEED times the walk, while there's stamina (0
-    // to 1): a full bar lasts STAMINA_DRAIN_SECONDS of sprinting and refills from nothing in
-    // STAMINA_REFILL_SECONDS, starting STAMINA_REFILL_DELAY after the last sprint. Run it dry and
-    // the player's winded: no sprinting until it's back up to STAMINA_WINDED_UNTIL
+    // Holding Shift while walking sprints at SPRINT_SPEED times the walk, for as long as it's held
     private static final float SPRINT_SPEED = 1.5f;
-
-    private static final float STAMINA_DRAIN_SECONDS = 6f, STAMINA_REFILL_SECONDS = 8f, STAMINA_REFILL_DELAY = 1f, STAMINA_WINDED_UNTIL = 0.3f;
 
     // With the oxygen downgraded, sprinting this long takes exertion from nothing to the most
     private static final float SPRINT_EXERTION_SECONDS = 3f;
-
-    volatile float stamina = 1f;
-
-    private float sinceSprint;
-
-    boolean winded;
-
-    /** Uses up or refills stamina this frame; whether the player's sprinting (wanting to, with stamina to do it). */
-    private boolean updateStamina(double deltaTime, boolean wantsToSprint) {
-        float dt = (float) deltaTime;
-        boolean sprinting = wantsToSprint && !winded && stamina > 0f;
-        if (sprinting) {
-            stamina = Math.max(0f, stamina - dt / STAMINA_DRAIN_SECONDS);
-            sinceSprint = 0f;
-            if (stamina == 0f) winded = true;
-        } else {
-            sinceSprint += dt;
-            if (sinceSprint >= STAMINA_REFILL_DELAY) stamina = Math.min(1f, stamina + dt / STAMINA_REFILL_SECONDS);
-            if (winded && stamina >= STAMINA_WINDED_UNTIL) winded = false;
-        }
-        return sprinting;
-    }
 
     // The eyes dip at each footfall and rise between: a step every STEP_LENGTH world units walked
     // (a 0.8 m pace walking, 1 m running: some 2.5 steps a second walking, 3 sprinting),
@@ -313,8 +286,7 @@ final class PlayerMotion extends GamePart {
 
     /**
      * How light-headed the player is this frame (or always, where they can't walk). Walking
-     * leaves them be; sprinting with the oxygen downgraded makes them dizzy within moments, and
-     * running out of stamina leaves them as dizzy as they get.
+     * leaves them be; sprinting with the oxygen downgraded makes them dizzy within moments.
      */
     private void updateOxygen(double deltaTime, boolean sprinting, double time) {
         if (!oxygenDowngraded) {
@@ -329,7 +301,6 @@ final class PlayerMotion extends GamePart {
         float dt = (float) deltaTime;
         float change = sprinting ? dt / SPRINT_EXERTION_SECONDS : -dt / EXERTION_CLEAR_SECONDS;
         exertion = Math.max(0f, Math.min(1f, exertion + change));
-        if (winded) exertion = 1f;
         float t = Math.max(0f, Math.min(1f, (exertion - EXERTION_SHOWS) / (1f - EXERTION_SHOWS)));
         oxygenStrength = 0.9f * t * t * (3f - 2f * t);
     }

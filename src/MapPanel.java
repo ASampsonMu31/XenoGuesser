@@ -106,6 +106,9 @@ public class MapPanel extends JPanel {
     private static final int WHOLE_IMAGE_DETAIL = 2250;
     private float viewCentreU = 0.5f;
     private float viewCentreV = 0.5f;
+    // The enlarged map's zoom and centre when it was last shrunk (zoom 0 for none, this round),
+    // for it to open again just as it was left
+    private float largeZoom, largeCentreU, largeCentreV;
     
     private static final int BORDER_SIZE = 10;       
     private static final int EXTRA_BOTTOM_SPACE = 55; 
@@ -1482,8 +1485,10 @@ public class MapPanel extends JPanel {
         this.isFullScreenReveal = true;
         this.isLarge = false;
         this.mapSize = MapSize.SMALL;
-        // The reveal starts from the whole map so both the guess and the answer are visible
+        // The reveal starts from the whole map so both the guess and the answer are visible (and
+        // the next round's enlarged map from the whole map too)
         resetZoom();
+        largeZoom = 0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         this.lineProgress = 0.0f;
         globe.setTexture(mapImage);
@@ -1745,7 +1750,7 @@ public class MapPanel extends JPanel {
             } else {
                 // The map's tray (the Guess button under it when enlarged) as one of the HUD's panels
                 Stroke stroke = g2d.getStroke();
-                HudStyle.panel(g2d, 0, 0, frameW, frameH, HudStyle.GLASS_SOLID);
+                HudStyle.panel(g2d, 0, 0, frameW, frameH, HudStyle.GLASS_SOLID, HudStyle.Bar.RIGHT);
                 g2d.setStroke(stroke);
             }
 
@@ -2087,6 +2092,7 @@ public class MapPanel extends JPanel {
         this.hasPin = false;
         this.currentMapSize = 210;
         resetZoom();
+        largeZoom = 0f;
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         if (partnerWait != null) partnerWait.stop();
@@ -2176,6 +2182,7 @@ public class MapPanel extends JPanel {
 
     private void setMapSize(MapSize size) {
         if (isFullScreenReveal || isGuessed) return;
+        boolean wasLarge = isLarge;
         mapSize = size;
         isLarge = size == MapSize.LARGE;
         int parentHeight = getParent() != null ? getParent().getHeight() : 900;
@@ -2184,7 +2191,18 @@ public class MapPanel extends JPanel {
             case LARGE -> Math.min(largeMapSize(parentHeight),
                     getParent() != null ? (int) (getParent().getWidth() * 0.55f) : 900);
         };
-        if (!isLarge) resetZoom();
+        if (!isLarge && wasLarge) {
+            largeZoom = zoom;
+            largeCentreU = viewCentreU;
+            largeCentreV = viewCentreV;
+            resetZoom();
+        } else if (!isLarge) {
+            resetZoom();
+        } else if (!wasLarge && largeZoom > 0f) {
+            zoom = Math.max(minZoom(), Math.min(MAX_ZOOM, largeZoom));
+            viewCentreU = clampCentre(largeCentreU);
+            viewCentreV = clampCentreV(largeCentreV);
+        }
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
         repaint();

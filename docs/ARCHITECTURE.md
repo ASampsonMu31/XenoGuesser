@@ -37,7 +37,7 @@ Same seed ⇒ same world on both multiplayer PCs: everything is generated from s
 `XenoGuesser_GLEventListener.display` handles loading, round building behind the results,
 teleporting, then `renderScene` → `render`:
 
-1. `countFrameRate`, `PlayerMotion.movePlayer` (keys, stamina, oxygen, collision, ground or deck
+1. `countFrameRate`, `PlayerMotion.movePlayer` (keys, oxygen, collision, ground or deck
    underfoot, swimming, jumping, head bob).
 2. Sun, chunk streaming (`updateVisibleChunks`: terrain patch, `wantInfrastructureAround` cells
    from `InfrastructureManager.generateForCell`, `updateVegetation` trees/grass).
@@ -88,7 +88,7 @@ Parts extend `GamePart` (field `game`).
 |---|---|
 | `XenoGuesser_GLEventListener` | World set-up (constructor), GL init/loading steps, terrain/vegetation/infrastructure streaming, `render`, flora/grass building, rivers/sea, round loading, misc. game API used by `XenoGuesser` |
 | `RoundSpawner` | Where each round starts, prefetching the next, time of day, dev views |
-| `PlayerMotion` | Movement, stamina, jumping, head bob, oxygen |
+| `PlayerMotion` | Movement, sprinting, jumping, head bob, oxygen |
 | `MapOverlays` | Bird's-eye map + layers, heatmaps, maps of pictures, owned maps, shop offers |
 | `SpeciesPictures` | Portraits/turning previews of plants and animals |
 | `IdentificationLens` | The magnifying glass's finds |

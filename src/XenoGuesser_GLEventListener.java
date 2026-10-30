@@ -3100,21 +3100,16 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         heldItem = index >= 0 && index < ownedItems.size() ? index : -1;
     }
 
-    /** The middle mouse button: takes out the inventory's first item, or puts away the one in hand. */
-    public void toggleItems() {
-        useItem(heldItem < 0 ? 0 : -1);
-    }
-
     /**
-     * The mouse wheel while an item's in hand: the next item down the inventory (steps above
-     * 0) or up it, round from the last to the first and back. Whether it was taken (nothing in
-     * hand, it's left to zoom the view).
+     * The mouse wheel: the next place down the inventory (steps above 0) or up it, None (nothing
+     * in hand) coming after the last item, and round from there to the first and back.
      */
-    public boolean scrollItems(int steps) {
-        int held = heldItem, count = ownedItems.size();
-        if (held < 0 || count == 0) return false;
-        if (steps != 0) useItem(Math.floorMod(held + steps, count));
-        return true;
+    public void scrollItems(int steps) {
+        int count = ownedItems.size();
+        if (count == 0 || steps == 0) return;
+        int held = heldItem, place = held < 0 ? count : held;
+        int next = Math.floorMod(place + steps, count + 1);
+        useItem(next == count ? -1 : next);
     }
 
     /** Nothing in hand, everything put away at once rather than lowered (each round starts so). */

@@ -122,8 +122,8 @@ public final class Achievements {
 
     /** The pop-up, TOAST_W by TOAST_H at (0, 0): "Achievement unlocked" and its name, in the HUD's style. */
     public static void paintToast(java.awt.Graphics2D g, Achievement a) {
-        HudStyle.panel(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GLASS_SOLID);
-        HudStyle.edge(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GOLD);
+        HudStyle.panel(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GLASS_SOLID, HudStyle.Bar.RIGHT);
+        HudStyle.edge(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GOLD, HudStyle.Bar.RIGHT);
         // A gold star
         float cx = 40f, cy = TOAST_H / 2f;
         java.awt.geom.Path2D star = new java.awt.geom.Path2D.Float();

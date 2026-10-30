@@ -4,7 +4,7 @@ import com.jogamp.opengl.*;
 import java.awt.Graphics2D;
 
 /**
- * The HUD drawn over the 3D view each frame: score, clock, items, stamina, the map's size and
+ * The HUD drawn over the 3D view each frame: score, clock, items, the map's size and
  * achievements' toasts, each picture redrawn only when what it shows changes.
  */
 final class HudRenderer extends GamePart {
@@ -17,7 +17,7 @@ final class HudRenderer extends GamePart {
     final HudOverlay hud = new HudOverlay();
 
     private final DiagnosticsPanel diagnostics = new DiagnosticsPanel();
-    private int hudScoreVersion = -1, hudItemsVersion = -1, hudHeldItem = -2, hudStaminaStep = -1;
+    private int hudScoreVersion = -1, hudItemsVersion = -1, hudHeldItem = -2;
 
     private long hudClockTenth = -1L;
 
@@ -59,22 +59,6 @@ final class HudRenderer extends GamePart {
         int fps = game.gameHUD != null ? game.gameHUD.getGameFps() : 0;
         diagnostics.show(hud, game.gameHUD != null, fps, scale, rescaled, game.screenWidth);
 
-        // The sprint's stamina, in the top right (under the diagnostics, when they're shown), wherever the player can walk
-        boolean staminaShown = GameMode.current().moving;
-        if (staminaShown) {
-            int step = Math.round(game.playerMotion.stamina * 200f) * 2 + (game.playerMotion.winded ? 1 : 0);
-            if (rescaled || step != hudStaminaStep || !hud.has("stamina")) {
-                hudStaminaStep = step;
-                BufferedImage image = HudStyle.canvas(HudStyle.STAMINA_W, HudStyle.STAMINA_H, scale, g);
-                HudStyle.paintStamina(g[0], game.playerMotion.stamina, game.playerMotion.winded);
-                g[0].dispose();
-                hud.put("stamina", image, 0, 0);
-            }
-            int below = GameSettings.showDiagnostics() ? margin + Math.round((HudStyle.DIAGNOSTICS_H + 6) * scale) : margin;
-            hud.move("stamina", game.screenWidth - hud.width("stamina") - margin, below);
-        }
-        hud.setVisible("stamina", staminaShown);
-
         // The round's clock (M41), at the top in the middle, while it's running
         long[] clock = game.minimap != null ? game.minimap.guessClock() : null;
         if (clock != null) {
@@ -101,19 +85,21 @@ final class HudRenderer extends GamePart {
         }
 
         // The inventory: only what the player has bought, and nothing at all until they've bought
-        // something, the item in hand lit up; and above it, how to take items out and switch them
-        java.util.List<HudStyle.Item> items = game.inventoryItems();
+        // something, the item in hand lit up (or None, last, with nothing out); and above it, how to
+        // take items out and switch them
+        java.util.List<HudStyle.Item> gadgets = game.inventoryItems();
         int held = game.heldItem();
         if (rescaled || game.itemsVersion != hudItemsVersion || held != hudHeldItem || !hud.has("inventory")) {
             hudItemsVersion = game.itemsVersion;
             hudHeldItem = held;
-            int h = HudStyle.inventoryHeight(Math.max(1, items.size()));
+            java.util.List<HudStyle.Item> items = new java.util.ArrayList<>(gadgets);
+            items.add(new HudStyle.Item("None", HudStyle::paintNoneIcon));
+            int h = HudStyle.inventoryHeight(items.size());
             BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
-            HudStyle.paintInventory(g[0], items, held);
+            HudStyle.paintInventory(g[0], items, held < 0 ? gadgets.size() : held);
             g[0].dispose();
             hud.put("inventory", image, 0, 0);
-            String[] keys = held < 0 ? new String[] { "Middle mouse", "Use gadgets" }
-                    : new String[] { "Scroll", "Switch", "Middle mouse", "Put away" };
+            String[] keys = { "1-4", "or", "Scroll", "for gadgets" };
             BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
             java.awt.Graphics2D pg = probe.createGraphics();
             HudStyle.smooth(pg);
@@ -124,11 +110,11 @@ final class HudRenderer extends GamePart {
             g[0].dispose();
             hud.put("inventoryHint", hint, 0, 0);
         }
-        hud.setVisible("inventory", !items.isEmpty());
-        if (hud.has("inventoryHint")) hud.setVisible("inventoryHint", !items.isEmpty() && !GameClock.isPaused());
+        hud.setVisible("inventory", !gadgets.isEmpty());
+        if (hud.has("inventoryHint")) hud.setVisible("inventoryHint", !gadgets.isEmpty() && !GameClock.isPaused());
         // (kept at the bottom however the window is resized, clear of the message strip along it)
         if (hud.has("inventory")) {
-            int h = Math.round(HudStyle.inventoryHeight(Math.max(1, items.size())) * scale);
+            int h = Math.round(HudStyle.inventoryHeight(gadgets.size() + 1) * scale);
             java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
             int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * scale);
             // (tucked into the corner, just clear of the window's edge and the strip)
@@ -143,8 +129,8 @@ final class HudRenderer extends GamePart {
             if (rescaled || size != hudMapSize) {
                 hudMapSize = size;
                 String[] keys = switch (size) {
-                    case SMALL -> new String[] { "M", "Expand map" };
-                    case LARGE -> new String[] { "M", "Contract map", "", "Scroll to zoom", "", "Click the map to place your marker" };
+                    case SMALL -> new String[] { "Tab", "Expand map" };
+                    case LARGE -> new String[] { "Tab", "Contract map", "Scroll", "to zoom", "Click", "to place marker" };
                 };
                 BufferedImage probe = new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB);
                 java.awt.Graphics2D pg = probe.createGraphics();
