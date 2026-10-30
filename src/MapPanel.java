@@ -1626,6 +1626,7 @@ public class MapPanel extends JPanel {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
                     calculateAndApplyScore();
+                    awardBullseye();
                     shouldDrawScoreText = true;
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
@@ -1642,6 +1643,7 @@ public class MapPanel extends JPanel {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
                     calculateAndApplyScore();
+                    awardBullseye();
                     shouldDrawScoreText = true;
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
@@ -2433,6 +2435,15 @@ public class MapPanel extends JPanel {
         this.targetRoundScore = score;
     }
 
+    /**
+     * As the round's results are shown (singleplayer or multiplayer alike): a guess within
+     * PERFECT_DISTANCE earns Bullseye. Not as the score's first worked out in multiplayer, when
+     * the guess is sent, so its pop-up doesn't give the round away before the reveal.
+     */
+    private void awardBullseye() {
+        if (roundDistance <= PERFECT_DISTANCE) Achievements.unlock(Achievements.Achievement.BULLSEYE);
+    }
+
     public void setGameHUD(GameHUD hud) {
         this.gameHUD = hud;
     }
@@ -2557,7 +2568,8 @@ public class MapPanel extends JPanel {
      * Under the top of the results' map: the guess's points going to productivity, and the cash
      * it earns worked out (the monthly salary plus half the points).
      */
-    // A guess this close (world units: 10 m) scores full marks
+    // A guess this close (world units: 20 m) scores full marks, and in either mode earns the
+    // Bullseye achievement (Achievements.BULLSEYE's description says the same 20 m)
     private static final double PERFECT_DISTANCE = 20.0 * PlayerBody.METRE;
     // The most a round can score
     public static final int FULL_MARKS = 5000;

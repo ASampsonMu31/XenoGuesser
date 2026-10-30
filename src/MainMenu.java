@@ -303,7 +303,7 @@ public class MainMenu extends JComponent {
 
     /**
      * The achievements (M53), at the bottom in the middle: singleplayer (playing, each win, and the pod's chair in the dark) down the left,
-     * the collections and multiplayer down the right, each ticked once it's unlocked; how many of
+     * the collections, multiplayer and Bullseye down the right, each ticked once it's unlocked; how many of
      * them; what the one under the mouse is for; and Reset.
      */
     private void paintAchievements(Graphics2D g, int w, int h, float unit) {
