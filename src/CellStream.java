@@ -70,10 +70,20 @@ public final class CellStream<T> {
         return grid;
     }
 
+    // Only the cells within reach that this lets through are wanted (null for all of them)
+    private java.util.function.Predicate<GeodesicChunkGrid.Cell> only;
+
+    /** From now on wants only the cells within reach that only lets through (those in a photograph's view: see LandmarkPhotos), or all again with null. */
+    public void setOnly(java.util.function.Predicate<GeodesicChunkGrid.Cell> only) {
+        this.only = only;
+        wantedFor = Long.MIN_VALUE;
+    }
+
     /** The cells wanted round a place, nearest first. */
     private List<GeodesicChunkGrid.Cell> wantedAround(SpherePosition place) {
         GeodesicChunkGrid.Direction here = SphereMath.direction(place);
         List<GeodesicChunkGrid.Cell> cells = grid.cellsWithin(here, reach / Planet.radius());
+        if (only != null) cells.removeIf(only.negate());
         cells.sort(Comparator.comparingDouble(cell -> SphereMath.angle(here, cell.centre())));
         return cells;
     }

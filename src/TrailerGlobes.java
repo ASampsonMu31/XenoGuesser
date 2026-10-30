@@ -24,6 +24,8 @@ public final class TrailerGlobes {
             PerlinNoise noise = new PerlinNoise(seed);
             Planet.setWidth(150_000f * (0.92f + 0.16f * new Random(seed * 104_729L + 17L).nextFloat()));
             float sea = XenoGuesser_GLEventListener.precalculateSeaLevel(seed, noise);
+            // The land shaped for the natural landmarks, before anything else is worked out from it
+            noise.landforms = Landforms.shape(noise, seed, sea);
             // (the rivers cut its coasts, as in the game)
             RegionalGenerationManager climate = new RegionalGenerationManager(seed, sea);
             climate.precalculateWaterDistanceField(noise);

@@ -7,6 +7,8 @@ public class PerlinNoise {
     public final long seed;
     // The world's continents, worked out from the seed when first needed (see TerrainMesh)
     volatile float[][] continentCores;
+    // The land shaped for the natural landmarks, once worked out from the bare land (see Landforms; null until then)
+    volatile Landforms landforms;
     // The world's rivers, once worked out from the bare land (see Rivers; null until then)
     volatile Rivers rivers;
     // The world's climate, if it was worked out with the rivers (see XenoGuesser; null if not)

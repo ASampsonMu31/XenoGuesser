@@ -34,6 +34,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     final PlayerMotion playerMotion = new PlayerMotion(this);
     final SnowCover snowCover = new SnowCover(this);
     final RoundSpawner roundSpawner = new RoundSpawner(this);
+    final LandmarkPhotos landmarkPhotos = new LandmarkPhotos(this);
     final FloraSpecies floraSpecies = new FloraSpecies(this);
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
@@ -66,6 +67,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private Model geodesicTerrainModel;
     private java.util.concurrent.Future<MeshData> geodesicTerrainBuild;
     private SpherePosition geodesicTerrainBuildCentre;
+    // The photograph's view the patch being built is only of (null for all round: see buildOnlyInView)
+    private java.util.function.Predicate<GeodesicChunkGrid.Cell> geodesicTerrainBuildView;
     private SpherePosition geodesicTerrainActiveCentre;
     private long geodesicTerrainRetryAfterNanos;
     // The sea: a grid round the viewer, wrapped onto the sea's sphere and given its waves in
@@ -94,6 +97,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private final List<SphereFlora> visibleFlora = new ArrayList<>();
     // Tallest trees reach about this far from their base, before instance scaling
     static final float FLORA_CULL_RADIUS = 140.0f;
+    // How far above the sea the grass starts, above the sand along the shore (it thins in over the next 6 units)
+    static final float BEACH_GRASS_FROM = 12f;
     Model[][][] floraBranchModelsLOD; // Matrix bounds: [species][lodIndex][variationIndex]
     Model[][][] floraLeafModelsLOD;   
     
@@ -431,6 +436,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                         return speciesConfigs[species].trunkColor;
                     }
                 });
+        // Then the summit and the landforms the land was shaped for, so every landmark's known
+        // before the world's loaded (to be photographed while it loads: see LandmarkPhotos)
+        infraManager.landmarks().findLandforms(worldSeed, landPoints, p -> TerrainMesh.getLayeredHeight(p, worldNoise), seaLevelHeight,
+                nationManager::getNationAt, worldNoise.landforms);
         inhabitants.setCollision(geodesicCollision);
         // What's solid on the sphere: the pod, trees, rocks, and the buildings, fences, rails and
         // sign posts
@@ -478,6 +487,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // The set-up's steps (see coreSteps and finishSteps), once begun
     private List<Runnable> coreSteps, finishSteps;
 
+    // Whether the landmarks' map has been given its photographs (see advanceLoading)
+    private boolean landmarksShown;
+
     private boolean advanceLoading() {
         if (loadingStep == 0) {
             if (coreSteps == null) {
@@ -501,7 +513,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 loadingStep++;
             } while (loadingStep - 1 < floraSteps && System.nanoTime() < sliceEnd);
             loading.report((loadingStep - 1) / (float) floraSteps);
-            if (loadingStep - 1 == floraSteps) loading.begin(LoadingProgress.Stage.TERRAIN);
+            if (loadingStep - 1 == floraSteps) loading.begin(LoadingProgress.Stage.LANDMARKS);
             return false;
         }
         if (loadingStep == floraSteps + 1) {
@@ -510,9 +522,19 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             loadingStep++;
             return false;
         }
+        // The landmarks photographed for their map, in the world itself, while the maps are
+        // charted on their own thread (before the landing site's surroundings, so they're built once)
+        if (!landmarkPhotos.finished()) {
+            loading.report(landmarkPhotos.step());
+            return false;
+        }
         // The trees and grass round the landing site are worked out on the builder threads while
         // the loading screen keeps moving
         if (!surroundingsBuilt()) {
+            if (loadingStep == floraSteps + 2) {
+                loadingStep++;
+                loading.begin(LoadingProgress.Stage.TERRAIN);
+            }
             updateVisibleChunks(false);
             loading.report(Math.min(grassStream.progress(), floraStream.progress()));
             return false;
@@ -524,6 +546,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 loading.begin(LoadingProgress.Stage.MAPS);
             }
             return false;
+        }
+        if (!landmarksShown) {
+            landmarksShown = true;
+            mapOverlays.showLandmarks();
         }
         // Every rock round the landing site, near and far, is in place before the round starts
         // (made on the builder threads, put up as each is ready, so no one frame takes them all)
@@ -622,6 +648,61 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
     }
 
+    /**
+     * The world drawn once as it is round the camera into a picture of its own, width by height
+     * pixels with a view fieldOfView radians tall (for the landmarks' photographs, see
+     * LandmarkPhotos). The screen's framebuffers, size and projection are as they were afterwards.
+     */
+    java.awt.image.BufferedImage photograph(int width, int height, double fieldOfView) {
+        int screenFbo = sceneFbo, drawnWidth = currentWidth, drawnHeight = currentHeight;
+        int[] ids = new int[2];
+        gl.glGenFramebuffers(1, ids, 0);
+        int fbo = ids[0];
+        gl.glGenRenderbuffers(2, ids, 0);
+        gl.glBindRenderbuffer(GL3.GL_RENDERBUFFER, ids[0]);
+        gl.glRenderbufferStorage(GL3.GL_RENDERBUFFER, GL3.GL_RGBA8, width, height);
+        gl.glBindRenderbuffer(GL3.GL_RENDERBUFFER, ids[1]);
+        gl.glRenderbufferStorage(GL3.GL_RENDERBUFFER, GL3.GL_DEPTH_COMPONENT24, width, height);
+        gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, fbo);
+        gl.glFramebufferRenderbuffer(GL3.GL_FRAMEBUFFER, GL3.GL_COLOR_ATTACHMENT0, GL3.GL_RENDERBUFFER, ids[0]);
+        gl.glFramebufferRenderbuffer(GL3.GL_FRAMEBUFFER, GL3.GL_DEPTH_ATTACHMENT, GL3.GL_RENDERBUFFER, ids[1]);
+        try {
+            // (drawn as the screen is, but into this, at its size and with its view)
+            sceneFbo = fbo;
+            currentWidth = width;
+            currentHeight = height;
+            photoFieldOfView = fieldOfView;
+            applyProjection();
+            createDepthFramebuffer(gl, width, height);
+            gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, fbo);
+            gl.glViewport(0, 0, width, height);
+            render();
+            java.nio.ByteBuffer pixels = java.nio.ByteBuffer.allocateDirect(width * height * 4);
+            gl.glBindFramebuffer(GL3.GL_READ_FRAMEBUFFER, fbo);
+            gl.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1);
+            gl.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
+            java.awt.image.BufferedImage picture = new java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_RGB);
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int i = ((height - 1 - y) * width + x) * 4;
+                    picture.setRGB(x, y, (pixels.get(i) & 0xFF) << 16 | (pixels.get(i + 1) & 0xFF) << 8 | (pixels.get(i + 2) & 0xFF));
+                }
+            }
+            return picture;
+        } finally {
+            sceneFbo = screenFbo;
+            currentWidth = drawnWidth;
+            currentHeight = drawnHeight;
+            photoFieldOfView = 0.0;
+            applyProjection();
+            createDepthFramebuffer(gl, drawnWidth, drawnHeight);
+            gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, 0);
+            gl.glDeleteFramebuffers(1, new int[] { fbo }, 0);
+            gl.glDeleteRenderbuffers(2, ids, 0);
+            gl.glViewport(0, 0, screenWidth, screenHeight);
+        }
+    }
+
         void applyProjection() {
         float aspect = (float) currentWidth / (float) Math.max(1, currentHeight);
         camera.setPerspectiveMatrix(Matrix4Transform.perspective((float) Math.toDegrees(fieldOfView()), aspect, currentNearPlane, FAR_PLANE));
@@ -637,8 +718,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     volatile float zoomWanted = 1f;
     float zoom = 1f;
 
+    // The view's height as an angle while a photograph's taken (see photograph; 0 otherwise)
+    private double photoFieldOfView;
+
     /** The view's height as an angle: the usual, narrowed by the zoom (so zooming in keeps every pixel the screen has). */
     private double fieldOfView() {
+        if (photoFieldOfView > 0.0) return photoFieldOfView;
         return 2.0 * Math.atan(Math.tan(USUAL_FIELD_OF_VIEW / 2.0) / zoom);
     }
 
@@ -1822,6 +1907,31 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         return surroundingsLoadedHere();
     }
 
+    // Only the cells round the camera that this lets through are built (those in a photograph's
+    // view: see LandmarkPhotos); null for all of them, as in play
+    private java.util.function.Predicate<GeodesicChunkGrid.Cell> onlyInView;
+
+    /** Builds only the trees, grass, buildings and roads in cells this lets through from now on (null for all again). */
+    void buildOnlyInView(java.util.function.Predicate<GeodesicChunkGrid.Cell> inView) {
+        onlyInView = inView;
+        floraStream.setOnly(inView);
+        grassStream.setOnly(inView);
+        infraWantedFor = Long.MIN_VALUE;
+        // (the ground made again for this view, or all round)
+        geodesicTerrainActiveCentre = null;
+    }
+
+    /**
+     * Builds on what's round the camera (a slice of it each call) and says whether it's all
+     * there, the rocks too: for a landmark's photograph, and the landing site after them (see
+     * LandmarkPhotos).
+     */
+    boolean buildRoundCamera() {
+        updateVisibleChunks(false);
+        if (rockField != null) rockField.update(gl, camera.getSpherePosition(), false);
+        return surroundingsLoadedHere() && (rockField == null || rockField.allBuilt());
+    }
+
     // Points spread evenly over the land (see SpeciesRange.land), for the ranges and the landmarks
     List<GeodesicChunkGrid.Direction> landPoints = List.of();
 
@@ -1946,7 +2056,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             float slope = latticeSlope(lattice, n, wb, wc);
             float keep = 1f - Math.max(0f, Math.min(1f, (slope - 0.6f) / 0.6f));
             boolean onSlope = ((rand1 * 7.31f + rand2 * 3.17f) % 1f) >= keep;
-            if (ground <= seaLevelHeight + 0.1f || onSlope || underFreshWater(SphereMath.atAltitude(direction, 0.0), ground)) continue;
+            // (none on the sand along the shore: see the terrain shader's beach, as high as this and fading out above)
+            if (ground <= seaLevelHeight + BEACH_GRASS_FROM + (rand2 * 13.7f % 1f) * 6f || onSlope || underFreshWater(SphereMath.atAltitude(direction, 0.0), ground)) continue;
             // (a blade is a flat card turned to face the eyes: seen across a slope, its downhill
             // corner would stand clear of the ground, so its root is sunk by about that much)
             SpherePosition at = SphereMath.atAltitude(direction, ground - GRASS_SLOPE_SINK * Math.min(slope, 1.2f));
@@ -2071,7 +2182,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                     geodesicTerrainModel.mesh.dispose(gl);
                 }
                 geodesicTerrainModel = replacement;
-                geodesicTerrainActiveCentre = geodesicTerrainBuildCentre;
+                // (one built for only another photograph's view covers nowhere now)
+                geodesicTerrainActiveCentre = geodesicTerrainBuildView == onlyInView ? geodesicTerrainBuildCentre : null;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 System.err.println("Interrupted while building geodesic terrain: " + e.getMessage());
@@ -2091,9 +2203,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         geodesicTerrainBuildCentre = current;
         double angularRadius = geodesicPatchRadius(current);
+        java.util.function.Predicate<GeodesicChunkGrid.Cell> view = onlyInView;
+        geodesicTerrainBuildView = view;
         geodesicTerrainBuild = terrainBuilders.submit(() ->
                 TerrainMesh.buildGeodesicPatchData(geodesicTerrainGrid, current, angularRadius,
-                        GEODESIC_TERRAIN_SEGMENTS, worldNoise));
+                        GEODESIC_TERRAIN_SEGMENTS, worldNoise, view));
     }
 
     /**
@@ -2442,6 +2556,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             }
         }
         List<GeodesicChunkGrid.Cell> cells = infraGrid.cellsWithin(at, reach);
+        if (onlyInView != null) cells.removeIf(onlyInView.negate());
         Map<Long, Double> priority = new HashMap<>();
         for (GeodesicChunkGrid.Cell cell : cells) {
             double angle = SphereMath.angle(at, cell.centre());
@@ -2571,6 +2686,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         playerMotion.movePlayer(deltaTime, elapsedTime);
         if (trailerDirector != null) trailerDirector.placeCamera();
+        landmarkPhotos.placeCamera();
 
         SpherePosition eye = camera.getSpherePosition();
         // The sun's direction in the local frame here, and in the world

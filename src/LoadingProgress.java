@@ -27,6 +27,7 @@ public final class LoadingProgress {
         WINDOW("Opening the window", 800),
         GPU_UPLOAD("Uploading textures and shaders", 800),
         FLORA("Growing alien flora", 2000),
+        LANDMARKS("Photographing the landmarks", 20000),
         TERRAIN("Raising the terrain", 5000),
         MAPS("Charting the planet", 3000),
         FIRST_FRAME("Letting the light in", 500);

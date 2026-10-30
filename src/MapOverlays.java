@@ -168,31 +168,34 @@ final class MapOverlays extends GamePart {
             allOverlays().parallelStream().forEach(this::overlayImage);
             mapsReady = true;
             System.out.printf("[MINIMAP] Bird's-eye maps ready in %d ms%n", System.currentTimeMillis() - startTime);
-
-            // The landmarks: the natural landforms found now the land's known, then each one's
-            // picture, stood where it is (after the rest, as the round needn't wait for them)
-            Landmarks landmarks = game.infraManager.landmarks();
-            landmarks.findLandforms(game.worldSeed, game.landPoints, p -> TerrainMesh.getLayeredHeight(p, game.worldNoise), game.seaLevelHeight, game.nationManager::getNationAt);
-            WorldPalette palette = game.worldArt.palette();
-            java.util.function.Function<float[], Vector3> v = c -> new Vector3(c[0], c[1], c[2]);
-            landmarks.setLook(new Landmark.Look(v.apply(palette.skyZenith), v.apply(palette.skyHorizon), v.apply(palette.grassLush),
-                    v.apply(palette.grassDry), v.apply(palette.soilBase), v.apply(palette.seaLight)));
-            List<MapPicture> landmarkPictures = new ArrayList<>();
-            for (Landmark landmark : landmarks.all()) {
-                BufferedImage picture = landmark.render(LANDMARK_PICTURE_HEIGHT);
-                landmark.picture = picture;
-                double[] at = MapProjection.toMap(landmark.place());
-                landmarkPictures.add(new MapPicture(picture, (float) at[0], (float) at[1], true, landmark.name, landmark.caption, landmark.kind.label));
-            }
-            java.util.Map<FactorName, List<MapPicture>> withLandmarks = new java.util.EnumMap<>(mapPictures);
-            withLandmarks.put(FactorName.LANDMARKS, landmarkPictures);
-            mapPictures = withLandmarks;
-            javax.swing.SwingUtilities.invokeLater(() -> {
-                if (game.minimap != null && currentPictureMap == FactorName.LANDMARKS) choosePictureMap(currentPictureMap);
-            });
         }, "birds-eye-map-renderer");
         mapThread.setDaemon(true);
         mapThread.start();
+    }
+
+    /**
+     * The landmarks' map: each one's picture where it is, its photograph (see LandmarkPhotos) or,
+     * should that have failed, one drawn without the world. Once the maps are ready (it joins
+     * their pictures) and the photographs are taken.
+     */
+    void showLandmarks() {
+        Landmarks landmarks = game.infraManager.landmarks();
+        WorldPalette palette = game.worldArt.palette();
+        java.util.function.Function<float[], Vector3> v = c -> new Vector3(c[0], c[1], c[2]);
+        landmarks.setLook(new Landmark.Look(v.apply(palette.skyZenith), v.apply(palette.skyHorizon), v.apply(palette.grassLush),
+                v.apply(palette.grassDry), v.apply(palette.soilBase), v.apply(palette.seaLight)));
+        List<MapPicture> landmarkPictures = new ArrayList<>();
+        for (Landmark landmark : landmarks.all()) {
+            if (landmark.picture == null) landmark.picture = landmark.render(LANDMARK_PICTURE_HEIGHT);
+            double[] at = MapProjection.toMap(landmark.place());
+            landmarkPictures.add(new MapPicture(landmark.picture, (float) at[0], (float) at[1], true, landmark.name, landmark.caption, landmark.kind.label));
+        }
+        java.util.Map<FactorName, List<MapPicture>> withLandmarks = new java.util.EnumMap<>(mapPictures);
+        withLandmarks.put(FactorName.LANDMARKS, landmarkPictures);
+        mapPictures = withLandmarks;
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            if (game.minimap != null && currentPictureMap == FactorName.LANDMARKS) choosePictureMap(currentPictureMap);
+        });
     }
 
     /** Waits (on the map's own thread) until the map panel's been given to the game (see setMinimap). */
@@ -403,7 +406,7 @@ final class MapOverlays extends GamePart {
     private static final int MAP_PICTURE_HEIGHT = 128;
 
     // How tall the landmarks' pictures are (shown in their popups on the map)
-    private static final int LANDMARK_PICTURE_HEIGHT = 220;
+    static final int LANDMARK_PICTURE_HEIGHT = 220;
 
     // How tall the bollards' and poles' larger pictures are (shown in a popup when the pointer is over theirs on the map)
     private static final int DETAIL_PICTURE_HEIGHT = 420;

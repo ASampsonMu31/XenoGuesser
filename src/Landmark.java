@@ -14,19 +14,23 @@ import com.xenoguesser.math.Vector3;
  * One of the world's famous landmarks (see Landmarks): built ones that stand out from
  * everything round them (a great spire many times the height of the tallest towers, a circle
  * of standing stones, a grand pillared ruin dressed in its region's ornaments) and natural ones
- * (the planet's highest peak, its most sheltered bay, a ribbon of sand with the sea either
- * side, the grove where a plant grows thicker than anywhere else).
+ * (the planet's highest peak, its most sheltered bay with stacks of rock standing in it, a
+ * ribbon of sand with the sea either side, fields of steep pointed hills, the grove where a
+ * plant grows thicker than anywhere else: the land shaped for all but the peak and the grove,
+ * see Landforms).
  * <p>
  * A built one is laid out in a frame of its own (local +z its front, y its height above its
  * base) from its seed, as faces of a few colours (see SLOTS), drawn both in the world (see
- * InfrastructureManager) and in its picture for the map; with its floors (steps that can be
- * walked up) and what's solid. A natural one is only somewhere: its picture is the land there.
+ * InfrastructureManager); with its floors (steps that can be walked up) and what's solid. A
+ * natural one is only somewhere. Its picture for the map is a photograph of it taken in the
+ * world itself (see LandmarkPhotos); render draws one without the world, should that fail.
  */
 public final class Landmark {
 
     public enum Kind {
         SPIRE("Great spire", true), STONES("Ancient monoliths", true), RUIN("Ancient ruin", true),
-        SUMMIT("Highest peak", false), BAY("Sheltered bay", false), SPIT("Sand spit", false), GROVE("Famous grove", false);
+        SUMMIT("Highest peak", false), BAY("Sheltered bay", false), SPIT("Sand spit", false), GROVE("Famous grove", false),
+        PINNACLES("Stone pinnacles", false);
 
         public final String label;
         public final boolean built;
@@ -73,6 +77,10 @@ public final class Landmark {
     public int species = -1;
     Vector3 leaves, trunk;
     float span;
+    // How many hills or stacks a natural one has, and the way it runs or is best seen (a spit's
+    // out from its root, a field's by the sea from the land towards it), as a heading (NaN for none)
+    int count;
+    double way = Double.NaN;
 
     // What it's made of (built ones, once settled)
     Geometry geometry;
@@ -953,8 +961,7 @@ public final class Landmark {
      * stood on the land round it, a natural one the land itself; height pixels tall, on a sky.
      */
     public BufferedImage render(int heightPx) {
-        boolean tall = kind == Kind.SPIRE;
-        int widthPx = Math.round(heightPx * (tall ? 0.78f : 1.45f));
+        int widthPx = pictureWidth(heightPx);
         SoftwareRenderer r = new SoftwareRenderer(widthPx, heightPx, 3);
         float aspect = widthPx / (float) heightPx;
         if (kind.built) {
@@ -1008,9 +1015,28 @@ public final class Landmark {
         g.setPaint(new GradientPaint(0, 0, colour(look.zenith()), 0, heightPx * 0.75f, colour(look.horizon())));
         g.fillRect(0, 0, widthPx, heightPx);
         g.drawImage(drawn, 0, 0, null);
+        g.dispose();
+        return framed(out);
+    }
+
+    /** Whether its picture is tall (a spire's) rather than wide. */
+    boolean tallPicture() {
+        return kind == Kind.SPIRE;
+    }
+
+    /** A picture's width for its height, by its shape. */
+    int pictureWidth(int heightPx) {
+        return Math.round(heightPx * (tallPicture() ? 0.78f : 1.45f));
+    }
+
+    /** A picture in the pale frame every landmark's has on the map. */
+    static BufferedImage framed(BufferedImage picture) {
+        BufferedImage out = new BufferedImage(picture.getWidth(), picture.getHeight(), BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = out.createGraphics();
+        g.drawImage(picture, 0, 0, null);
         g.setColor(new Color(255, 255, 255, 170));
         g.setStroke(new BasicStroke(2f));
-        g.drawRect(1, 1, widthPx - 3, heightPx - 3);
+        g.drawRect(1, 1, out.getWidth() - 3, out.getHeight() - 3);
         g.dispose();
         return out;
     }
