@@ -64,7 +64,7 @@ public final class BollardStyle {
      * Every nation's bollards: the world's pool of designs, as each nation places them
      * ([nation][design]: its own spacing, distance out and roads, whichever design), and which
      * design each nation builds where (see RegionalDesigns: few designs, neighbours sharing them,
-     * some nations building two or three, each in its own part of the land).
+     * most nations building two or three, each in its own part of the land).
      */
     public record World(BollardStyle[][] styles, RegionalDesigns designs) {
         /** The bollard a nation builds at a place; null for none. */
@@ -87,7 +87,7 @@ public final class BollardStyle {
 
     /** Deals the world's bollards: about one design for every POOL_PER_NATIONS nations. */
     public static World generateForNations(long seed, int numNations, NationKinship kinship) {
-        RegionalDesigns designs = new RegionalDesigns(seed + 9494L, numNations, kinship, POOL_PER_NATIONS);
+        RegionalDesigns designs = new RegionalDesigns(seed + 9494L, numNations, kinship, POOL_PER_NATIONS, REGIONS);
         Random rand = new Random(seed + 9393L);
         BollardStyle[] pool = new BollardStyle[designs.poolSize];
         for (int d = 0; d < pool.length; d++) {
@@ -115,6 +115,9 @@ public final class BollardStyle {
     }
 
     private static final float POOL_PER_NATIONS = 3.5f;
+
+    // The chance a nation builds another design in a region of its own (see RegionalDesigns)
+    private static final float REGIONS = 0.65f;
 
     /** A design of its own. */
     private static BollardStyle fresh(Random rand) {

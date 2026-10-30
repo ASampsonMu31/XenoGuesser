@@ -14,18 +14,19 @@ import java.util.List;
  * hot spots, painting most of the range red while most of the species lives there.
  *
  * How many there are rises steeply along the scale, peak * scale^POWER: the heartland (green on
- * the map, above two thirds) has nearly all of them, PEAK_BOOST times as many as it had before
- * these ranges; the red third has under 1.2% of the peak, so barely any stragglers. The
- * population's own spread decides the scale, so the area where a species is concentrated stays
- * where it was; it just thins out sharply beyond.
+ * the map, above two thirds) has most of them, PEAK_BOOST times as many as it had before these
+ * ranges; the red third has under 4% of the peak, so few stragglers. The population's own spread
+ * decides the scale, so the area where a species is concentrated stays where it was; it thins
+ * out beyond. The shares are set so a species' heartland and the reach round it cover a fair
+ * area, rather than a few hot spots a player could hardly find.
  *
  * Worked out once per world from the same land points on every PC, so both players in
  * multiplayer have the same.
  */
 public final class SpeciesRange {
 
-    public static final float POWER = 4f, PEAK_BOOST = 3f;
-    public static final float LOW_SHARE = 0.10f, HIGH_SHARE = 0.90f;
+    public static final float POWER = 3f, PEAK_BOOST = 3f;
+    public static final float LOW_SHARE = 0.06f, HIGH_SHARE = 0.82f;
     // About how many points over the land the scale is measured from
     public static final int SAMPLES = 12_000;
 
@@ -101,7 +102,7 @@ public final class SpeciesRange {
     /** The density as a share of the peak for a raw abundance: the chance a candidate there is kept. */
     public float keep(float raw) {
         float t = share(raw);
-        return t * t * t * t;
+        return t * t * t;
     }
 
     /** How many are expected in a chunk's area at a raw abundance. */

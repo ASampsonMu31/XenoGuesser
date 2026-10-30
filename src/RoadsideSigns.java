@@ -270,23 +270,85 @@ final class RoadsideSigns extends InfraPart {
             cz = (rand.nextFloat() - 0.5f) * halfHeight * 0.8f;
             here = rand.nextFloat() < 0.6f ? foot : null;
         }
-        // (the map's own north-up frame at its middle)
-        SphereFrame centre = SphereFrame.at(round.toSphere(cx, 0.0, cz));
+        Framing first = new Framing(cx, cz, halfWidth, here != null);
         long style = infra.worldSeed * 61L + sign.nationId * 17L;
+        // Seeded by where the sign stands, so the other framings tried leave the sign's own roll alone
+        long others = infra.worldSeed * 131L + Double.doubleToLongBits(foot.x()) * 31L + Double.doubleToLongBits(foot.z());
         PerlinNoise noise = infra.terrainNoise;
         float sea = infra.seaLevel;
-        SpherePosition hereMark = here, shopMark = destination;
+        SpherePosition shopMark = destination;
         boolean withRoute = route;
         java.awt.image.BufferedImage letter = badge;
-        float half = halfWidth;
         InfrastructureManager.SIGN_MAP_ARTIST.submit(() -> {
             try {
-                List<SpherePosition> way = withRoute ? infra.routes().route(hereMark, shopMark) : null;
-                sign.mapPixels = SignMap.render(infra, noise, sea, style, centre, half, mapW, mapH, hereMark, shopMark, way, letter);
+                Framing framing = frame(first, round, foot, shopMark, aspect, mapW, mapH, new Random(others));
+                // (the map's own north-up frame at its middle)
+                SphereFrame centre = SphereFrame.at(round.toSphere(framing.cx, 0.0, framing.cz));
+                SpherePosition hereMark = framing.here ? foot : null;
+                List<SpherePosition> way = withRoute && hereMark != null ? infra.routes().route(hereMark, shopMark) : null;
+                sign.mapPixels = SignMap.render(infra, noise, sea, style, centre, framing.halfWidth, mapW, mapH, hereMark, shopMark, way, letter);
             } catch (RuntimeException e) {
                 System.err.println("[SIGNS] Map failed: " + e);
             }
         });
+    }
+
+    /** A sign map's view: its middle (east and south of the sign), half its width, and whether the sign's own mark is on it. */
+    private record Framing(float cx, float cz, float halfWidth, boolean here) {
+    }
+
+    /**
+     * The framing a sign's map is drawn at: the one first rolled if it shows a coast or a fair
+     * spread of buildings, else the first of some others that does (wider or narrower round
+     * the sign, round the advertised shop, or round the nearest town), else the busiest of them.
+     * A map of bare land with only the sign's mark on it says nothing.
+     */
+    private Framing frame(Framing first, SphereFrame round, SpherePosition foot, SpherePosition shop,
+                          float aspect, int mapW, int mapH, Random rand) {
+        List<Framing> tries = new ArrayList<>();
+        tries.add(first);
+        float widest = 3750f * (mapW / (float) Math.max(mapW, mapH));
+        if (shop != null) {
+            // Closer in round the shop, the sign's mark kept only while it still falls on the map
+            double[] door = round.fromSphere(shop);
+            for (float half : new float[] { 900f, 450f, 220f }) {
+                tries.add(new Framing((float) door[0], (float) door[2], half, first.here && fits(door, half, aspect, 0.9f)));
+            }
+        } else {
+            for (int i = 0; i < 6; i++) {
+                float half = (float) (150.0 * Math.pow(25.0, (i + rand.nextFloat()) / 6.0)) * (mapW / (float) Math.max(mapW, mapH));
+                tries.add(new Framing((rand.nextFloat() - 0.5f) * half * 0.8f, (rand.nextFloat() - 0.5f) * half / aspect * 0.8f, half, first.here));
+            }
+        }
+        SettlementManager.Settlement town = null;
+        double nearest = Double.MAX_VALUE;
+        for (SettlementManager.Settlement s : infra.settlementManager.getSettlements()) {
+            double d = SphereMath.distance(s.centre, foot);
+            if (d < nearest) { nearest = d; town = s; }
+        }
+        if (town != null) {
+            double[] middle = round.fromSphere(town.centre);
+            float tx = (float) middle[0], tz = (float) middle[2];
+            // Both the sign and the town, if the town is near enough; else the town alone
+            float both = Math.max(Math.abs(tx), Math.abs(tz) * aspect) * 0.5f + town.radius * 0.6f + 90f;
+            if (both <= widest) tries.add(new Framing(tx * 0.5f, tz * 0.5f, both, first.here));
+            tries.add(new Framing(tx, tz, Math.max(220f, town.radius * 0.8f), first.here && fits(middle, town.radius * 0.8f, aspect, 0.9f)));
+        }
+        Framing best = first;
+        float bestScore = -1f;
+        PerlinNoise noise = infra.terrainNoise;
+        for (Framing f : tries) {
+            SignMap.Content content = SignMap.content(infra, noise, infra.seaLevel,
+                    SphereFrame.at(round.toSphere(f.cx, 0.0, f.cz)), f.halfWidth, mapW, mapH);
+            if (content.decent()) return f;
+            if (content.score() > bestScore) { bestScore = content.score(); best = f; }
+        }
+        return best;
+    }
+
+    /** Whether the sign (at the origin) falls within the inner part of a map centred at middle, half wide. */
+    private static boolean fits(double[] middle, float half, float aspect, float inner) {
+        return Math.abs(middle[0]) <= half * inner && Math.abs(middle[2]) <= half / aspect * inner;
     }
 
     // Roadside signs roll once per road segment rather than per attempt, so scale the nation's sign chance up

@@ -1,0 +1,13 @@
+#version 330 core
+
+// The pod's beacon light: a point of it relative to the eyes, where it is across the light
+// (0, 0 at its middle; the beam only varies across) and how bright it is there
+layout(location = 0) in vec3 position;
+layout(location = 1) in vec3 light;
+uniform mat4 viewProjection;
+out vec3 place;
+
+void main() {
+    place = light;
+    gl_Position = viewProjection * vec4(position, 1.0);
+}

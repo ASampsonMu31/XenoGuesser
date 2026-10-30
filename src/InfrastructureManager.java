@@ -1615,47 +1615,16 @@ public class InfrastructureManager extends InfraGeometry {
     //  MAP PICTURES
     // ============================================================
 
-    /** A nation's utility poles (see UtilityPoleStyle), each with the neighbouring nation it's from (0 for its main one). */
-    public List<NationDesign<UtilityPoleStyle>> poleDesigns(int nationId) {
-        List<NationDesign<UtilityPoleStyle>> list = new ArrayList<>();
-        int[] designs = poleWorld.designs().designsOf(nationId), from = poleWorld.designs().fromNationsOf(nationId);
-        for (int k = 0; k < designs.length; k++) list.add(new NationDesign<>(poleWorld.design(nationId, designs[k]), from[k]));
-        return list;
-    }
-
     /**
-     * A nation's roadside bollards (see BollardStyle), each with the neighbouring nation it's
-     * from (0 for its main one, built over most of its land; another is built on the side of it
-     * nearer that neighbour).
+     * A nation's traditional house dressed in one of the world's architectures (an index into
+     * ArchitectureStyle.World.style), height pixels tall, for the map; null if it has no houses.
      */
-    public List<NationDesign<BollardStyle>> bollardDesigns(int nationId) {
-        List<NationDesign<BollardStyle>> list = new ArrayList<>();
-        int[] designs = bollardWorld.designs().designsOf(nationId), from = bollardWorld.designs().fromNationsOf(nationId);
-        for (int k = 0; k < designs.length; k++) list.add(new NationDesign<>(bollardWorld.design(nationId, designs[k]), from[k]));
-        return list;
-    }
-
-    /**
-     * One of a nation's architectures for the map: its picture (the nation's traditional house
-     * dressed in it), the neighbour it's from (0 for its main one, built over most of its land; -1
-     * for its own province's take on that), and for a province's, a direction {x, y, z} in the
-     * middle of the province (null otherwise).
-     */
-    public record ArchitecturePicture(java.awt.image.BufferedImage picture, int from, double[] spot) {
-    }
-
-    /** A nation's architecture for the map (see ArchitectureStyle.picture), each picture height pixels tall. */
-    public List<ArchitecturePicture> architecturePictures(int nationId, int height) {
-        List<ArchitecturePicture> list = new ArrayList<>();
+    public java.awt.image.BufferedImage architecturePicture(int nationId, int design, int height) {
         BuildingStyle[] forms = formStyles.get(nationId);
-        if (forms == null) return list;
-        for (Object[] design : architectureWorld.designsOf(nationId)) {
-            ArchitectureStyle arch = architectureWorld.style((Integer) design[0]);
-            BuildingStyle.WallVariant walls = wallVariants.get(typicalWall(nationId, arch.pattern));
-            java.awt.image.BufferedImage picture = arch.picture(height, forms[0], walls);
-            list.add(new ArchitecturePicture(picture, (Integer) design[1], design.length > 2 ? (double[]) design[2] : null));
-        }
-        return list;
+        if (forms == null) return null;
+        ArchitectureStyle arch = architectureWorld.style(design);
+        BuildingStyle.WallVariant walls = wallVariants.get(typicalWall(nationId, arch.pattern));
+        return arch.picture(height, forms[0], walls);
     }
 
     /** A nation's commonest wall variety in a masonry pattern (any, should it build none in it). */

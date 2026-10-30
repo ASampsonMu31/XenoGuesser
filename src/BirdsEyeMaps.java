@@ -375,6 +375,210 @@ public class BirdsEyeMaps {
         return canvas;
     }
 
+    /** Which design (of bollard, of pole...) a nation builds at a place, as a key for the map; -1 for none. */
+    public interface DesignAt {
+        int at(int nation, GeodesicChunkGrid.Direction place);
+    }
+
+    /**
+     * A picture map's regions (see designRegions): each one's outline, see-through elsewhere so
+     * it lies over any heatmap (at the detail resolution), and the same in tiles for the map
+     * zoomed in close (the outlines as thin there as when zoomed out); and a place for each
+     * region's picture, {key, nation, worldX, worldZ, cells}, biggest regions first.
+     */
+    public record DesignRegions(BufferedImage borders, MapTiles.Renderer tiles, List<float[]> places) {
+    }
+
+    // The smallest region given a picture of its own, as a share of the map's width each way (an
+    // island or a sliver smaller shows only its outline); and how thick an outline is drawn, in
+    // detail pixels inside the region's edge: dark at the edge, then the region's colour
+    private static final float MIN_PICTURED_REGION = 1f / 28f;
+    private static final int OUTLINE_DARK = 2, OUTLINE = 6;
+
+    /**
+     * Where each design is built over the land, region by region (a region being land of one key
+     * all joined up, whatever the nations): outlined all round, coasts and the furthest islands
+     * too, in its own colour (see regionColour) inside a dark edge, so it's plain where each
+     * design is built and where one gives way to another (a border between nations building the
+     * same one isn't drawn); and each region big enough its picture's place, on its deepest land
+     * (well inside it, never on the sea in a bay).
+     */
+    public DesignRegions designRegions(NationGenerationManager nations, DesignAt design) {
+        float[] heights = getDetailHeights();
+        int n = detailResolution;
+        int[] owner = nationGrid(nations);
+        int[] key = new int[n * n];
+        java.util.stream.IntStream.range(0, n).parallel().forEach(y -> {
+            float worldZ = pixelToWorld(y + 0.5f);
+            boolean onChart = Math.abs(worldZ) <= MapProjection.clipHalfHeight();
+            for (int x = 0; x < n; x++) {
+                int i = y * n + x;
+                key[i] = !onChart || heights[i] <= seaLevelHeight || owner[i] == 0 ? -1
+                        : design.at(owner[i], MapProjection.direction(pixelToWorld(x + 0.5f), worldZ));
+            }
+        });
+        // The outlines: land within OUTLINE of anything not its region (the sea, another key,
+        // across the map's join too), the nearest of it dark
+        int[] pixels = new int[n * n];
+        java.util.stream.IntStream.range(0, n).parallel().forEach(y -> {
+            for (int x = 0; x < n; x++) {
+                int k = key[y * n + x];
+                if (k < 0) continue;
+                int nearest = OUTLINE + 1;
+                for (int dy = -OUTLINE; dy <= OUTLINE; dy++) {
+                    int yy = y + dy;
+                    if (yy < 0 || yy >= n || Math.abs(dy) >= nearest) continue;
+                    for (int dx = -OUTLINE; dx <= OUTLINE; dx++) {
+                        int d = Math.max(Math.abs(dx), Math.abs(dy));
+                        if (d < nearest && key[yy * n + Math.floorMod(x + dx, n)] != k) nearest = d;
+                    }
+                }
+                if (nearest <= OUTLINE_DARK) pixels[y * n + x] = 0xF0181818;
+                else if (nearest <= OUTLINE) pixels[y * n + x] = regionColour(k).getRGB();
+            }
+        });
+        BufferedImage borders = new BufferedImage(n, n, BufferedImage.TYPE_INT_ARGB);
+        borders.setRGB(0, 0, n, n, pixels, 0, n);
+
+        // Each region found by flood fill (wrapping east to west), then how deep inside it each
+        // pixel is (steps from its edge: coast, another region, the chart's cut-off), and its
+        // picture put on the deepest, the one nearest its middle among equals
+        int[] region = new int[n * n];
+        int[] depth = new int[n * n];
+        int[] stack = new int[n * n], queue = new int[n * n];
+        List<float[]> places = new ArrayList<>();
+        int regions = 0;
+        for (int start = 0; start < n * n; start++) {
+            int k = key[start];
+            if (k < 0 || region[start] != 0) continue;
+            regions++;
+            int top = 0, found = 0;
+            stack[top++] = start;
+            region[start] = regions;
+            // (the region's pixels collect at the stack's far end as they're taken off it)
+            int tail = n * n;
+            double sumY = 0, sumCos = 0, sumSin = 0;
+            while (top > 0) {
+                int c = stack[--top];
+                stack[--tail] = c;
+                found++;
+                int cx = c % n, cy = c / n;
+                sumY += cy;
+                double angle = 2 * Math.PI * cx / n;
+                sumCos += Math.cos(angle);
+                sumSin += Math.sin(angle);
+                int[] around = { cy * n + Math.floorMod(cx + 1, n), cy * n + Math.floorMod(cx - 1, n), cy + 1 < n ? c + n : -1, cy > 0 ? c - n : -1 };
+                for (int q : around) {
+                    if (q < 0 || region[q] != 0 || key[q] != k) continue;
+                    region[q] = regions;
+                    stack[top++] = q;
+                }
+            }
+            if (found < MIN_PICTURED_REGION * MIN_PICTURED_REGION * n * n) continue;
+            // (the region's pixels are stack[tail..n*n); the edge ones go first in the queue)
+            int head = 0, queued = 0;
+            for (int j = tail; j < n * n; j++) {
+                int c = stack[j], cx = c % n, cy = c / n;
+                boolean edge = cy == 0 || cy == n - 1;
+                int[] around = { cy * n + Math.floorMod(cx + 1, n), cy * n + Math.floorMod(cx - 1, n), c + n, c - n };
+                for (int q : around) edge |= q < 0 || q >= n * n || region[q] != regions;
+                depth[c] = edge ? 1 : 0;
+                if (edge) queue[queued++] = c;
+            }
+            int deepest = 1;
+            while (head < queued) {
+                int c = queue[head++], cx = c % n, cy = c / n;
+                int[] around = { cy * n + Math.floorMod(cx + 1, n), cy * n + Math.floorMod(cx - 1, n), c + n, c - n };
+                for (int q : around) {
+                    if (q < 0 || q >= n * n || region[q] != regions || depth[q] != 0) continue;
+                    depth[q] = depth[c] + 1;
+                    deepest = Math.max(deepest, depth[q]);
+                    queue[queued++] = q;
+                }
+            }
+            double meanX = Math.floorMod((long) Math.round(Math.atan2(sumSin, sumCos) / (2 * Math.PI) * n * 1000), (long) n * 1000) / 1000.0;
+            double meanY = sumY / found;
+            int pick = -1;
+            double nearest = Double.MAX_VALUE;
+            for (int j = 0; j < queued; j++) {
+                int c = queue[j];
+                if (depth[c] < deepest) continue;
+                double dx = Math.abs(c % n - meanX);
+                dx = Math.min(dx, n - dx);
+                double dy = c / n - meanY;
+                double d = dx * dx + dy * dy;
+                if (d < nearest || (d == nearest && c < pick)) {
+                    nearest = d;
+                    pick = c;
+                }
+            }
+            places.add(new float[] { k, owner[pick], pixelToWorld(pick % n + 0.5f), pixelToWorld(pick / n + 0.5f), found });
+        }
+        places.sort((a, b) -> Float.compare(b[4], a[4]));
+        return new DesignRegions(borders, regionTiles(nations, design), places);
+    }
+
+    // How thick a region's outline is in a tile (tile pixels inside its edge: dark at the edge, then its colour)
+    private static final int TILE_OUTLINE_DARK = 1, TILE_OUTLINE = 3;
+
+    /** The regions' outlines (see designRegions) traced afresh at a tile's own detail. */
+    private MapTiles.Renderer regionTiles(NationGenerationManager nations, DesignAt design) {
+        return (level, tx, ty, size) -> {
+            // (each pixel's key, with a border of an outline's width all round)
+            int b = TILE_OUTLINE, w = size + 2 * b;
+            int[] key = new int[w * w];
+            for (int y = 0; y < w; y++) {
+                float worldZ = tileWorld(level, ty, y - b, size);
+                boolean onChart = Math.abs(worldZ) <= MapProjection.clipHalfHeight();
+                for (int x = 0; x < w; x++) {
+                    float worldX = tileWorld(level, tx, x - b, size);
+                    int nation = onChart ? nations.getNationAtMap(worldX, worldZ) : 0;
+                    key[y * w + x] = nation == 0 || TerrainMesh.getLayeredHeight(worldX, worldZ, terrainNoise) <= seaLevelHeight ? -1
+                            : design.at(nation, MapProjection.direction(worldX, worldZ));
+                }
+            }
+            BufferedImage tile = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+            for (int y = 0; y < size; y++) {
+                for (int x = 0; x < size; x++) {
+                    int k = key[(y + b) * w + x + b];
+                    if (k < 0) continue;
+                    int nearest = b + 1;
+                    for (int dy = -b; dy <= b; dy++) {
+                        for (int dx = -b; dx <= b; dx++) {
+                            int d = Math.max(Math.abs(dx), Math.abs(dy));
+                            if (d < nearest && key[(y + b + dy) * w + x + b + dx] != k) nearest = d;
+                        }
+                    }
+                    if (nearest <= TILE_OUTLINE_DARK) tile.setRGB(x, y, 0xF0181818);
+                    else if (nearest <= TILE_OUTLINE) tile.setRGB(x, y, regionColour(k).getRGB());
+                }
+            }
+            return tile;
+        };
+    }
+
+    /** A region's outline colour: one of its own for its key (the golden angle round the hues), bright. */
+    public static Color regionColour(int key) {
+        float hue = (key * 0.618034f) % 1f;
+        return new Color(Color.HSBtoRGB(hue, 0.85f, 1f));
+    }
+
+    // Which nation holds each detail pixel (see nationGrid), once worked out
+    private int[] nationGrid;
+
+    /** Which nation holds each detail pixel's middle on the map (0 for none), worked out once. */
+    private synchronized int[] nationGrid(NationGenerationManager nations) {
+        if (nationGrid != null) return nationGrid;
+        int n = detailResolution;
+        int[] grid = new int[n * n];
+        java.util.stream.IntStream.range(0, n).parallel().forEach(y -> {
+            float worldZ = pixelToWorld(y + 0.5f);
+            for (int x = 0; x < n; x++) grid[y * n + x] = nations.getNationAtMap(pixelToWorld(x + 0.5f), worldZ);
+        });
+        nationGrid = grid;
+        return grid;
+    }
+
     public BufferedImage[] renderRoadLayer(InfrastructureManager infrastructure) {
         BufferedImage canvas = newLayer();
         Graphics2D g = onDetail(createGraphics(canvas));

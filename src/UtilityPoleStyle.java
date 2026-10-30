@@ -97,7 +97,7 @@ public final class UtilityPoleStyle {
 
     /** Deals the world's poles: about one design for every POOL_PER_NATIONS nations. */
     public static World generateForNations(long seed, int numNations, NationKinship kinship) {
-        RegionalDesigns designs = new RegionalDesigns(seed + 7575L, numNations, kinship, POOL_PER_NATIONS);
+        RegionalDesigns designs = new RegionalDesigns(seed + 7575L, numNations, kinship, POOL_PER_NATIONS, REGIONS);
         Random rand = new Random(seed + 7474L);
         UtilityPoleStyle[] pool = new UtilityPoleStyle[designs.poolSize];
         for (int d = 0; d < pool.length; d++) {
@@ -125,6 +125,9 @@ public final class UtilityPoleStyle {
     }
 
     private static final float POOL_PER_NATIONS = 3.5f;
+
+    // The chance a nation builds another design in a region of its own (see RegionalDesigns)
+    private static final float REGIONS = 0.65f;
 
     private static UtilityPoleStyle fresh(Random rand) {
         UtilityPoleStyle s = new UtilityPoleStyle();

@@ -85,10 +85,13 @@ public class MapPanel extends JPanel {
     // Whether the nations' names are written over the map (with the nations overlay)
     private volatile boolean showNationNames;
     // Pictures stood on the plain map instead of an overlay's colours (the bollard map: each
-    // nation's bollard on its main land, no borders), each at its u, v; null when none
+    // region's bollard on its land), each at its u, v; null when none
     private volatile List<MapPicture> mapPictures;
-    // (and that map's name, shown with the heatmap's)
+    // (and that map's name, shown with the heatmap's; and the edges of the regions the pictures
+    // stand for, washed each in its colour, laid over the whole map, or null)
     private volatile String picturesName;
+    private volatile BufferedImage pictureRegions;
+    private volatile MapTiles.Renderer pictureRegionTiles;
     private MapLayersPanel layersPanel;
 
     // Scroll-wheel zoom of the enlarged map: magnification and the visible centre in 0..1 map space
@@ -106,6 +109,9 @@ public class MapPanel extends JPanel {
     private static final int WHOLE_IMAGE_DETAIL = 2250;
     private float viewCentreU = 0.5f;
     private float viewCentreV = 0.5f;
+    // The enlarged map's zoom and centre when it was last shrunk (zoom 0 for none, this round),
+    // for it to open again just as it was left
+    private float largeZoom, largeCentreU, largeCentreV;
     
     private static final int BORDER_SIZE = 10;       
     private static final int EXTRA_BOTTOM_SPACE = 55; 
@@ -737,6 +743,8 @@ public class MapPanel extends JPanel {
             BufferedImage[] images = layerImages.get(layer);
             if (images != null && shownLayers.contains(layer)) key.add(images[1]);
         }
+        BufferedImage regions = pictureRegions;
+        if (regions != null && mapPictures != null) key.add(regions);
         if (globeTexture != null && key.equals(globeTextureKey)) return globeTexture;
         int w = base.getWidth(), h = base.getHeight();
         BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
@@ -1085,9 +1093,14 @@ public class MapPanel extends JPanel {
 
     /**
      * Pictures stood on the map, named (as an overlay is), over whatever heatmap there is (M47):
-     * each at its world x, z where its foot stands; null for none.
+     * each at its world x, z (a landmark's foot, a design's middle); null for none.
      */
     public void setPictureOverlay(String name, List<MapPicture> pictures) {
+        setPictureOverlay(name, pictures, null);
+    }
+
+    /** As above, with the outlines of the regions the pictures stand for (see BirdsEyeMaps.designRegions), or null. */
+    public void setPictureOverlay(String name, List<MapPicture> pictures, BirdsEyeMaps.DesignRegions regions) {
         List<MapPicture> placed = null;
         if (pictures != null) {
             placed = new ArrayList<>();
@@ -1097,8 +1110,12 @@ public class MapPanel extends JPanel {
         }
         this.picturesName = placed != null ? name : null;
         this.mapPictures = placed;
+        this.pictureRegions = placed != null && regions != null ? regions.borders() : null;
+        this.pictureRegionTiles = placed != null && regions != null ? regions.tiles() : null;
         hoveredLandmark = null;
+        previewHovered(null);
         landmarkMarks = List.of();
+        pictureMarks = List.of();
         repaint();
     }
 
@@ -1110,6 +1127,10 @@ public class MapPanel extends JPanel {
     /** A landmark's marker as drawn: its thumbnail's centre and radius on screen, and its picture. */
     private record LandmarkMark(float x, float y, float r, MapPicture picture) {
     }
+
+    // A design's pictures with larger ones (see MapPicture.detail) where they were last drawn: each
+    // one's box on screen
+    private volatile List<java.util.Map.Entry<java.awt.Rectangle, MapPicture>> pictureMarks = List.of();
     // Each landmark picture's round thumbnail, for its marker
     private final java.util.Map<BufferedImage, BufferedImage> landmarkThumbs = new java.util.IdentityHashMap<>();
 
@@ -1121,11 +1142,23 @@ public class MapPanel extends JPanel {
                 float dx = x - mark.x(), dy = y - mark.y(), r = mark.r() + 3f;
                 if (dx * dx + dy * dy <= r * r) over = mark.picture();
             }
+            for (java.util.Map.Entry<java.awt.Rectangle, MapPicture> mark : pictureMarks) {
+                if (mark.getKey().contains(x, y)) over = mark.getValue();
+            }
         }
         if (over != hoveredLandmark) {
             hoveredLandmark = over;
+            previewHovered(over);
             repaint();
         }
+    }
+
+    /** A design's picture the pointer is over (see MapPicture.detail) shown larger in the card above the map, or the card back to what it showed. */
+    private void previewHovered(MapPicture over) {
+        boolean design = over != null && over.detail() != null;
+        if (!design && !previewCard.hasSubject()) return;
+        previewCard.showHovered(design ? over.kind() : null, design ? over.detail() : null);
+        if (getParent() instanceof JLayeredPane) XenoGuesser.updateMinimapBounds((JLayeredPane) getParent(), this);
     }
 
     /** A landmark's picture cut to a disc, size pixels across, with a rim. */
@@ -1258,7 +1291,10 @@ public class MapPanel extends JPanel {
         return lines;
     }
 
-    /** The map's pictures (see setPictureOverlay), each standing on its place, at a size readable on the map (they don't grow with zooming). */
+    /**
+     * The map's pictures (see setPictureOverlay), each over its place (well inside the land of its
+     * region, see BirdsEyeMaps.designRegions), at a size readable on the map (they don't grow with zooming).
+     */
     private void drawMapPictures(Graphics2D g2d, int mapX, int mapY, List<MapPicture> pictures) {
         if (!pictures.isEmpty() && pictures.get(0).described()) {
             drawLandmarks(g2d, mapX, mapY, pictures);
@@ -1269,20 +1305,44 @@ public class MapPanel extends JPanel {
         int tall = currentMapSize < 300 ? 30 : Math.round(Math.min(80f, 50f + zoom * 4f));
         Object oldInterpolation = g2d.getRenderingHint(RenderingHints.KEY_INTERPOLATION);
         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        MapPicture hovered = hoveredLandmark;
+        List<java.util.Map.Entry<java.awt.Rectangle, MapPicture>> marks = new ArrayList<>();
         for (MapPicture p : pictures) {
             BufferedImage picture = p.picture();
             int w = Math.round(picture.getWidth() * tall / (float) picture.getHeight());
             for (int copy = -1; copy <= 1; copy++) {
                 float[] at = uvScreen(p.x(), p.z(), copy, mapX, mapY);
                 if (at == null) continue;
-                int footX = Math.round(at[0]), footY = Math.round(at[1]);
-                if (footX < mapX || footX >= mapX + currentMapSize || footY < mapY || footY >= mapY + mapHeight()) continue;
-                int x = footX - w / 2, y = footY - tall;
-                // (on a soft backing, so it reads on any land)
-                g2d.setColor(new Color(245, 245, 240, 120));
+                int middleX = Math.round(at[0]), middleY = Math.round(at[1]);
+                if (middleX < mapX || middleX >= mapX + currentMapSize || middleY < mapY || middleY >= mapY + mapHeight()) continue;
+                int x = middleX - w / 2, y = middleY - tall / 2;
+                // (on a soft backing, so it reads on any land; lighter under the pointer)
+                boolean over = p == hovered;
+                g2d.setColor(over ? new Color(255, 255, 250, 210) : new Color(245, 245, 240, 120));
                 g2d.fillRoundRect(x - 4, y - 3, w + 8, tall + 6, 10, 10);
+                // (ringed in its region's outline colour, if it has one, to match it to its region's islands)
+                if (p.ring() != null) {
+                    Stroke stroke = g2d.getStroke();
+                    g2d.setStroke(new BasicStroke(2.5f));
+                    g2d.setColor(p.ring());
+                    g2d.drawRoundRect(x - 4, y - 3, w + 8, tall + 6, 10, 10);
+                    g2d.setStroke(stroke);
+                }
                 g2d.drawImage(picture, x, y, w, tall, null);
+                java.awt.Rectangle box = new java.awt.Rectangle(x - 4, y - 3, w + 8, tall + 6);
+                if (p.detail() != null) marks.add(java.util.Map.entry(box, p));
             }
+        }
+        pictureMarks = marks;
+        // Developer aid: -Dxenoguesser.picturepopup=n shows the nth picture above the map, as if hovered over
+        if (hovered == null && !marks.isEmpty() && Dev.property("xenoguesser.picturepopup") != null) {
+            MapPicture first = marks.get(Math.min(marks.size() - 1, Dev.integer("xenoguesser.picturepopup", 0))).getValue();
+            javax.swing.SwingUtilities.invokeLater(() -> {
+                if (hoveredLandmark == null) {
+                    hoveredLandmark = first;
+                    previewHovered(first);
+                }
+            });
         }
         if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
     }
@@ -1482,8 +1542,10 @@ public class MapPanel extends JPanel {
         this.isFullScreenReveal = true;
         this.isLarge = false;
         this.mapSize = MapSize.SMALL;
-        // The reveal starts from the whole map so both the guess and the answer are visible
+        // The reveal starts from the whole map so both the guess and the answer are visible (and
+        // the next round's enlarged map from the whole map too)
         resetZoom();
+        largeZoom = 0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         this.lineProgress = 0.0f;
         globe.setTexture(mapImage);
@@ -1564,6 +1626,7 @@ public class MapPanel extends JPanel {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
                     calculateAndApplyScore();
+                    awardBullseye();
                     shouldDrawScoreText = true;
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
@@ -1580,6 +1643,7 @@ public class MapPanel extends JPanel {
                     lineProgress = 1.0f;
                     currentPhase = RevealPhase.SHOW_ALL_RESULTS;
                     calculateAndApplyScore();
+                    awardBullseye();
                     shouldDrawScoreText = true;
                     updateGeometryLayouts();
                     triggerParentLayoutUpdate();
@@ -1745,7 +1809,7 @@ public class MapPanel extends JPanel {
             } else {
                 // The map's tray (the Guess button under it when enlarged) as one of the HUD's panels
                 Stroke stroke = g2d.getStroke();
-                HudStyle.panel(g2d, 0, 0, frameW, frameH, HudStyle.GLASS_SOLID);
+                HudStyle.panel(g2d, 0, 0, frameW, frameH, HudStyle.GLASS_SOLID, HudStyle.Bar.RIGHT);
                 g2d.setStroke(stroke);
             }
 
@@ -1789,6 +1853,11 @@ public class MapPanel extends JPanel {
                 if (!drawTiles(g2d, layer.name(), layerTiles.get(layer), mapX, mapY, images[1].getWidth(), whole)) {
                     drawWholeMap(g2d, whole, mapX, mapY);
                 }
+            }
+            BufferedImage regions = pictureRegions;
+            if (regions != null && mapPictures != null && !plain
+                    && !drawTiles(g2d, "regions-" + picturesName, pictureRegionTiles, mapX, mapY, regions.getWidth(), regions)) {
+                drawWholeMap(g2d, regions, mapX, mapY);
             }
             tiles.endFrame();
             if (oldInterpolation != null) g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, oldInterpolation);
@@ -2087,6 +2156,7 @@ public class MapPanel extends JPanel {
         this.hasPin = false;
         this.currentMapSize = 210;
         resetZoom();
+        largeZoom = 0f;
         this.lineProgress = 0.0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         if (partnerWait != null) partnerWait.stop();
@@ -2176,6 +2246,7 @@ public class MapPanel extends JPanel {
 
     private void setMapSize(MapSize size) {
         if (isFullScreenReveal || isGuessed) return;
+        boolean wasLarge = isLarge;
         mapSize = size;
         isLarge = size == MapSize.LARGE;
         int parentHeight = getParent() != null ? getParent().getHeight() : 900;
@@ -2184,7 +2255,18 @@ public class MapPanel extends JPanel {
             case LARGE -> Math.min(largeMapSize(parentHeight),
                     getParent() != null ? (int) (getParent().getWidth() * 0.55f) : 900);
         };
-        if (!isLarge) resetZoom();
+        if (!isLarge && wasLarge) {
+            largeZoom = zoom;
+            largeCentreU = viewCentreU;
+            largeCentreV = viewCentreV;
+            resetZoom();
+        } else if (!isLarge) {
+            resetZoom();
+        } else if (!wasLarge && largeZoom > 0f) {
+            zoom = Math.max(minZoom(), Math.min(MAX_ZOOM, largeZoom));
+            viewCentreU = clampCentre(largeCentreU);
+            viewCentreV = clampCentreV(largeCentreV);
+        }
         updateGeometryLayouts();
         triggerParentLayoutUpdate();
         repaint();
@@ -2353,6 +2435,15 @@ public class MapPanel extends JPanel {
         this.targetRoundScore = score;
     }
 
+    /**
+     * As the round's results are shown (singleplayer or multiplayer alike): a guess within
+     * PERFECT_DISTANCE earns Bullseye. Not as the score's first worked out in multiplayer, when
+     * the guess is sent, so its pop-up doesn't give the round away before the reveal.
+     */
+    private void awardBullseye() {
+        if (roundDistance <= PERFECT_DISTANCE) Achievements.unlock(Achievements.Achievement.BULLSEYE);
+    }
+
     public void setGameHUD(GameHUD hud) {
         this.gameHUD = hud;
     }
@@ -2477,7 +2568,8 @@ public class MapPanel extends JPanel {
      * Under the top of the results' map: the guess's points going to productivity, and the cash
      * it earns worked out (the monthly salary plus half the points).
      */
-    // A guess this close (world units: 10 m) scores full marks
+    // A guess this close (world units: 20 m) scores full marks, and in either mode earns the
+    // Bullseye achievement (Achievements.BULLSEYE's description says the same 20 m)
     private static final double PERFECT_DISTANCE = 20.0 * PlayerBody.METRE;
     // The most a round can score
     public static final int FULL_MARKS = 5000;

@@ -75,8 +75,16 @@ public final class HudStyle {
         return p;
     }
 
+    /** Which side of a panel its accent bar runs down: the left, the right (for one kept to the right of the screen) or neither. */
+    public enum Bar { LEFT, RIGHT, NONE }
+
     /** The standard panel: glass body, a faint sheen at the top, a cyan edge and an accent bar down the left. */
     public static void panel(Graphics2D g, float x, float y, float w, float h, Color body) {
+        panel(g, x, y, w, h, body, Bar.LEFT);
+    }
+
+    /** The standard panel, its accent bar down the side given (or none). */
+    public static void panel(Graphics2D g, float x, float y, float w, float h, Color body, Bar bar) {
         float cut = Math.min(14f, h * 0.25f);
         Path2D shape = chamfered(x + 0.5f, y + 0.5f, w - 1f, h - 1f, cut);
         g.setColor(body);
@@ -86,18 +94,28 @@ public final class HudStyle {
         g.setColor(EDGE);
         g.setStroke(new BasicStroke(1.2f));
         g.draw(shape);
+        if (bar == Bar.NONE) return;
+        boolean right = bar == Bar.RIGHT;
         g.setColor(ACCENT);
-        g.fill(new java.awt.geom.Rectangle2D.Float(x + 3f, y + cut + 4f, 2.5f, Math.max(0f, h - cut - 12f)));
+        // (clear of the cut corner on its side: the top left's, or the bottom right's)
+        g.fill(new java.awt.geom.Rectangle2D.Float(right ? x + w - 5.5f : x + 3f, y + (right ? 8f : cut + 4f), 2.5f, Math.max(0f, h - cut - 12f)));
     }
 
     /** A panel's edge drawn over again, thick, in colour (e.g. green for a good outcome, red for a bad one). */
     public static void edge(Graphics2D g, float x, float y, float w, float h, Color colour) {
+        edge(g, x, y, w, h, colour, Bar.LEFT);
+    }
+
+    /** A panel's edge drawn over again, its bar down the side given (see panel). */
+    public static void edge(Graphics2D g, float x, float y, float w, float h, Color colour, Bar bar) {
         float cut = Math.min(14f, h * 0.25f);
         Path2D shape = chamfered(x + 0.5f, y + 0.5f, w - 1f, h - 1f, cut);
         g.setColor(colour);
         g.setStroke(new BasicStroke(4f));
         g.draw(shape);
-        g.fill(new java.awt.geom.Rectangle2D.Float(x + 3f, y + cut + 4f, 3.5f, Math.max(0f, h - cut - 12f)));
+        if (bar == Bar.NONE) return;
+        boolean right = bar == Bar.RIGHT;
+        g.fill(new java.awt.geom.Rectangle2D.Float(right ? x + w - 6.5f : x + 3f, y + (right ? 8f : cut + 4f), 3.5f, Math.max(0f, h - cut - 12f)));
     }
 
     public static final int TIMER_W = 330, TIMER_H = 96;
@@ -108,7 +126,7 @@ public final class HudStyle {
      * it's for (note: "Time to guess", or that the partner has guessed).
      */
     public static void paintTimer(Graphics2D g, long msLeft, long msTotal, String note) {
-        panel(g, 0, 0, TIMER_W, TIMER_H, GLASS);
+        panel(g, 0, 0, TIMER_W, TIMER_H, GLASS, Bar.NONE);
         float share = msTotal <= 0L ? 0f : Math.max(0f, Math.min(1f, msLeft / (float) msTotal));
         Color run = share > 1f / 3f ? ACCENT : share > 1f / 6f ? GOLD : new Color(245, 95, 80);
         float cx = 54f, cy = TIMER_H * 0.5f, r = 36f;
@@ -350,7 +368,7 @@ public final class HudStyle {
      */
     public static void paintDiagnostics(Graphics2D g, int fps, MemoryBudget.Reading memory) {
         int w = DIAGNOSTICS_W;
-        panel(g, 0, 0, w, DIAGNOSTICS_H, GLASS);
+        panel(g, 0, 0, w, DIAGNOSTICS_H, GLASS, Bar.RIGHT);
 
         // The frame rate, at the right as it always was
         String n = Integer.toString(fps);
@@ -425,29 +443,6 @@ public final class HudStyle {
         g.fill(new java.awt.geom.RoundRectangle2D.Float(x, baseline - 8f, 8f, 8f, 3f, 3f));
         label(g, text, x + 12f, baseline, 9.5f, VALUE);
         return x + 12f + labelWidth(g, text, 9.5f);
-    }
-
-    public static final int STAMINA_W = 220, STAMINA_H = 40;
-    // The stamina bar's colour: pink when full, deepening to red as it runs out (and while winded)
-    private static final Color STAMINA_FULL = new Color(250, 145, 200), STAMINA_LOW = new Color(245, 80, 95);
-
-    /** The sprint's stamina (share, 0 to 1) as a bar; winded greys its label until it's usable again. */
-    public static void paintStamina(Graphics2D g, float share, boolean winded) {
-        share = Math.max(0f, Math.min(1f, share));
-        panel(g, 0, 0, STAMINA_W, STAMINA_H, GLASS);
-        label(g, "Stamina", 14, 25, 10f, winded ? DIM : LABEL);
-        float bx = 84f, by = 15f, bw = STAMINA_W - bx - 14f, bh = 10f;
-        g.setColor(new Color(255, 255, 255, 34));
-        g.fill(new java.awt.geom.RoundRectangle2D.Float(bx, by, bw, bh, bh, bh));
-        if (share > 0f) {
-            // (pink down to half, then towards red)
-            float t = winded ? 1f : Math.max(0f, Math.min(1f, (0.5f - share) / 0.5f));
-            Color c = new Color(Math.round(STAMINA_FULL.getRed() + (STAMINA_LOW.getRed() - STAMINA_FULL.getRed()) * t),
-                    Math.round(STAMINA_FULL.getGreen() + (STAMINA_LOW.getGreen() - STAMINA_FULL.getGreen()) * t),
-                    Math.round(STAMINA_FULL.getBlue() + (STAMINA_LOW.getBlue() - STAMINA_FULL.getBlue()) * t));
-            g.setColor(c);
-            g.fill(new java.awt.geom.RoundRectangle2D.Float(bx, by, Math.max(bh, bw * share), bh, bh, bh));
-        }
     }
 
     // ------------------------------------------------------------------ Inventory
@@ -592,6 +587,16 @@ public final class HudStyle {
         g.draw(new java.awt.geom.Line2D.Float(cx, cy, cx + (float) Math.sin(a) * f * 0.75f, cy - (float) Math.cos(a) * f * 0.75f));
         g.setColor(new Color(200, 160, 70));
         g.fill(new java.awt.geom.Ellipse2D.Float(cx - size * 0.05f, cy - size * 0.05f, size * 0.1f, size * 0.1f));
+    }
+
+    /** None, the inventory's place for nothing in hand: an empty circle struck through. */
+    public static void paintNoneIcon(Graphics2D g, float x, float y, float size) {
+        float r = size * 0.3f, cx = x + size / 2f, cy = y + size / 2f;
+        g.setColor(new Color(200, 210, 220, 170));
+        g.setStroke(new BasicStroke(size * 0.07f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.draw(new java.awt.geom.Ellipse2D.Float(cx - r, cy - r, r * 2, r * 2));
+        float d = r * 0.7071f;
+        g.draw(new java.awt.geom.Line2D.Float(cx - d, cy + d, cx + d, cy - d));
     }
 
     /** An open brown book with a magnifying glass over it. */

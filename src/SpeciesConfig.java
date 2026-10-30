@@ -25,6 +25,8 @@ class SpeciesConfig {
     float tempMean, tempStdDev;
     // How much further its tolerance reaches into the heat than the cold (1 for trees; see OrganismSpecies.heatHardiness)
     float tempHotStretch = 1f;
+    // How much further its tolerance reaches into the cold than the heat (see OrganismSpecies.coldHardiness)
+    float tempColdStretch = 1f;
     float patchNoiseScale;
     
     RegionalFactor tempFactor;

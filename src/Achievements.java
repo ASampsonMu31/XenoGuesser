@@ -32,7 +32,8 @@ public final class Achievements {
         ZOOLOGIST("Zoologist", "Unlock all fauna heatmaps in one game", 9),
         PLAY_MULTIPLAYER("Play a Multiplayer game", null, 10),
         WIN_MULTIPLAYER("Win a Multiplayer game", null, 11),
-        FLAWLESS_MULTIPLAYER("Flawless", "Win a Multiplayer game without your opponent winning a round", 12);
+        FLAWLESS_MULTIPLAYER("Flawless", "Win a Multiplayer game without your opponent winning a round", 12),
+        BULLSEYE("Bullseye", "Guess within 20 m of the right spot, in either mode", 16);
 
         public final String title, detail;
         // Its bit in what's kept (fixed, so adding one never moves another's)
@@ -122,8 +123,8 @@ public final class Achievements {
 
     /** The pop-up, TOAST_W by TOAST_H at (0, 0): "Achievement unlocked" and its name, in the HUD's style. */
     public static void paintToast(java.awt.Graphics2D g, Achievement a) {
-        HudStyle.panel(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GLASS_SOLID);
-        HudStyle.edge(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GOLD);
+        HudStyle.panel(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GLASS_SOLID, HudStyle.Bar.RIGHT);
+        HudStyle.edge(g, 0, 0, TOAST_W, TOAST_H, HudStyle.GOLD, HudStyle.Bar.RIGHT);
         // A gold star
         float cx = 40f, cy = TOAST_H / 2f;
         java.awt.geom.Path2D star = new java.awt.geom.Path2D.Float();

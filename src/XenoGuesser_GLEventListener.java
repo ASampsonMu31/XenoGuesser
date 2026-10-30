@@ -41,6 +41,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         playerMotion.jump();
     }
 
+    /** R: back to the pod's stairs where the round started. */
+    public void returnToPod() {
+        playerMotion.returnToPod();
+    }
+
     /** The oxygen's downgraded, for the rest of the game. */
     public void downgradeOxygen() {
         playerMotion.downgradeOxygen();
@@ -111,6 +116,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // The pod the player landed in, standing where each round starts
     // (in multiplayer with wider stairs, so both players start on them side by side: M11)
     final LandingPod landingPod = new LandingPod(Multiplayer.isActive());
+    // (and the beam of light it shines up from its top, to find it by)
+    private final PodBeacon podBeacon = new PodBeacon();
     private RockField rockField;
     static final Object PLAYER = "player", PARTNER = "partner";
     static final float PLAYER_RADIUS = 3.0f;   // must stay over 1.45 x NEAR_PLANE
@@ -365,10 +372,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             .addFactor(this.leafColourNoiseFactor, 0.3f)
             .build();
 
-        floraSpecies.createFloraSpecies();
+        // (the land points first: one plant is suited to the coldest of them)
+        landPoints = SpeciesRange.land(worldNoise, seaLevelHeight);
+        floraSpecies.createFloraSpecies(landPoints);
 
         // Each plant's range (see SpeciesRange): spawning and its heatmap both follow it
-        landPoints = SpeciesRange.land(worldNoise, seaLevelHeight);
         floraSpecies.floraRanges = floraSpecies.floraRanges(landPoints);
 
         // Dynamically determine the total number of writing systems/nations between 6 and 14 configurations
@@ -957,6 +965,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         deletePeoplePictures();
         playerBody.dispose(gl);
         landingPod.dispose(gl);
+        podBeacon.dispose(gl);
         if (rockField != null) rockField.clear(gl);
         hudRenderer.hud.dispose(gl);
         if (sphereSkyRenderer != null) sphereSkyRenderer.dispose(gl);
@@ -1511,6 +1520,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         });
         steps.add(this::initialiseBodies);
         steps.add(() -> landingPod.initialise(gl));
+        steps.add(() -> podBeacon.initialise(gl));
         steps.add(() -> {
             rockField = rocks();
             rockField.setKeepout((p, r) -> {
@@ -1593,6 +1603,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         playerMotion.airborne = false;
         playerMotion.jumpHeight = 0f;
         playerMotion.lastStood = Float.NaN;
+        playerMotion.cancelReturn();
 
         // (what's round the new place is worked out on the builder threads while the loading
         // screen, or the teleport's wait, keeps going)
@@ -2747,6 +2758,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // --- RAIN, under dark clouds ---
         sphereWeather.renderRain(gl, sphereViewProjection, eye, worldArt.palette().seaShallowTint(), daylight,
                 (float) (currentHeight * 0.5 / Math.tan(fieldOfView() / 2.0)));
+        // --- THE POD'S BEACON, up into the sky over everything but what stands in front of it ---
+        podBeacon.render(gl, sphereViewProjection, eye, landingPod);
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         identificationLens.captureLensDepth(gl);
@@ -3100,21 +3113,16 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         heldItem = index >= 0 && index < ownedItems.size() ? index : -1;
     }
 
-    /** The middle mouse button: takes out the inventory's first item, or puts away the one in hand. */
-    public void toggleItems() {
-        useItem(heldItem < 0 ? 0 : -1);
-    }
-
     /**
-     * The mouse wheel while an item's in hand: the next item down the inventory (steps above
-     * 0) or up it, round from the last to the first and back. Whether it was taken (nothing in
-     * hand, it's left to zoom the view).
+     * The mouse wheel: the next place down the inventory (steps above 0) or up it, None (nothing
+     * in hand) coming after the last item, and round from there to the first and back.
      */
-    public boolean scrollItems(int steps) {
-        int held = heldItem, count = ownedItems.size();
-        if (held < 0 || count == 0) return false;
-        if (steps != 0) useItem(Math.floorMod(held + steps, count));
-        return true;
+    public void scrollItems(int steps) {
+        int count = ownedItems.size();
+        if (count == 0 || steps == 0) return;
+        int held = heldItem, place = held < 0 ? count : held;
+        int next = Math.floorMod(place + steps, count + 1);
+        useItem(next == count ? -1 : next);
     }
 
     /** Nothing in hand, everything put away at once rather than lowered (each round starts so). */

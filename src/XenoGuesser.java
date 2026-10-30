@@ -569,18 +569,13 @@ glEventListener.setGameHUD(gameHUD);
         ? (multiplayerScore.gameWinner(gameHUD.getRound()) != null ? "See the result" : "Proceed to shop")
         : gameHUD.isQuarterEnd() ? "End of quarter" : "Proceed to shop");
 
-    // The mouse wheel (and a touchpad's pinch, which comes as one) switches the gadget in hand,
-    // down the inventory or up it; with none out it zooms the view where the game mode allows it
+    // The mouse wheel moves down the inventory or up it, None (everything put away) after the last
+    // gadget (the enlarged map has the wheel to itself, being out of the game's mouse). A touchpad's
+    // pinch comes as the wheel with Ctrl held: that zooms the view where the game mode allows it
     canvas.addMouseWheelListener(e -> {
       if (!inGame || !mouseCaptured) return;
-      if (!glEventListener.scrollItems(e.getWheelRotation())) glEventListener.zoomBy(e.getPreciseWheelRotation());
-    });
-    // The middle mouse button takes the gadgets out (the first in the inventory) or puts them away
-    canvas.addMouseListener(new java.awt.event.MouseAdapter() {
-      @Override
-      public void mousePressed(MouseEvent e) {
-        if (e.getButton() == MouseEvent.BUTTON2 && inGame && mouseCaptured) glEventListener.toggleItems();
-      }
+      if (e.isControlDown()) glEventListener.zoomBy(e.getPreciseWheelRotation());
+      else glEventListener.scrollItems(e.getWheelRotation());
     });
     installControls();
 
@@ -803,8 +798,10 @@ glEventListener.setGameHUD(gameHUD);
   }
 
   /**
-   * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, M enlarges
-   * or shrinks the map and Esc opens the settings (the gadgets are the mouse's: see buildGameWindow). Mouse
+   * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, R returns to
+   * the pod's stairs, Tab enlarges
+   * or shrinks the map, 1 to 4 take out each gadget, 5 puts them away and Esc opens the settings (the
+   * wheel works the gadgets as well: see buildGameWindow). Mouse
    * movement anywhere in the window turns the view while the game has the mouse.
    */
   private void installControls() {
@@ -832,14 +829,23 @@ glEventListener.setGameHUD(gameHUD);
         if ((shopPanel != null && shopPanel.isOpen()) || (quarterPanel != null && quarterPanel.isOpen())) return true;
         if (firstPress) {
           switch (code) {
-            case KeyEvent.VK_M: minimap.toggleSize(); break;
+            case KeyEvent.VK_TAB: minimap.toggleSize(); break;
+            // 1 to 4: the inventory's gadgets in turn, the compass to the identification kit; 5: None
+            case KeyEvent.VK_1: case KeyEvent.VK_2: case KeyEvent.VK_3: case KeyEvent.VK_4:
+              if (mouseCaptured) glEventListener.useItem(code - KeyEvent.VK_1);
+              break;
+            case KeyEvent.VK_5: if (mouseCaptured) glEventListener.useItem(-1); break;
             // X: the controls on offer skipped
             case KeyEvent.VK_X: if (controlsOffered) withdrawControls(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
+            // R: back to the pod's stairs
+            case KeyEvent.VK_R: glEventListener.returnToPod(); break;
             default: break;
           }
         }
         keyboardInput.keyPressed(e);
+        // (Tab is the map's, not for moving the focus between components)
+        if (code == KeyEvent.VK_TAB) return true;
       } else if (e.getID() == KeyEvent.KEY_RELEASED) {
         keysDown.remove(code);
         keyboardInput.keyReleased(e);
