@@ -162,6 +162,49 @@ public final class SignMap {
         return image.getRGB(0, 0, width, height, null, 0, width);
     }
 
+    /** How much a framing would show: the share of it that is sea, how many buildings, and the share they would cover as drawn. */
+    record Content(float sea, int count, float buildings) {
+        /** Worth printing: a coast (not open sea) or a fair spread of buildings, not just one or two big ones close up. */
+        boolean decent() {
+            return (sea >= 0.08f && sea <= 0.92f) || (count >= 8 && buildings >= 0.02f);
+        }
+
+        /** For choosing among framings that are none of them decent: 1 is as good as decent. */
+        float score() {
+            float coast = sea <= 0.92f ? sea / 0.08f : (1f - sea) / 0.08f;
+            return Math.max(Math.min(1f, coast), Math.min(count / 8f, buildings / 0.02f));
+        }
+    }
+
+    /** What the map render would draw at the same framing, measured cheaply: sea on a coarse grid of heights, buildings by their drawn size. */
+    static Content content(InfrastructureManager infrastructure, PerlinNoise terrain, float seaLevel,
+                           SphereFrame centre, float halfWidth, int width, int height) {
+        float unitsPerPixel = halfWidth * 2f / width;
+        float halfHeight = halfWidth * height / width;
+        int samples = 20, wet = 0;
+        for (int j = 0; j < samples; j++) {
+            for (int i = 0; i < samples; i++) {
+                float x = -halfWidth + (i + 0.5f) * 2f * halfWidth / samples, z = -halfHeight + (j + 0.5f) * 2f * halfHeight / samples;
+                if (TerrainMesh.getLayeredHeight(centre.toSphere(x, 0.0, z), terrain) <= seaLevel) wet++;
+            }
+        }
+        float least = 2.2f * unitsPerPixel;
+        double[] covered = { 0.0 };
+        int[] count = { 0 };
+        infrastructure.forEachBuildingNear(centre.origin(), (float) Math.hypot(halfWidth, halfHeight), (frame, outline, nationId) -> {
+            double[] middle = centre.fromSphere(frame.origin());
+            if (Math.abs(middle[0]) > halfWidth || Math.abs(middle[2]) > halfHeight) return;
+            float minX = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, minZ = Float.MAX_VALUE, maxZ = -Float.MAX_VALUE;
+            for (float[] p : outline) {
+                minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+                minZ = Math.min(minZ, p[1]); maxZ = Math.max(maxZ, p[1]);
+            }
+            count[0]++;
+            covered[0] += Math.max(least, maxX - minX) * Math.max(least, maxZ - minZ);
+        });
+        return new Content(wet / (float) (samples * samples), count[0], (float) (covered[0] / (4.0 * halfWidth * halfHeight)));
+    }
+
     /** Where the sign stands, in one of six unearthly marks. */
     private static void mark(Graphics2D g, float x, float y, float size, int shape, Color colour) {
         Color dark = colour.darker().darker();

@@ -3,12 +3,12 @@ rivers 92789b1cb0951ae5/2
 globe 05f0409d810aaf30/2
 alphabets b99f33898e33a961/8509
 art b9e0d97630ac8942/30143
-infra.cells.0 c90b0b911bcf1067/908
+infra.cells.0 47326291c082b149/908
 infra.lookups.0 1ce2c6d1c31ac7fc/29768
 infra.obstacles.0 cbbc0a14557708a4/2421
 infra.doorways.0 fff8e5988c1d2eac/363
 infra.stop.0 d1282ccf2e2296a9/2
-infra.cells.1 b789cfb3e5ec10cc/816
+infra.cells.1 a880bd4c4f329360/816
 infra.lookups.1 1d4164de348e69b9/29768
 infra.obstacles.1 7431409f37c918ff/445
 infra.doorways.1 efd3970503d568e9/55
@@ -18,7 +18,7 @@ infra.lookups.2 70c2bcfe1c9caf43/29768
 infra.obstacles.2 46bbe666de1361db/1309
 infra.doorways.2 2da4de10a7bccdb2/31
 infra.stop.2 d1282ccf2e2296a9/2
-infra.cells.3 82834c4aa0f57a3e/1016
+infra.cells.3 37d77176955ae2bc/1016
 infra.lookups.3 8ade3c89811e0b26/29768
 infra.obstacles.3 83cb471e849f09e0/1999
 infra.doorways.3 6f9298f3091e9650/313
