@@ -47,7 +47,7 @@ teleporting, then `renderScene` → `render`:
    and people → `renderGrass` → rocks (`RockField`) → landing pod → partner → clouds
    (`SphereWeather`) → window glass → sea → rivers (`RiverRenderer`) → rain → lens depth →
    `renderPlayerBody` (`PlayerBody`, in the camera's local frame).
-5. Then `OxygenBlur`, `HudRenderer.drawHud`, `SpeciesPictures.advancePreviews`.
+5. Then `OxygenBlur`, `TeleportFizzle` (returning to the pod), `HudRenderer.drawHud`, `SpeciesPictures.advancePreviews`.
 
 Everything is drawn camera-relative in planet-centred coordinates (`SpherePosition`, doubles);
 shaders are in `assets/shaders/*.txt` (`vs_*`/`fs_*`, loaded by `Shader`).
@@ -126,7 +126,7 @@ Parts extend `GamePart` (field `game`).
 - **Player and pod**: `PlayerBody`, `LandingPod`, `PodSequence`, `PodTimeline`, `PodInterior`,
   `PodFurniture`, `PodChair`, `PodPhysics`, `PodTerminal`, `PodSpaceView`, `PodSounds`,
   `LoadingScreen`, `LoadingArt`, `LoadingProgress`, `TransmissionMessage` (with the players' names
-  spliced in), `PlanetVoice`, `OxygenBlur`.
+  spliced in), `PlanetVoice`, `OxygenBlur`, `TeleportFizzle`.
 - **Player profile**: `Profile` (username, suit colour, the name's recording), `ProfilePanel`,
   `NameCheck` (swearing by spelling, sound and spoonerism), `Pronunciation` (a name split into words,
   said from `assets/text/word_sounds.txt.gz`, made by `tools/word_sounds.py`), `SuitColour`.

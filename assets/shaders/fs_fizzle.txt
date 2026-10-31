@@ -1,0 +1,55 @@
+#version 330 core
+
+// Returning to the pod: the view fizzling out and back. It tears into horizontal bands, wide and
+// thin, each jerked sideways a different way many times a second with its colours split apart,
+// the thinnest dropping out into static, and the whole lost in static and flickering scanlines;
+// all the more the greater the strength (0 none, 1 nothing left of the view)
+
+in vec2 uv;
+out vec4 fragColour;
+
+uniform sampler2D scene;
+uniform float strength;
+uniform float time;
+uniform vec2 texel;      // one pixel, in uv
+
+// (without sin, which loses its precision on the GPU and draws the static as flat slabs)
+float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    float s = strength;
+    // The bands jump to new places this many times a second, the static faster still
+    // (counted round, so they stay small enough for the hash to tell apart)
+    float beat = mod(floor(time * 24.0), 997.0), flicker = mod(floor(time * 60.0), 991.0);
+    // Wide bands and thin ones, their edges shifting a little each beat
+    float wide = floor(uv.y * 12.0 + hash(vec2(beat, 1.7)) * 0.8);
+    float thin = floor(uv.y * 80.0 + hash(vec2(beat, 5.3)) * 0.8);
+    // Which bands are torn (more of them the stronger), and how far sideways
+    float shift = 0.0;
+    if (hash(vec2(wide, beat)) < s * 1.2) shift += (hash(vec2(wide, beat + 3.1)) - 0.5) * 0.3 * s * s;
+    if (hash(vec2(thin, beat + 9.7)) < s) shift += (hash(vec2(thin, beat + 4.4)) - 0.5) * 0.1 * s;
+    // (a fine shimmer along every row, as the view starts to go)
+    shift += (hash(vec2(floor(uv.y / texel.y), flicker)) - 0.5) * 0.006 * s;
+    float x = uv.x + shift;
+    // The colours drawn apart, further in the torn bands
+    float split = (0.004 + 0.02 * abs(shift)) * s;
+    vec3 colour = vec3(texture(scene, vec2(x + split, uv.y)).r,
+                       texture(scene, vec2(x, uv.y)).g,
+                       texture(scene, vec2(x - split, uv.y)).b);
+    // The static: a grain a couple of pixels across, stretched along the rows, fresh every flicker
+    vec2 grain = floor(uv / texel / vec2(4.0, 2.0));
+    float noise = hash(grain + vec2(flicker * 7.0, flicker * 3.0));
+    vec3 fizz = vec3(noise) * vec3(0.8, 0.95, 1.0);
+    // Thin bands lost to static altogether, and the rest fading into it as the strength grows
+    float lost = hash(vec2(thin, beat + 17.3)) < s * s * s * 0.9 ? 1.0 : 0.0;
+    float amount = max(lost, s * s * 0.55 + smoothstep(0.7, 1.0, s) * 0.45);
+    colour = mix(colour, fizz, amount);
+    // Scanlines, flickering darker and lighter
+    float line = step(0.5, fract(uv.y / texel.y * 0.5));
+    colour *= 1.0 - s * line * (0.2 + 0.15 * hash(vec2(flicker, 2.9)));
+    fragColour = vec4(colour, 1.0);
+}

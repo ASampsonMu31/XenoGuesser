@@ -893,6 +893,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         renderScene(gl);
         // (light-headed, once the oxygen's downgraded: M52; the HUD over it stays clear)
         if (!hideFirstPerson) playerMotion.oxygenBlur.apply(gl, screenWidth, screenHeight, playerMotion.oxygenStrength, playerMotion.oxygenTime);
+        // (breaking up and coming back together as the player returns to the pod)
+        if (!hideFirstPerson) playerMotion.teleportFizzle.apply(gl, screenWidth, screenHeight, playerMotion.fizzleStrength());
         if (!hideFirstPerson) hudRenderer.drawHud(drawable);
         speciesPictures.advancePreviews(gl);
         if (trailerDirector != null) trailerDirector.afterFrame(gl, screenWidth, screenHeight);
