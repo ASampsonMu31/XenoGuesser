@@ -1721,7 +1721,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
         gl.glDepthMask(false);
         gl.glDisable(GL.GL_CULL_FACE);
-        for (List<InfrastructureObject> objects : infraCache.values()) {
+        // (a building photographed on its own: only its windows)
+        Iterable<List<InfrastructureObject>> drawn = photoSubject != null ? List.of(List.of(photoSubject)) : infraCache.values();
+        for (List<InfrastructureObject> objects : drawn) {
             for (InfrastructureObject obj : objects) {
                 if (obj.type != InfrastructureObject.Type.BATCH || !obj.hasTransparentParts()) continue;
                 double dx = obj.centre.x() - eye.x(), dy = obj.centre.y() - eye.y(), dz = obj.centre.z() - eye.z();
@@ -1912,6 +1914,17 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // Only the cells round the camera that this lets through are built (those in a photograph's
     // view: see LandmarkPhotos); null for all of them, as in play
     private java.util.function.Predicate<GeodesicChunkGrid.Cell> onlyInView;
+
+    // A building drawn on its own against the sky, nothing else of the world (a house's
+    // photograph for the architecture map: see LandmarkPhotos); null in play
+    InfrastructureObject photoSubject;
+
+    /** Back to drawing the world after a building's been photographed on its own, its meshes let go. */
+    void endPhotoSubject() {
+        if (photoSubject == null) return;
+        photoSubject.dispose(gl);
+        photoSubject = null;
+    }
 
     /** Builds only the trees, grass, buildings and roads in cells this lets through from now on (null for all again). */
     void buildOnlyInView(java.util.function.Predicate<GeodesicChunkGrid.Cell> inView) {
@@ -2174,6 +2187,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     private void updateGeodesicTerrain(GL3 gl) {
+        // (no ground's wanted under a building photographed on its own: see photoSubject)
+        if (photoSubject != null) return;
         if (geodesicTerrainBuild != null && geodesicTerrainBuild.isDone()) {
             try {
                 MeshData data = geodesicTerrainBuild.get();
@@ -2746,7 +2761,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         inhabitants.update((float) deltaTime, eye, session != null && session.role == Multiplayer.Role.HOST && partner.hasPose() ? partner.eye() : null);
 
         // --- PASS 0: THE SUN'S SHADOWS (drawn from the sun, for everything lit by it to look up) ---
-        renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
+        // (none for a building photographed on its own: nothing round it may cast one on it)
+        if (photoSubject == null) renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
+        else Shader.clearShadows(gl);
 
         // --- PASS 1: DEPTH PRE-PASS ---
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
@@ -2759,10 +2776,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         lastSceneViewProjection = camera.localViewProjection(camera.getPerspectiveMatrix()).toFloatArrayForGLSL();
 
         // The ground: the sphere's patch round the player, in both the depth and colour passes
+        // (none under a building photographed on its own)
         updateGeodesicTerrain(gl);
-
-        depthPrePassShader.use(gl);
-        geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
+        if (photoSubject == null) {
+            depthPrePassShader.use(gl);
+            geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
+        }
 
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);   // (back to where the world is drawn)
 
@@ -2804,6 +2823,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         Shader.setFog(gl, fog[0], fog[1], fog[2]);
         // The snow lying on the ground, once it's been worked out
         snowCover.bindSnowCover(gl);
+
+        // A building photographed on its own (see LandmarkPhotos): it alone against the sky
+        if (photoSubject != null) {
+            photoSubject.renderBatch(gl, ambientLight, nightProportion, solidShader, terrainShader, terrainRenderer, camera);
+            drawWindowGlass(gl, sphereViewProjection, eye, camera.getSphereForwardDirection(), SphereRender.sunPoint(sunDirection),
+                    sunColour, skyRotation, textures.get(skyTextureKey), GLASS_DRAW_DISTANCE);
+            return;
+        }
 
         // --- TERRAIN PASS ---
         terrainShader.use(gl);

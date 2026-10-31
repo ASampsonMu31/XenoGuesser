@@ -1629,6 +1629,38 @@ public class InfrastructureManager extends InfraGeometry {
         return arch.picture(height, forms[0], walls);
     }
 
+    /**
+     * A nation's houses in one of the world's architectures, the most typical first (to be
+     * photographed for the architecture map: see LandmarkPhotos): of its commonest form, walls
+     * and weathering, neither grand nor a shop, then those nearest the middling size and wealth.
+     * Empty should it build none in it.
+     */
+    List<House> typicalHouses(int nationId, int design) {
+        List<House> built = new ArrayList<>();
+        for (House house : houses) if (house.nationId == nationId && house.architecture == design && house.shop == null) built.add(house);
+        if (built.isEmpty()) return built;
+        int form = commonest(built, h -> h.form), walls = commonest(built, h -> h.wallVariant), weathering = commonest(built, h -> h.weathering);
+        float size = middling(built, h -> h.sizeScale), wealth = middling(built, h -> h.richness);
+        built.sort(java.util.Comparator.comparingDouble(h -> (h.form != form ? 8 : 0) + (h.wallVariant != walls ? 4 : 0) + (h.grand ? 2 : 0)
+                + (h.weathering != weathering ? 1 : 0) + Math.abs(h.sizeScale - size) * 4 + Math.abs(h.richness - wealth)));
+        return built;
+    }
+
+    /** The commonest of something about houses (the lowest, should two be as common). */
+    private static int commonest(List<House> houses, java.util.function.ToIntFunction<House> of) {
+        java.util.TreeMap<Integer, Integer> counts = new java.util.TreeMap<>();
+        for (House house : houses) counts.merge(of.applyAsInt(house), 1, Integer::sum);
+        int best = counts.firstKey();
+        for (Map.Entry<Integer, Integer> e : counts.entrySet()) if (e.getValue() > counts.get(best)) best = e.getKey();
+        return best;
+    }
+
+    /** The median of something about houses. */
+    private static float middling(List<House> houses, java.util.function.ToDoubleFunction<House> of) {
+        double[] values = houses.stream().mapToDouble(of).sorted().toArray();
+        return (float) values[values.length / 2];
+    }
+
     /** A nation's commonest wall variety in a masonry pattern (any, should it build none in it). */
     private int typicalWall(int nationId, BuildingStyle.Pattern pattern) {
         float[] weights = buildingStyles.get(nationId).wallVariantWeights;
