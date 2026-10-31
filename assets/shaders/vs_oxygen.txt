@@ -1,6 +1,7 @@
 #version 330 core
 
-// The oxygen's downgrade (M52): one triangle covering the screen, the finished view drawn again through it
+// The oxygen's downgrade (M52), and returning to the pod's fizzle: one triangle covering the
+// screen, the finished view drawn again through it
 
 out vec2 uv;
 

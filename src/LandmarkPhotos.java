@@ -2,15 +2,19 @@ import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.util.List;
+import com.xenoguesser.math.Vector3;
 
 /**
- * The landmarks' photographs for their map (see MapOverlays.showLandmarks): each one taken in
- * the world itself, with its own renderer, as a visitor would see it. While the world loads
+ * The landmarks' photographs for their map (see MapOverlays.showLandmarks), and a typical
+ * house's for each of the architecture map's pictures: each one taken in the world itself, with
+ * its own renderer, as a visitor would see it. While the world loads
  * (the maps being charted on their own thread meanwhile), the camera's sent to a spot chosen for
  * each kind (before a built one's front and off to one side; across a bay from its shore; along
  * a spit from its root; over a field of pinnacles from the land...), waits there until what's
  * round it is built, as a teleport does, and the world's drawn into a picture of its own on a
- * clear mid-morning. Then it goes back to the landing site (before anything's built round it), the
+ * clear mid-morning. A house is drawn on its own against the sky instead, from before its
+ * door, with nothing round it (no ground, plants, people, vehicles or signs) to hide it or to
+ * tell where it stands: the architecture map shows how a region builds, not where. Then it goes back to the landing site (before anything's built round it), the
  * round's own day put back.
  */
 final class LandmarkPhotos extends GamePart {
@@ -31,10 +35,27 @@ final class LandmarkPhotos extends GamePart {
     private record Shot(SpherePosition eye, SpherePosition target, double fieldOfView) {
     }
 
+    /**
+     * Something to photograph: its name (for the log and a saved photograph's file), the landmark
+     * or the house it is (the other null), its picture's size, where it's taken from and what's
+     * done with the picture once taken.
+     */
+    private record Subject(String name, String file, Landmark landmark, House house, int width, int height,
+                           java.util.function.Supplier<Shot> shot, java.util.function.Consumer<BufferedImage> keep) {
+    }
+
     private enum Stage { WAITING_TO_START, GOING, WAITING, SHOOTING, DONE }
 
+    // A house's picture is as wide as a landmark's; how long to wait for the architecture map's
+    // pictures to be placed (on the maps' own thread) before its houses go unphotographed
+    private static final float HOUSE_PICTURE_ASPECT = 1.45f;
+    private static final long MAP_PATIENCE = 60_000;
+
     private Stage stage = Stage.WAITING_TO_START;
-    private List<Landmark> landmarks;
+    private final List<Subject> subjects = new java.util.ArrayList<>();
+    // Whether the houses have been added after the landmarks, and since when they've been waited for
+    private boolean housesAdded;
+    private long housesWanted;
     private int next, frame;
     private Shot shot;
     private long since;
@@ -62,7 +83,11 @@ final class LandmarkPhotos extends GamePart {
     float step() {
         switch (stage) {
             case WAITING_TO_START -> {
-                landmarks = game.infraManager.landmarks().all();
+                for (Landmark lm : game.infraManager.landmarks().all()) {
+                    int height = MapOverlays.LANDMARK_PICTURE_HEIGHT;
+                    subjects.add(new Subject(lm.name, lm.kind.name().toLowerCase(), lm, null, lm.pictureWidth(height), height,
+                            () -> shotOf(lm), picture -> lm.picture = Landmark.framed(picture)));
+                }
                 homeEye = game.camera.getSpherePosition();
                 homeYaw = game.camera.getYaw();
                 homePitch = game.camera.getPitch();
@@ -74,45 +99,79 @@ final class LandmarkPhotos extends GamePart {
                 stage = Stage.GOING;
             }
             case GOING -> {
-                if (next >= landmarks.size()) {
+                if (next >= subjects.size() && !housesAdded && !addHouses()) break;
+                if (next >= subjects.size()) {
                     goHome();
                     break;
                 }
-                Landmark lm = landmarks.get(next);
-                aim(shotOf(lm), lm);
+                Subject subject = subjects.get(next);
+                aim(subject.shot().get(), subject);
                 refined = false;
                 since = System.currentTimeMillis();
                 stage = Stage.WAITING;
+                // (a house, drawn on its own, has nothing round it to wait for)
+                if (subject.house() != null) {
+                    game.photoSubject = game.infraManager.houseBuilder.alone(subject.house());
+                    frame = 0;
+                    stage = Stage.SHOOTING;
+                }
             }
             case WAITING -> {
                 placeCamera();
                 boolean built = game.buildRoundCamera();
                 // (a grove's looked at again once its plants are there: at the nearest of them to its middle)
-                Landmark lm = landmarks.get(next);
-                if (built && lm.kind == Landmark.Kind.GROVE && !refined) {
+                Subject subject = subjects.get(next);
+                Landmark lm = subject.landmark();
+                if (built && lm != null && lm.kind == Landmark.Kind.GROVE && !refined) {
                     refined = true;
                     Shot closer = amongPlants(lm);
                     if (closer != null) {
-                        aim(closer, lm);
+                        aim(closer, subject);
                         break;
                     }
                 }
                 if (built || System.currentTimeMillis() - since > PATIENCE) {
-                    if (!built) System.out.printf("[LANDMARKS] %s's surroundings still unbuilt after %d s: photographed as they are%n", landmarks.get(next).name, PATIENCE / 1000);
+                    if (!built) System.out.printf("[LANDMARKS] %s's surroundings still unbuilt after %d s: photographed as they are%n", subject.name(), PATIENCE / 1000);
                     clearDay(shot.target());
                     frame = 0;
                     stage = Stage.SHOOTING;
                 }
             }
-            case SHOOTING -> shoot(landmarks.get(next));
+            case SHOOTING -> shoot(subjects.get(next));
             default -> { }
         }
-        return landmarks == null || landmarks.isEmpty() ? 1f : Math.min(1f, (next + (stage == Stage.SHOOTING ? 0.6f : 0f)) / (landmarks.size() + 0.5f));
+        return subjects.isEmpty() ? 1f : Math.min(1f, (next + (stage == Stage.SHOOTING ? 0.6f : 0f)) / (subjects.size() + 0.5f));
     }
 
-    /** Draws a frame at the spot; the last, once the frames before have settled the grass and shadows, is kept as the landmark's picture. */
-    private void shoot(Landmark lm) {
-        int height = MapOverlays.LANDMARK_PICTURE_HEIGHT, width = lm.pictureWidth(height);
+    /**
+     * After the landmarks, a typical house (see InfrastructureManager.typicalHouses) for each of
+     * the architecture map's designs as built in each nation, once its pictures are placed.
+     * False while they're still being waited for.
+     */
+    private boolean addHouses() {
+        List<Integer> keys = game.mapOverlays.architectureKeys;
+        if (keys == null) {
+            if (housesWanted == 0L) housesWanted = System.currentTimeMillis();
+            if (System.currentTimeMillis() - housesWanted < MAP_PATIENCE) return false;
+            System.out.printf("[LANDMARKS] The architecture map's pictures still unplaced after %d s: its houses left drawn%n", MAP_PATIENCE / 1000);
+            keys = List.of();
+        }
+        housesAdded = true;
+        int height = MapOverlays.DETAIL_PICTURE_HEIGHT, width = Math.round(height * HOUSE_PICTURE_ASPECT);
+        for (int key : new java.util.TreeSet<>(keys)) {
+            int[] of = game.mapOverlays.architectureOf(key);
+            List<House> houses = game.infraManager.typicalHouses(of[0], of[1]);
+            if (houses.isEmpty()) continue;
+            House house = houses.get(0);
+            subjects.add(new Subject("nation " + of[0] + "'s house in architecture " + of[1], "house_" + of[0] + "_" + of[1], null, house, width, height,
+                    () -> houseShot(house), picture -> game.mapOverlays.architecturePhotos.put(key, picture)));
+        }
+        return true;
+    }
+
+    /** Draws a frame at the spot; the last, once the frames before have settled the grass and shadows, is kept as the subject's picture. */
+    private void shoot(Subject subject) {
+        int height = subject.height(), width = subject.width();
         try {
             game.hideFirstPerson = true;
             BufferedImage drawn = game.photograph(width * SUPERSAMPLE, height * SUPERSAMPLE, shot.fieldOfView());
@@ -123,15 +182,16 @@ final class LandmarkPhotos extends GamePart {
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             g.drawImage(drawn, 0, 0, width, height, null);
             g.dispose();
-            lm.picture = Landmark.framed(picture);
-            System.out.printf("[LANDMARKS] Photographed %s in %d ms%n", lm.name, System.currentTimeMillis() - since);
-            if (SAVE_TO != null) save(drawn, lm);
+            subject.keep().accept(picture);
+            System.out.printf("[LANDMARKS] Photographed %s in %d ms%n", subject.name(), System.currentTimeMillis() - since);
+            if (SAVE_TO != null) save(drawn, subject);
         } catch (RuntimeException e) {
             // (its picture's drawn without the world instead: see MapOverlays.showLandmarks)
-            System.err.println("[LANDMARKS] Couldn't photograph " + lm.name + ": " + e);
+            System.err.println("[LANDMARKS] Couldn't photograph " + subject.name() + ": " + e);
         } finally {
             game.hideFirstPerson = homeHidden;
         }
+        game.endPhotoSubject();
         putDayBack();
         next++;
         stage = Stage.GOING;
@@ -140,13 +200,13 @@ final class LandmarkPhotos extends GamePart {
     // Developer aid: -Dxenoguesser.landmarkphotos=folder saves each photograph there, at the size it was drawn
     private static final String SAVE_TO = Dev.property("xenoguesser.landmarkphotos");
 
-    private void save(BufferedImage drawn, Landmark lm) {
+    private void save(BufferedImage drawn, Subject subject) {
         java.io.File folder = new java.io.File(SAVE_TO);
         folder.mkdirs();
         try {
-            javax.imageio.ImageIO.write(drawn, "png", new java.io.File(folder, String.format("%02d_%s.png", next, lm.kind.name().toLowerCase())));
+            javax.imageio.ImageIO.write(drawn, "png", new java.io.File(folder, String.format("%02d_%s.png", next, subject.file())));
         } catch (java.io.IOException e) {
-            System.err.println("[LANDMARKS] Couldn't save " + lm.name + "'s photograph: " + e);
+            System.err.println("[LANDMARKS] Couldn't save " + subject.name() + "'s photograph: " + e);
         }
     }
 
@@ -177,12 +237,11 @@ final class LandmarkPhotos extends GamePart {
     // ------------------------------------------------------------------ where each is taken from
 
     /** Takes a shot from now on: the camera there, and only what's in its view built round it. */
-    private void aim(Shot s, Landmark lm) {
+    private void aim(Shot s, Subject subject) {
         shot = s;
         placeCamera();
-        int height = MapOverlays.LANDMARK_PICTURE_HEIGHT;
-        double across = Math.atan(lm.pictureWidth(height) / (double) height * Math.tan(s.fieldOfView() * 0.5));
-        game.buildOnlyInView(inView(s, across));
+        double across = Math.atan(subject.width() / (double) subject.height() * Math.tan(s.fieldOfView() * 0.5));
+        game.buildOnlyInView(subject.house() != null ? cell -> false : inView(s, across));
     }
 
     /**
@@ -286,6 +345,28 @@ final class LandmarkPhotos extends GamePart {
             }
             case GROVE -> clearest(middle, 0.0, 8, lm.reach + 15f * M, eye -> ground(eye) + 5f * M, ground(middle) + 4f * M, 55);
         };
+    }
+
+    /**
+     * A house's shot: from before its door and off to one side (the side the sun lights), a
+     * little above a visitor's eyes, far enough off to have all of it in the picture. It's drawn
+     * on its own (see XenoGuesser_GLEventListener.photoSubject), so nothing can be in the way.
+     */
+    private Shot houseShot(House house) {
+        BuildingStyle style = game.infraManager.styleOf(house);
+        float wide = house.houseMaxX() - house.houseMinX(), middleX = (house.houseMinX() + house.houseMaxX()) * 0.5f;
+        float tall = house.mainWallHeight + style.roofHeight * house.sizeScale;
+        SpherePosition foot = house.frame.toSphere(middleX, 0.0, 0.0);
+        double ground = ground(foot);
+        float distance = house.depth * 0.5f + Math.max(Math.max(wide * 1.0f, tall * 1.4f), 5f * M);
+        SpherePosition target = SphereMath.atAltitude(foot, ground + tall * 0.42);
+        // (on the clear day it's photographed on: see clearDay)
+        clearDay(foot);
+        Vector3 sun = SphereRender.sunDirection(foot, Planet.sunDirection(foot, game.sunDeclination, game.noonLongitude));
+        double[] right = house.frame.worldDirection(1.0, 0.0, 0.0);
+        double side = right[0] * sun.x + right[1] * sun.y + right[2] * sun.z >= 0.0 ? 0.45 : -0.45;
+        SpherePosition at = house.frame.toSphere(middleX + Math.sin(side) * distance, 0.0, Math.cos(side) * distance);
+        return new Shot(SphereMath.atAltitude(at, ground + Math.max(2.2f * M, tall * 0.35)), target, Math.toRadians(50));
     }
 
     /**

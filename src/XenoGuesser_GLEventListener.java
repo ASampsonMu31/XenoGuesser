@@ -184,9 +184,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     int currentWidth = 1024;  
     int currentHeight = 768;
     
-    private static final double FPS_WINDOW_SECONDS = 0.5;
+    private static final long FPS_WINDOW_NANOS = 500_000_000L;
     private int fpsFrameCount = 0;
-    private double fpsWindowStart = 0;
+    private long fpsWindowStart = 0L;
 
     // --- Fully GPU-Driven Instanced Grass Rendering Fields ---
     private Shader grassShader;
@@ -889,9 +889,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 camera.lookAt(SphereMath.atAltitude(SphereMath.move(stand.place(), stand.heading(), 50.0), eyes - 8.0));
             }
         }
+        countFrameRate();
         renderScene(gl);
         // (light-headed, once the oxygen's downgraded: M52; the HUD over it stays clear)
         if (!hideFirstPerson) playerMotion.oxygenBlur.apply(gl, screenWidth, screenHeight, playerMotion.oxygenStrength, playerMotion.oxygenTime);
+        // (breaking up and coming back together as the player returns to the pod)
+        if (!hideFirstPerson) playerMotion.teleportFizzle.apply(gl, screenWidth, screenHeight, playerMotion.fizzleStrength());
         if (!hideFirstPerson) hudRenderer.drawHud(drawable);
         speciesPictures.advancePreviews(gl);
         if (trailerDirector != null) trailerDirector.afterFrame(gl, screenWidth, screenHeight);
@@ -928,7 +931,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     /**
      * How far the soil's colour departs from the base soil texture over the whole sphere, as a
-     * cube map (see SphereRaster) of per-channel ratios, halved to fit in [0, 1], three bytes a
+     * cube map (see SphereRaster) of per-channel ratios, quartered to fit in [0, 1] (a chalk-pale
+     * region over a dark base soil is well over twice as bright), three bytes a
      * texel. The terrain shader multiplies the soil texture by it in each place's direction, so
      * the ground shifts gradually between the palette's base soil and its two regional
      * variants over tens of kilometres. Kept until the GL thread uploads it (see soilRegionTexture).
@@ -954,8 +958,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             for (int c = 0; c < 3; c++) {
                 float colour = base[c] + (a[c] - base[c]) * wa;
                 colour += (b[c] - colour) * wb;
-                float ratio = Math.min(2.0f, colour / Math.max(0.02f, base[c]));
-                texels[t * 3 + c] = (byte) Math.round(ratio * 0.5f * 255f);
+                float ratio = Math.min(4.0f, colour / Math.max(0.02f, base[c]));
+                texels[t * 3 + c] = (byte) Math.round(ratio * 0.25f * 255f);
             }
         }
         soilRegionTexels = texels;
@@ -1719,7 +1723,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
         gl.glDepthMask(false);
         gl.glDisable(GL.GL_CULL_FACE);
-        for (List<InfrastructureObject> objects : infraCache.values()) {
+        // (a building photographed on its own: only its windows)
+        Iterable<List<InfrastructureObject>> drawn = photoSubject != null ? List.of(List.of(photoSubject)) : infraCache.values();
+        for (List<InfrastructureObject> objects : drawn) {
             for (InfrastructureObject obj : objects) {
                 if (obj.type != InfrastructureObject.Type.BATCH || !obj.hasTransparentParts()) continue;
                 double dx = obj.centre.x() - eye.x(), dy = obj.centre.y() - eye.y(), dz = obj.centre.z() - eye.z();
@@ -1910,6 +1916,17 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // Only the cells round the camera that this lets through are built (those in a photograph's
     // view: see LandmarkPhotos); null for all of them, as in play
     private java.util.function.Predicate<GeodesicChunkGrid.Cell> onlyInView;
+
+    // A building drawn on its own against the sky, nothing else of the world (a house's
+    // photograph for the architecture map: see LandmarkPhotos); null in play
+    InfrastructureObject photoSubject;
+
+    /** Back to drawing the world after a building's been photographed on its own, its meshes let go. */
+    void endPhotoSubject() {
+        if (photoSubject == null) return;
+        photoSubject.dispose(gl);
+        photoSubject = null;
+    }
 
     /** Builds only the trees, grass, buildings and roads in cells this lets through from now on (null for all again). */
     void buildOnlyInView(java.util.function.Predicate<GeodesicChunkGrid.Cell> inView) {
@@ -2172,6 +2189,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     private void updateGeodesicTerrain(GL3 gl) {
+        // (no ground's wanted under a building photographed on its own: see photoSubject)
+        if (photoSubject != null) return;
         if (geodesicTerrainBuild != null && geodesicTerrainBuild.isDone()) {
             try {
                 MeshData data = geodesicTerrainBuild.get();
@@ -2679,8 +2698,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         lastElapsedTime = elapsedTime;
         applyLook();
 
-        countFrameRate(elapsedTime);
-
         // Movement uses a capped step so a long hitch doesn't fling the camera
         if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
@@ -2746,7 +2763,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         inhabitants.update((float) deltaTime, eye, session != null && session.role == Multiplayer.Role.HOST && partner.hasPose() ? partner.eye() : null);
 
         // --- PASS 0: THE SUN'S SHADOWS (drawn from the sun, for everything lit by it to look up) ---
-        renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
+        // (none for a building photographed on its own: nothing round it may cast one on it)
+        if (photoSubject == null) renderShadows(gl, eye, sunDirection, sunElevation, (float) elapsedTime);
+        else Shader.clearShadows(gl);
 
         // --- PASS 1: DEPTH PRE-PASS ---
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, depthFBO[0]);
@@ -2759,10 +2778,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         lastSceneViewProjection = camera.localViewProjection(camera.getPerspectiveMatrix()).toFloatArrayForGLSL();
 
         // The ground: the sphere's patch round the player, in both the depth and colour passes
+        // (none under a building photographed on its own)
         updateGeodesicTerrain(gl);
-
-        depthPrePassShader.use(gl);
-        geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
+        if (photoSubject == null) {
+            depthPrePassShader.use(gl);
+            geodesicTerrainModel.renderDepthPass(gl, depthPrePassShader);
+        }
 
         gl.glBindFramebuffer(GL3.GL_FRAMEBUFFER, sceneFbo);   // (back to where the world is drawn)
 
@@ -2804,6 +2825,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         Shader.setFog(gl, fog[0], fog[1], fog[2]);
         // The snow lying on the ground, once it's been worked out
         snowCover.bindSnowCover(gl);
+
+        // A building photographed on its own (see LandmarkPhotos): it alone against the sky
+        if (photoSubject != null) {
+            photoSubject.renderBatch(gl, ambientLight, nightProportion, solidShader, terrainShader, terrainRenderer, camera);
+            drawWindowGlass(gl, sphereViewProjection, eye, camera.getSphereForwardDirection(), SphereRender.sunPoint(sunDirection),
+                    sunColour, skyRotation, textures.get(skyTextureKey), GLASS_DRAW_DISTANCE);
+            return;
+        }
 
         // --- TERRAIN PASS ---
         terrainShader.use(gl);
@@ -2875,7 +2904,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         sphereWeather.renderRain(gl, sphereViewProjection, eye, worldArt.palette().seaShallowTint(), daylight,
                 (float) (currentHeight * 0.5 / Math.tan(fieldOfView() / 2.0)));
         // --- THE POD'S BEACON, up into the sky over everything but what stands in front of it ---
-        podBeacon.render(gl, sphereViewProjection, eye, landingPod);
+        podBeacon.render(gl, sphereViewProjection, eye, landingPod, skyColour);
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         identificationLens.captureLensDepth(gl);
@@ -2890,14 +2919,18 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     /** The frame rate, counted over half-second windows, for the HUD (and the developer's log). */
-    private void countFrameRate(double elapsedTime) {
+    private void countFrameRate() {
         // Frames counted over half-second windows give the true rate; the old per-frame
-        // estimate replaced any frame slower than 0.1 s with 1/60 s, so slow frames read as 60 fps
+        // estimate replaced any frame slower than 0.1 s with 1/60 s, so slow frames read as 60 fps.
+        // Only frames shown on screen count, timed by the wall clock: the landmarks' photographs,
+        // drawn while loading before the world's clock started, left the window stuck years ahead
+        long now = System.nanoTime();
+        if (fpsWindowStart == 0L) fpsWindowStart = now;
         fpsFrameCount++;
-        if (elapsedTime - fpsWindowStart >= FPS_WINDOW_SECONDS) {
-            double measuredFps = fpsFrameCount / (elapsedTime - fpsWindowStart);
+        if (now - fpsWindowStart >= FPS_WINDOW_NANOS) {
+            double measuredFps = fpsFrameCount * 1e9 / (now - fpsWindowStart);
             fpsFrameCount = 0;
-            fpsWindowStart = elapsedTime;
+            fpsWindowStart = now;
             if (this.gameHUD != null) {
                 this.gameHUD.setGameFps((int) Math.round(measuredFps));
             }
@@ -2905,7 +2938,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             if (Dev.flag("xenoguesser.fpslog")) {
                 System.out.printf(java.util.Locale.ROOT, "[FPS] %.0f, %d plants drawn, %d thousand triangles in them%n", measuredFps, visibleFlora.size(), floraTriangles / 1000);
             }
-    }
+        }
     }
 
     /** The grass, drawn instanced: every blade gathered round the player (see updateVegetation). */

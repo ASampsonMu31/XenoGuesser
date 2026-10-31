@@ -188,6 +188,8 @@ final class DevTestRun {
         }
         case "frameshot": XenoGuesser.later(Dev.integer("xenoguesser.frameshotdelay", 4000),
             () -> app.glEventListener.devShots.saveNextFrame(new java.io.File(Dev.property("xenoguesser.frameshot", "frame.png")))); break;
+        // returnpod: R pressed -Dxenoguesser.returnpoddelay ms in (default 4000), to see its fizzle with frameshots
+        case "returnpod": XenoGuesser.later(Dev.integer("xenoguesser.returnpoddelay", 4000), app.glEventListener::returnToPod); break;
         // herd: faces the nearest herd (and again each time a frame is saved by frameshots)
         case "herd": XenoGuesser.later(2000, () -> app.glEventListener.devShots.lookAtHerd()); break;
         // frameshots: frames saved at each of -Dxenoguesser.frameshotsat=ms,... as <frameshot>_<ms>.png, facing the herd first

@@ -1,10 +1,11 @@
 import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL3;
 import com.xenoguesser.math.Matrix4;
+import com.xenoguesser.math.Vector3;
 
 /**
  * The light the landing pod's beacon shines, so the player can find their way back to it from
- * wherever it's in view: bright green, gathered by the dish on its roof (kept level, see
+ * wherever it's in view: bright white (to stand out against any sky), gathered by the dish on its roof (kept level, see
  * LandingPod) into a ball over it, and from the ball a beam straight up into the sky, however
  * the pod leans.
  *
@@ -20,14 +21,16 @@ public class PodBeacon {
     private static final double LENGTH = 12000.0;
     private static final int SEGMENTS = 32;
     // The beam's half width up close, and the least it's ever seen at (radians either side of its middle)
-    private static final double RADIUS = 1.6, LEAST_ANGLE = 0.003;
+    private static final double RADIUS = 5.0, LEAST_ANGLE = 0.008;
     // The ball's radius (its glow's: its bright middle is about a third of it), and the least it's seen at
-    private static final double BALL_RADIUS = 5.5, BALL_LEAST_ANGLE = 0.008;
+    private static final double BALL_RADIUS = 12.0, BALL_LEAST_ANGLE = 0.02;
     // How many slices the light off the dish is built from
     private static final int CONE_SLICES = 24;
     // Each vertex: camera-relative position, where it is across the light (-1 to 1 each way: 0, 0
     // at its middle) and how bright it is there
     private static final int FLOATS = 6;
+    // How much more vivid the fringe is than the sky's complementary colour, and how dark
+    private static final float FRINGE_VIVIDNESS = 2.5f, FRINGE_DARKNESS = 0.45f;
 
     private Shader shader;
     private int vao, vbo;
@@ -57,8 +60,11 @@ public class PodBeacon {
         gl.glDeleteBuffers(1, new int[] { vbo }, 0);
     }
 
-    /** Draws the pod's beacon light (if it's been placed) over what's behind it. */
-    public void render(GL3 gl, Matrix4 viewProjection, SpherePosition eye, LandingPod pod) {
+    /**
+     * Draws the pod's beacon light (if it's been placed) over what's behind it, its fringe in
+     * the sky's complementary colour.
+     */
+    public void render(GL3 gl, Matrix4 viewProjection, SpherePosition eye, LandingPod pod, Vector3 sky) {
         SpherePosition focus = shader == null ? null : pod.beaconFocus();
         if (focus == null) return;
         SphereFrame frame = pod.frame();
@@ -114,8 +120,10 @@ public class PodBeacon {
         gl.glBufferData(GL.GL_ARRAY_BUFFER, count * 4L, java.nio.FloatBuffer.wrap(vertices, 0, count), GL3.GL_STREAM_DRAW);
         shader.use(gl);
         gl.glUniformMatrix4fv(gl.glGetUniformLocation(shader.getID(), "viewProjection"), 1, false, viewProjection.toFloatArrayForGLSL(), 0);
+        float[] fringe = complement(sky);
+        shader.setFloat(gl, "fringeColour", fringe[0], fringe[1], fringe[2]);
         gl.glEnable(GL.GL_BLEND);
-        // (premultiplied: its green over whatever's behind, however bright the sky)
+        // (premultiplied: its white over whatever's behind, rather than added to an already bright sky)
         gl.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA);
         gl.glDepthMask(false);
         gl.glDepthFunc(GL.GL_LEQUAL);
@@ -136,6 +144,22 @@ public class PodBeacon {
         double s = Math.sin(angle) * LandingPod.DISH_RADIUS * 0.95, c = Math.cos(angle) * LandingPod.DISH_RADIUS * 0.95;
         put(fx - up[0] * rimDown + x[0] * s + z[0] * c, fy - up[1] * rimDown + x[1] * s + z[1] * c,
                 fz - up[2] * rimDown + x[2] * s + z[2] * c, 0.0, 0.0, 0.04);
+    }
+
+    /**
+     * The sky's complementary colour for the beam's fringe: its hue turned half way round (each
+     * channel flipped about the middle of the brightest and dimmest), made more vivid, and
+     * darkened so it stands apart in brightness as well. A grey sky's is just a dark grey.
+     */
+    private static float[] complement(Vector3 sky) {
+        float[] c = { sky.x, sky.y, sky.z };
+        float most = Math.max(c[0], Math.max(c[1], c[2])), least = Math.min(c[0], Math.min(c[1], c[2]));
+        float grey = (most + least) * 0.5f;
+        for (int i = 0; i < 3; i++) {
+            float flipped = most + least - c[i];
+            c[i] = Math.max(0f, Math.min(1f, grey + (flipped - grey) * FRINGE_VIVIDNESS)) * FRINGE_DARKNESS;
+        }
+        return c;
     }
 
     private void put(double px, double py, double pz, double u, double v, double bright) {

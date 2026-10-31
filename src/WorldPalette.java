@@ -94,11 +94,11 @@ public final class WorldPalette {
         skyHorizon = washed;
 
         soilBase = pickSoil(rng);
-        // Two clearly different regional soils, so the ground itself hints at where you are
-        int kindA = rng.nextInt(SOIL_VARIANT_KINDS);
-        int kindB = (kindA + 1 + rng.nextInt(SOIL_VARIANT_KINDS - 1)) % SOIL_VARIANT_KINDS;
-        soilRegionalA = pickSoilVariant(rng, soilBase, kindA);
-        soilRegionalB = pickSoilVariant(rng, soilBase, kindB);
+        // Two clearly different regional soils, so the ground itself hints at where you are (from
+        // a stream of their own, so however many tries they take the colours after them don't move)
+        RegionalSoils regional = pickRegionalSoils(rng(worldSeed, 0x5011_4E61_0A11L));
+        soilRegionalA = regional.a();
+        soilRegionalB = regional.b();
 
         // The sea needn't be water: any hue, as long as it reads apart from the sky
         float[] skyHsv = toHsv(skyZenith);
@@ -138,6 +138,36 @@ public final class WorldPalette {
     }
 
     private static final int SOIL_VARIANT_KINDS = 4;
+    // How far apart the three soils must look (OKLab distance): every pair at least the first, so
+    // none is a mere tint of another, and some pair at least the second, so the soil map always
+    // shows at least two plainly different grounds (a red and a pale, a brown and a dark...)
+    private static final float MIN_SOIL_DISTANCE = 0.1f, STRONG_SOIL_DISTANCE = 0.22f;
+
+    /** The two regional soils (see soilRegionalA and soilRegionalB). */
+    private record RegionalSoils(float[] a, float[] b) {}
+
+    /**
+     * Two regional soils of different kinds, re-rolled until they and the base soil stand apart
+     * (see MIN_SOIL_DISTANCE): the pair furthest from that if none manages it.
+     */
+    private RegionalSoils pickRegionalSoils(Random rng) {
+        RegionalSoils best = null;
+        float bestScore = -1f;
+        for (int attempt = 0; attempt < 64; attempt++) {
+            int kindA = rng.nextInt(SOIL_VARIANT_KINDS);
+            int kindB = (kindA + 1 + rng.nextInt(SOIL_VARIANT_KINDS - 1)) % SOIL_VARIANT_KINDS;
+            float[] a = pickSoilVariant(rng, soilBase, kindA), b = pickSoilVariant(rng, soilBase, kindB);
+            float baseA = okDistance(soilBase, a), baseB = okDistance(soilBase, b), aB = okDistance(a, b);
+            float weakest = Math.min(baseA, Math.min(baseB, aB)), strongest = Math.max(baseA, Math.max(baseB, aB));
+            float score = Math.min(1f, weakest / MIN_SOIL_DISTANCE) + Math.min(1f, strongest / STRONG_SOIL_DISTANCE);
+            if (score > bestScore) {
+                bestScore = score;
+                best = new RegionalSoils(a, b);
+            }
+            if (score >= 2f) break;
+        }
+        return best;
+    }
 
     private float[] pickSoil(Random rng) {
         float[] skyHsv = toHsv(skyHorizon);
@@ -174,38 +204,49 @@ public final class WorldPalette {
         return candidate;
     }
 
-    /** A regional relative of the base soil: redder, dark and ashy, pale and sandy, or browner and richer. */
+    /**
+     * A regional soil of one kind, as earth's run: a red iron-rich laterite, a dark ashy or peaty
+     * ground, a pale chalky or sandy one, or a rich humus brown. Each leans a little toward the
+     * base soil's hue (so an alien world's variants are a touch alien too) and is kept clear of
+     * the sky like the base.
+     */
     private float[] pickSoilVariant(Random rng, float[] base, int kind) {
-        float[] hsv = toHsv(base);
+        float baseHue = toHsv(base)[0];
         float[] skyHsv = toHsv(skyHorizon);
         float[] candidate = base;
-        for (int attempt = 0; attempt < 32; attempt++) {
-            float hue = hsv[0], sat = Math.max(0.15f, hsv[1]), val = hsv[2];
+        for (int attempt = 0; attempt < 16; attempt++) {
+            float hue, sat, val;
             switch (kind) {
-                case 0 -> {               // redder, iron-rich
-                    hue -= 0.035f + rng.nextFloat() * 0.04f;
-                    sat = Math.min(0.75f, sat * 1.5f + 0.1f);
-                    val *= 0.92f;
+                case 0 -> {               // red, iron-rich
+                    hue = 0.005f + rng.nextFloat() * 0.035f;
+                    sat = 0.55f + rng.nextFloat() * 0.2f;
+                    val = 0.36f + rng.nextFloat() * 0.14f;
                 }
                 case 1 -> {               // dark grey, ashy or peaty
-                    sat *= 0.25f;
-                    val *= 0.5f + rng.nextFloat() * 0.12f;
+                    hue = baseHue;
+                    sat = 0.04f + rng.nextFloat() * 0.1f;
+                    val = 0.13f + rng.nextFloat() * 0.09f;
                 }
-                case 2 -> {               // pale, sandy or chalky
-                    hue += 0.02f;
-                    sat *= 0.5f;
-                    val = Math.min(0.72f, val * (1.45f + rng.nextFloat() * 0.2f));
+                case 2 -> {               // pale, chalky or sandy
+                    hue = 0.09f + rng.nextFloat() * 0.06f;
+                    sat = 0.06f + rng.nextFloat() * 0.14f;
+                    val = 0.66f + rng.nextFloat() * 0.14f;
                 }
-                default -> {              // ochre-brown, humus-rich
-                    hue += 0.04f + rng.nextFloat() * 0.03f;
-                    sat = Math.min(0.7f, sat * 1.25f + 0.05f);
-                    val *= 0.72f;
+                default -> {              // brown, humus-rich
+                    hue = 0.06f + rng.nextFloat() * 0.04f;
+                    sat = 0.4f + rng.nextFloat() * 0.2f;
+                    val = 0.24f + rng.nextFloat() * 0.12f;
                 }
             }
+            // (the shorter way round the colour wheel)
+            float toward = baseHue - hue;
+            toward -= Math.round(toward);
+            hue += toward * 0.2f;
             candidate = hsv(hue, sat, val);
             boolean grey = sat < GREY_SOIL_SATURATION;
             boolean clear = grey || hueDistance(((hue % 1f) + 1f) % 1f * 360f, skyHsv[0] * 360f) >= MIN_SOIL_SKY_HUE_DISTANCE;
-            if (clear && skyHsv[2] - val >= 0.2f) return candidate;
+            // (a pale soil may come nearer the horizon's lightness than the others: chalk is pale)
+            if (clear && skyHsv[2] - val >= (kind == 2 ? 0.05f : 0.2f)) return candidate;
         }
         return candidate;
     }
@@ -288,29 +329,36 @@ public final class WorldPalette {
         return best;
     }
 
-    /** How strong a colour is (OKLCH chroma). */
-    private static float okChroma(float[] rgb) {
+    /** An sRGB colour (0 to 1 each) in OKLab: lightness, then a and b. */
+    private static double[] okLab(float[] rgb) {
         double[] lin = new double[3];
         for (int i = 0; i < 3; i++) lin[i] = rgb[i] <= 0.04045 ? rgb[i] / 12.92 : Math.pow((rgb[i] + 0.055) / 1.055, 2.4);
         double l = Math.cbrt(0.4122214708 * lin[0] + 0.5363325363 * lin[1] + 0.0514459929 * lin[2]);
         double m = Math.cbrt(0.2119034982 * lin[0] + 0.6806995451 * lin[1] + 0.1073969566 * lin[2]);
         double s = Math.cbrt(0.0883024619 * lin[0] + 0.2817188376 * lin[1] + 0.6299787005 * lin[2]);
-        double a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
-        double b = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
-        return (float) Math.hypot(a, b);
+        return new double[] {
+            0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s };
+    }
+
+    /** How strong a colour is (OKLCH chroma). */
+    private static float okChroma(float[] rgb) {
+        double[] lab = okLab(rgb);
+        return (float) Math.hypot(lab[1], lab[2]);
     }
 
     /** A colour's hue as it looks (OKLCH degrees, 0 to 360). */
     static float okHue(float[] rgb) {
-        double[] lin = new double[3];
-        for (int i = 0; i < 3; i++) lin[i] = rgb[i] <= 0.04045 ? rgb[i] / 12.92 : Math.pow((rgb[i] + 0.055) / 1.055, 2.4);
-        double l = Math.cbrt(0.4122214708 * lin[0] + 0.5363325363 * lin[1] + 0.0514459929 * lin[2]);
-        double m = Math.cbrt(0.2119034982 * lin[0] + 0.6806995451 * lin[1] + 0.1073969566 * lin[2]);
-        double s = Math.cbrt(0.0883024619 * lin[0] + 0.2817188376 * lin[1] + 0.6299787005 * lin[2]);
-        double a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
-        double b = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
-        double hue = Math.toDegrees(Math.atan2(b, a));
+        double[] lab = okLab(rgb);
+        double hue = Math.toDegrees(Math.atan2(lab[2], lab[1]));
         return (float) (hue < 0 ? hue + 360 : hue);
+    }
+
+    /** How different two colours look (OKLab distance: about 0.02 just noticeable, 0.2 plainly different). */
+    static float okDistance(float[] x, float[] y) {
+        double[] p = okLab(x), q = okLab(y);
+        return (float) Math.sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2]));
     }
 
     /** An OKLab colour as sRGB (0 to 1 each), or null if the screen can't show it. */

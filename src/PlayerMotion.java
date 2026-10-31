@@ -109,9 +109,12 @@ final class PlayerMotion extends GamePart {
 
     private volatile boolean jumpWanted;
 
-    // How long returning to the pod (R) takes, and when it's due (NaN while not returning)
-    private static final double RETURN_SECONDS = 3.0;
-    private volatile double returnAt = Double.NaN;
+    // How long returning to the pod (R) takes (and its fizzle as long again to clear after), when
+    // it's due (NaN while not returning), and when the player last got there (NaN once it's clear)
+    private static final double RETURN_SECONDS = 1.0;
+    private volatile double returnAt = Double.NaN, arrivedAt = Double.NaN;
+
+    final TeleportFizzle teleportFizzle = new TeleportFizzle();
 
     boolean airborne;
 
@@ -138,6 +141,20 @@ final class PlayerMotion extends GamePart {
         return !Double.isNaN(returnAt);
     }
 
+    /**
+     * How broken up the view is by returning to the pod, 0 to 1: fizzling out over RETURN_SECONDS
+     * until the player's moved, at its worst as they are, then clearing over as long again.
+     */
+    float fizzleStrength() {
+        double now = System.nanoTime() * 1e-9, due = returnAt, arrived = arrivedAt;
+        if (!Double.isNaN(due)) return (float) Math.max(0.0, Math.min(1.0, 1.0 - (due - now) / RETURN_SECONDS));
+        if (Double.isNaN(arrived)) return 0f;
+        double left = 1.0 - (now - arrived) / RETURN_SECONDS;
+        if (left > 0.0) return (float) left;
+        arrivedAt = Double.NaN;
+        return 0f;
+    }
+
     /** Forgets any return to the pod under way (a spawn or teleport has moved the player anyway). */
     void cancelReturn() {
         returnAt = Double.NaN;
@@ -161,6 +178,8 @@ final class PlayerMotion extends GamePart {
         if (returningToPod() && System.nanoTime() * 1e-9 >= returnAt) {
             returnAt = Double.NaN;
             game.roundSpawner.returnToPod();
+            // (after the move, as moving cancels any return; the fizzle clears from now)
+            arrivedAt = System.nanoTime() * 1e-9;
         }
         boolean moveW = game.keyboard.w;
         boolean moveS = game.keyboard.s;

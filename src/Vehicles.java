@@ -1239,6 +1239,7 @@ public final class Vehicles {
      */
     public void render(GL3 gl, Shader shader, List<Vehicle> all, float drawDistance, SpherePosition eye) {
         int bonesLocation = gl.glGetUniformLocation(shader.getID(), "bones");
+        shader.setFloat(gl, "shadowExtraBias", SHADOW_EXTRA_BIAS);
         for (Vehicle v : all) {
             float ground = standingHeight(v);
             SpherePosition middle = SphereMath.atAltitude(v.position, ground + v.height * 0.5f);
@@ -1274,7 +1275,14 @@ public final class Vehicles {
             shader.setInt(gl, "flagOnTop", 0);
             meshes[v.kind][v.variant].render(gl);
         }
+        shader.setFloat(gl, "shadowExtraBias", 0f);
     }
+
+    // How much further than other things a vehicle's surface is pushed out against its own shadow
+    // (units, see shadows_include): one moving fast slides a texel or more across the shadow map
+    // each frame, so the speckles where it shades itself would change every frame, its back
+    // flashing light and dark
+    private static final float SHADOW_EXTRA_BIAS = 1.6f;
 
     /**
      * The height above the datum of the road (or ground) under it, and its tilt along its

@@ -13,6 +13,21 @@ final class HouseBuilder extends InfraPart {
         super(infra);
     }
 
+    /**
+     * A house on its own, in a batch of its own (for the architecture map's photographs, see
+     * LandmarkPhotos): only the building, without its garden's fence, flagpole, driveway or the
+     * posters on its walls, nothing round it to tell where it stands. On the GL thread, between
+     * cells built (nothing it touches is filed for walking into then).
+     */
+    InfrastructureObject alone(House house) {
+        NationBatch batch = new NationBatch(infra, house.nationId);
+        batch.place(inWorld(house));
+        bakeHouse(batch, house, new java.util.ArrayList<>());
+        batch.place(null);
+        batch.builders.remove("driveway");
+        return batch.build();
+    }
+
         void bakeHouse(NationBatch batch, House house, List<InfrastructureObject> objects) {
         BuildingStyle style = infra.styleOf(house);
         float scale = house.sizeScale;

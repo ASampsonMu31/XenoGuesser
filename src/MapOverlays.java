@@ -123,6 +123,7 @@ final class MapOverlays extends GamePart {
                 regions.put(f, found);
                 Map<Integer, BufferedImage[]> drawn = new HashMap<>();
                 List<MapPicture> placed = new ArrayList<>();
+                java.util.Map<MapPicture, Integer> keys = new java.util.IdentityHashMap<>();
                 for (float[] place : found.places()) {
                     int key = (int) place[0], nation = (int) place[1];
                     BufferedImage[] picture = drawn.computeIfAbsent(key, k -> new BufferedImage[] {
@@ -132,10 +133,16 @@ final class MapOverlays extends GamePart {
                             : MapPicture.withDetail(picture[0], place[2], place[3], f.label().replaceAll("s$", ""), picture[1]))
                             .ringed(BirdsEyeMaps.regionColour(key));
                     placed.add(f == FactorName.LANGUAGES ? p.written() : p);
+                    keys.put(placed.get(placed.size() - 1), key);
                 }
                 // (the names are writing, a line long and short: they make room for each other as
                 // they're drawn instead, see MapPanel.drawMapPictures)
                 pictures.put(f, f == FactorName.LANGUAGES ? placed : spaceOut(placed));
+                if (f == FactorName.ARCHITECTURE) {
+                    List<Integer> shown = new ArrayList<>();
+                    for (MapPicture p : pictures.get(f)) shown.add(keys.get(p));
+                    architectureKeys = shown;
+                }
             }
             pictureRegions = regions;
             mapPictures = pictures;
@@ -192,10 +199,58 @@ final class MapOverlays extends GamePart {
         }
         java.util.Map<FactorName, List<MapPicture>> withLandmarks = new java.util.EnumMap<>(mapPictures);
         withLandmarks.put(FactorName.LANDMARKS, landmarkPictures);
+        withLandmarks.put(FactorName.ARCHITECTURE, withArchitecturePhotos(mapPictures.getOrDefault(FactorName.ARCHITECTURE, List.of())));
         mapPictures = withLandmarks;
         javax.swing.SwingUtilities.invokeLater(() -> {
-            if (game.minimap != null && currentPictureMap == FactorName.LANDMARKS) choosePictureMap(currentPictureMap);
+            if (game.minimap != null && (currentPictureMap == FactorName.LANDMARKS || currentPictureMap == FactorName.ARCHITECTURE)) choosePictureMap(currentPictureMap);
         });
+    }
+
+    // The architecture map's keys (see designKey), one for each of its pictures in order, once
+    // they're placed (null until then); and the photographs of a typical house for each (see
+    // LandmarkPhotos), as they're taken, DETAIL_PICTURE_HEIGHT tall
+    volatile List<Integer> architectureKeys;
+    final Map<Integer, BufferedImage> architecturePhotos = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The nation and the architecture (an index into ArchitectureStyle.World.style) an architecture map key goes by. */
+    int[] architectureOf(int key) {
+        int nations = game.infraManager.roadLineStyles.size();
+        return new int[] { key % (nations + 1), key / (nations + 1) };
+    }
+
+    /**
+     * The architecture map's pictures with each one's house photographed where it was (the house
+     * as it's really built, framed like the landmarks', with the photograph larger in its popup);
+     * a picture whose house couldn't be photographed keeps its drawing.
+     */
+    private List<MapPicture> withArchitecturePhotos(List<MapPicture> drawn) {
+        List<Integer> keys = architectureKeys;
+        if (keys == null || keys.size() != drawn.size()) return drawn;
+        Map<Integer, BufferedImage> small = new HashMap<>();
+        List<MapPicture> pictures = new ArrayList<>();
+        for (int i = 0; i < drawn.size(); i++) {
+            MapPicture p = drawn.get(i);
+            BufferedImage photo = architecturePhotos.get(keys.get(i));
+            if (photo == null) {
+                pictures.add(p);
+                continue;
+            }
+            BufferedImage thumb = small.computeIfAbsent(keys.get(i), k -> Landmark.framed(shrunk(photo, MAP_PICTURE_HEIGHT)));
+            pictures.add(new MapPicture(thumb, p.x(), p.z(), false, null, null, FactorName.ARCHITECTURE.label(), Landmark.framed(photo), p.ring(), false));
+        }
+        return pictures;
+    }
+
+    /** A picture shrunk smoothly to a height. */
+    private static BufferedImage shrunk(BufferedImage picture, int height) {
+        int width = Math.round(picture.getWidth() * height / (float) picture.getHeight());
+        BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D g = out.createGraphics();
+        g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING, java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+        g.drawImage(picture, 0, 0, width, height, null);
+        g.dispose();
+        return out;
     }
 
     /** Waits (on the map's own thread) until the map panel's been given to the game (see setMinimap). */
@@ -408,8 +463,8 @@ final class MapOverlays extends GamePart {
     // How tall the landmarks' pictures are (shown in their popups on the map)
     static final int LANDMARK_PICTURE_HEIGHT = 220;
 
-    // How tall the bollards' and poles' larger pictures are (shown in a popup when the pointer is over theirs on the map)
-    private static final int DETAIL_PICTURE_HEIGHT = 420;
+    // How tall the bollards', poles' and houses' larger pictures are (shown in a popup when the pointer is over theirs on the map)
+    static final int DETAIL_PICTURE_HEIGHT = 420;
 
     // How tall a letter of a nation's name is drawn for the languages map, and for its popup
     private static final int NAME_LETTER = MapPanel.NATION_NAME_GLYPH, DETAIL_NAME_LETTER = 84;

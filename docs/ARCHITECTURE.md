@@ -47,7 +47,7 @@ teleporting, then `renderScene` → `render`:
    and people → `renderGrass` → rocks (`RockField`) → landing pod → partner → clouds
    (`SphereWeather`) → window glass → sea → rivers (`RiverRenderer`) → rain → lens depth →
    `renderPlayerBody` (`PlayerBody`, in the camera's local frame).
-5. Then `OxygenBlur`, `HudRenderer.drawHud`, `SpeciesPictures.advancePreviews`.
+5. Then `OxygenBlur`, `TeleportFizzle` (returning to the pod), `HudRenderer.drawHud`, `SpeciesPictures.advancePreviews`.
 
 Everything is drawn camera-relative in planet-centred coordinates (`SpherePosition`, doubles);
 shaders are in `assets/shaders/*.txt` (`vs_*`/`fs_*`, loaded by `Shader`).
@@ -96,7 +96,7 @@ Parts extend `GamePart` (field `game`).
 | `SnowCover` | Snow on the ground |
 | `FloraSpecies` | Plant species generation and ranges (`SpeciesConfig`, `SphereFlora`) |
 | `DevShots` | Saved frames, menu picture, sign/vehicle shots, dev viewpoints |
-| `LandmarkPhotos` | Photographs each landmark in the world itself while loading (camera sent to a spot per kind, surroundings built, `photograph` draws it into a picture of its own), for the landmarks' map |
+| `LandmarkPhotos` | Photographs each landmark in the world itself while loading (camera sent to a spot per kind, surroundings built, `photograph` draws it into a picture of its own), for the landmarks' map; then a typical house (`InfrastructureManager.typicalHouses`) for each of the architecture map's pictures and their popups, baked on its own (`HouseBuilder.alone`) and drawn alone against the sky (`photoSubject`) |
 | `TrailerDirector` | Films the Steam trailer's shots (`-Dxenoguesser.trailer`): finds each place, sets the day, steps the clock a frame at a time and saves frames; made only when filming (see `tools/trailer/README.md`) |
 | Data | `FactorName` (map overlays' factors), `MapOverlay`, `MapPicture`, `NationLabel` |
 
@@ -126,12 +126,13 @@ Parts extend `GamePart` (field `game`).
 - **Player and pod**: `PlayerBody`, `LandingPod`, `PodSequence`, `PodTimeline`, `PodInterior`,
   `PodFurniture`, `PodChair`, `PodPhysics`, `PodTerminal`, `PodSpaceView`, `PodSounds`,
   `LoadingScreen`, `LoadingArt`, `LoadingProgress`, `TransmissionMessage` (with the players' names
-  spliced in), `PlanetVoice`, `OxygenBlur`.
+  spliced in), `PlanetVoice`, `OxygenBlur`, `TeleportFizzle`.
 - **Player profile**: `Profile` (username, suit colour, the name's recording), `ProfilePanel`,
   `NameCheck` (swearing by spelling, sound and spoonerism), `Pronunciation` (a name split into words,
   said from `assets/text/word_sounds.txt.gz`, made by `tools/word_sounds.py`), `SuitColour`.
 - **Multiplayer**: `Multiplayer` (session, messages), `MultiplayerTransport`, `SteamTransport`,
-  `LocalTransport`, `MultiplayerPanel` (friends' codes, and matchmaking's casual and ranked queues), `MultiplayerScore`
+  `LocalTransport`, `MultiplayerPanel` (friends' codes, and matchmaking's casual and ranked queues), `MultiplayerScore`,
+  `PartnerGuessSound` (the chime when the partner guesses first)
   (rounds won), `Rating` (ranked Elo), `RemotePlayer`, `TownsfolkSync` (the host's
   people and vehicles sent to the joiner's PC).
 - **GL plumbing**: `Shader`, `Mesh`, `MeshBuilder`, `MeshData`, `Model`, `Renderer`, `Material`,
