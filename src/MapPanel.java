@@ -244,6 +244,8 @@ public class MapPanel extends JPanel {
                 // (the partner's guessed: this player has a little longer)
                 guessMsLeft = guessMsTotal = AFTER_PARTNER_MS;
                 partnerGuessedFirst = true;
+                // (heard as well as seen at the border, as the player may not be looking there)
+                PartnerGuessSound.play();
             }
             return;
         }
