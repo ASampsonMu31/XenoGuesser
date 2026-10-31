@@ -112,7 +112,7 @@ uniform vec2 scale;
 uniform vec3 ambientLight;
 uniform mat4 skyRotation;
 
-// Regional soil colour (terrain and tracks, on the sphere): colour ratios, stored halved, in a
+// Regional soil colour (terrain and tracks, on the sphere): colour ratios, stored quartered, in a
 // cube map read in the place's direction
 uniform samplerCube soilRegionMap;
 uniform float useSoilRegions;
@@ -182,7 +182,7 @@ void main() {
     vec3 texColor = sampledColor;
     float rockAmount = 0.0, rockBump = 0.0, cliffSnow = 0.0;
     if (useSoilRegions > 0.5) {
-        texColor *= texture(soilRegionMap, normalize(aWorldPos)).rgb * 2.0;
+        texColor *= texture(soilRegionMap, normalize(aWorldPos)).rgb * 4.0;
 
         // Sand along the shore: from the water's edge to a little above the waves' reach (the
         // grass begins there, see BEACH_GRASS_FROM), wandering up and down a little, on the

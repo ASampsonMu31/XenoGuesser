@@ -184,9 +184,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     int currentWidth = 1024;  
     int currentHeight = 768;
     
-    private static final double FPS_WINDOW_SECONDS = 0.5;
+    private static final long FPS_WINDOW_NANOS = 500_000_000L;
     private int fpsFrameCount = 0;
-    private double fpsWindowStart = 0;
+    private long fpsWindowStart = 0L;
 
     // --- Fully GPU-Driven Instanced Grass Rendering Fields ---
     private Shader grassShader;
@@ -889,6 +889,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 camera.lookAt(SphereMath.atAltitude(SphereMath.move(stand.place(), stand.heading(), 50.0), eyes - 8.0));
             }
         }
+        countFrameRate();
         renderScene(gl);
         // (light-headed, once the oxygen's downgraded: M52; the HUD over it stays clear)
         if (!hideFirstPerson) playerMotion.oxygenBlur.apply(gl, screenWidth, screenHeight, playerMotion.oxygenStrength, playerMotion.oxygenTime);
@@ -928,7 +929,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     /**
      * How far the soil's colour departs from the base soil texture over the whole sphere, as a
-     * cube map (see SphereRaster) of per-channel ratios, halved to fit in [0, 1], three bytes a
+     * cube map (see SphereRaster) of per-channel ratios, quartered to fit in [0, 1] (a chalk-pale
+     * region over a dark base soil is well over twice as bright), three bytes a
      * texel. The terrain shader multiplies the soil texture by it in each place's direction, so
      * the ground shifts gradually between the palette's base soil and its two regional
      * variants over tens of kilometres. Kept until the GL thread uploads it (see soilRegionTexture).
@@ -954,8 +956,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             for (int c = 0; c < 3; c++) {
                 float colour = base[c] + (a[c] - base[c]) * wa;
                 colour += (b[c] - colour) * wb;
-                float ratio = Math.min(2.0f, colour / Math.max(0.02f, base[c]));
-                texels[t * 3 + c] = (byte) Math.round(ratio * 0.5f * 255f);
+                float ratio = Math.min(4.0f, colour / Math.max(0.02f, base[c]));
+                texels[t * 3 + c] = (byte) Math.round(ratio * 0.25f * 255f);
             }
         }
         soilRegionTexels = texels;
@@ -2679,8 +2681,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         lastElapsedTime = elapsedTime;
         applyLook();
 
-        countFrameRate(elapsedTime);
-
         // Movement uses a capped step so a long hitch doesn't fling the camera
         if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
@@ -2875,7 +2875,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         sphereWeather.renderRain(gl, sphereViewProjection, eye, worldArt.palette().seaShallowTint(), daylight,
                 (float) (currentHeight * 0.5 / Math.tan(fieldOfView() / 2.0)));
         // --- THE POD'S BEACON, up into the sky over everything but what stands in front of it ---
-        podBeacon.render(gl, sphereViewProjection, eye, landingPod);
+        podBeacon.render(gl, sphereViewProjection, eye, landingPod, skyColour);
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         identificationLens.captureLensDepth(gl);
@@ -2890,14 +2890,18 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     /** The frame rate, counted over half-second windows, for the HUD (and the developer's log). */
-    private void countFrameRate(double elapsedTime) {
+    private void countFrameRate() {
         // Frames counted over half-second windows give the true rate; the old per-frame
-        // estimate replaced any frame slower than 0.1 s with 1/60 s, so slow frames read as 60 fps
+        // estimate replaced any frame slower than 0.1 s with 1/60 s, so slow frames read as 60 fps.
+        // Only frames shown on screen count, timed by the wall clock: the landmarks' photographs,
+        // drawn while loading before the world's clock started, left the window stuck years ahead
+        long now = System.nanoTime();
+        if (fpsWindowStart == 0L) fpsWindowStart = now;
         fpsFrameCount++;
-        if (elapsedTime - fpsWindowStart >= FPS_WINDOW_SECONDS) {
-            double measuredFps = fpsFrameCount / (elapsedTime - fpsWindowStart);
+        if (now - fpsWindowStart >= FPS_WINDOW_NANOS) {
+            double measuredFps = fpsFrameCount * 1e9 / (now - fpsWindowStart);
             fpsFrameCount = 0;
-            fpsWindowStart = elapsedTime;
+            fpsWindowStart = now;
             if (this.gameHUD != null) {
                 this.gameHUD.setGameFps((int) Math.round(measuredFps));
             }
@@ -2905,7 +2909,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             if (Dev.flag("xenoguesser.fpslog")) {
                 System.out.printf(java.util.Locale.ROOT, "[FPS] %.0f, %d plants drawn, %d thousand triangles in them%n", measuredFps, visibleFlora.size(), floraTriangles / 1000);
             }
-    }
+        }
     }
 
     /** The grass, drawn instanced: every blade gathered round the player (see updateVegetation). */

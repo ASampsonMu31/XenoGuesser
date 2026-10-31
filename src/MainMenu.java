@@ -390,7 +390,7 @@ public class MainMenu extends JComponent {
 
     /**
      * The player's profile at the top right (M58): their name on a button that opens it, with a
-     * swatch of their suit's colour before it.
+     * swatch of their suit's colour before it, and their rank below.
      */
     private void paintProfile(Graphics2D g, int w, float unit) {
         float bw = 380 * unit, bh = 56 * unit, margin = 40 * unit;
@@ -402,6 +402,25 @@ public class MainMenu extends JComponent {
         g.setColor(Color.WHITE);
         g.setStroke(new BasicStroke(2f * Math.max(1f, unit)));
         g.draw(new java.awt.geom.Ellipse2D.Float(sx, sy, swatch, swatch));
+        paintRank(g, profileButton.x, profileButton.y + bh + 12 * unit, bw, unit);
+    }
+
+    /**
+     * The player's rank under their profile: their rating from ranked multiplayer (see Rating),
+     * large in gold at the right, and how many ranked games they've won and lost.
+     */
+    private void paintRank(Graphics2D g, float x, float y, float width, float unit) {
+        float h = 64 * unit, pad = 20 * unit;
+        HudStyle.panel(g, x, y, width, h, HudStyle.GLASS);
+        HudStyle.label(g, "Ranked rating", x + pad, y + 26 * unit, 12 * unit, HudStyle.ACCENT);
+        int wins = Rating.wins(), losses = Rating.losses();
+        String record = wins + losses == 0 ? "No ranked games yet" : wins + " won, " + losses + " lost";
+        HudStyle.label(g, record, x + pad, y + 48 * unit, 12 * unit, HudStyle.LABEL);
+        g.setFont(HudStyle.font(Font.BOLD, 30 * unit));
+        FontMetrics fm = g.getFontMetrics();
+        String rating = Integer.toString(Rating.rating());
+        g.setColor(HudStyle.GOLD);
+        g.drawString(rating, x + width - pad - fm.stringWidth(rating), y + (h + fm.getAscent() - fm.getDescent()) / 2f);
     }
 
     /** The question before Reset: are they sure, it can't be undone. */

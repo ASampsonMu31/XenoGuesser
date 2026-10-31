@@ -46,8 +46,8 @@ public class LandingPod {
     // upright), the dish's depth below its rim and its rim's radius (a paraboloid, so its focus
     // is DISH_RADIUS^2 / (4 DISH_DEPTH) above its bowl's bottom), how far the bowl stands above
     // the joint, and so where the dish brings the light together into a ball
-    private static final float JOINT_HEIGHT = HULL_TOP + 5f, DISH_STEM = 2.5f;
-    static final float DISH_RADIUS = 7f, DISH_DEPTH = 2.2f;
+    private static final float JOINT_HEIGHT = HULL_TOP + 6f, DISH_STEM = 3.5f;
+    static final float DISH_RADIUS = 11f, DISH_DEPTH = 3.4f;
     static final float DISH_RIM = DISH_STEM + DISH_DEPTH, DISH_FOCUS = DISH_STEM + DISH_RADIUS * DISH_RADIUS / (4f * DISH_DEPTH);
     // How far the pod's solid outline reaches from its middle (its feet)
     private static final float KEEP_OUT = 40f;
