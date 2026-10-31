@@ -15,6 +15,10 @@ uniform vec2 shadowReach;
 uniform vec2 shadowTexel;
 uniform vec2 shadowBias;
 uniform vec3 shadowSunDir;
+// How much further (units) a surface is pushed out against its own shadow than the maps' own
+// bias: zero for most things, more for a vehicle on the move, which slides across the map's
+// texels each frame and would otherwise speckle light and dark where it shades itself
+uniform float shadowExtraBias;
 
 // The share of one map's light that reaches a point (its place in the map, uvz), softened over
 // the texels round it: four reads half a texel apart, each softened by the hardware over its own four
@@ -27,7 +31,8 @@ float shadowLookup(sampler2DShadow map, vec3 uvz, float texel) {
 // The share of one map's light at a point, or -1 where the map doesn't reach it
 float shadowIn(sampler2DShadow map, mat4 matrix, vec3 pos, vec3 normal, float texel, float bias) {
     // (pushed a little out from its surface and towards the sun, so it doesn't shade itself)
-    vec3 p = pos + normal * bias + shadowSunDir * bias * 0.5;
+    float push = bias + shadowExtraBias;
+    vec3 p = pos + normal * push + shadowSunDir * push * 0.5;
     vec4 c = matrix * vec4(p, 1.0);
     vec3 uvz = c.xyz * 0.5 + 0.5;
     if (uvz.x <= 0.0 || uvz.x >= 1.0 || uvz.y <= 0.0 || uvz.y >= 1.0 || uvz.z >= 1.0) return -1.0;
