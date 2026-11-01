@@ -8,7 +8,8 @@
  * what one player gains the other loses.
  *
  * A ranked game counts as lost the moment it begins, and is put right if it's won: so quitting,
- * or the game closing, part way through a game going badly still loses it.
+ * or the game closing, part way through a game going badly still loses it. A game ended by a
+ * disconnection counts as any other: won by whoever's still connected, lost by whoever dropped.
  */
 public final class Rating {
 
@@ -63,7 +64,7 @@ public final class Rating {
         }
     }
 
-    /** A ranked game being played: its rating before, and settled once, as won, lost or void. */
+    /** A ranked game being played: its rating before, and settled once, as won or lost. */
     public static final class Game {
         public final int before, opponent;
         private boolean settled;
@@ -89,14 +90,6 @@ public final class Rating {
         /** Lost (or forfeited): as counted when it began. */
         public void lost() {
             settled = true;
-        }
-
-        /** Void (the connection lost, so nobody can say who left): as if it never was. */
-        public void voided() {
-            if (settled) return;
-            settled = true;
-            store(before, wins(), losses() - 1);
-            System.out.println("[MP] Ranked game void: " + before + " kept");
         }
     }
 }

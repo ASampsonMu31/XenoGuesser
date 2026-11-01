@@ -84,10 +84,10 @@ final class DevTestRun {
         // (the third and fourth items, had from the start: the altimeter and the identification kit)
         case "altimeter": XenoGuesser.later(1200, () -> app.glEventListener.useItem(2)); break;
         case "kit": XenoGuesser.later(1200, () -> app.glEventListener.useItem(3)); break;
-        // Multiplayer: face the partner (level); look down at this player's own body; and
-        // frameshot: the drawn frame saved (from the GL, so another window over this one doesn't
-        // spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
-        case "partner": XenoGuesser.later(1500, () -> app.glEventListener.lookAtPartner(0f)); break;
+        // Multiplayer: face the partner (level), -Dxenoguesser.partnerdelay ms in (default 1500); look
+        // down at this player's own body; and frameshot: the drawn frame saved (from the GL, so another
+        // window over this one doesn't spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)
+        case "partner": XenoGuesser.later(Dev.integer("xenoguesser.partnerdelay", 1500), () -> app.glEventListener.lookAtPartner(0f)); break;
         // quit: quits the game -Dxenoguesser.quitdelay ms in (default 5000), as the settings' Quit game does
         case "quit": XenoGuesser.later(Dev.integer("xenoguesser.quitdelay", 5000), app::shutdownGame); break;
         // leave: Return to menu, as the settings' button (forfeiting a multiplayer game), five

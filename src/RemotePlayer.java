@@ -43,6 +43,10 @@ public final class RemotePlayer {
     private double heading;
     private double speed;
     private boolean hasPose;
+    // How far up they look (radians), eased towards each pose's over about PITCH_EASE seconds: only
+    // the Spectator Cam looks through their eyes (M62), and a jump five times a second would show
+    static final double PITCH_EASE = 0.08;
+    private double pitch;
 
     /**
      * Works out where the partner is this frame: poses as Multiplayer has them, the time now
@@ -69,7 +73,16 @@ public final class RemotePlayer {
         if (!offGround) shown = SphereMath.atAltitude(shown, groundAt.applyAsDouble(shown) + eyeHeight);
         eye = shown;
         heading = wrap(predicted[3] + oHeading);
+        double up = pitchOf(pose);
+        pitch = hasPose ? pitch + (up - pitch) * (1.0 - Math.exp(-Math.max(0.0, dt) / PITCH_EASE)) : up;
         hasPose = true;
+    }
+
+    /** How far up a pose looks (radians): its forward's height in the east/up/south frame where it is. */
+    private static double pitchOf(Multiplayer.Pose pose) {
+        double[] local = SphereFrame.at(new SpherePosition(pose.x(), pose.y(), pose.z()))
+                .localDirection(pose.fx(), pose.fy(), pose.fz());
+        return Math.asin(Math.max(-1.0, Math.min(1.0, local[1])));
     }
 
     /** A new pose: its speed and turn from the one before, and the jump from what was shown to the new prediction. */
@@ -137,6 +150,24 @@ public final class RemotePlayer {
     /** Which way they face, in the east/up/south frame at eye() (as PlayerBody's heading). */
     public double heading() {
         return heading;
+    }
+
+    /** The gadget in their hand (PlayerBody.GADGET_COMPASS to GADGET_KIT), or PlayerBody.NO_GADGET (M63). */
+    public int gadget() {
+        return ((flags() & Multiplayer.POSE_GADGET_MASK) >> Multiplayer.POSE_GADGET_SHIFT) - 1;
+    }
+
+    /** How far up they look (radians, eased), for seeing through their eyes. */
+    public double pitch() {
+        return pitch;
+    }
+
+    /**
+     * Whether they've guessed first and are watching through this player's eyes (M62): then
+     * they're not where their pose says, and aren't drawn or bumped into.
+     */
+    public boolean watching() {
+        return (flags() & Multiplayer.POSE_SPECTATING) != 0;
     }
 
     /** How fast they're going (world units a second), from their last two poses. */

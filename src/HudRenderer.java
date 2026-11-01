@@ -20,6 +20,8 @@ final class HudRenderer extends GamePart {
     private int hudScoreVersion = -1, hudItemsVersion = -1, hudHeldItem = -2;
 
     private long hudClockTenth = -1L;
+    // What the clock was last painted saying beside its ring
+    private String hudClockNote;
 
     private Achievements.Achievement hudToast;
 
@@ -64,12 +66,16 @@ final class HudRenderer extends GamePart {
 
         // The round's clock (M41), at the top in the middle, while it's running
         long[] clock = game.minimap != null ? game.minimap.guessClock() : null;
+        // (or, guessed first in multiplayer and watching the partner's view, their time left: M62)
+        long[] watched = clock == null && game.minimap != null ? game.minimap.spectatorClock() : null;
+        if (watched != null) clock = new long[] { watched[0], watched[1], 0L };
         if (clock != null) {
             long tenth = clock[0] / 100L;
-            String note = clock[2] == 1L && Multiplayer.active() != null
-                    ? Multiplayer.active().remoteName() + " guessed!" : "Time to guess";
-            if (rescaled || tenth != hudClockTenth || !hud.has("clock")) {
+            String note = watched != null ? "Spectator Cam"
+                    : clock[2] == 1L && Multiplayer.active() != null ? Multiplayer.active().remoteName() + " guessed!" : "Time to guess";
+            if (rescaled || tenth != hudClockTenth || !note.equals(hudClockNote) || !hud.has("clock")) {
                 hudClockTenth = tenth;
+                hudClockNote = note;
                 BufferedImage image = HudStyle.canvas(HudStyle.TIMER_W, HudStyle.TIMER_H, scale, g);
                 HudStyle.paintTimer(g[0], clock[0], clock[1], note);
                 g[0].dispose();
@@ -79,7 +85,8 @@ final class HudRenderer extends GamePart {
         hud.setVisible("clock", clock != null);
         // Under 5 s left (M45), the screen's edges pulse red, about once a second and stronger
         // as it runs out
-        if (clock != null && clock[0] > 0L && clock[0] < LOW_CLOCK_MS) {
+        // (only for this player's own clock, not the partner's being watched)
+        if (clock != null && watched == null && clock[0] > 0L && clock[0] < LOW_CLOCK_MS) {
             float urgency = 1f - clock[0] / (float) LOW_CLOCK_MS;
             float beat = 0.5f + 0.5f * (float) Math.cos(System.nanoTime() / 1e9 * Math.PI * 2.0 * 1.25);
             hud.setEdgeGlow(Math.min(0.9f, (0.6f + 0.3f * urgency) * (0.3f + 0.7f * beat)));
@@ -88,18 +95,16 @@ final class HudRenderer extends GamePart {
         }
 
         // The inventory: only what the player has bought, and nothing at all until they've bought
-        // something, the item in hand lit up (or None, last, with nothing out); and above it, how to
-        // take items out and switch them
+        // something, the item in hand lit up (none with nothing out); and above it, how to take items
+        // out and switch them
         java.util.List<HudStyle.Item> gadgets = game.inventoryItems();
         int held = game.heldItem();
         if (rescaled || game.itemsVersion != hudItemsVersion || held != hudHeldItem || !hud.has("inventory")) {
             hudItemsVersion = game.itemsVersion;
             hudHeldItem = held;
-            java.util.List<HudStyle.Item> items = new java.util.ArrayList<>(gadgets);
-            items.add(new HudStyle.Item("None", HudStyle::paintNoneIcon));
-            int h = HudStyle.inventoryHeight(items.size());
+            int h = HudStyle.inventoryHeight(gadgets.size());
             BufferedImage image = HudStyle.canvas(HudStyle.INVENTORY_W, h, scale, g);
-            HudStyle.paintInventory(g[0], items, held < 0 ? gadgets.size() : held);
+            HudStyle.paintInventory(g[0], gadgets, held);
             g[0].dispose();
             hud.put("inventory", image, 0, 0);
             String[] keys = { "1-4", "or", "Scroll", "for gadgets" };
@@ -117,7 +122,7 @@ final class HudRenderer extends GamePart {
         if (hud.has("inventoryHint")) hud.setVisible("inventoryHint", !gadgets.isEmpty() && !GameClock.isPaused());
         // (kept at the bottom however the window is resized, clear of the message strip along it)
         if (hud.has("inventory")) {
-            int h = Math.round(HudStyle.inventoryHeight(gadgets.size() + 1) * scale);
+            int h = Math.round(HudStyle.inventoryHeight(gadgets.size()) * scale);
             java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
             int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * scale);
             // (tucked into the corner, just clear of the window's edge and the strip)

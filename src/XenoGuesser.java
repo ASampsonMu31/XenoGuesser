@@ -571,13 +571,20 @@ glEventListener.setGameHUD(gameHUD);
         ? (multiplayerScore.gameWinner(gameHUD.getRound()) != null ? "See the result" : "Proceed to shop")
         : gameHUD.isQuarterEnd() ? "End of quarter" : "Proceed to shop");
 
-    // The mouse wheel moves down the inventory or up it, None (everything put away) after the last
-    // gadget (the enlarged map has the wheel to itself, being out of the game's mouse). A touchpad's
+    // The mouse wheel moves down the inventory or up it, round from the last gadget to the first
+    // (the enlarged map has the wheel to itself, being out of the game's mouse). A touchpad's
     // pinch comes as the wheel with Ctrl held: that zooms the view where the game mode allows it
     canvas.addMouseWheelListener(e -> {
       if (!inGame || !mouseCaptured) return;
       if (e.isControlDown()) glEventListener.zoomBy(e.getPreciseWheelRotation());
       else glEventListener.scrollItems(e.getWheelRotation());
+    });
+    // The middle button (the wheel pressed): the first gadget taken out, or whatever's out put away
+    canvas.addMouseListener(new MouseAdapter() {
+      @Override
+      public void mousePressed(MouseEvent e) {
+        if (inGame && mouseCaptured && e.getButton() == MouseEvent.BUTTON2) glEventListener.middleClickItem();
+      }
     });
     installControls();
 
@@ -802,7 +809,7 @@ glEventListener.setGameHUD(gameHUD);
   /**
    * Keys work wherever the focus is (except while typing a note): WASD walk, Space jumps, R returns to
    * the pod's stairs, Tab enlarges
-   * or shrinks the map, 1 to 4 take out each gadget, 5 puts them away and Esc opens the settings (the
+   * or shrinks the map, 1 to 4 take out each gadget (or put away the one out), 5 puts them away and Esc opens the settings (the
    * wheel works the gadgets as well: see buildGameWindow). Mouse
    * movement anywhere in the window turns the view while the game has the mouse.
    */
@@ -832,11 +839,11 @@ glEventListener.setGameHUD(gameHUD);
         if (firstPress) {
           switch (code) {
             case KeyEvent.VK_TAB: minimap.toggleSize(); break;
-            // 1 to 4: the inventory's gadgets in turn, the compass to the identification kit; 5: None
+            // 1 to 4: the inventory's gadgets in turn, the compass to the identification kit (the
+            // number of the one out puts it away; so does waiting: see GADGET_OUT_MS)
             case KeyEvent.VK_1: case KeyEvent.VK_2: case KeyEvent.VK_3: case KeyEvent.VK_4:
-              if (mouseCaptured) glEventListener.useItem(code - KeyEvent.VK_1);
+              if (mouseCaptured) glEventListener.toggleItem(code - KeyEvent.VK_1);
               break;
-            case KeyEvent.VK_5: if (mouseCaptured) glEventListener.useItem(-1); break;
             // X: the controls on offer skipped
             case KeyEvent.VK_X: if (controlsOffered) withdrawControls(); break;
             case KeyEvent.VK_SPACE: glEventListener.jump(); break;
@@ -1152,7 +1159,7 @@ glEventListener.setGameHUD(gameHUD);
       lines.add(session.name(player) + ": " + wins + (wins == 1 ? " round" : " rounds") + " won");
       colours.add(GameHUD.textColour(session.suit(player)));
     }
-    QuarterPanel.RatingChange rating = settleRanked(won ? Boolean.TRUE : Boolean.FALSE, lines, colours);
+    QuarterPanel.RatingChange rating = settleRanked(won);
     System.out.println("[MP] Game over: " + session.name(winner) + " wins");
     gameOver = true;
     quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? GOOD : BAD,
@@ -1173,20 +1180,13 @@ glEventListener.setGameHUD(gameHUD);
   private Rating.Game rankedGame;
 
   /**
-   * Ranked: settles the game (won: TRUE, lost: FALSE, void: null) and gives how the player's
-   * rating moved, shown large at the game's end; a void game adds a line saying it stays as it
-   * was instead. Null if the game wasn't ranked, or was void.
+   * Ranked: settles the game, won or lost, and gives how the player's rating moved, shown large
+   * at the game's end. Null if the game wasn't ranked.
    */
-  private QuarterPanel.RatingChange settleRanked(Boolean won, java.util.List<String> lines, java.util.List<Color> colours) {
+  private QuarterPanel.RatingChange settleRanked(boolean won) {
     Rating.Game game = rankedGame;
     if (game == null) return null;
     rankedGame = null;
-    if (won == null) {
-      game.voided();
-      lines.add("Ranked: no result, as the connection was lost. Your rating stays " + game.before + ".");
-      colours.add(HudStyle.LABEL);
-      return null;
-    }
     if (won) game.won();
     else game.lost();
     return new QuarterPanel.RatingChange(game.before, game.after(won));
@@ -1199,26 +1199,29 @@ glEventListener.setGameHUD(gameHUD);
   private boolean gameOver;
 
   /**
-   * Multiplayer: the partner has gone (left on purpose, the connection lost, or silent for 10
-   * s). Mid-game this player wins (M23): the end panel says so and why, then Main menu. Before
-   * the game (still loading, or waiting at Begin) it's back to the menu, saying who left.
+   * Multiplayer: the two players are parted (the partner left on purpose, or the connection was
+   * lost at either end: see Multiplayer.connectionLost). Mid-game whoever's still connected wins
+   * (M23), and the one whose connection failed loses, ranked games counting as any other: the
+   * end panel says which and why, then Main menu. Before the game (still loading, or waiting at
+   * Begin) it's back to the menu, saying who left.
    */
   private void partnerGone(Multiplayer session, String reason) {
     if (gameOver) return;
     String who = session.remoteName();
-    System.out.println("[MP] Partner gone (" + reason + ")" + (inGame ? ": this player wins" : ": back to the menu"));
+    boolean won = !session.droppedHere();
+    System.out.println("[MP] " + (won ? "Partner gone" : "This player's connection lost") + " (" + reason + ")"
+        + (inGame ? won ? ": this player wins" : ": this player loses" : ": back to the menu"));
     if (inGame && quarterPanel != null) {
       gameOver = true;
       if (shopPanel != null && shopPanel.isOpen()) shopPanel.close();
       java.util.List<String> lines = new java.util.ArrayList<>(java.util.List.of(reason));
       java.util.List<Color> colours = new java.util.ArrayList<>(java.util.List.of(HudStyle.LABEL));
-      // Ranked (M59): a partner who left on purpose has lost; a dropped connection can't say whose
-      // doing it was (both PCs see the other go), so that game counts for neither
-      QuarterPanel.RatingChange rating = settleRanked(session.remoteLeftOnPurpose() ? Boolean.TRUE : null, lines, colours);
-      quarterPanel.showMultiplayer("You win", GOOD, "You win: " + who + " disconnected",
-          HudStyle.VALUE, GOOD, lines, colours, "Main menu", null, () -> {
+      QuarterPanel.RatingChange rating = settleRanked(won);
+      quarterPanel.showMultiplayer(won ? "You win" : "You lose", won ? GOOD : BAD,
+          won ? "You win: " + who + " disconnected" : "You lose: you disconnected",
+          HudStyle.VALUE, won ? GOOD : BAD, lines, colours, "Main menu", null, () -> {
             quarterPanel.close();
-            endGame(true);
+            endGame(won);
           });
       quarterPanel.showRatingChange(rating);
       layoutComponents();
@@ -1226,7 +1229,7 @@ glEventListener.setGameHUD(gameHUD);
       devTestRun.verdictShot("partnergone");
       return;
     }
-    leaveBeforeTheGame(who + " left. " + reason);
+    leaveBeforeTheGame(won ? who + " left. " + reason : reason);
   }
 
   /**

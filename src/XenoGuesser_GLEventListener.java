@@ -36,14 +36,18 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     final RoundSpawner roundSpawner = new RoundSpawner(this);
     final LandmarkPhotos landmarkPhotos = new LandmarkPhotos(this);
     final FloraSpecies floraSpecies = new FloraSpecies(this);
+    final SpectatorCam spectatorCam = new SpectatorCam(this);
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
     public void jump() {
+        // (not while watching the partner's view: this player's standing elsewhere)
+        if (minimap != null && minimap.isSpectating()) return;
         playerMotion.jump();
     }
 
     /** R: back to the pod's stairs where the round started. */
     public void returnToPod() {
+        if (minimap != null && minimap.isSpectating()) return;
         playerMotion.returnToPod();
     }
 
@@ -755,7 +759,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             setBuilderThreads(false);
             roundSpawner.queueNextRound();
             rainSound.start();
-            Thread scale = new Thread(() -> playerBody.setAltimeterTop(roundUp(highestGround())), "altimeter-scale");
+            Thread scale = new Thread(() -> {
+                float top = roundUp(highestGround());
+                playerBody.setAltimeterTop(top);
+                // (the partner's altimeter, seen in their hand, the same)
+                PlayerBody theirs = partnerBody;
+                if (theirs != null) theirs.setAltimeterTop(top);
+            }, "altimeter-scale");
             // April's message: the planet's ocean cover worked out and its sentence said, well before it's needed
             Thread ocean = new Thread(() -> {
                 double percent = oceanPercent();
@@ -780,6 +790,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // to building the next round (behind the results) returns early
         rainSound.setAudible(!worldHidden && !menuOpen && minimap != null && !minimap.isFullScreenRevealMode()
                 && !roundLoading && !teleportLoading);
+        // (the Spectator Cam begun or ended first: ended, this player's put back where they stood
+        // before the next round's built behind the results)
+        spectatorCam.frame();
 
         // The next round is built behind the results screen as soon as the guess is made, a
         // slice per frame. Next Round then starts it at once if it's ready; if not, its button
@@ -892,9 +905,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         countFrameRate();
         renderScene(gl);
         // (light-headed, once the oxygen's downgraded: M52; the HUD over it stays clear)
-        if (!hideFirstPerson) playerMotion.oxygenBlur.apply(gl, screenWidth, screenHeight, playerMotion.oxygenStrength, playerMotion.oxygenTime);
+        // (neither while watching the partner's view: they're this player's own)
+        boolean ownView = !hideFirstPerson && !spectatorCam.watching();
+        if (ownView) playerMotion.oxygenBlur.apply(gl, screenWidth, screenHeight, playerMotion.oxygenStrength, playerMotion.oxygenTime);
         // (breaking up and coming back together as the player returns to the pod)
-        if (!hideFirstPerson) playerMotion.teleportFizzle.apply(gl, screenWidth, screenHeight, playerMotion.fizzleStrength());
+        if (ownView) playerMotion.teleportFizzle.apply(gl, screenWidth, screenHeight, playerMotion.fizzleStrength());
         if (!hideFirstPerson) hudRenderer.drawHud(drawable);
         speciesPictures.advancePreviews(gl);
         if (trailerDirector != null) trailerDirector.afterFrame(gl, screenWidth, screenHeight);
@@ -2701,7 +2716,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // Movement uses a capped step so a long hitch doesn't fling the camera
         if (deltaTime > 0.1) { deltaTime = 1.0 / 60.0; }
 
-        playerMotion.movePlayer(deltaTime, elapsedTime);
+        putAwayIfOutTooLong();
+        // (guessed first in multiplayer: the view's the partner's, M62)
+        if (spectatorCam.watching()) spectatorCam.placeCamera();
+        else playerMotion.movePlayer(deltaTime, elapsedTime);
         if (trailerDirector != null) trailerDirector.placeCamera();
         landmarkPhotos.placeCamera();
 
@@ -2863,7 +2881,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // The player is solid to everything else too; then this frame's bodies take over
         geodesicCollision.addBody(PLAYER, eye, PLAYER_RADIUS, true);
         // (and so is the partner, so the host's townsfolk step round them and stop for them)
-        if (Multiplayer.isActive() && partner.hasPose()) geodesicCollision.addBody(PARTNER, partner.eye(), PLAYER_RADIUS, true);
+        if (Multiplayer.isActive() && partner.hasPose() && !partner.watching()) geodesicCollision.addBody(PARTNER, partner.eye(), PLAYER_RADIUS, true);
         geodesicCollision.endFrame();
         organismManager.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
         inhabitants.render(gl, camera, sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey), (float) elapsedTime);
@@ -2883,7 +2901,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 ambientLight, skyRotation, textures.get(skyTextureKey));
 
         // --- THE PARTNER (multiplayer): always drawn, however far, where they're predicted to be now ---
-        if (partnerBody != null && partner.hasPose()) {
+        if (partnerBody != null && partnerShown()) {
+            // (whatever they've taken out, in their hands, reading where they stand: M63)
+            partnerBody.hold(partner.gadget());
+            partnerBody.setReading(temperatureAt(partner.eye()));
+            partnerBody.setAltitude(((float) groundHeightAt(partner.eye()) - seaLevelHeight) / PlayerBody.METRE);
             partnerBody.update((float) deltaTime, partner.eye(), (partner.flags() & Multiplayer.POSE_SWIMMING) != 0);
             partnerBody.renderInWorld(gl, sphereViewProjection, eye, partner.eye(), (float) partner.heading(),
                     sunDirection, sunColour, ambientLight, skyRotation, textures.get(skyTextureKey));
@@ -2912,7 +2934,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // after this frame's world, such as the map's pictures)
         Shader.clearShadows(gl);
 
-        if (hideFirstPerson) return;
+        if (hideFirstPerson || spectatorCam.watching()) return;
 
         // --- THE PLAYER'S OWN BODY, drawn last and nearest, in the camera's local frame ---
         renderPlayerBody(eye, deltaTime, sunDir, sunColour, localSkyRotation, skyTextureKey);
@@ -2985,7 +3007,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             gadgetsDropped = false;
             playerBody.putAwayAtOnce();
         }
-        playerBody.hold(heldItem < 0 ? PlayerBody.NO_GADGET : gadgetOf(ownedItems.get(heldItem)));
+        playerBody.hold(heldGadget());
         playerBody.setReading(temperatureAt(eye));
         // The altimeter reads the height of the ground underfoot (or the road) above the sea, in
         // metres: not the rock or roof stood on, so it agrees with the map
@@ -3046,7 +3068,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                     gl.glDisable(GL.GL_CULL_FACE);
                     rockField.render(gl, sunView, eye, camera.getSphereForwardDirection(), sunDirection, sunColour, ambientLight, skyRotation, null);
                     landingPod.render(gl, sunView, eye, sunDirection, sunColour, ambientLight, skyRotation, null);
-                    if (partnerBody != null && partner.hasPose()) {
+                    if (partnerBody != null && partnerShown()) {
                         partnerBody.renderInWorld(gl, sunView, eye, partner.eye(), (float) partner.heading(),
                                 sunDirection, sunColour, ambientLight, skyRotation, null);
                     }
@@ -3115,6 +3137,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     }
 
     /**
+     * Whether the partner's body is drawn (and stood in the way of): not while they're watching
+     * through this player's eyes, nor while this player's watching through theirs (M62).
+     */
+    boolean partnerShown() {
+        return partner.hasPose() && !partner.watching() && !spectatorCam.watching();
+    }
+
+    /**
      * Once a frame in multiplayer: this player's pose for the networking thread to send (it
      * sends the latest 5 times a second), and the partner's predicted for this frame.
      */
@@ -3126,7 +3156,9 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
         SpherePosition eye = camera.getSpherePosition();
         Vector3 forward = camera.getSphereForwardDirection();
-        byte flags = (byte) ((swimming ? Multiplayer.POSE_SWIMMING : 0) | (playerMotion.airborne ? Multiplayer.POSE_AIRBORNE : 0));
+        byte flags = (byte) ((swimming ? Multiplayer.POSE_SWIMMING : 0) | (playerMotion.airborne ? Multiplayer.POSE_AIRBORNE : 0)
+                | (spectatorCam.watching() ? Multiplayer.POSE_SPECTATING : 0)
+                | (heldGadget() + 1) << Multiplayer.POSE_GADGET_SHIFT);
         session.publishLocalPose(new Multiplayer.Pose(eye.x(), eye.y(), eye.z(), forward.x, forward.y, forward.z, flags));
 
         long now = System.currentTimeMillis();
@@ -3231,6 +3263,12 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     volatile int itemsVersion;
 
     /** Which of the body's gadgets an item is. */
+    /** The gadget in this player's hand (PlayerBody.GADGET_*), or PlayerBody.NO_GADGET. */
+    int heldGadget() {
+        int held = heldItem;
+        return held < 0 || held >= ownedItems.size() ? PlayerBody.NO_GADGET : gadgetOf(ownedItems.get(held));
+    }
+
     private static int gadgetOf(String item) {
         return switch (item) {
             case COMPASS -> PlayerBody.GADGET_COMPASS;
@@ -3247,8 +3285,14 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         return items;
     }
 
-    // The place in the inventory of the item in hand (kept out until put away or scrolled off), or -1 for none
+    // The place in the inventory of the item in hand, or -1 for none: kept out until put away (its
+    // number again or the middle button) or GADGET_OUT_MS after it was taken out or scrolled to,
+    // when it's put away of itself
     private volatile int heldItem = -1;
+    static final long GADGET_OUT_MS = 5000L;
+    // When the item in hand was taken out or scrolled to (the world's clock, ms: it stands still
+    // while singleplayer's paused)
+    private volatile long heldSince;
     // Set when everything's to be put away at once rather than lowered (a new round)
     private volatile boolean gadgetsDropped;
 
@@ -3257,21 +3301,39 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         return heldItem;
     }
 
-    /** Takes out the item in that place in the inventory (0 for the first) and keeps it out; -1, or a place with nothing, puts it away. */
+    /** Takes out the item in that place in the inventory (0 for the first), for GADGET_OUT_MS; -1, or a place with nothing, puts it away. */
     public void useItem(int index) {
+        // (the clock first, so the GL thread never sees the new item with the old one's time)
+        heldSince = GameClock.millis();
         heldItem = index >= 0 && index < ownedItems.size() ? index : -1;
     }
 
+    /** Once a frame: the item in hand put away (lowered, as by hand) once it's been out GADGET_OUT_MS. */
+    private void putAwayIfOutTooLong() {
+        if (heldItem >= 0 && GameClock.millis() - heldSince >= GADGET_OUT_MS) heldItem = -1;
+    }
+
+    /** 1 to 4: that gadget taken out, or put away should it be the one out already. */
+    public void toggleItem(int index) {
+        useItem(heldItem == index ? -1 : index);
+    }
+
+    /** The middle mouse button: whatever's out put away, or with nothing out the first gadget taken out. */
+    public void middleClickItem() {
+        useItem(heldItem >= 0 ? -1 : 0);
+    }
+
     /**
-     * The mouse wheel: the next place down the inventory (steps above 0) or up it, None (nothing
-     * in hand) coming after the last item, and round from there to the first and back.
+     * The mouse wheel: the next item down the inventory (steps above 0) or up it, round from the
+     * last to the first and back; with nothing in hand, the first (down) or the last (up). Each
+     * item scrolled to has its full GADGET_OUT_MS.
      */
     public void scrollItems(int steps) {
         int count = ownedItems.size();
         if (count == 0 || steps == 0) return;
-        int held = heldItem, place = held < 0 ? count : held;
-        int next = Math.floorMod(place + steps, count + 1);
-        useItem(next == count ? -1 : next);
+        int held = heldItem;
+        int next = held < 0 ? Math.floorMod(steps > 0 ? steps - 1 : steps, count) : Math.floorMod(held + steps, count);
+        useItem(next);
     }
 
     /** Nothing in hand, everything put away at once rather than lowered (each round starts so). */

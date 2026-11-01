@@ -295,6 +295,7 @@ M23 A disconnect mid-game (LEAVE received, lobby member left/disconnected, P2P f
     panel (Phase 7b's final panel) says so, with the reason, e.g. "You win: Employee
     119-B disconnected", then "Main menu". Before the game has started (panel, loading
     screen) a disconnect just returns to the menu with a message, with no winner.
+    (M61: a lost connection is the WIN of whoever's still connected, the other losing.)
 
 M24 (user, 2026-10-18) In multiplayer there is no April message at the start of round 4.
     The loading screen's multiplayer message (M12) and the gift message in the first shop
@@ -679,13 +680,16 @@ type  name          dir    channel  fields after the type byte
  6    POSE          both   1 unrel  int seq, long sentAtMs (sender's clock),
                                     double x, y, z (eye, planet-centred SpherePosition),
                                     float fx, fy, fz (camera forward, world space),
-                                    byte flags (1 = swimming, 2 = airborne)
+                                    byte flags (1 = swimming, 2 = airborne,
+                                    4 = spectating: guessed first and watching, M62;
+                                    bits 3-5 = gadget in hand + 1, 0 for none, M63)
  7    GUESS         both   0 rel    int round, double px, py, pz (pin direction), int score,
                                     int quarterProductivity (this quarter's total so far,
                                     including this guess: what M13 compares)
  8    SHOP_DONE     both   0 rel    int round         left the shop for this round
  9    ROUND_BUILT   both   0 rel    int round         next round's world is built here
 10    LEAVE         both   0 rel    (none)            leaving on purpose (menu / quit)
+18    UNHEARD       both   0 rel    (none)            nothing heard from you for 10 s (M61)
 11    STAGE_DONE   both   0 rel    int stageId       generic "I've finished this stage"
                                     for any other lock-step point (M16), e.g. the quarter
                                     panel's Continue; stage ids are listed in Multiplayer
@@ -1636,8 +1640,8 @@ LOG
             at 1000, K = 32; E = 1 / (1 + 10^((O - R) / 400)), R' = R + K (S - E). A ranked game is
             counted as lost the moment the game begins and put right if won, so quitting or closing
             the game part way still loses it. A partner who says LEAVE has lost (the one left wins);
-            a connection lost or gone quiet can't say whose doing it was (each PC sees the other
-            go), so it counts for neither. The game's end shows the rating's move.
+            a connection lost or gone quiet is settled as M61 says. The game's end shows the
+            rating's move.
             PROTOCOL_VERSION 5. MultiplayerCheck match | ranked; -Dxenoguesser.mpauto=match | ranked.
 2026-10-28  M60 (user). Choosing the game mode and map moves off the main menu. Play
             Singleplayer opens SingleplayerPanel: a grid of every game mode and map, each square
@@ -1652,3 +1656,40 @@ LOG
             START as before (its own should they share none). The loading screen and the pod show
             the game at the top (singleplayer, friends, or matchmaking casual or ranked, and its
             mode and map), and so do the settings. PROTOCOL_VERSION 6.
+2026-10-31  M61 (user). A disconnection says rightly who disconnected. Each PC sees the other go
+            when the connection's lost, so both had said "You win". Now, the connection lost
+            without a LEAVE (silence, Steam's lobby or P2P, the socket), each PC tries to reach
+            the internet (api.steampowered.com, steamcommunity.com, one.one.one.one, port 443,
+            2 s each): one that can't is the one that dropped, "You lose: you disconnected"; one
+            that can wins. A PC whose 10 s of silence runs out first says UNHEARD (reliable, 200
+            ms to go), so a partner who can still hear but not be heard knows it's their end
+            that failed. Ranked counts these as any other win or loss (no more void games). Two
+            PCs both online but unable to reach each other both win: nothing can tell them apart.
+            Developer aid: -Dxenoguesser.mpmuteafter on one PC gives that PC the loss (UNHEARD).
+            PROTOCOL_VERSION 7.
+2026-10-31  M62 (user). Spectator Cam. A player who guesses first no longer waits on the results
+            screen for the partner: their view becomes the partner's (SpectatorCam: the camera at
+            where RemotePlayer shows the partner, facing and looking up as they do, the pitch eased),
+            with "Spectator Cam" written beside the partner's time left at the top (their 20 s as
+            reckoned on this PC from the guess). The map stays as it was, small or enlarged (Tab),
+            to be looked over; the pin is locked and the enlarged map's Guess becomes Add note.
+            Once the partner's guess comes both PCs go to the reveal together, and the view's put
+            back where the player stood. Meanwhile this player's own walking, body, oxygen blur and
+            fizzle are left out, and so is the partner's body; Space and R do nothing. The pose sent
+            while watching is the camera's with flag 4 (spectating): the partner's PC neither draws
+            the watcher nor bumps into them, and the host's townsfolk gather round where the joiner
+            watches from. A watched player sends poses 20 times a second (50 ms) rather than 5.
+            The round's note (one per round, kept at the answer) can be written while spectating
+            and at any point of the reveal, not only once the results are up; the box opens holding
+            the note so far, so one begun while spectating goes on being written in the reveal (it
+            follows the map's button, and carries over into the reveal while still open). It isn't
+            drawn on the map until the reveal, where it would give the answer away. Emptied and
+            kept, the round's note is rubbed out. PROTOCOL_VERSION 8.
+2026-10-31  M63 (user). The partner's gadgets are seen. Whatever the partner has taken out (compass,
+            thermometer, altimeter, or the identification kit's glass and book) is seen in their hands,
+            their arms raised to it as the player's own are: POSE's flags carry the gadget in hand (bits
+            3 to 5, one more than PlayerBody's GADGET_*, 0 for none), and the partner's body, seen from
+            outside, is now built with the gadgets (PlayerBody.buildMesh(helmet, tools)) and brings them
+            out and puts them back as the player's own does. Its compass needle swings to north where
+            they stand, its thermometer and altimeter read the temperature and height there, and its
+            book holds the same pictures as the player's own. PROTOCOL_VERSION 9.

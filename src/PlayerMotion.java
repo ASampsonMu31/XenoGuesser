@@ -59,7 +59,7 @@ final class PlayerMotion extends GamePart {
      * one that does is held back. Passing over their head (a jump that high) is allowed too.
      */
     private SpherePosition clearOfPartner(SpherePosition from, SpherePosition to, float feet) {
-        if (game.partnerBody == null || !game.partner.hasPose()) return to;
+        if (game.partnerBody == null || !game.partnerShown()) return to;
         SpherePosition them = game.partner.eye();
         double theirFeet = SphereMath.altitude(them) - game.playerEyeHeight;
         if (feet > theirFeet + game.playerEyeHeight + 2.0) return to;

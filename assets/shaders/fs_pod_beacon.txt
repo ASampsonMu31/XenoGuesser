@@ -1,8 +1,8 @@
 #version 330 core
 
-// White light, a solid bright middle edged by a fringe in the sky's complementary colour
-// (darkened): the white stands out against a dark or coloured sky, the fringe against a pale or
-// clouded one, and by its hue against any
+// White light, a solid bright middle edged by a fringe in the sky's complementary colour (as
+// bright as its hue goes): the white stands out against a dark or coloured sky, the fringe by its
+// hue against any, pale or clouded too
 in vec3 place;
 out vec4 fragColour;
 uniform vec3 fringeColour;
