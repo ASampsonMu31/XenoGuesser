@@ -589,16 +589,6 @@ public final class HudStyle {
         g.fill(new java.awt.geom.Ellipse2D.Float(cx - size * 0.05f, cy - size * 0.05f, size * 0.1f, size * 0.1f));
     }
 
-    /** None, the inventory's place for nothing in hand: an empty circle struck through. */
-    public static void paintNoneIcon(Graphics2D g, float x, float y, float size) {
-        float r = size * 0.3f, cx = x + size / 2f, cy = y + size / 2f;
-        g.setColor(new Color(200, 210, 220, 170));
-        g.setStroke(new BasicStroke(size * 0.07f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        g.draw(new java.awt.geom.Ellipse2D.Float(cx - r, cy - r, r * 2, r * 2));
-        float d = r * 0.7071f;
-        g.draw(new java.awt.geom.Line2D.Float(cx - d, cy + d, cx + d, cy - d));
-    }
-
     /** An open brown book with a magnifying glass over it. */
     public static void paintKitIcon(Graphics2D g, float x, float y, float size) {
         // The book, open: a brown cover, two cream pages with lines of writing

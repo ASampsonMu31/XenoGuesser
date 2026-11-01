@@ -29,8 +29,8 @@ public class PodBeacon {
     // Each vertex: camera-relative position, where it is across the light (-1 to 1 each way: 0, 0
     // at its middle) and how bright it is there
     private static final int FLOATS = 6;
-    // How much more vivid the fringe is than the sky's complementary colour, and how dark
-    private static final float FRINGE_VIVIDNESS = 2.5f, FRINGE_DARKNESS = 0.45f;
+    // How much more vivid the fringe is than the sky's complementary colour
+    private static final float FRINGE_VIVIDNESS = 2.5f;
 
     private Shader shader;
     private int vao, vbo;
@@ -148,8 +148,10 @@ public class PodBeacon {
 
     /**
      * The sky's complementary colour for the beam's fringe: its hue turned half way round (each
-     * channel flipped about the middle of the brightest and dimmest), made more vivid, and
-     * darkened so it stands apart in brightness as well. A grey sky's is just a dark grey.
+     * channel flipped about the middle of the brightest and dimmest), made more vivid, and as
+     * bright as that hue goes (its brightest channel full), so a green sky's is a bright magenta
+     * rather than the dark purple or navy it was once darkened to. A grey sky's (none in the
+     * palettes, whose skies are all vivid) is a mid grey, apart from the white middle.
      */
     private static float[] complement(Vector3 sky) {
         float[] c = { sky.x, sky.y, sky.z };
@@ -157,8 +159,11 @@ public class PodBeacon {
         float grey = (most + least) * 0.5f;
         for (int i = 0; i < 3; i++) {
             float flipped = most + least - c[i];
-            c[i] = Math.max(0f, Math.min(1f, grey + (flipped - grey) * FRINGE_VIVIDNESS)) * FRINGE_DARKNESS;
+            c[i] = Math.max(0f, Math.min(1f, grey + (flipped - grey) * FRINGE_VIVIDNESS));
         }
+        float brightest = Math.max(c[0], Math.max(c[1], c[2]));
+        if (most - least < 0.05f || brightest <= 0f) return new float[] { 0.5f, 0.5f, 0.5f };
+        for (int i = 0; i < 3; i++) c[i] /= brightest;
         return c;
     }
 

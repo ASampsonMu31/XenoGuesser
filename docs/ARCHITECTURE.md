@@ -97,6 +97,7 @@ Parts extend `GamePart` (field `game`).
 | `FloraSpecies` | Plant species generation and ranges (`SpeciesConfig`, `SphereFlora`) |
 | `DevShots` | Saved frames, menu picture, sign/vehicle shots, dev viewpoints |
 | `LandmarkPhotos` | Photographs each landmark in the world itself while loading (camera sent to a spot per kind, surroundings built, `photograph` draws it into a picture of its own), for the landmarks' map; then a typical house (`InfrastructureManager.typicalHouses`) for each of the architecture map's pictures and their popups, baked on its own (`HouseBuilder.alone`) and drawn alone against the sky (`photoSubject`) |
+| `SpectatorCam` | Multiplayer (M62): having guessed first, the view is the partner's (camera at `RemotePlayer`'s eye and look) until their guess comes; own movement and both bodies left out, and where the player stood put back as the reveal opens |
 | `TrailerDirector` | Films the Steam trailer's shots (`-Dxenoguesser.trailer`): finds each place, sets the day, steps the clock a frame at a time and saves frames; made only when filming (see `tools/trailer/README.md`) |
 | Data | `FactorName` (map overlays' factors), `MapOverlay`, `MapPicture`, `NationLabel` |
 

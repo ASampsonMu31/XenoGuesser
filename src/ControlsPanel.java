@@ -24,12 +24,13 @@ public class ControlsPanel extends JComponent {
         { "Tab", "Expand / contract the map" },
         { "Scroll", "Zoom the map / switch gadget" },
         { "Click", "Place your marker on the enlarged map" },
-        { "1 2 3 4", "Take out a gadget" },
-        { "5", "Put gadgets away" },
+        { "1 2 3 4", "Take out a gadget (again: put it away)" },
+        { "Middle-click", "Take out the first gadget / put away" },
+        { "", "Gadgets go away by themselves after 5 s" },
         { "Esc", "Settings" },
         { "Enter", "Skip a message" },
     };
-    public static final int W = 560, H = 578;
+    public static final int W = 560, H = 614;
 
     private final Rectangle button = new Rectangle();
     private boolean hovered;
@@ -99,7 +100,10 @@ public class ControlsPanel extends JComponent {
         float y = 72;
         for (String[] row : ROWS) {
             float x = 28;
-            for (String key : row[0].split(" ")) x += HudStyle.keyCap(g, key, x, y, 28f) + 6f;
+            for (String key : row[0].split(" ")) {
+                // (a row with no key: just what happens)
+                if (!key.isEmpty()) x += HudStyle.keyCap(g, key, x, y, 28f) + 6f;
+            }
             g.setFont(HudStyle.font(Font.PLAIN, 16f));
             FontMetrics fm = g.getFontMetrics();
             g.setColor(HudStyle.VALUE);

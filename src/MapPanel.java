@@ -202,6 +202,11 @@ public class MapPanel extends JPanel {
     private Multiplayer.Guess partnerGuess;
     private GeodesicChunkGrid.Direction partnerPin;
     private Timer partnerWait;
+    // Multiplayer (M62): guessed first, this player watches the partner's view (the Spectator Cam)
+    // and can still look over the map and write the round's note until the partner's guess comes,
+    // and the reveal with it. The partner's clock as reckoned here: AFTER_PARTNER_MS from the guess
+    private volatile boolean spectating;
+    private long partnerMsLeft;
 
     // The round's clock (M41): in singleplayer a minute to guess in from the round's start; in
     // multiplayer none until the partner guesses, then AFTER_PARTNER_MS more. Run out, the round
@@ -224,6 +229,16 @@ public class MapPanel extends JPanel {
         return new long[] { Math.max(0L, guessMsLeft), guessMsTotal, partnerGuessedFirst ? 1L : 0L };
     }
 
+    /** Whether this player's guessed first and is watching the partner's view until theirs comes (M62). */
+    public boolean isSpectating() {
+        return spectating;
+    }
+
+    /** While spectating, the partner's clock as reckoned here: {ms left, ms it started with}; otherwise null. */
+    public long[] spectatorClock() {
+        return spectating ? new long[] { Math.max(0L, partnerMsLeft), AFTER_PARTNER_MS } : null;
+    }
+
     /** A tenth of a second of the round's clock: started, run down, and run out into an unguessed round. */
     private void tickClock() {
         // (by the world's time, so a trailer filmed a frame at a time counts the clock down as it's seen)
@@ -233,6 +248,10 @@ public class MapPanel extends JPanel {
         if (devClockHeld) {
             guessMsLeft = devClockFrom;
             guessMsTotal = SINGLE_GUESS_MS;
+            return;
+        }
+        if (spectating) {
+            partnerMsLeft -= dt;
             return;
         }
         if (isGuessed || mainApp == null || gameHUD == null || !mainApp.roundInPlay()) return;
@@ -426,6 +445,7 @@ public class MapPanel extends JPanel {
                     int mapTop = (visualMapY != 0) ? visualMapY : BORDER_SIZE;
                     for (int i = savedNotes.size() - 1; i >= 0; i--) {
                         MapNote note = savedNotes.get(i);
+                        if (spectating && note == roundNote()) continue;
                         int[] at = noteScreen(note, mapLeft, mapTop);
                         if (at == null) continue;
                         int nx = at[0];
@@ -494,21 +514,17 @@ public class MapPanel extends JPanel {
                 }
 
                 if (e.getButton() == MouseEvent.BUTTON1) {
+                    // The round's note, written at any point of the reveal (M62), and while
+                    // spectating in place of the enlarged map's Guess
+                    if (isFullScreenReveal && clickX >= noteBtnX && clickX <= (noteBtnX + noteBtnWidth) && clickY >= noteBtnY && clickY <= (noteBtnY + noteBtnHeight)) {
+                        openNote(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight);
+                        return;
+                    }
+                    if (spectating && isLarge && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
+                        openNote(btnX, btnY, btnWidth, btnHeight);
+                        return;
+                    }
                     if (isFullScreenReveal && (currentPhase == RevealPhase.SHOW_ALL_RESULTS || currentPhase == RevealPhase.LINGER || currentPhase == RevealPhase.SLAM_TO_HUD)) {
-                        
-                        if (clickX >= noteBtnX && clickX <= (noteBtnX + noteBtnWidth) && clickY >= noteBtnY && clickY <= (noteBtnY + noteBtnHeight)) {
-                            if (!isTypingNote) {
-                                isTypingNote = true;
-                                MapPanel.this.add(noteArea);
-                                // (the whole width: it's kept when the shop's opened, or with Enter)
-                                noteArea.setBounds(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight);
-                                noteArea.setVisible(true);
-                                noteArea.requestFocusInWindow();
-                                MapPanel.this.repaint();
-                            }
-                            return; 
-                        }
-
                         if (clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
                                                         boolean resultsReady = resultsShown();
                             if (resultsReady && !roundLoading) {
@@ -1020,24 +1036,45 @@ public class MapPanel extends JPanel {
         return (viewTop() + (float) (screenY - mapTop) / (currentMapSize * zoom)) * mapImage.getHeight();
     }
 
+    /** The note kept at this round's answer, or null while it has none. */
+    private MapNote roundNote() {
+        for (MapNote note : savedNotes) {
+            if (note.coreX == Math.round(goalX) && note.coreY == Math.round(goalY)) return note;
+        }
+        return null;
+    }
+
+    /**
+     * Opens the note's box over a button, holding the round's note as written so far (one note a
+     * round, whether begun while spectating or during the reveal), to be added to or changed.
+     */
+    private void openNote(int x, int y, int w, int h) {
+        if (isTypingNote) return;
+        isTypingNote = true;
+        MapNote existing = roundNote();
+        noteArea.setText(existing != null ? existing.text : "");
+        add(noteArea);
+        // (the whole width: it's kept when the shop's opened, or with Enter)
+        noteArea.setBounds(x, y, w, h);
+        noteArea.setVisible(true);
+        noteArea.requestFocusInWindow();
+        repaint();
+    }
+
     private void commitNote() {
         String text = noteArea.getText().trim();
-        if (!text.isEmpty()) {
-            boolean existingFound = false;
-            for (MapNote note : savedNotes) {
-                if (note.coreX == Math.round(goalX) && note.coreY == Math.round(goalY)) {
-                    note.text = text;
-                    note.isExpanded = false;
-                    existingFound = true;
-                    System.out.println("Note Overwritten at destination: " + text);
-                    break;
-                }
-            }
-            
-            if (!existingFound) {
-                savedNotes.add(new MapNote(Math.round(goalX), Math.round(goalY), text));
-                System.out.println("Note Stored: " + text);
-            }
+        MapNote existing = roundNote();
+        if (!text.isEmpty() && existing != null) {
+            existing.text = text;
+            existing.isExpanded = false;
+            System.out.println("Note Overwritten at destination: " + text);
+        } else if (!text.isEmpty()) {
+            savedNotes.add(new MapNote(Math.round(goalX), Math.round(goalY), text));
+            System.out.println("Note Stored: " + text);
+        } else if (existing != null) {
+            // (emptied: the round's note is rubbed out)
+            savedNotes.remove(existing);
+            System.out.println("Note Removed");
         }
         noteArea.setText("");
         noteArea.setVisible(false);
@@ -1507,6 +1544,8 @@ public class MapPanel extends JPanel {
 
 
     private void startRevealSequence() {
+        // (already guessed, watching the partner: the guess went once)
+        if (spectating) return;
         partnerGuess = null;
         partnerPin = null;
         Multiplayer session = Multiplayer.active();
@@ -1518,13 +1557,25 @@ public class MapPanel extends JPanel {
             // (an unguessed round goes as a guess with no place and no distance: NaN)
             session.sendGuess(new Multiplayer.Guess(round, pin == null ? Double.NaN : pin.x(), pin == null ? Double.NaN : pin.y(),
                     pin == null ? Double.NaN : pin.z(), roundDistance));
-            setUpReveal();
-            currentPhase = RevealPhase.WAITING_FOR_PARTNER;
+            if (session.remoteGuess(round) == null) {
+                // Guessed first (M62): the partner's view is watched, the map left as it is to
+                // be looked over, until their guess comes and the reveal begins on both PCs
+                isGuessed = true;
+                partnerMsLeft = AFTER_PARTNER_MS;
+                spectating = true;
+                System.out.println("[MP] Guessed first: spectating " + session.remoteName());
+                updateGeometryLayouts();
+                repaint();
+            } else {
+                setUpReveal();
+                currentPhase = RevealPhase.WAITING_FOR_PARTNER;
+            }
             if (partnerWait != null) partnerWait.stop();
             partnerWait = new Timer(100, e -> {
                 // (given up should the partner have gone meanwhile: the game's ended for this player)
                 if (session.isClosed()) {
                     ((Timer) e.getSource()).stop();
+                    spectating = false;
                     return;
                 }
                 Multiplayer.Guess theirs = session.remoteGuess(round);
@@ -1533,6 +1584,11 @@ public class MapPanel extends JPanel {
                     return;
                 }
                 ((Timer) e.getSource()).stop();
+                if (spectating) {
+                    // (a note being written goes on being written in the reveal)
+                    spectating = false;
+                    setUpReveal();
+                }
                 partnerGuess = theirs;
                 // (none where they didn't guess in time)
                 partnerPin = Double.isNaN(theirs.px()) ? null : new GeodesicChunkGrid.Direction(theirs.px(), theirs.py(), theirs.pz());
@@ -1769,9 +1825,16 @@ public class MapPanel extends JPanel {
             this.btnY = mapHeight() + (BORDER_SIZE * 2) + 2;
 
             if (noteArea != null && noteArea.isVisible()) {
-                noteArea.setVisible(false);
-                isTypingNote = false;
-                this.remove(noteArea);
+                // (while spectating the note's kept: over the enlarged map's button, or put away)
+                if (spectating && isLarge) {
+                    noteArea.setBounds(btnX, btnY, btnWidth, btnHeight);
+                } else if (spectating) {
+                    commitNote();
+                } else {
+                    noteArea.setVisible(false);
+                    isTypingNote = false;
+                    this.remove(noteArea);
+                }
             }
         }
     }
@@ -1937,13 +2000,22 @@ public class MapPanel extends JPanel {
                 // The menus' primary button, greyed until a marker's down
                 Stroke stroke = g2d.getStroke();
                 HudStyle.smooth(g2d);
-                HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), "Guess", null, hasPin, true,
-                        hoveredButton == 2, 1f);
+                // (guessed first and spectating: the round's note in its place, M62)
+                if (spectating && !isTypingNote) {
+                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), roundNote() != null ? "Edit note" : "Add note",
+                            null, true, false, hoveredButton == 2, 1f);
+                } else if (!spectating) {
+                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), "Guess", null, hasPin, true,
+                            hoveredButton == 2, 1f);
+                }
                 g2d.setStroke(stroke);
             }
 
             if (isLarge || isFullScreenReveal) {
+                MapNote unrevealed = spectating ? roundNote() : null;
                 for (MapNote note : savedNotes) {
+                    // (the round's own note would give the answer away before the reveal)
+                    if (note == unrevealed) continue;
                     int[] at = noteScreen(note, mapX, mapY);
                     if (at == null) continue;
                     int drawX = at[0];
@@ -2090,8 +2162,8 @@ public class MapPanel extends JPanel {
                     // The menus' buttons: adding a note dark, going on cyan with its arrow
                     HudStyle.smooth(g2d);
                     if (!isTypingNote) {
-                        HudStyle.button(g2d, new Rectangle(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight), "Add note", null,
-                                resultsReady, false, hoveredButton == 1, revealUnit());
+                        HudStyle.button(g2d, new Rectangle(noteBtnX, noteBtnY, noteBtnWidth, noteBtnHeight),
+                                roundNote() != null ? "Edit note" : "Add note", null, true, false, hoveredButton == 1, revealUnit());
                     }
                     String endText = proceedLabel != null ? proceedLabel.get() : "Proceed to shop";
                     HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), endText, null,
@@ -2154,6 +2226,7 @@ public class MapPanel extends JPanel {
         guessMsLeft = -1L;
         partnerGuessedFirst = false;
         missedGuess = false;
+        spectating = false;
         // (the round just played is now the last round)
         if (isGuessed && goal != null) {
             lastRound = goal;
@@ -2257,7 +2330,7 @@ public class MapPanel extends JPanel {
     }
 
     private void setMapSize(MapSize size) {
-        if (isFullScreenReveal || isGuessed) return;
+        if (isFullScreenReveal || (isGuessed && !spectating)) return;
         boolean wasLarge = isLarge;
         mapSize = size;
         isLarge = size == MapSize.LARGE;

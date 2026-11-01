@@ -301,5 +301,7 @@ final class SpeciesPictures extends GamePart {
             for (int i = 0; i < 2; i++) pictures.add(i < some.size() ? some.get(i) : null);
         }
         game.playerBody.setBookPictures(pictures, game.worldSeed);
+        // (the partner's book, seen open in their hands, the same)
+        if (game.partnerBody != null) game.partnerBody.setBookPictures(pictures, game.worldSeed);
     }
 }

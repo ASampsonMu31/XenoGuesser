@@ -135,8 +135,8 @@ public class PlayerBody {
             + 0.035f * (float) Math.sin(angle * 3f + along * 1.9f + 1.3f)
             + 0.02f * (float) Math.sin(angle * 7f - along * 4.1f);
 
-    // Seen from outside (the partner in multiplayer): with the helmet and no tools, drawn in the
-    // world (renderInWorld) rather than over the view
+    // Seen from outside (the partner in multiplayer): with the helmet, and the gadgets they hold
+    // (see hold), drawn in the world (renderInWorld) rather than over the view
     private final boolean outside;
     // The grey of the boots and gloves, and the packs' and collar's colour (OrganismMesh.PART_SUIT_COLOUR):
     // grey too in singleplayer, the player's own colour in multiplayer (M6)
@@ -212,13 +212,9 @@ public class PlayerBody {
 
     public void initialise(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_organism.txt", GamePaths.HOME + "assets/shaders/fs_organism.txt");
-        // In first person the eyes are inside the helmet, so it is left off
-        mesh = buildMesh(outside).build(gl);
-        if (outside) {
-            // (no tools in hand, so no glass, scale or print)
-            if (new java.io.File(LoadingArt.FABRIC).exists()) fabric = TextureLibrary.loadTextureWrap(gl, LoadingArt.FABRIC);
-            return;
-        }
+        // In first person the eyes are inside the helmet, so it is left off; seen from outside (the
+        // partner) it's worn, and the gadgets go with it so what they take out is seen in their hands
+        mesh = buildMesh(outside, true).build(gl);
         glass = buildGlass().build(gl);
         // The suit's crumpled fabric, shared with the loading screen's spaceman
         if (new java.io.File(LoadingArt.FABRIC).exists()) {
@@ -249,8 +245,13 @@ public class PlayerBody {
 
     private OrganismMesh glass;
 
-    /** The suit, optionally with its helmet; shared with the loading screen's spaceman. */
+    /** The suit, with its helmet and no gadgets (the loading screen's spaceman) or without the helmet and with them (first person). */
     static OrganismMesh.Builder buildMesh(boolean helmet) {
+        return buildMesh(helmet, !helmet);
+    }
+
+    /** The suit, optionally with its helmet, and optionally with the gadgets (out of sight until they're used). */
+    static OrganismMesh.Builder buildMesh(boolean helmet, boolean tools) {
         OrganismMesh.Builder b = new OrganismMesh.Builder();
         b.folds(SUIT_FOLDS);
 
@@ -287,8 +288,8 @@ public class PlayerBody {
             b.bone(BOOT + side).transform(Affine.translation(0f, -0.15f, 0.55f));
             trimSegment(b, OrganismMesh.PART_TRIM, 2.8f, 1.5f, 1.3f);
         }
-        if (!helmet) {
-            // In first person: the compass, out of sight until it is used
+        if (tools) {
+            // The compass, out of sight until it is used
             b.folds(null);
             b.bone(COMPASS).resetTransform().part(OrganismMesh.PART_BRASS);
             b.lathe(24, 12, puck(COMPASS_RADIUS, COMPASS_DEPTH));
@@ -846,8 +847,33 @@ public class PlayerBody {
         } else {
             shader.setFloat(gl, "detailAmount", 0f);
         }
+        // The gadgets in their hands: the thermometer's scale, the altimeter's dial and the book's pages
+        if (scale != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE5);
+            scale.bind(gl);
+            shader.setInt(gl, "productTexture", 5);
+        }
+        if (printDirty) refreshPrint(gl);
+        if (print != null) {
+            gl.glActiveTexture(GL3.GL_TEXTURE6);
+            print.bind(gl);
+            shader.setInt(gl, "printTexture", 6);
+        }
         gl.glDisable(GL.GL_CULL_FACE);
         mesh.render(gl);
+        if (glass != null && (thermometerBlend() > 0.01f || kitBlend() > 0.01f)) {
+            // The thermometer's tube and the magnifying glass's lens, pale and glossy rather than the visor's dark
+            gl.glEnable(GL.GL_BLEND);
+            gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
+            gl.glDepthMask(false);
+            shader.setVec3(gl, "eyeColour", new Vector3(0.78f, 0.86f, 0.9f));
+            shader.setFloat(gl, "glassAlpha", 0.12f);
+            shader.setFloat(gl, "gloss", 0.9f);
+            glass.render(gl);
+            shader.setFloat(gl, "glassAlpha", 0f);
+            gl.glDepthMask(true);
+            gl.glDisable(GL.GL_BLEND);
+        }
         gl.glEnable(GL.GL_CULL_FACE);
     }
 

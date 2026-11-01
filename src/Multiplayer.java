@@ -39,7 +39,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 6;
+    public static final int PROTOCOL_VERSION = 9;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -47,8 +47,10 @@ public final class Multiplayer {
     public static final String ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
     public static final int ROOM_CODE_LENGTH = 5;
 
-    // Poses go 5 times a second; a lost one is simply predicted over by the receiver
-    public static final long POSE_INTERVAL_MS = 200;
+    // Poses go 5 times a second; a lost one is simply predicted over by the receiver. While the
+    // partner's guessed first and is watching through this player's eyes (M62), 20 times a
+    // second, so their Spectator Cam keeps close to what this player sees
+    public static final long POSE_INTERVAL_MS = 200, WATCHED_POSE_INTERVAL_MS = 50;
 
     // Message types (the first byte of each message)
     static final byte HELLO = 1;
@@ -74,6 +76,15 @@ public final class Multiplayer {
     // TownsfolkSync), in pieces small enough for one unreliable packet each
     static final byte TOWNSFOLK = 17;
     public static final int MAX_TOWNSFOLK_BYTES = 1100;
+    // Said by a player who's heard nothing from the partner for SILENCE_MS, as they give up on
+    // them: should the partner still hear it (their sending broke, not their hearing), they
+    // know it was their connection that failed
+    static final byte UNHEARD = 18;
+
+    // Hosts any PC still on the internet can reach (Steam's own first), to tell whether a lost
+    // connection was this PC's or the partner's, and how long to try each (ms)
+    private static final String[] REACHABLE_HOSTS = { "api.steampowered.com", "steamcommunity.com", "one.one.one.one" };
+    private static final int REACH_TIMEOUT_MS = 2000;
 
     // POD_EVENT kinds
     public static final byte POD_LIGHTS_OFF = 1;
@@ -85,6 +96,11 @@ public final class Multiplayer {
     // POSE flags
     public static final byte POSE_SWIMMING = 1;
     public static final byte POSE_AIRBORNE = 2;
+    // (guessed first and watching the partner: the pose is the partner's own, seen through, M62)
+    public static final byte POSE_SPECTATING = 4;
+    // The gadget in hand (PlayerBody.GADGET_COMPASS to GADGET_KIT), one more than it in bits 3
+    // to 5 (0: nothing in hand), so the partner's seen holding it (M63)
+    public static final int POSE_GADGET_SHIFT = 3, POSE_GADGET_MASK = 7 << POSE_GADGET_SHIFT;
 
     private static final int MAX_ALPHABETS = 1000 * 1000;
     private static final String VERSION_MISMATCH = "Your partner has a different version of XenoGuesser.";
@@ -160,8 +176,11 @@ public final class Multiplayer {
     private final int localRating = Rating.rating();
     private volatile boolean remoteRanked;
     private volatile int remoteRating = Rating.START;
-    // Whether the partner said they were leaving (LEAVE), rather than going quiet or dropping
-    private volatile boolean remoteLeft;
+    // Whether the connection was lost at this PC's end (it's off the internet, or the partner
+    // said UNHEARD), rather than the partner's: then it's this player who's gone, and lost
+    private volatile boolean localDropped;
+    // The connection's been lost and connectionLost() is finding out whose end failed
+    private volatile boolean judging;
     private volatile String remoteName;
     private volatile SuitColour remoteSuit;
     private final CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
@@ -420,9 +439,12 @@ public final class Multiplayer {
         return remoteRating;
     }
 
-    /** Whether the partner left on purpose (said LEAVE), rather than going quiet or the connection dropping. */
-    public boolean remoteLeftOnPurpose() {
-        return remoteLeft;
+    /**
+     * Whether, the session having ended without either player leaving on purpose, it was this
+     * PC's connection that failed rather than the partner's: set before disconnected() is heard.
+     */
+    public boolean droppedHere() {
+        return localDropped;
     }
 
     /** The world's seed: the host's own, or the one in the host's START. */
@@ -684,13 +706,16 @@ public final class Multiplayer {
         if (playing && ready && !closed && now - lastHeardMs > SILENCE_MS) {
             String reason = "No word from " + remoteName() + " for " + SILENCE_MS / 1000 + " seconds.";
             System.out.println("[MP] " + reason);
-            close();
-            notifyListeners(l -> l.disconnected(reason));
+            // (reliable, and a moment for it to go: it only arrives if the partner can still hear)
+            send(message(UNHEARD, 0), true);
+            connectionLost(reason, LEAVE_GRACE_MS);
             return;
         }
         if (!ready || closed) return;
         tickPod(now);
-        if (now - lastPoseSentMs < POSE_INTERVAL_MS) return;
+        // (the partner's guessed a round this player hasn't: they're watching)
+        boolean watched = remoteGuesses.size() > localGuesses.size();
+        if (now - lastPoseSentMs < (watched ? WATCHED_POSE_INTERVAL_MS : POSE_INTERVAL_MS)) return;
         Pose pose = localPose.get();
         if (pose == null) return;
         lastPoseSentMs = now;
@@ -850,7 +875,14 @@ public final class Multiplayer {
             }
             case LEAVE -> {
                 String reason = remoteName() + " left.";
-                remoteLeft = true;
+                close();
+                notifyListeners(l -> l.disconnected(reason));
+                return false;
+            }
+            case UNHEARD -> {
+                String reason = "Your connection was lost: " + remoteName() + " stopped hearing from you.";
+                System.out.println("[MP] The partner hears nothing from this PC: its connection failed");
+                localDropped = true;
                 close();
                 notifyListeners(l -> l.disconnected(reason));
                 return false;
@@ -949,6 +981,53 @@ public final class Multiplayer {
         return true;
     }
 
+    /**
+     * The connection's gone with neither player saying they were leaving (the partner silent,
+     * Steam or the socket reporting them gone): both PCs see the other go, so each asks whether
+     * it can still reach the internet. One that can't is the one that dropped, and is told so;
+     * one that can, wins. The session closes (after a pause, should a last message be on its
+     * way) and the listeners hear once it's known whose end failed: off the Swing thread, as
+     * trying the hosts can take a few seconds.
+     */
+    private void connectionLost(String reason, long pauseMs) {
+        if (judging) return;
+        judging = true;
+        // (the silence isn't noticed again meanwhile)
+        playing = false;
+        Thread judge = new Thread(() -> {
+            if (pauseMs > 0) {
+                try {
+                    Thread.sleep(pauseMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            // (the partner's UNHEARD came meanwhile, and settled it)
+            if (closed) return;
+            close();
+            boolean online = online();
+            if (!online) localDropped = true;
+            System.out.println("[MP] Connection lost (" + reason + "): " + (localDropped ? "this PC dropped" : "this PC is online, so the partner dropped"));
+            String said = localDropped ? "Your connection was lost." : reason;
+            notifyListeners(l -> l.disconnected(said));
+        }, "mp-connection-lost");
+        judge.setDaemon(true);
+        judge.start();
+    }
+
+    /** Whether this PC can reach any of REACHABLE_HOSTS (blocks for up to a few seconds). */
+    private static boolean online() {
+        for (String host : REACHABLE_HOSTS) {
+            try (java.net.Socket socket = new java.net.Socket()) {
+                socket.connect(new java.net.InetSocketAddress(host, 443), REACH_TIMEOUT_MS);
+                return true;
+            } catch (java.io.IOException e) {
+                System.out.println("[MP] Couldn't reach " + host + ": " + e.getMessage());
+            }
+        }
+        return false;
+    }
+
     private void notifyListeners(java.util.function.Consumer<Listener> event) {
         SwingUtilities.invokeLater(() -> {
             for (Listener l : listeners) event.accept(l);
@@ -982,6 +1061,7 @@ public final class Multiplayer {
                 case POD_EVENT -> "POD_EVENT " + m.get();
                 case CHAIR_STATE -> "CHAIR_STATE";
                 case TOWNSFOLK -> "TOWNSFOLK (" + m.remaining() + " bytes)";
+                case UNHEARD -> "UNHEARD";
                 default -> "unknown type " + type + " (" + original.remaining() + " bytes)";
             };
         } catch (BufferUnderflowException e) {
@@ -1046,9 +1126,12 @@ public final class Multiplayer {
         public void disconnected(String reason) {
             Multiplayer session = active;
             if (session == null || session.leaving) return;
+            if (session.ready) {
+                session.connectionLost(reason, 0);
+                return;
+            }
             session.close();
-            if (session.ready) session.notifyListeners(l -> l.disconnected(reason));
-            else session.notifyListeners(l -> l.failed(reason));
+            session.notifyListeners(l -> l.failed(reason));
         }
 
         @Override
