@@ -180,6 +180,15 @@ final class RoundSpawner extends GamePart {
             System.out.printf("[PLANET] Sun %.0f degrees up, latitude %.1f, declination %.1f%n",
                     Math.toDegrees(Math.asin(d[1])), Math.toDegrees(Planet.latitude(eye)), Math.toDegrees(game.sunDeclination));
         }
+        // Developer aid: -Dxenoguesser.lookatmoon starts the round looking at the moon (on a world with one)
+        StarSystem system = StarSystem.of(game.worldSeed);
+        if (Dev.property("xenoguesser.lookatmoon") != null && system.hasMoon) {
+            SpherePosition eye = game.camera.getSpherePosition();
+            double e = system.elongation(game.sunDeclination, game.noonLongitude, game.landingPod.frame().origin());
+            float[] d = system.moonDirection(eye, game.sunDeclination, game.noonLongitude, e);
+            game.camera.lookAt(SphereFrame.at(eye).toWorld(d[0] * 10.0, d[1] * 10.0, d[2] * 10.0));
+            System.out.printf("[PLANET] Moon %.0f degrees up, %.0f degrees round from the sun%n", Math.toDegrees(Math.asin(d[1])), Math.toDegrees(e));
+        }
         // Developer aid: -Dxenoguesser.pitch=-60 starts the round looking down by that many degrees
         String pitch = Dev.property("xenoguesser.pitch");
         // and -Dxenoguesser.yaw=180 turned round by that many degrees

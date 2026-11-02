@@ -8,10 +8,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * What the old computer at the back of the pod shows as the world loads: green phosphor text
- * with the steps done so far, the one under way, a progress bar (in multiplayer one for each
- * player) and the time left, and a line for each stage of the pod's way down. Drawn again only
- * when something on it changes (see picture).
+ * What the old computer at the back of the pod shows on the way down: green phosphor text with
+ * the ship's log (PodTimeline: what the ship's done, and what it's doing now, under a blinking
+ * cursor), a progress bar for the way down (in multiplayer one for each player) and the time
+ * left. The world's being made behind it all, but the computer speaks only of the ship (unless
+ * the making fails). Drawn again only when something on it changes (see picture).
  */
 public class PodTerminal {
 
@@ -22,8 +23,6 @@ public class PodTerminal {
 
     private final long worldSeed;
     private final Multiplayer.Role role;
-    private final List<String> finishedSteps = new ArrayList<>();
-    private String lastLabel;
     private float smoothed, partnerSmoothed;
     private String key = "";
     private BufferedImage picture;
@@ -32,33 +31,31 @@ public class PodTerminal {
     public PodTerminal(long worldSeed, Multiplayer.Role role) {
         this.worldSeed = worldSeed;
         this.role = role;
-        // The link to the partner's PC is already made; the loading stages follow it
-        if (role != null) finishedSteps.add("Partner pod linked: " + name(role.other()));
     }
 
     /**
      * The screen as it should be now, or null if it's as it was last time: partner is the
-     * partner's share loaded (multiplayer), status a line for the pod's way down (null for none).
+     * partner's share loaded (multiplayer), log what the ship's done (the latest last) and doing
+     * what it's doing now.
      */
-    public BufferedImage picture(LoadingProgress progress, float partner, String status) {
+    public BufferedImage picture(LoadingProgress progress, float partner, List<String> log, String doing) {
         String label = progress.currentLabel();
         float target = progress.overallFraction();
         float secondsLeft = progress.estimatedSecondsLeft();
         boolean failed = label.startsWith("Loading failed");
-        if (lastLabel != null && !lastLabel.equals(label) && !failed) finishedSteps.add(lastLabel);
-        lastLabel = label;
         smoothed += (target - smoothed) * 0.18f;
         partnerSmoothed += (partner - partnerSmoothed) * 0.18f;
         int percent = Math.round(smoothed * 100), partnerPercent = Math.round(partnerSmoothed * 100);
         boolean blink = (System.currentTimeMillis() / 450) % 2 == 0;
-        String now = label + "|" + finishedSteps.size() + "|" + percent + "|" + partnerPercent + "|" + Math.round(secondsLeft) + "|" + blink + "|" + status;
+        String last = log.isEmpty() ? "" : log.get(log.size() - 1);
+        String now = (failed ? label : doing) + "|" + log.size() + "|" + last + "|" + percent + "|" + partnerPercent + "|" + Math.round(secondsLeft) + "|" + blink;
         if (now.equals(key) && picture != null) return null;
         key = now;
-        picture = render(label, failed, percent, partnerPercent, secondsLeft, blink, status);
+        picture = render(failed ? label : doing, log, failed, percent, partnerPercent, secondsLeft, blink);
         return picture;
     }
 
-    private BufferedImage render(String label, boolean failed, int percent, int partnerPercent, float secondsLeft, boolean blink, String status) {
+    private BufferedImage render(String doing, List<String> log, boolean failed, int percent, int partnerPercent, float secondsLeft, boolean blink) {
         // Drawn small, so the text has the chunky look of an old screen when it's shown large
         BufferedImage image = new BufferedImage(COLS * 9, ROWS * 16, BufferedImage.TYPE_INT_RGB);
         Graphics2D t = image.createGraphics();
@@ -77,15 +74,12 @@ public class PodTerminal {
             lines.add("WORLD SEED " + worldSeed);
         }
         lines.add("");
-        // (fewer steps shown in multiplayer, to leave room for the second bar)
-        int keep = role != null ? 2 : 3;
-        if (status != null) keep--;
-        int shown = Math.max(0, finishedSteps.size() - keep);
-        for (int i = shown; i < finishedSteps.size(); i++) {
-            lines.add(fit("> " + finishedSteps.get(i).toUpperCase(), COLS - 4) + " OK");
+        // (fewer lines of the log shown in multiplayer, to leave room for the second bar)
+        int keep = role != null ? 3 : 4;
+        for (int i = Math.max(0, log.size() - keep); i < log.size(); i++) {
+            lines.add(fit("  " + log.get(i).toUpperCase(), COLS));
         }
-        lines.add(fit("> " + label.toUpperCase(), COLS - 2) + (blink && !failed ? "_" : ""));
-        if (status != null) lines.add(fit("* " + status.toUpperCase(), COLS));
+        if (doing != null) lines.add(fit("> " + doing.toUpperCase(), COLS - 1) + (blink && !failed ? "_" : ""));
         int bottom = role != null ? 3 : 2;
         while (lines.size() < ROWS - bottom) lines.add("");
         if (role != null) {
@@ -97,14 +91,14 @@ public class PodTerminal {
         } else {
             lines.add(bar(null, percent, COLS - 8));
         }
-        lines.add(failed ? "SYSTEM HALTED" : secondsLeft >= 1f ? String.format("ETA %d S", Math.round(secondsLeft)) : "STAND BY");
+        lines.add(failed ? "SYSTEM HALTED" : secondsLeft >= 1f ? String.format("LANDING IN %d S", Math.round(secondsLeft)) : "STAND BY");
 
         for (int i = 0; i < lines.size() && i < ROWS; i++) {
             // A soft glow behind each line, then the line itself
             t.setColor(new Color(text.getRed(), text.getGreen(), text.getBlue(), 50));
             t.drawString(lines.get(i), 5, 15 + i * 16 + 1);
             t.drawString(lines.get(i), 7, 15 + i * 16 - 1);
-            t.setColor(i < 2 ? PHOSPHOR_DIM : text);
+            t.setColor(i < 2 || lines.get(i).startsWith("  ") ? PHOSPHOR_DIM : text);
             t.drawString(lines.get(i), 6, 15 + i * 16);
         }
         // Scanlines, and a faint glare across the curved glass

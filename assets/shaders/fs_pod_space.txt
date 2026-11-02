@@ -4,6 +4,7 @@ in vec3 vDirection;
 in vec2 vUV;
 in float vBrightness;
 in vec3 vNormal;
+in vec3 vLocal;
 
 out vec4 fragColour;
 
@@ -15,6 +16,17 @@ uniform float alpha;
 // (2) where the star's light comes from, and the thin air's colour round the rim
 uniform vec3 lightDirection;
 uniform vec3 atmosphere;
+// (2) which globe (0 plain, 1 the planet with its relief, 2 its clouds), the ground's heights and the planet's radius, and its turn
+uniform int surface;
+uniform sampler2D heightMap;
+uniform float worldRadius;
+uniform mat3 planetTurn;
+// The star's light's colour
+uniform vec3 lightColour;
+// (5) the rings' inner edge (a share of the outer), and the giant they go round, which shadows them
+uniform float ringInner;
+uniform vec3 planetCentre;
+uniform float planetRadius;
 // (3) which way is up through the fog (the pod's frame), and the sky's and the ground's colours
 uniform vec3 skyUp;
 uniform vec3 skyColour;
@@ -32,16 +44,55 @@ void main() {
         vec3 n = normalize(vNormal);
         // (drawn without depth: only the side facing the eyes)
         if (dot(n, -vDirection) < 0.0) discard;
-        vec3 albedo = texture(image, vUV).rgb;
-        float lit = max(dot(n, -lightDirection), 0.0);
+        vec4 picture = texture(image, vUV);
+        vec3 albedo = picture.rgb;
+        // The planet's hills and mountains: the surface tipped by how steeply the ground rises
+        // east and north here (from its heights either side), lit by it; a little steeper than
+        // it is, so the ranges read from space
+        vec3 shaded = n;
+        if (surface == 1) {
+            vec2 texel = 1.0 / vec2(textureSize(heightMap, 0));
+            float east = texture(heightMap, vUV + vec2(texel.x, 0.0)).r - texture(heightMap, vUV - vec2(texel.x, 0.0)).r;
+            float north = texture(heightMap, vUV - vec2(0.0, texel.y)).r - texture(heightMap, vUV + vec2(0.0, texel.y)).r;
+            float latitude = (0.5 - vUV.y) * 3.14159265;
+            float slopeEast = east / (2.0 * texel.x * 6.2831853 * worldRadius * max(cos(latitude), 0.05));
+            float slopeNorth = north / (2.0 * texel.y * 3.14159265 * worldRadius);
+            vec3 p = normalize(vLocal);
+            vec3 eastward = normalize(vec3(p.z, 0.0, -p.x) + vec3(1e-5));
+            vec3 northward = cross(p, eastward);
+            shaded = normalize(planetTurn * normalize(p - (eastward * slopeEast + northward * slopeNorth) * 2.5));
+        }
+        float lit = max(dot(shaded, -lightDirection), 0.0);
         // A soft line between day and night, and a little light on the night side
         float day = smoothstep(-0.08, 0.25, dot(n, -lightDirection));
-        vec3 colour = albedo * (0.04 + 1.05 * day * (0.35 + 0.65 * lit));
+        vec3 colour = albedo * (0.04 + 1.05 * day * (0.35 + 0.65 * lit) * lightColour);
         // The air at the rim, bright on the day side
         vec3 toEye = normalize(-vDirection);
         float rim = pow(1.0 - max(dot(n, toEye), 0.0), 3.0);
         colour += atmosphere * rim * (0.15 + 0.85 * day);
+        // Clouds: white, lit by the star, seen through where they're thin
+        if (surface == 2) {
+            fragColour = vec4(lightColour * (0.03 + 1.0 * day * (0.45 + 0.55 * lit)), picture.a * alpha);
+            return;
+        }
         fragColour = vec4(colour, alpha);
+    } else if (mode == 4) {
+        // A rock: grey-brown, lit hard by the star, black where it's not (alpha fades it in from the dark)
+        vec3 n = normalize(vNormal);
+        float lit = max(dot(n, -lightDirection), 0.0);
+        vec3 albedo = vec3(0.55, 0.5, 0.45);
+        fragColour = vec4(albedo * (0.05 + 1.2 * lit * lightColour) * alpha, 1.0);
+    } else if (mode == 5) {
+        // Rings: their bands across, lit from either face, dark in the giant's shadow
+        float r = length(vUV);
+        if (r > 1.0 || r < ringInner) discard;
+        vec4 c = texture(image, vec2((r - ringInner) / (1.0 - ringInner), 0.5));
+        vec3 toStar = -lightDirection;
+        vec3 off = planetCentre - vDirection;
+        float along = dot(off, toStar);
+        float shadow = along > 0.0 && length(off - toStar * along) < planetRadius ? 0.12 : 1.0;
+        float lit = 0.35 + 0.65 * abs(dot(normalize(vNormal), toStar));
+        fragColour = vec4(c.rgb * lightColour * lit * shadow, c.a * alpha);
     } else {
         // Through fogged glass: a bright sky above, the ground darker below, blurred into each other
         float up = dot(normalize(vDirection), skyUp);

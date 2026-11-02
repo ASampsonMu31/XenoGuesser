@@ -1,0 +1,38 @@
+#version 330 core
+
+// The moon in the game's sky: a ball of rock lit by the sun, its face (the same face always
+// towards the planet) from its surface picture; its light added to the sky's, so its dark side
+// is just sky and its phase is wherever the sun's light falls on it.
+
+in vec2 vCorner;
+in vec3 vPosition;
+
+out vec4 fragColour;
+
+uniform vec3 centre;
+uniform vec3 sunDirection;
+uniform vec3 lightColour;
+uniform float strength;
+uniform sampler2D surface;
+
+void main() {
+    float r2 = dot(vCorner, vCorner);
+    if (r2 > 1.0) discard;
+    // The ball's surface here, in the world: across the disc and out towards the eyes
+    vec3 toEye = -normalize(centre);
+    vec3 side = normalize(cross(-toEye, abs(toEye.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
+    vec3 up = cross(side, -toEye);
+    vec3 n = normalize(side * vCorner.x + up * vCorner.y + toEye * sqrt(1.0 - r2));
+    // Its own frame, its face towards the planet (as the eyes, near enough), north the planet's
+    vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), toEye));
+    vec3 north = cross(toEye, east);
+    vec2 uv = vec2(atan(dot(n, east), dot(n, toEye)) / 6.2831853 + 0.5, 0.5 - asin(clamp(dot(n, north), -1.0, 1.0)) / 3.14159265);
+    vec3 rock = texture(surface, uv).rgb;
+    float sunOn = dot(n, normalize(sunDirection));
+    // (a soft edge between day and night, and moonlike: lit nearly as bright to its rim)
+    float day = smoothstep(-0.03, 0.1, sunOn);
+    vec3 colour = rock * lightColour * day * (0.55 + 0.45 * max(sunOn, 0.0));
+    // A soft edge to the disc, so it isn't jagged
+    float edge = 1.0 - smoothstep(0.96, 1.0, r2);
+    fragColour = vec4(colour * strength * edge, 1.0);
+}

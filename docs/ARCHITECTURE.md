@@ -114,7 +114,7 @@ Parts extend `GamePart` (field `game`).
   `CellIndex`, `CellStream`, `SphereRaster`, `GeodesicCollision`, `Viewpoint`, `Camera`.
 - **Terrain, water, sky, weather**: `TerrainMesh`, `PerlinNoise`, `Landforms`, `Rivers`, `RiverRenderer`,
   `RegionalGenerationManager`, `RegionalFactor`, `SpeciesRange`, `SphereSkyRenderer`,
-  `SphereWeather`, `RainSound`, `ShadowMaps`, `RockField`, `WorldPalette`, `ProceduralTextures`,
+  `SphereWeather`, `StarSystem` (the sun's size, the moon, what the pod meets on the way in), `SkyMoon`, `RainSound`, `ShadowMaps`, `RockField`, `WorldPalette`, `ProceduralTextures`,
   `TileableNoise`, `WorldArtGenerator`, `PlanetGlobeTexture`.
 - **Plants**: `Flora` (a species' branching meshes and LODs, `Flora.Design`), `FloraForms` (the non-tree forms), `FloraSpecies`.
 - **Animals**: `OrganismManager`, `OrganismSpecies`, `OrganismParts`, `OrganismMesh`.

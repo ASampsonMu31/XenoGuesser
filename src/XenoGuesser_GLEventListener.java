@@ -84,6 +84,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private final RiverRenderer riverRenderer = new RiverRenderer();
     private java.util.concurrent.Future<RiverRenderer.Built> riverBuild;
     private SphereSkyRenderer sphereSkyRenderer;
+    // The planet's moon in the sky (null on a world without one, or before the GL side's set up)
+    private SkyMoon skyMoon;
     SphereWeather sphereWeather;
     final GeodesicCollision geodesicCollision = new GeodesicCollision();
     // Trees and grass, per geodesic cell (a little over two chunks' area each) round the player,
@@ -347,7 +349,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             this.regionalManager.precalculateWaterDistanceField(this.worldNoise);
             if (this.worldNoise.rivers != null) this.regionalManager.addRivers(this.worldNoise.rivers);
         }
-        this.freezingPoint = -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
+        this.freezingPoint = freezingPoint(worldSeed);
 
         // (world units from the sea)
         float GRASS_WATER_MEAN = 0f;
@@ -1073,6 +1075,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         if (rockField != null) rockField.clear(gl);
         hudRenderer.hud.dispose(gl);
         if (sphereSkyRenderer != null) sphereSkyRenderer.dispose(gl);
+        if (skyMoon != null) skyMoon.dispose(gl);
         if (sphereWeather != null) sphereWeather.dispose(gl);
         if (geodesicTerrainModel != null && geodesicTerrainModel.mesh != null) {
             geodesicTerrainModel.mesh.dispose(gl);
@@ -1231,8 +1234,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         timeOfDay = 0.5f;
 
         lights = new Light[1];
-        // (the sun's picture is its disc inside its glow: sized so the disc stays as big as ever)
-        float lightSize = 275.0f / ProceduralTextures.SUN_DISC; 
+        // (the sun's picture is its disc inside its glow: sized so the disc is as big as this world's
+        // sun looks, as it did out of the pod's window, see StarSystem)
+        StarSystem system = StarSystem.of(worldSeed);
+        float lightSize = 275.0f * system.sunScale / ProceduralTextures.SUN_DISC;
         
         Light l = new Light(gl, camera, true, new Vector3(0,0,0), lightSize, textures.get("sun_glow"));
         Material m = new Material();
@@ -1245,6 +1250,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         lights[0] = l;
 
         sphereSkyRenderer = new SphereSkyRenderer(gl);
+        if (system.hasMoon) skyMoon = new SkyMoon(gl, system);
     }
 
     private void initialiseCoreShaders() {
@@ -2834,6 +2840,13 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         lights[0].render(gl);
         gl.glDepthMask(true);
         gl.glDisable(GL.GL_BLEND);
+        // The moon, lit by the sun as it is from where the sun is (re-enabling the depth test after)
+        if (skyMoon != null) {
+            SphereFrame podFrame = landingPod != null ? landingPod.frame() : null;
+            skyMoon.render(gl, camera, eye, sunDirection, sunDeclination, noonLongitude, podFrame != null ? podFrame.origin() : null,
+                    nightProportion, worldArt.palette().sunTint);
+            gl.glEnable(GL.GL_DEPTH_TEST);
+        }
 
         float[] sunTintNow = worldArt.palette().sunTint;
         float daylight = 1.0f - nightProportion;
@@ -3228,6 +3241,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     public void setMinimap(MapPanel minimap) {
         this.minimap = minimap;
+        // The contours and the temperature heatmap are had from the start, in singleplayer and multiplayer
+        // alike, for the altimeter and the thermometer to be read against
+        mapOverlays.ownedLayers.add(MapPanel.Layer.CONTOURS);
+        mapOverlays.ownedOverlays.add(MapOverlay.of(FactorName.TEMPERATURE));
         // Developer aid: -Dxenoguesser.unlockall starts with every map (the items are had from the start anyway)
         if (Dev.flag("xenoguesser.unlockall")) {
             mapOverlays.ownedLayers.addAll(List.of(MapPanel.Layer.values()));
@@ -3244,7 +3261,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     // ------------------------------------------------------------------ what the player has bought
 
     // The things the player can carry, every one had from the start (in this order, so the
-    // compass comes out first and the kit is last); and the maps bought in the shop, nothing to begin with: the map's
+    // compass comes out first and the kit is last); and the maps bought in the shop, only the contours and temperature to begin with: the map's
     // layers and overlays
     private static final String COMPASS = "Compass", THERMOMETER = "Thermometer", ALTIMETER = "Altimeter", KIT = "Identification kit";
     private static final String[] ITEMS = { COMPASS, THERMOMETER, ALTIMETER, KIT };
@@ -3585,6 +3602,11 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     /** How much rain falls at a place, 0 driest to 1 wettest (see RegionalGenerationManager.rainfallMap). */
     private float rainfallAt(SpherePosition place) {
         return regionalManager.rainfallMap.evaluateAt(place);
+    }
+
+    /** The world's freezing point (Celsius), from its seed: what the snow lies below (the pod's globe shows the same, see PlanetGlobeTexture). */
+    static float freezingPoint(long worldSeed) {
+        return -5f + 10f * new java.util.Random(worldSeed * 41L + 19L).nextFloat();
     }
 
     float temperatureAt(SpherePosition place) {

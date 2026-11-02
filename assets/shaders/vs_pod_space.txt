@@ -1,8 +1,9 @@
 #version 330 core
 
 // What's seen through the landing pod's window, far off in space: streaking stars (mode 0, a quad each, or still ones as points),
-// the star the planet goes round, as a picture always facing the pod (1), the planet's globe
-// (2), and the sky above and the ground below seen through fogged glass (3). Everything is
+// the star the planet goes round, as a picture always facing the pod (1), a globe (2: the planet,
+// its moon or a gas giant), the sky above and the ground below seen through fogged glass (3), an
+// asteroid (4) and a giant's rings (5). Everything is
 // placed round the eyes, in the frame the pod flies in, and turned into the view as the pod's
 // turned (viewProjection).
 
@@ -13,6 +14,7 @@ out vec3 vDirection;
 out vec2 vUV;
 out float vBrightness;
 out vec3 vNormal;
+out vec3 vLocal;
 
 uniform int mode;
 uniform mat4 viewProjection;
@@ -24,6 +26,19 @@ uniform float billboardSize;
 uniform vec3 planetCentre;
 uniform float planetRadius;
 uniform mat3 planetTurn;
+// (2) which globe: 0 plain (a moon, a giant), 1 the planet, its ground raised by its height
+// (heightMap, units above the sea; worldRadius the planet's radius in the same units), 2 its clouds
+uniform int surface;
+uniform sampler2D heightMap;
+uniform float worldRadius;
+// (4) a rock: its middle, size and turn (its normals in extra)
+uniform vec3 rockCentre;
+uniform float rockSize;
+uniform mat3 rockTurn;
+// (5) rings, round planetCentre: the plane's two axes and the outer edge's radius
+uniform vec3 ringU;
+uniform vec3 ringV;
+uniform float ringOuter;
 
 void main() {
     vBrightness = extra.z;
@@ -38,7 +53,17 @@ void main() {
         vUV = position.xy * 0.5 + 0.5;
     } else if (mode == 2) {
         vNormal = planetTurn * position;
-        world = planetCentre + vNormal * planetRadius;
+        vLocal = position;
+        // (the clouds a few hundred units up, over all but the highest peaks)
+        float lift = surface == 1 ? textureLod(heightMap, extra.xy, 0.0).r / worldRadius : surface == 2 ? 0.012 : 0.0;
+        world = planetCentre + vNormal * planetRadius * (1.0 + lift);
+    } else if (mode == 4) {
+        vNormal = rockTurn * extra;
+        world = rockCentre + rockTurn * position * rockSize;
+    } else if (mode == 5) {
+        vUV = position.xy;
+        world = planetCentre + (ringU * position.x + ringV * position.y) * ringOuter;
+        vNormal = cross(ringU, ringV);
     } else {
         world = position;
     }
