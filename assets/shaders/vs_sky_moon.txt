@@ -1,0 +1,20 @@
+#version 330 core
+
+// The moon in the game's sky (SkyMoon): a square facing the eyes about its middle, placed round
+// the eyes (camera-relative, as everything in the sphere world is drawn).
+
+layout (location = 0) in vec2 corner;
+
+out vec2 vCorner;
+out vec3 vPosition;
+
+uniform mat4 viewProjection;
+uniform vec3 centre;
+uniform vec3 side;
+uniform vec3 up;
+
+void main() {
+    vCorner = corner;
+    vPosition = centre + side * corner.x + up * corner.y;
+    gl_Position = viewProjection * vec4(vPosition, 1.0);
+}

@@ -11,14 +11,15 @@ import javax.sound.sampled.SourceDataLine;
  * hiss of its air always; the engines' throb as the pod's turned; the roar and crackle of the
  * air tearing past as it comes in; the low rumble of coming down; the chair's casters rolling.
  * And sounds that happen once: the clunk as the pod's let go, the thrusters' puffs, the lights
- * switch's click, the thump of landing, the hiss of the hatch.
+ * switch's click, the thump of landing, the hiss of the hatch; the boom of dropping out of
+ * lightspeed, and a small rock's tick on the glass, or its crack.
  *
  * Told how loud each continuing sound should be every frame (it eases to that); one-off sounds
  * are queued from any thread.
  */
 public final class PodSounds {
 
-    enum Shot { CLUNK, THRUSTER, SWITCH, LANDING, HATCH }
+    enum Shot { CLUNK, THRUSTER, SWITCH, LANDING, HATCH, DROP_OUT, STRIKE, CRACK }
 
     private static final int RATE = 22050, BLOCK = 256;
 
@@ -145,6 +146,9 @@ public final class PodSounds {
         shots[Shot.SWITCH.ordinal()] = click(rand);
         shots[Shot.LANDING.ordinal()] = thump(rand);
         shots[Shot.HATCH.ordinal()] = puff(rand, 1.4f, 0.35f);
+        shots[Shot.DROP_OUT.ordinal()] = dropOut(rand);
+        shots[Shot.STRIKE.ordinal()] = strike(rand, false);
+        shots[Shot.CRACK.ordinal()] = strike(rand, true);
     }
 
     /** The pod let go: a heavy latch's clunk, a ringing of the hull and a click before it. */
@@ -188,6 +192,45 @@ public final class PodSounds {
             float second = t2 > 0f ? (float) Math.exp(-t2 * 1200.0) * (rand.nextFloat() * 2f - 1f) * 0.6f : 0f;
             float ring = (float) Math.sin(2 * Math.PI * 2400.0 * t) * (float) Math.exp(-t * 120.0) * 0.15f;
             w[i] = (first + second) * 0.7f + ring;
+        }
+        return w;
+    }
+
+    /** Out of lightspeed: a deep boom sliding down in pitch under a rush that dies away. */
+    private static float[] dropOut(Random rand) {
+        int n = (int) (RATE * 2.4f);
+        float[] w = new float[n];
+        float phase = 0f, low = 0f;
+        for (int i = 0; i < n; i++) {
+            float t = i / (float) RATE;
+            phase += (float) (2 * Math.PI * (40.0 + 140.0 * Math.exp(-t * 2.2)) / RATE);
+            float boom = (float) Math.sin(phase) * (float) (Math.min(1.0, t * 30.0) * Math.exp(-t * 1.6));
+            float white = rand.nextFloat() * 2f - 1f;
+            low += (white - low) * (0.05f + 0.25f * (float) Math.exp(-t * 2.0));
+            float rush = low * (float) Math.exp(-t * 2.5) * 0.6f;
+            w[i] = boom * 0.8f + rush;
+        }
+        return w;
+    }
+
+    /** A small rock on the glass: a hard tick and a ringing of the pane; cracking, a splintering after it. */
+    private static float[] strike(Random rand, boolean cracks) {
+        int n = (int) (RATE * (cracks ? 1.2f : 0.5f));
+        float[] w = new float[n];
+        for (int i = 0; i < n; i++) {
+            float t = i / (float) RATE;
+            float tick = (float) Math.exp(-t * 700.0) * (rand.nextFloat() * 2f - 1f) * 0.9f;
+            float ring = ((float) Math.sin(2 * Math.PI * 1850.0 * t) + 0.5f * (float) Math.sin(2 * Math.PI * 3120.0 * t))
+                    * (float) Math.exp(-t * 18.0) * 0.12f;
+            float knock = (float) Math.sin(2 * Math.PI * 140.0 * t) * (float) Math.exp(-t * 30.0) * 0.4f;
+            float splinter = 0f;
+            if (cracks && t > 0.02f) {
+                // Little snaps, coming fast and then slower as the crack runs and stops
+                float rate = (float) Math.exp(-(t - 0.02) * 6.0);
+                if (rand.nextFloat() < 0.012f * rate) splinter = (rand.nextFloat() * 2f - 1f) * 0.8f * rate;
+                splinter += (rand.nextFloat() * 2f - 1f) * 0.05f * rate;
+            }
+            w[i] = tick + ring + knock + splinter;
         }
         return w;
     }

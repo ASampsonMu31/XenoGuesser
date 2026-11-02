@@ -5,7 +5,9 @@
 // down, beaded with condensation: a few drops that gather and join as the mist thickens, and
 // bigger ones running the way gravity pulls (down the glass, or aside as the pod leans) right off
 // the edge, each leaving a channel of water behind it, wiped clear of the mist and broken into
-// little beads where it split. The water's faintly the colour of the planet's seas.
+// little beads where it split. The water's faintly the colour of the planet's seas. Where a small
+// rock from an asteroid belt struck it there's a chip, or a crack running out from a crushed spot,
+// catching the light, with a flash as it struck.
 // u and v run across the oval, (0.5, 0.5) its middle.
 
 in vec3 aPos;
@@ -24,6 +26,9 @@ uniform float time;
 uniform vec2 glassSize;   // the door's half width and half height (units)
 uniform vec2 slide;       // which way drops run on it (across, up), from gravity
 uniform vec3 waterTint;   // the planet's seas' colour, which the water's faintly tinted
+uniform int crackCount;   // how many rocks have struck it
+uniform vec4 cracks[4];   // each: where (u, v), how big (units across; a chip if small), a seed
+uniform float cracked[4]; // when each struck (as time)
 
 float hash1(float x) {
     return fract(sin(x * 91.3458) * 47453.5453);
@@ -114,6 +119,44 @@ vec2 water(vec2 p, float grow) {
     return vec2(field, wipe);
 }
 
+// A crack (or chip) in the glass at p (units from where the rock struck): how much of a crack
+// line is here (x), and the strike's flash (y). age is how long since it struck
+vec2 crack(vec2 p, vec4 c, float age) {
+    float r = length(p), theta = atan(p.y, p.x);
+    float size = c.z, seed = c.w;
+    float aa = fwidth(r) * 1.2 + 1e-4;
+    // (the crack runs out in a moment)
+    float grow = smoothstep(0.0, 0.3, age);
+    float line = 0.0;
+    // The crushed spot where it struck, frosted white
+    float spot = min(0.16, size * 0.3);
+    line = max(line, (1.0 - smoothstep(spot * 0.6, spot, r)) * 0.9);
+    // Lines running out from it, jagged, thinning as they go
+    float n = 6.0 + floor(seed * 5.0);
+    for (float k = 0.0; k < 11.0; k += 1.0) {
+        if (k >= n) break;
+        float a = 6.2831853 * (k + 0.6 * (hash1(k + seed * 13.0) - 0.5)) / n;
+        float len = size * (0.45 + 0.55 * hash1(k * 3.7 + seed * 7.0)) * grow;
+        float jag = 0.08 * sin(r * 7.0 + k * 3.0 + seed * 9.0) + 0.04 * sin(r * 19.0 + seed * 20.0 + k);
+        float d = mod(theta - a - jag + 3.14159265, 6.2831853) - 3.14159265;
+        if (abs(d) > 1.5 || r > len) continue;
+        float across = r * sin(abs(d));
+        float w = 0.012 + 0.025 * (1.0 - r / max(len, 1e-3));
+        line = max(line, 1.0 - smoothstep(w * 0.5, w * 0.5 + aa, across));
+    }
+    // ...and broken rings round it, between some of the lines, where the glass flexed
+    if (size > 0.8) {
+        for (float j = 1.0; j <= 2.0; j += 1.0) {
+            float ring = size * (0.18 + 0.22 * j) * (1.0 + 0.07 * sin(theta * 5.0 + seed * 11.0 + j));
+            float sector = floor((theta + 3.14159265) / 6.2831853 * n + seed * 3.0);
+            if (hash1(sector * 5.3 + j * 17.0 + seed) < 0.45 || ring > size * grow) continue;
+            line = max(line, (1.0 - smoothstep(0.006, 0.006 + aa, abs(r - ring))) * 0.8);
+        }
+    }
+    float flash = exp(-age * 12.0) * exp(-r * r * 1.5);
+    return vec2(line, flash);
+}
+
 void main() {
     vec3 normal = normalize(aNormal);
     vec3 toEye = normalize(viewPos - aPos);
@@ -154,6 +197,17 @@ void main() {
     float burn = plasma * smoothstep(0.35, 1.0, edge) * flicker;
     colour += vec3(1.0, 0.45, 0.12) * burn * 1.6 + vec3(1.0, 0.85, 0.6) * pow(burn, 3.0);
     alpha = max(alpha, burn * 0.9);
+
+    // Where rocks struck it: the cracks catching the light, and each one's flash as it struck
+    for (int i = 0; i < 4; i++) {
+        if (i >= crackCount) break;
+        vec2 k = crack((vUV - cracks[i].xy) * 2.0 * glassSize, cracks[i], max(0.0, time - cracked[i]));
+        vec3 lit = vec3(0.88, 0.92, 0.97) * (0.4 + 0.6 * cabinLight);
+        colour = mix(colour, lit, k.x * 0.85);
+        alpha = max(alpha, k.x * 0.65);
+        colour += vec3(1.0, 0.95, 0.85) * k.y * 1.5;
+        alpha = max(alpha, k.y * 0.8);
+    }
 
     fragColour = vec4(colour, alpha);
 }

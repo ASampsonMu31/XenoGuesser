@@ -60,7 +60,7 @@ public class XenoGuesser extends JFrame {
   private PodSequence podSequence;
   private boolean podShown;
   // The planet's globe for the pod's window (see PlanetGlobeTexture), once it's made
-  private BufferedImage planetGlobe;
+  private PlanetGlobeTexture.Relief planetGlobe;
   // JOGL's first profile probe takes seconds: made while the menu's up, so the pod can be shown at once
   private static final Thread GL_WARM_UP = new Thread(() -> GLProfile.get(GLProfile.GL3), "gl-profile-warm-up");
   private MainMenu mainMenu;
@@ -481,7 +481,7 @@ public class XenoGuesser extends JFrame {
       // The planet as the pod sees it coming in, made alongside the rest from here (the rivers cut its coasts)
       long globeSeed = worldSeed;
       Thread globe = new Thread(() -> {
-        BufferedImage image = PlanetGlobeTexture.make(worldNoise, seaLevelHeight, globeSeed);
+        PlanetGlobeTexture.Relief image = PlanetGlobeTexture.relief(worldNoise, seaLevelHeight, globeSeed, climate);
         SwingUtilities.invokeLater(() -> {
           if (run != generationRun) return;
           planetGlobe = image;

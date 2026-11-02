@@ -47,7 +47,7 @@ public class PodSequence implements GLEventListener {
     private final HudOverlay hud = new HudOverlay();
     private final PodInterior.Lighting lighting = new PodInterior.Lighting();
     private final PodTerminal terminal;
-    private final PodTimeline timeline = new PodTimeline();
+    private final PodTimeline timeline;
     private final PodSpaceView space;
     private final PodSounds sounds = new PodSounds();
     // Multiplayer: the partner in the pod with this player, as last heard {x, y, z, yaw} and eased towards it
@@ -91,11 +91,14 @@ public class PodSequence implements GLEventListener {
         this.progress = progress;
         interior = new PodInterior(multiplayer);
         space = new PodSpaceView(worldSeed);
+        timeline = new PodTimeline(StarSystem.of(worldSeed));
         // (the condensation on the door the faint colour of the planet's seas)
         interior.setWaterTint(MapColours.of(worldSeed)[0]);
         Multiplayer session = Multiplayer.active();
         role = multiplayer ? (session != null ? session.role : Multiplayer.Role.HOST) : null;
         terminal = new PodTerminal(worldSeed, role);
+        // The link to the partner's PC is already made: the first thing in the ship's log
+        if (role != null) timeline.note("Partner pod linked: " + partnerName());
         // In multiplayer this player's suit in their colour, and the partner's in theirs (as in the game)
         partnerBody = role == null ? null : PlayerBody.seenFromOutside();
         if (role != null) {
@@ -236,7 +239,7 @@ public class PodSequence implements GLEventListener {
     }
 
     /** The planet as seen coming in (see PlanetGlobeTexture), from any thread once it's made. */
-    public void setGlobe(BufferedImage globe) {
+    public void setGlobe(PlanetGlobeTexture.Relief globe) {
         space.setGlobe(globe);
     }
 
@@ -466,6 +469,7 @@ public class PodSequence implements GLEventListener {
         space.update(dt);
         System.arraycopy(timeline.gravity, 0, physics.gravity, 0, 3);
         for (PodTimeline.Event event = timeline.nextEvent(); event != null; event = timeline.nextEvent()) happened(event);
+        for (PodSpaceView.Strike strike = space.nextStruck(); strike != null; strike = space.nextStruck()) struck(strike);
         bumpSpeed += (-bump * 160f - bumpSpeed * 9f) * dt;
         bump += bumpSpeed * dt;
         sharePod(dt);
@@ -655,6 +659,18 @@ public class PodSequence implements GLEventListener {
     /** Something that happens once on the way down: the pod's jolted, and so's everything loose in it. */
     private void happened(PodTimeline.Event event) {
         switch (event) {
+            case DROPPED_OUT -> {
+                // Out of lightspeed with a lurch towards the door
+                sounds.play(PodSounds.Shot.DROP_OUT);
+                physics.shove(0f, 4f, 16f);
+                chair.vz += 8f;
+                bumpSpeed += 10f;
+            }
+            case STRIKE -> {
+                // A small rock on its way to the door's glass, from the belt
+                float[] s = timeline.nextStrike();
+                if (s != null) space.strike(interior.glassPoint(s[1], s[2]), s[1], s[2], s[3] > 0.5f, s[4]);
+            }
             case RELEASED -> {
                 sounds.play(PodSounds.Shot.CLUNK);
                 // Let go with a clunk: a kick up and back
@@ -682,6 +698,16 @@ public class PodSequence implements GLEventListener {
                 bumpSpeed -= 70f;
             }
         }
+    }
+
+    /** A rock's struck the door's glass: a crack (or a chip, if it held), a crack of a sound and a jolt, and a line in the log. */
+    private void struck(PodSpaceView.Strike strike) {
+        float time = (System.nanoTime() - startNanos) / 1e9f;
+        interior.addCrack(strike.u(), strike.v(), strike.cracks() ? 2.2f + 2.5f * strike.seed() : 0.35f, strike.seed(), time);
+        sounds.play(strike.cracks() ? PodSounds.Shot.CRACK : PodSounds.Shot.STRIKE);
+        bumpSpeed += strike.cracks() ? 9f : 4f;
+        timeline.note(strike.cracks() ? "Impact: glass cracked" : "Impact: forward glass");
+        if (strike.cracks()) timeline.note("Glass holding: no leak");
     }
 
     /**
@@ -881,11 +907,12 @@ public class PodSequence implements GLEventListener {
         lighting.ambient[1] = 0.016f + 0.18f * cabin;
         lighting.ambient[2] = 0.022f + 0.19f * cabin;
         lighting.interference = timeline.roar;
-        java.awt.image.BufferedImage screen = terminal.picture(progress, partnerLoaded(), timeline.status());
+        java.awt.image.BufferedImage screen = terminal.picture(progress, partnerLoaded(), timeline.log(), timeline.doing());
         if (screen != null) interior.showOnTerminal(gl, screen);
         interior.setBone(PodInterior.CHAIR, chair.pose());
         interior.setBone(PodInterior.SWITCH, PodFurniture.switchPose(lever));
         // Space (or the fogged sky) first, behind the cabin, seen only through the door's glass
+        System.arraycopy(eye, 0, space.eye, 0, 3);
         space.render(gl, Matrix4Transform.perspective(FIELD_OF_VIEW, aspect, 0.5f, 200000f), rotation);
         interior.render(gl, Matrix4.multiply(projection, view), eye, lighting, time);
         // The partner, in their suit

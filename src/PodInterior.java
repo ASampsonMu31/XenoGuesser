@@ -401,6 +401,29 @@ public class PodInterior {
         return b;
     }
 
+    /** Where on the door's glass (as it is when shut) u, v across it is, in the cabin's frame. */
+    float[] glassPoint(float u, float v) {
+        float cx = (u - 0.5f) * 2f, cy = (v - 0.5f) * 2f;
+        return doorPoint((float) Math.atan2(cy, cx), Math.max(1e-3f, (float) Math.hypot(cx, cy)), WALL * 0.45f);
+    }
+
+    // The cracks and chips in the door's glass from rocks that struck it: {u, v, size (units), seed}
+    // each, and when each was made (for the strike's flash and the crack's running out)
+    private static final int CRACKS = 4;
+    private final float[] cracks = new float[CRACKS * 4], cracked = new float[CRACKS];
+    private int crackCount;
+
+    /** A rock's struck the glass at u, v: a crack size units across (a small one a chip), at time (as renderGlass is given it). */
+    void addCrack(float u, float v, float size, float seed, float time) {
+        if (crackCount == CRACKS) return;
+        cracks[crackCount * 4] = u;
+        cracks[crackCount * 4 + 1] = v;
+        cracks[crackCount * 4 + 2] = size;
+        cracks[crackCount * 4 + 3] = seed;
+        cracked[crackCount] = time;
+        crackCount++;
+    }
+
     /**
      * The door's glass, over everything else: fog and plasma 0..1, cabin the lamp, fogLight the
      * light through the fog, gravity as felt in the cabin (for which way its drops run).
@@ -423,6 +446,11 @@ public class PodInterior {
         float across = gravity[0], down = gravity[1];
         if (across * across + down * down < 1f) down = -1f;
         glassShader.setFloat(gl, "slide", across, down);
+        glassShader.setInt(gl, "crackCount", crackCount);
+        if (crackCount > 0) {
+            gl.glUniform4fv(gl.glGetUniformLocation(glassShader.getID(), "cracks"), CRACKS, cracks, 0);
+            gl.glUniform1fv(gl.glGetUniformLocation(glassShader.getID(), "cracked"), CRACKS, cracked, 0);
+        }
         gl.glEnable(GL.GL_BLEND);
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
         gl.glDepthMask(false);

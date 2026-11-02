@@ -95,6 +95,17 @@ public final class Planet {
         return d;
     }
 
+    /**
+     * Where something far off in the sky is at a place (the moon, say), as a unit direction in the
+     * local east/up/south frame: overhead at that declination and longitude; unlike the sun, free
+     * to set.
+     */
+    public static float[] skyDirection(SpherePosition position, double declination, double overheadLongitude) {
+        double lat = latitude(position), lon = longitude(position);
+        double[] body = point(declination, overheadLongitude), up = point(lat, lon), e = east(lon), n = north(lat, lon);
+        return new float[] { (float) dot(body, e), (float) dot(body, up), (float) -dot(body, n) };
+    }
+
     // The lowest the sun is ever seen, in degrees above the horizon
     public static final double MIN_SUN_ELEVATION = 10.0;
     private static final double SIN_MIN_SUN = Math.sin(Math.toRadians(MIN_SUN_ELEVATION));
