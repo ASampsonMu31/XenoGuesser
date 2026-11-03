@@ -1,6 +1,7 @@
 /**
  * The player's body in the world: walking, sprinting, jumping,
- * swimming, kept clear of what's solid and off slopes too steep to climb, standing on the
+ * swimming, scrambling up steep slopes (Space held), sliding off those too steep even for that,
+ * kept clear of what's solid, standing on the
  * ground, a road's deck or the pod's stairs; the head's bob as they step; and the oxygen's
  * light-headedness once it's been downgraded.
  */
@@ -13,7 +14,8 @@ final class PlayerMotion extends GamePart {
     /**
      * Carries the player from where they were to where the keys took them, in short steps,
      * stopping against anything solid and sliding along it rather than passing through, and
-     * not up anything too steep to climb.
+     * not up anything too steep to climb: past MAX_CLIMB only with Space held (scrambling), and
+     * never past MAX_SCRAMBLE, not even mid-jump unless the feet are already above the rise.
      */
     private void moveSolidly(SpherePosition from) {
         SpherePosition to = game.camera.getSpherePosition();
@@ -26,6 +28,9 @@ final class PlayerMotion extends GamePart {
                 : Float.isNaN(lastStood) ? (float) SphereMath.altitude(to) - game.playerEyeHeight : lastStood;
         float head = feet + game.playerEyeHeight + 2f;
         boolean startsInRoad = game.infraManager != null && game.infraManager.blocksWalker(from, feet, head);
+        boolean holdingClimb = game.keyboard.space;
+        scrambling = false;
+        againstSlope = false;
         for (int i = 1; i <= steps; i++) {
             SpherePosition candidate = clearOfPartner(lastFree, SphereMath.slerp(from, to, i / (double) steps), feet);
             // (while swimming, the slope of the bed beneath doesn't matter: only ground that
@@ -39,7 +44,21 @@ final class PlayerMotion extends GamePart {
             float under = TerrainMesh.getLayeredHeight(candidate, game.worldNoise);
             boolean onBridge = !Float.isNaN(deck) && feet >= deck - 3f && deck > under + 1f;
             double clearance = onBridge ? Math.max(jumpHeight, feet - under) : jumpHeight;
-            if (!floating && !onBridge && jumpHeight < 1f && sphereTooSteep(lastFree, candidate, feet)) break;
+            if (!floating && !onBridge) {
+                if (jumpHeight < 1f) {
+                    if (sphereTooSteep(lastFree, candidate, feet, MAX_CLIMB)) {
+                        againstSlope = true;
+                        if (!holdingClimb || sphereTooSteep(lastFree, candidate, feet, MAX_SCRAMBLE)) break;
+                        scrambling = true;
+                    }
+                } else if (sphereTooSteep(lastFree, candidate, feet, MAX_SCRAMBLE)
+                        && TerrainMesh.getLayeredHeight(SphereMath.move(candidate, SphereMath.heading(lastFree, candidate), 3.0), game.worldNoise) > feet) {
+                    // (in the air, a rise too steep to scramble up stops them unless they're
+                    // already clear of its top: a low bank can be jumped onto, a cliff can't)
+                    againstSlope = true;
+                    break;
+                }
+            }
             SpherePosition resolved = game.geodesicCollision.resolveFirm(lastFree, candidate, XenoGuesser_GLEventListener.PLAYER_RADIUS, XenoGuesser_GLEventListener.PLAYER, clearance);
             if (game.geodesicCollision.blockedStatic(resolved, XenoGuesser_GLEventListener.PLAYER_RADIUS * 0.98, clearance)) break;
             if (!startsInRoad && game.infraManager != null && game.infraManager.blocksWalker(resolved, feet, head)) break;
@@ -72,14 +91,20 @@ final class PlayerMotion extends GamePart {
         return SphereMath.atAltitude(edge, SphereMath.altitude(to));
     }
 
+    /** Whether the ground rises too steeply from at towards toward to be walked up. */
     boolean sphereTooSteep(SpherePosition at, SpherePosition toward) {
+        return risesTooSteeply(at, toward, MAX_CLIMB);
+    }
+
+    /** Whether the ground rises from at towards toward by more than limit (rise over run). */
+    private boolean risesTooSteeply(SpherePosition at, SpherePosition toward, float limit) {
         if (SphereMath.angle(at, toward) < 1e-12) return false;
         double heading = SphereMath.heading(at, toward);
         SpherePosition ahead = SphereMath.move(at, heading, 3.0);
         SpherePosition behind = SphereMath.move(at, heading + Math.PI, 3.0);
         float rise = TerrainMesh.getLayeredHeight(ahead, game.worldNoise)
                 - TerrainMesh.getLayeredHeight(behind, game.worldNoise);
-        return rise / 6f > MAX_CLIMB;
+        return rise / 6f > limit;
     }
 
     /**
@@ -90,18 +115,37 @@ final class PlayerMotion extends GamePart {
      * (ahead and behind both on it) nothing is too steep: what's built to be walked is.
      */
     boolean sphereTooSteep(SpherePosition at, SpherePosition toward, float feet) {
-        if (!sphereTooSteep(at, toward)) return false;
+        return sphereTooSteep(at, toward, feet, MAX_CLIMB);
+    }
+
+    /** As sphereTooSteep(at, toward, feet), against limit (rise over run). */
+    private boolean sphereTooSteep(SpherePosition at, SpherePosition toward, float feet, float limit) {
+        if (!risesTooSteeply(at, toward, limit)) return false;
         if (game.infraManager == null) return true;
         double heading = SphereMath.heading(at, toward);
         SpherePosition ahead = SphereMath.move(at, heading, 3.0);
         SpherePosition behind = SphereMath.move(at, heading + Math.PI, 3.0);
         if (game.infraManager.isRoadLocation(ahead, 0f) && game.infraManager.isRoadLocation(behind, 0f)) return false;
         float rise = game.infraManager.walkingSurfaceY(ahead, feet) - game.infraManager.walkingSurfaceY(behind, feet);
-        return rise / 6f > MAX_CLIMB;
+        return rise / 6f > limit;
     }
 
     // Steeper than this (rise over run) can't be walked up
     private static final float MAX_CLIMB = 0.7f;   // about 35 degrees
+
+    // Steeper than MAX_CLIMB, up to this, can be scrambled up with Space held, at SCRAMBLE_SPEED
+    // times the walk; steeper still can't be climbed at all, and bare ground this steep slides
+    // the player off it, gathering speed by SLIDE_ACCEL a second up to SLIDE_SPEED
+    private static final float MAX_SCRAMBLE = 1.19f;   // about 50 degrees
+    private static final float SCRAMBLE_SPEED = 0.5f;
+    private static final float SLIDE_ACCEL = 120f, SLIDE_SPEED = 90f;
+
+    // Whether last frame's step went up a slope past MAX_CLIMB with Space held, and whether a
+    // slope past MAX_CLIMB stood in its way (scrambled up or not): Space there climbs, not jumps
+    private boolean scrambling, againstSlope;
+
+    // How fast the player's sliding down ground too steep to stand on (0 when not)
+    private float slideSpeed;
 
     // Jumping: Space throws the player up, and gravity brings them down again. While in the
     // air, anything lower than their feet passes beneath them (rocks, low fences, rails).
@@ -123,7 +167,7 @@ final class PlayerMotion extends GamePart {
     // What the player stood on last frame (NaN before any, and after a spawn or teleport)
     float lastStood = Float.NaN;
 
-    /** Space: jump, if standing on something (not mid-air or swimming). */
+    /** Space: jump, if standing on something (not mid-air, swimming, or on or against a slope too steep to walk, where Space climbs). */
     public void jump() {
         // (not where the game mode keeps the player where they landed: it'd serve no purpose)
         if (!GameMode.current().moving) return;
@@ -169,6 +213,15 @@ final class PlayerMotion extends GamePart {
         return (float) Math.hypot(gx, gz) / (float) (2.0 * d);
     }
 
+    /** Which way is straight downhill at a place (as SphereMath.heading). */
+    private double downhillHeading(SpherePosition p) {
+        SphereFrame frame = SphereFrame.at(p);
+        double d = 3.0;
+        float gx = TerrainMesh.getLayeredHeight(frame.toSphere(d, 0.0, 0.0), game.worldNoise) - TerrainMesh.getLayeredHeight(frame.toSphere(-d, 0.0, 0.0), game.worldNoise);
+        float gz = TerrainMesh.getLayeredHeight(frame.toSphere(0.0, 0.0, d), game.worldNoise) - TerrainMesh.getLayeredHeight(frame.toSphere(0.0, 0.0, -d), game.worldNoise);
+        return SphereMath.heading(p, frame.toSphere(-gx, 0.0, -gz));
+    }
+
     /**
      * Moves the player for a frame: walking or sprinting by the keys (where the game mode lets
      * them), kept clear of what's solid, onto the ground, a road's deck or the pod's stairs
@@ -199,7 +252,22 @@ final class PlayerMotion extends GamePart {
         if (revealing) {
             game.camera.updatePosition(false, false, false, false, (float)deltaTime);
         } else {
-            game.camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime, sprinting ? SPRINT_SPEED : 1f);
+            game.camera.updatePosition(moveW, moveA, moveS, moveD, (float)deltaTime,
+                    scrambling ? SCRAMBLE_SPEED : sprinting ? SPRINT_SPEED : 1f);
+    }
+    // On bare ground (not a road, a bridge or the pod's stairs) too steep to walk up, there's
+    // no jumping; too steep to scramble up, the player slides down it
+    SpherePosition here = sphereBeforeMove;
+    boolean bareGround = !airborne && !game.swimming && !Float.isNaN(lastStood)
+            && Math.abs(lastStood - TerrainMesh.getLayeredHeight(here, game.worldNoise)) < 1f
+            && (game.infraManager == null || !game.infraManager.isRoadLocation(here, 0f));
+    float slopeHere = bareGround ? slopeAt(here) : 0f;
+    if (slopeHere > MAX_SCRAMBLE && GameMode.current().moving && !game.devShots.menuShotHold) {
+        slideSpeed = Math.min(SLIDE_SPEED, slideSpeed + SLIDE_ACCEL * (float) deltaTime);
+        SpherePosition at = game.camera.getSpherePosition();
+        game.camera.setSpherePosition(SphereMath.move(at, downhillHeading(at), slideSpeed * deltaTime));
+    } else {
+        slideSpeed = 0f;
     }
 
     if (!game.devShots.menuShotHold) {
@@ -238,7 +306,7 @@ final class PlayerMotion extends GamePart {
 
     if (jumpWanted) {
         jumpWanted = false;
-        if (!airborne && !game.swimming) {
+        if (!airborne && !game.swimming && !againstSlope && slopeHere <= MAX_CLIMB) {
             airborne = true;
             jumpVelocity = JUMP_SPEED;
             // From where the eyes are now (the walking height eases after the ground, so

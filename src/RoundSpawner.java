@@ -165,7 +165,11 @@ final class RoundSpawner extends GamePart {
         }
         // Multiplayer (M11): side by side, the host on the left and the joiner on the right as seen
         // facing down the stairs, both still facing down them (from the same shared spot)
-        if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
+        if (Multiplayer.isActive()) {
+            spawn = !GameMode.current().moving && devView == null
+                    ? standingApart(spawn, Multiplayer.active().role)
+                    : sideBySide(spawn, Multiplayer.active().role, SIDE_OFFSET);
+        }
         game.moveToLocation(spawn);
         // (each round starts with the view as usual, and nothing in hand, whatever was out as the last ended)
         game.dropItems();
@@ -211,38 +215,61 @@ final class RoundSpawner extends GamePart {
 
     private double settleUntil = -1.0;
 
-    /** Where a player who can't move stands, out along the pod's stairs' way from spawn (see STAND_OUT). */
     // How far each player stands from the shared spawn, sideways: with PLAYER_RADIUS 3 they're
     // 13 apart, a clear gap between them, and 9.5 from the middle to their outer edge is well
     // inside the multiplayer stairs' half width of 14
     private static final double SIDE_OFFSET = 6.5;
 
+    // Where the players can't move (multiplayer, GameMode.NO_MOVE), how far each stands to their
+    // side of the shared spot, the widest that's clear first: 6 m apart at most, so neither's
+    // stood at the other's elbow for the whole round
+    private static final double[] APART_OFFSET = { 30.0, 24.0, 18.0, 12.0 };
+
     /**
-     * Multiplayer's spawn for this player from the shared one: SIDE_OFFSET to the left for
-     * the host, to the right for the joiner. Headings turn from east towards south (clockwise seen from
+     * Multiplayer's spawn for this player from the shared one: offset to the left for the host,
+     * to the right for the joiner. Headings turn from east towards south (clockwise seen from
      * above, D10), so the left of heading h is h - pi/2. The heading is carried along, so both
      * still face exactly the same way.
      */
-    private static Viewpoint sideBySide(Viewpoint spawn, Multiplayer.Role role) {
+    private static Viewpoint sideBySide(Viewpoint spawn, Multiplayer.Role role, double offset) {
         double side = role == Multiplayer.Role.HOST ? -Math.PI / 2 : Math.PI / 2;
-        SpherePosition moved = SphereMath.move(spawn.place(), spawn.heading() + side, SIDE_OFFSET);
+        SpherePosition moved = SphereMath.move(spawn.place(), spawn.heading() + side, offset);
         return new Viewpoint(moved, SphereMath.carryHeading(spawn.place(), moved, spawn.heading()));
     }
 
+    /**
+     * Where this player stands in a multiplayer game they can't move in: as far to their side of
+     * the shared spot as is fit to stand on (see APART_OFFSET), or side by side as usual if
+     * none is.
+     */
+    private Viewpoint standingApart(Viewpoint spawn, Multiplayer.Role role) {
+        for (double offset : APART_OFFSET) {
+            Viewpoint apart = sideBySide(spawn, role, offset);
+            if (standable(spawn.place(), apart.place())) return apart;
+        }
+        return sideBySide(spawn, role, SIDE_OFFSET);
+    }
+
+    /** Where a player who can't move stands, out along the pod's stairs' way from spawn (see STAND_OUT). */
     private Viewpoint standingClear(Viewpoint spawn) {
         for (float out : STAND_OUT) {
             SpherePosition p = SphereMath.move(spawn.place(), spawn.heading(), out);
-            float ground = TerrainMesh.getLayeredHeight(p, game.worldNoise);
-            if (ground <= game.seaLevelHeight + 1f || game.underFreshWater(p, ground)) continue;
-            // (nor on anyone's land: their plot, garden or driveway)
-            if (game.infraManager.isPrivateGround(p, XenoGuesser_GLEventListener.PLAYER_RADIUS + 2f)) continue;
-            // (never on a road or track, nor at its very edge)
-            if (game.infraManager.isRoadLocation(p, XenoGuesser_GLEventListener.PLAYER_RADIUS + 2f)) continue;
-            if (game.infraManager.blocksWalker(p, ground, ground + game.playerEyeHeight + 2f)) continue;
-            if (game.playerMotion.sphereTooSteep(spawn.place(), p)) continue;
+            if (!standable(spawn.place(), p)) continue;
             return new Viewpoint(p, SphereMath.carryHeading(spawn.place(), p, spawn.heading()));
         }
         return spawn;
+    }
+
+    /** Whether a player who can't move could be left standing at p, come to from from: on dry, open, public ground not too steep. */
+    private boolean standable(SpherePosition from, SpherePosition p) {
+        float ground = TerrainMesh.getLayeredHeight(p, game.worldNoise);
+        if (ground <= game.seaLevelHeight + 1f || game.underFreshWater(p, ground)) return false;
+        // (nor on anyone's land: their plot, garden or driveway)
+        if (game.infraManager.isPrivateGround(p, XenoGuesser_GLEventListener.PLAYER_RADIUS + 2f)) return false;
+        // (never on a road or track, nor at its very edge)
+        if (game.infraManager.isRoadLocation(p, XenoGuesser_GLEventListener.PLAYER_RADIUS + 2f)) return false;
+        if (game.infraManager.blocksWalker(p, ground, ground + game.playerEyeHeight + 2f)) return false;
+        return !game.playerMotion.sphereTooSteep(from, p);
     }
 
     // Returning to the pod (R): how far apart the places tried beside the stairs' spawn are, how
@@ -261,7 +288,7 @@ final class RoundSpawner extends GamePart {
         if (pod == null) return;
         SpherePosition stairs = pod.toWorld(0.0, 0.0, LandingPod.SPAWN_DISTANCE);
         Viewpoint spawn = new Viewpoint(stairs, SphereMath.heading(stairs, pod.toWorld(0.0, 0.0, LandingPod.SPAWN_DISTANCE + 50.0)));
-        if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role);
+        if (Multiplayer.isActive()) spawn = sideBySide(spawn, Multiplayer.active().role, SIDE_OFFSET);
         double across = pod.toLocal(spawn.place())[0];
         double halfWidth = (Multiplayer.isActive() ? LandingPod.MULTIPLAYER_STAIR_WIDTH : LandingPod.STAIR_WIDTH) * 0.5;
         double reach = Math.max(0.0, halfWidth - XenoGuesser_GLEventListener.PLAYER_RADIUS - RAIL_GAP);

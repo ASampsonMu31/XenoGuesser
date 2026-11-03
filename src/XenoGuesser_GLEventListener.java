@@ -2724,7 +2724,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
         putAwayIfOutTooLong();
         // (guessed first in multiplayer: the view's the partner's, M62)
-        if (spectatorCam.watching()) spectatorCam.placeCamera();
+        if (spectatorCam.watching()) spectatorCam.placeCamera(deltaTime);
         else playerMotion.movePlayer(deltaTime, elapsedTime);
         if (trailerDirector != null) trailerDirector.placeCamera();
         landmarkPhotos.placeCamera();
@@ -3151,10 +3151,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
 
     /**
      * Whether the partner's body is drawn (and stood in the way of): not while they're watching
-     * through this player's eyes, nor while this player's watching through theirs (M62).
+     * this player (M62). While this player's watching them it's drawn, seen from behind.
      */
     boolean partnerShown() {
-        return partner.hasPose() && !partner.watching() && !spectatorCam.watching();
+        return partner.hasPose() && !partner.watching();
     }
 
     /**
