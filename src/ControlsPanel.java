@@ -19,7 +19,7 @@ public class ControlsPanel extends JComponent {
         { "W A S D", "Move" },
         { "Shift", "Sprint" },
         { "Mouse", "Look" },
-        { "Space", "Jump" },
+        { "Space", "Jump; hold to climb steep slopes" },
         { "R", "Return to spawn" },
         { "Tab", "Expand / contract the map" },
         { "Scroll", "Zoom the map / switch gadget" },
