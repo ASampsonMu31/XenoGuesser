@@ -271,15 +271,16 @@ public class MainMenu extends JComponent {
         float bw = 420 * unit, bh = 64 * unit, gap = 18 * unit;
         // (high enough for the settings' rows and Quit to fit below)
         float top = 440 * unit;
-        singleButton.setBounds(Math.round(left), Math.round(top), Math.round(bw), Math.round(bh));
-        multiButton.setBounds(Math.round(left), Math.round(top + bh + gap), Math.round(bw), Math.round(bh));
-        tutorialButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 2), Math.round(bw), Math.round(bh));
+        // The tutorial first, then the games; all three the same blue
+        tutorialButton.setBounds(Math.round(left), Math.round(top), Math.round(bw), Math.round(bh));
+        singleButton.setBounds(Math.round(left), Math.round(top + bh + gap), Math.round(bw), Math.round(bh));
+        multiButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 2), Math.round(bw), Math.round(bh));
         paintButton(g, singleButton, "Play Singleplayer", null, true, true, unit);
         // The graphics settings below the play buttons and the tutorial, and Quit below them
         float settingsHeight = paintSettings(g, left, top + (bh + gap) * 3, bw, unit);
         quitButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 3 + settingsHeight + gap * 1.5f), Math.round(bw * 0.55f), Math.round(bh * 0.8f));
-        paintButton(g, multiButton, "Play Multiplayer", null, true, false, unit);
-        paintButton(g, tutorialButton, "Tutorial", "Xenocorp training", true, false, unit);
+        paintButton(g, multiButton, "Play Multiplayer", null, true, true, unit);
+        paintButton(g, tutorialButton, "Tutorial", null, true, true, unit);
         paintButton(g, quitButton, "Quit", null, true, false, unit);
 
         // The spaceman standing on the ground in the picture, as tall as he'd look there
