@@ -38,6 +38,9 @@ final class HudRenderer extends GamePart {
 
     private MapPanel.MapSize hudMapSize;
 
+    // How far below the top margin the tutorial's objectives begin (clear of the diagnostics)
+    private static final int TUTORIAL_TOP = 92;
+
     /**
      * The HUD over the finished frame: the round and score at the top left, the diagnostics
      * (frame rate and memory) in the top right corner, the inventory at the bottom left and the map's keys above the map.
@@ -179,6 +182,8 @@ final class HudRenderer extends GamePart {
                     Math.round((map.y - 8) * scale) - Math.round(HudStyle.HINT_H * scale));
         }
 
+        // The tutorial's objectives, down the right under the diagnostics
+        game.tutorial.drawPanel(hud, scale, rescaled, game.screenWidth, margin + Math.round(TUTORIAL_TOP * scale));
         game.identificationLens.drawLensFinds(scale);
         // The readings taken this round, down the left below the score
         game.measurementLog.drawNotebook(scale, rescaled);

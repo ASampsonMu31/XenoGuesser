@@ -309,6 +309,24 @@ final class MapOverlays extends GamePart {
         if (fauna) Achievements.unlock(Achievements.Achievement.ZOOLOGIST);
     }
 
+    /**
+     * The tutorial: only these maps had (each exercise its own), anything else shown on the map
+     * put away; done on the UI thread, as the map's choices are.
+     */
+    void ownMapsOnly(java.util.Set<MapPanel.Layer> layers, List<MapOverlay> overlays) {
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            ownedLayers.clear();
+            ownedLayers.addAll(layers);
+            ownedOverlays.clear();
+            ownedOverlays.addAll(overlays);
+            if (game.minimap == null) return;
+            for (MapPanel.Layer layer : MapPanel.Layer.values()) if (!layers.contains(layer)) game.minimap.setLayerShown(layer, false);
+            if (currentDebugFactor != null && !overlays.contains(currentDebugFactor)) chooseGradient(null);
+            if (currentPictureMap != null && !overlays.contains(MapOverlay.of(currentPictureMap))) choosePictureMap(null);
+            refreshMapChoices();
+        });
+    }
+
     /** Lists, beside the enlarged map, the layers and overlays the player has. */
     void refreshMapChoices() {
         if (game.minimap == null) return;
@@ -479,7 +497,7 @@ final class MapOverlays extends GamePart {
      * the nations marking their roads alike); the architecture and nation together (each nation's
      * house is its own, whatever the architecture). -1 for none.
      */
-    private BirdsEyeMaps.DesignAt designKey(FactorName f) {
+    BirdsEyeMaps.DesignAt designKey(FactorName f) {
         InfrastructureManager infra = game.infraManager;
         int nations = infra.roadLineStyles.size();
         return switch (f) {
@@ -690,8 +708,6 @@ final class MapOverlays extends GamePart {
      */
     private BufferedImage soilColourMap() {
         WorldPalette palette = new WorldPalette(game.worldSeed);
-        float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
-        float[][] ranges = game.soilBlendRanges;
         int minChunkX = (int) Math.floor((-game.TOTAL_REGION_WIDTH / 2.0f) / game.PHYSICAL_CHUNK_SIZE);
         int maxChunkX = (int) Math.ceil((game.TOTAL_REGION_WIDTH / 2.0f) / game.PHYSICAL_CHUNK_SIZE);
         int size = maxChunkX - minChunkX + 1;
@@ -699,20 +715,26 @@ final class MapOverlays extends GamePart {
         java.util.stream.IntStream.range(0, size).parallel().forEach(z -> {
             float mapZ = (minChunkX + z + 0.5f) * game.PHYSICAL_CHUNK_SIZE;
             for (int x = 0; x < size; x++) {
-                GeodesicChunkGrid.Direction d = MapProjection.direction((minChunkX + x + 0.5f) * game.PHYSICAL_CHUNK_SIZE, mapZ);
-                float fa = game.soilVariantAFactor.evaluate(d), fb = game.soilVariantBFactor.evaluate(d);
-                float wa = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[0][0], ranges[0][1], fa);
-                float wb = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[1][0], ranges[1][1], fb);
-                int rgb = 0xFF;
-                for (int c = 0; c < 3; c++) {
-                    float colour = base[c] + (a[c] - base[c]) * wa;
-                    colour += (b[c] - colour) * wb;
-                    rgb = (rgb << 8) | Math.max(0, Math.min(255, Math.round(colour * 255f)));
-                }
-                image.setRGB(x, z, rgb);
+                image.setRGB(x, z, soilColourAt(palette, MapProjection.direction((minChunkX + x + 0.5f) * game.PHYSICAL_CHUNK_SIZE, mapZ)));
             }
         });
         return image;
+    }
+
+    /** The soil's colour in a direction as the soil overlay shows it (opaque ARGB): see soilColourMap. */
+    int soilColourAt(WorldPalette palette, GeodesicChunkGrid.Direction d) {
+        float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
+        float[][] ranges = game.soilBlendRanges;
+        float fa = game.soilVariantAFactor.evaluate(d), fb = game.soilVariantBFactor.evaluate(d);
+        float wa = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[0][0], ranges[0][1], fa);
+        float wb = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[1][0], ranges[1][1], fb);
+        int rgb = 0xFF;
+        for (int c = 0; c < 3; c++) {
+            float colour = base[c] + (a[c] - base[c]) * wa;
+            colour += (b[c] - colour) * wb;
+            rgb = (rgb << 8) | Math.max(0, Math.min(255, Math.round(colour * 255f)));
+        }
+        return rgb;
     }
 
     // Each overlay as worked out, a pixel a chunk (before being laid over the land for the map)
@@ -780,7 +802,7 @@ final class MapOverlays extends GamePart {
      * lowest it is anywhere on the land the map shows (0, the key's first colour) to the highest
      * (1, its last). The grass colour map is the grass's own colour instead.
      */
-    private RegionalFactor factorFor(MapOverlay overlay) {
+    RegionalFactor factorFor(MapOverlay overlay) {
         if (overlay.factor() == FactorName.GRASS_COLOUR) {
             float[] span = game.grassColourSpan();
             return new RegionalFactor(1f, d -> XenoGuesser_GLEventListener.grassShare(span, game.grassColourFactor.evaluate(d)));
@@ -806,7 +828,7 @@ final class MapOverlays extends GamePart {
      * metres), the grass's height in centimetres, degrees Celsius, millimetres of rain a year; or
      * for the grass's abundance and wealth, their own 0 to 1. Null for the maps not on a scale.
      */
-    private RegionalFactor.Sampler heatmapMeasure(MapOverlay overlay) {
+    RegionalFactor.Sampler heatmapMeasure(MapOverlay overlay) {
         if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
             int s = overlay.species();
             return d -> game.floraSpecies.floraRanges[s].density(game.floraSpecies.floraRaw(s, d));

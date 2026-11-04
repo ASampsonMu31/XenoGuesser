@@ -1,0 +1,33 @@
+# The tutorial's rounds, found by TutorialFinder on seed 20261104 (see TutorialPlan, and
+# .claude/skills/update-tutorial). Each: the stage, the pod's stairs (lat, lon in degrees, heading in
+# radians from east towards south), the hour (radians from noon), the sun's declination (radians),
+# how wet the day is (-3 clear to 3 wet), then what the stage needs. Written again whenever the
+# game's generation changes.
+# sun: -53.02, 117.25; 51.5% of the land passes
+# coast: 59.09, -130.09; NaN% of the land passes (before the coast's own check)
+# temperature: 0.65, 83.65; 12.8% of the land passes
+# altitude: -13.40, -79.24; 0.5% of the land passes
+# wildlife: the commonest other species there is at 88% of its range (0 is none about)
+# wildlife: 22.78, 32.30; 1.6% of the land passes
+# rainfall: -7.04, -0.51; 22.9% of the land passes
+# ground: 49.63, -180.00; 5.9% of the land passes
+# grass: -40.75, 147.77; 6.0% of the land passes
+# wealth: -34.70, -74.10; 2.0% of the land passes
+# flags: -30.77, 36.36; 9.8% of the land passes
+# roadside: -17.50, -121.30; 16.4% of the land passes
+# architecture: 49.68, -38.94; 9.8% of the land passes
+# landmarks: -26.02, 157.30; 1.1% of the land passes
+world sea=-67.86108 width=148981.61
+sun lat=-53.018016 lon=117.250257 heading=2.13418 hour=-0.55000 declination=0.00000 wetness=-3.00
+coast lat=59.094148 lon=-130.090729 heading=-1.56212 hour=-0.70000 declination=0.00000 wetness=-2.50 markerLat=59.915694 markerLon=-130.076509 coastLine=0.00868
+temperature lat=0.645643 lon=83.646386 heading=4.03103 hour=-0.97080 declination=0.00000 wetness=-1.50
+altitude lat=-13.399909 lon=-79.243612 heading=4.31969 hour=-0.90000 declination=0.00000 wetness=-2.50
+wildlife lat=22.775371 lon=32.300000 heading=1.13836 hour=-0.60000 declination=0.00000 wetness=-2.00 plant=4 animal=2 plentiful=0.80
+rainfall lat=-7.036104 lon=-0.508545 heading=-1.64119 hour=-0.60000 declination=0.00000 wetness=2.40
+ground lat=49.632845 lon=-179.999507 heading=-1.84444 hour=-0.60000 declination=0.00000 wetness=-2.00
+grass lat=-40.748747 lon=147.772735 heading=0.57098 hour=-0.60000 declination=0.00000 wetness=-1.50
+wealth lat=-34.701213 lon=-74.099977 heading=2.10607 hour=-0.60000 declination=0.00000 wetness=-2.00
+flags lat=-30.770132 lon=36.359271 heading=-2.08023 hour=-0.60000 declination=0.00000 wetness=-2.00
+roadside lat=-17.498071 lon=-121.303346 heading=-2.90958 hour=-0.60000 declination=0.00000 wetness=-2.00
+architecture lat=49.676478 lon=-38.939444 heading=0.27953 hour=-0.60000 declination=0.00000 wetness=-2.00
+landmarks lat=-26.016391 lon=157.303696 heading=-2.31206 hour=-0.50000 declination=0.00000 wetness=-3.00 landmark=3

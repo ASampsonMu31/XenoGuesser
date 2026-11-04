@@ -156,6 +156,32 @@ public class TransmissionMessage {
         }
     }
 
+    /**
+     * A message with no recording (one of the tutorial's, its words changed since it was last
+     * recorded): its words scrolled along at a steady reading pace over silence.
+     */
+    public static TransmissionMessage silent(String text) {
+        AudioFormat format = new AudioFormat(22050f, 16, 1, true, false);
+        List<long[]> words = new ArrayList<>();
+        long at = 300L;
+        int c = 0;
+        for (String word : text.split(" ")) {
+            words.add(new long[] { at, c });
+            // (a pause after each phrase, as the voice makes)
+            char last = word.isEmpty() ? ' ' : word.charAt(word.length() - 1);
+            at += 120L + 52L * word.length() + (last == '.' || last == '?' || last == '!' ? 320L : last == ',' || last == ':' ? 140L : 0L);
+            c += word.length() + 1;
+        }
+        long end = at + 200L;
+        byte[] pcm = new byte[(int) (end * 22050L / 1000L) * 2];
+        return new TransmissionMessage(text, words, end, format, pcm, new java.util.HashMap<>(), "", false, null);
+    }
+
+    /** A recorded message as it is, with no slot of its own (the tutorial's): null if it's unavailable. */
+    public static TransmissionMessage plain(String name) {
+        return load(name, "", null);
+    }
+
     /** A message's recording and its transcript, word timings and the lines after them. */
     private record Recording(String transcript, List<long[]> words, long end, AudioFormat format, byte[] pcm,
                              Map<String, String[]> extra) {

@@ -59,7 +59,8 @@ public class LoadingScreen extends JComponent {
 
     private void loadMessage() {
         Thread loader = new Thread(() -> {
-            TransmissionMessage loaded = TransmissionMessage.load(
+            // (the tutorial's own, from its words: see TutorialText)
+            TransmissionMessage loaded = Tutorial.active ? TutorialText.load().message("msg.pod") : TransmissionMessage.load(
                     role == null ? TransmissionMessage.SINGLEPLAYER : TransmissionMessage.MULTIPLAYER, worldSeed);
             javax.swing.SwingUtilities.invokeLater(() -> {
                 message = loaded;

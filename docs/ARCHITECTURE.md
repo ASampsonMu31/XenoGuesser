@@ -99,6 +99,7 @@ Parts extend `GamePart` (field `game`).
 | `DevShots` | Saved frames, menu picture, sign/vehicle shots, dev viewpoints |
 | `LandmarkPhotos` | Photographs each landmark in the world itself while loading (camera sent to a spot per kind, surroundings built, `photograph` draws it into a picture of its own), for the landmarks' map; then a typical house (`InfrastructureManager.typicalHouses`) for each of the architecture map's pictures and their popups, baked on its own (`HouseBuilder.alone`) and drawn alone against the sky (`photoSubject`) |
 | `SpectatorCam` | Multiplayer (M62): having guessed first, the view is the partner's (camera at `RemotePlayer`'s eye and look) until their guess comes; own movement and both bodies left out, and where the player stood put back as the reveal opens |
+| `Tutorial` | Xenocorp's training programme (the main menu's Tutorial): each exercise's script (its messages from `TutorialText`, the gadgets and maps it gives, the objectives down the HUD's right under a progress bar, what's detected each frame), its spawn (`RoundSpawner` takes it, with its fixed hour, season, weather and creatures), and the results' verdict (`TutorialChecks`: what passes, washed green on the globe). Places in `assets/text/tutorial_rounds.txt`, found by `TutorialFinder` (`TutorialSites`) on `TutorialPlan.SEED`'s planet; see `.claude/skills/update-tutorial` |
 | `TrailerDirector` | Films the Steam trailer's shots (`-Dxenoguesser.trailer`): finds each place, sets the day, steps the clock a frame at a time and saves frames; made only when filming (see `tools/trailer/README.md`) |
 | Data | `FactorName` (map overlays' factors), `MapOverlay`, `MapPicture`, `NationLabel` |
 
@@ -142,6 +143,10 @@ Parts extend `GamePart` (field `game`).
   `com.xenoguesser.math.*`, `BuildingMeshes`, `InfrastructureObject` (a cell's batch or a sign).
 - **Runtime**: `Dev` (developer switches), `RunFiles`, `GamePaths`, `MemoryBudget`, `CrashLog`,
   `BackgroundWorkers`.
+- **Tutorial**: `Tutorial` (a part, above), `TutorialPlan` (the seed, the exercises, the rounds
+  file), `TutorialChecks`, `TutorialText` (`assets/text/tutorial_messages.txt`, recorded by
+  `tools/record_tutorial.py` into `assets/audio/tutorial`), `TutorialSites` + `TutorialFinder`
+  (main class: `tools/find-tutorial.sh`).
 - **Checks** (main classes, not part of the game): `SphereToolkitCheck`, `PlanningCheck`,
   `MultiplayerCheck`, `RegressionCheck` + `Fingerprint`.
 

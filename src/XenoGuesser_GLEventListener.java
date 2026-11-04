@@ -38,6 +38,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     final FloraSpecies floraSpecies = new FloraSpecies(this);
     final SpectatorCam spectatorCam = new SpectatorCam(this);
     final MeasurementLog measurementLog = new MeasurementLog(this);
+    // (the training programme's script, when the game is the tutorial: see Tutorial)
+    final Tutorial tutorial = new Tutorial(this);
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
     public void jump() {
@@ -2682,7 +2684,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     private void render() {
 
         double elapsedTime = getSeconds() - startTime;
-        float cloudTime = (float) (Multiplayer.isActive() ? getSeconds() - roundClockStart : elapsedTime);
+        // (from the round's start in multiplayer and the tutorial, so the clouds are where they always are)
+        float cloudTime = (float) (Multiplayer.isActive() || Tutorial.active ? getSeconds() - roundClockStart : elapsedTime);
         double deltaTime = elapsedTime - lastElapsedTime;
         lastElapsedTime = elapsedTime;
         applyLook();
@@ -2694,6 +2697,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // (guessed first in multiplayer: the view's the partner's, M62)
         if (spectatorCam.watching()) spectatorCam.placeCamera(deltaTime);
         else playerMotion.movePlayer(deltaTime, elapsedTime);
+        tutorial.update();
         if (trailerDirector != null) trailerDirector.placeCamera();
         landmarkPhotos.placeCamera();
 
@@ -3324,6 +3328,19 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         int held = heldItem;
         int next = held < 0 ? Math.floorMod(steps > 0 ? steps - 1 : steps, count) : Math.floorMod(held + steps, count);
         useItem(next);
+    }
+
+    /**
+     * The tutorial: only the gadgets an exercise gives (by their places in the full list: the
+     * compass, thermometer, altimeter and kit), in their usual order; nothing in hand.
+     */
+    void ownItemsOnly(boolean[] which) {
+        List<String> items = new ArrayList<>();
+        for (int i = 0; i < ITEMS.length; i++) if (which[i]) items.add(ITEMS[i]);
+        heldItem = -1;
+        ownedItems.clear();
+        ownedItems.addAll(items);
+        itemsVersion++;
     }
 
     /** Nothing in hand, everything put away at once rather than lowered (each round starts so). */

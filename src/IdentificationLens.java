@@ -106,6 +106,8 @@ final class IdentificationLens extends GamePart {
                 if (TerrainMesh.getLayeredHeight(along, game.worldNoise) > SphereMath.altitude(along) + 1f) passes = false;
             }
             if (passes) lensLastSeen.put(key, lensFrame);
+            // (the tutorial counts what's been named: the animals are known by their outlines, the plants by themselves)
+            if (passes && Tutorial.active) game.tutorial.identified(!(key instanceof float[]), here.toWorld(mx, my, mz));
             Integer last = lensLastSeen.get(key);
             if (last == null || lensFrame - last > LENS_HOLD_FRAMES) return;
             boxes.add(new float[] { (float) Math.hypot(mx, mz), minX, minY, maxX, maxY });

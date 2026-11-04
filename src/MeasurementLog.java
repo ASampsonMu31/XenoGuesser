@@ -56,6 +56,7 @@ final class MeasurementLog extends GamePart {
 
     /** The value as written in the notebook and on the pin: tenths of a degree, or whole metres. */
     private static String written(Reading r) {
+        if (r.gadget == MARKER) return "Here";
         String text = r.gadget == PlayerBody.GADGET_THERMOMETER
                 ? String.format(java.util.Locale.ROOT, "%.1f°C", r.value)
                 : Math.round(r.value) + " m";
@@ -74,6 +75,20 @@ final class MeasurementLog extends GamePart {
         readings.add(new Reading(s.gadget(), s.value(), SphereMath.atAltitude(eye, ground)));
         if (readings.size() > MOST_PINS) forget(readings.remove(0));
         notebookDirty = true;
+        game.tutorial.readingTaken(s.gadget());
+    }
+
+    // The tutorial's marker (a pin like a reading's, gold, saying where to go), or null; and the
+    // marker it's to be once the GL thread next draws (set from anywhere)
+    static final int MARKER = -1;
+    private Reading marker;
+    private volatile SpherePosition markerWanted;
+    private volatile boolean markerChanged;
+
+    /** Puts the tutorial's marker in the ground at a place (null takes it up). */
+    void setMarker(SpherePosition at) {
+        markerWanted = at;
+        markerChanged = true;
     }
 
     /** A clean page (a new round): every reading forgotten and its pin taken up. */
@@ -178,6 +193,8 @@ final class MeasurementLog extends GamePart {
     private static final int PIN_W = 560, PIN_H = 400;
     // The pins' colours: the thermometer's red and the altimeter's blue
     private static final Color TEMPERATURE_PIN = new Color(206, 42, 34), ALTITUDE_PIN = new Color(30, 78, 175);
+    // (and the tutorial's marker's, Xenocorp's gold)
+    private static final Color MARKER_PIN = new Color(214, 150, 20);
 
     private GL3 gl;
     private Shader shader;
@@ -190,9 +207,16 @@ final class MeasurementLog extends GamePart {
      * camera-relative, as the pod's beacon, the farthest first so the nearer are drawn over them.
      */
     void renderPins(GL3 gl, Matrix4 viewProjection, SpherePosition eye) {
-        if (readings.isEmpty()) return;
+        if (markerChanged) {
+            markerChanged = false;
+            if (marker != null && shader != null) forget(marker);
+            SpherePosition at = markerWanted;
+            marker = at == null ? null : new Reading(MARKER, 0f, at);
+        }
+        if (readings.isEmpty() && marker == null) return;
         if (shader == null) initialise(gl);
         List<Reading> order = new ArrayList<>(readings);
+        if (marker != null) order.add(marker);
         order.sort((a, b) -> Double.compare(squaredFrom(eye, b.at), squaredFrom(eye, a.at)));
         float[] vertices = new float[order.size() * 6 * FLOATS];
         int count = 0;
@@ -293,7 +317,7 @@ final class MeasurementLog extends GamePart {
         point.lineTo(cx, PIN_H - edge * 0.5f);
         point.closePath();
         shape.add(new Area(point));
-        g.setColor(temperature ? TEMPERATURE_PIN : ALTITUDE_PIN);
+        g.setColor(r.gadget == MARKER ? MARKER_PIN : temperature ? TEMPERATURE_PIN : ALTITUDE_PIN);
         g.fill(shape);
         g.setStroke(new BasicStroke(edge, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
         g.setColor(Color.WHITE);
@@ -303,7 +327,16 @@ final class MeasurementLog extends GamePart {
         float disc = headH - edge * 5f, dx = edge * 3f, dy = edge * 2.5f;
         g.setColor(HudStyle.GLASS_SOLID);
         g.fill(new Ellipse2D.Float(dx, dy, disc, disc));
-        if (temperature) HudStyle.paintThermometerIcon(g, dx + disc * 0.14f, dy + disc * 0.14f, disc * 0.72f);
+        if (r.gadget == MARKER) {
+            // (the marker's: a target's rings)
+            g.setColor(MARKER_PIN);
+            g.setStroke(new BasicStroke(disc * 0.08f));
+            for (float ring : new float[] { 0.62f, 0.32f }) {
+                float d = disc * ring;
+                g.draw(new Ellipse2D.Float(dx + (disc - d) * 0.5f, dy + (disc - d) * 0.5f, d, d));
+            }
+            g.fill(new Ellipse2D.Float(dx + disc * 0.45f, dy + disc * 0.45f, disc * 0.1f, disc * 0.1f));
+        } else if (temperature) HudStyle.paintThermometerIcon(g, dx + disc * 0.14f, dy + disc * 0.14f, disc * 0.72f);
         else HudStyle.paintAltitudeIcon(g, dx + disc * 0.14f, dy + disc * 0.14f, disc * 0.72f);
 
         // The value, as large as fits beside it

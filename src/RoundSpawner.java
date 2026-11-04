@@ -67,6 +67,8 @@ final class RoundSpawner extends GamePart {
         game.grassStream.clearPrefetch();
         queuedPod = null;
         if (Dev.property("xenoguesser.view") != null || Dev.property("xenoguesser.spawnat") != null) return;
+        // (the tutorial's rounds are where they always are, not drawn: see spawnPlayerAtRandomLocation)
+        if (Tutorial.active) return;
         queuedSite = landingSite(roundRandom(spawnedRound + 1, SITE_DRAWS));
         if (queuedSite == null) return;
         if (Multiplayer.isActive()) {
@@ -101,7 +103,7 @@ final class RoundSpawner extends GamePart {
         if (devView == null) {
             // A normal round: the pod has come down near a road, clear of houses and fences (where
             // it was chosen during the last round, so its surroundings could be got ready then)
-            Viewpoint site = queuedSite != null ? queuedSite : landingSite(roundRandom(round, SITE_DRAWS));
+            Viewpoint site = queuedSite != null ? queuedSite : Tutorial.active ? null : landingSite(roundRandom(round, SITE_DRAWS));
             queuedSite = null;
             queuedPod = null;
             if (site != null) spawn = site;
@@ -134,18 +136,27 @@ final class RoundSpawner extends GamePart {
             if (ground > game.seaLevelHeight && !game.underFreshWater(p, ground)) spawn = new Viewpoint(p, dynamicRand.nextDouble() * Math.PI * 2);
         }
 
-        game.timeOfDay = dynamicRand.nextFloat();
+        // The tutorial: each exercise where it always is, its sky, hour, season and creatures as
+        // they always are (see Tutorial.spawn)
+        Viewpoint taught = Tutorial.active && devView == null && spawnAt == null ? game.tutorial.spawn() : null;
+        if (taught != null) spawn = taught;
 
-        // The season: where the planet is in its orbit sets how far north or south the sun
-        // stands overhead
-        float seasonalPhase = dynamicRand.nextFloat() * (float)(2.0 * Math.PI);
-        game.sunDeclination = Math.asin(Math.sin(Math.toRadians(game.planetAxialTiltDegrees)) * Math.sin(seasonalPhase));
+        if (taught == null) {
+            game.timeOfDay = dynamicRand.nextFloat();
+
+            // The season: where the planet is in its orbit sets how far north or south the sun
+            // stands overhead
+            float seasonalPhase = dynamicRand.nextFloat() * (float)(2.0 * Math.PI);
+            game.sunDeclination = Math.asin(Math.sin(Math.toRadians(game.planetAxialTiltDegrees)) * Math.sin(seasonalPhase));
+        }
 
         if (game.minimap != null) game.minimap.setPlayerSpawnLocation(SphereMath.direction(spawn.place()));
 
-        chooseTimeOfDay(spawn.place(), dynamicRand);
-        // A new day: new clouds and weather
-        if (game.sphereWeather != null) game.sphereWeather.newDay(dynamicRand, spawn.place());
+        if (taught == null) {
+            chooseTimeOfDay(spawn.place(), dynamicRand);
+            // A new day: new clouds and weather
+            if (game.sphereWeather != null) game.sphereWeather.newDay(dynamicRand, spawn.place());
+        }
         if (Multiplayer.isActive()) {
             // For checking both PCs agree: the same lines on each, round by round
             System.out.printf(java.util.Locale.ROOT, "[ROUND] Round %d (seed %d): site %.5f, %.5f heading %.4f, time of day %.4f, sun declination %.4f, noon longitude %.4f%n",

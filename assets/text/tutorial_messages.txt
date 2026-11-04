@@ -1,0 +1,180 @@
+# The tutorial's words: what Xenocorp says (msg.*), the objectives listed on the HUD (obj.*),
+# and what the results say once an exercise is passed (explain.*) or failed (fail.*).
+#
+# One entry a line: key = text. Lines starting with # are notes and are ignored.
+# Words in {braces} are filled in by the game: {hemisphere}, {sunside}, {coastline},
+# {coastdistance}, {temperature}, {tolerance}, {altitude}, {plant}, {animal}, {rainfall},
+# {landmark}. Keep the ones an entry already has (a message that's spoken can't say them,
+# so they're only in obj.*, explain.* and fail.* entries).
+#
+# After changing a msg.* entry, re-record it in the Xenocorp voice:
+#     python tools/record_tutorial.py
+# (only the changed ones are recorded). Until then the new words scroll along the bottom
+# without the voice.
+
+# ------------------------------------------------------------------ the landing pod (said while the planet loads)
+
+msg.pod = Training deployment in progress. You are being sent to Xenocorp's designated training planet, which has been chosen for its safety, its convenience, and its great distance from our lawyers. Please remain seated until the hatch opens. Please do not touch anything. Especially that.
+
+# ------------------------------------------------------------------ 1. the sun
+
+msg.sun.welcome = Welcome to the Xenocorp Training Programme. You have been selected for training on the basis of having applied. Over the following exercises you will learn to work out where you are using only your standard-issue equipment and a minimum of complaint. Your progress is being monitored. Your mistakes are being recorded. Several already have been.
+msg.sun.walk = A marker has been placed in the ground ahead of you. Walk to it using W, A, S and D. When you arrive, turn a full circle on the spot using the mouse. This is to confirm that you can walk and turn, which, regrettably, can no longer be assumed.
+msg.sun.spun.clockwise = Thank you. Most trainees, when asked to turn on the spot, turn anticlockwise. You, on the other hand, turned clockwise. Our psychologists describe this as a bit odd. It has been noted on your file.
+msg.sun.spun.anticlockwise = Thank you. Most trainees, when asked to turn on the spot, turn clockwise. You, on the other hand, turned anticlockwise. Our psychologists describe this as a bit odd. It has been noted on your file.
+msg.sun.compass = You have been issued a compass. Press 1 to hold it up, then turn until you are facing the sun. When the sun is in the north of the sky, you are in the planet's southern hemisphere. When it is in the south of the sky, you are in the northern hemisphere. When it is hidden by cloud, you are, in the technical sense, on your own. Today's sky has been cleared for you at considerable expense.
+msg.sun.map = Good. Now press Tab to expand your map. Scroll to zoom in and out, and click to place a marker where you think you are, then confirm your guess. For this exercise, any guess in the correct hemisphere will be accepted. Standards will rise.
+
+obj.sun.walk = Walk to the marker (W, A, S, D)
+obj.sun.spin = Turn a full circle on the marker
+obj.sun.compass = Face the sun with your compass (1)
+obj.sun.expand = Expand the map (Tab)
+obj.sun.guess = Guess in the right hemisphere
+
+explain.sun = The sun stood in the {sunside} of the sky, so you were in the {hemisphere} hemisphere: anywhere in it would do.
+fail.sun = That's the wrong hemisphere. The sun was in the {sunside}: think again about which half of the planet that puts you in.
+
+# ------------------------------------------------------------------ 2. the coast
+
+msg.coast.intro = Exercise two. You have landed near the coast. Coastlines are long, wiggly and, for our purposes, extremely useful. Walk to the marker on the shore.
+msg.coast.compass = Now hold up your compass and look along the coastline, so that the needle tells you which way it runs. Then find a stretch of coast on your map that runs the same way, and guess about as far from the sea as you landed. Note that the map is not the coast. The coast is the coast.
+
+obj.coast.walk = Walk to the marker on the shore
+obj.coast.line = Look along the coast with your compass (1)
+obj.coast.guess = Guess on a coast running the same way
+
+explain.coast = The coast here runs {coastline}, and the pod came down {coastdistance} from the sea: anywhere about as near a coast running that way would do.
+fail.coast = The coast there doesn't run {coastline}, or you guessed too far from it. Line the coast up with your compass again.
+
+# ------------------------------------------------------------------ 3. temperature
+
+msg.temperature.intro = Exercise three. Your compass has been withdrawn, so that you do not come to depend on it. You have been issued a thermometer. Press 1 to hold it up and wait for the reading to settle. Then open your map, show the temperature heatmap, and guess somewhere exactly as warm as here.
+msg.temperature.read = Good. The heatmap shows the planet's average. Mornings are colder, afternoons warmer, summers warmer still, and winters best not discussed. Today, by happy coincidence, is exactly average. Find the colour that matches your reading.
+
+obj.temperature.read = Take a temperature reading (1)
+obj.temperature.map = Show the temperature heatmap
+obj.temperature.guess = Guess somewhere as warm as here
+
+explain.temperature = It was {temperature} here on an average day, so anywhere the heatmap reads within {tolerance} of that would do.
+fail.temperature = The heatmap there reads {guessed}, and your thermometer read {temperature}. Find somewhere the colours match.
+
+# ------------------------------------------------------------------ 4. altitude
+
+msg.altitude.intro = Exercise four. Your thermometer has been withdrawn. You have been issued an altimeter. Press 1 to hold it up and wait for the needle to settle. Then show the contours on your map and guess somewhere at the same height. Each contour line is ten metres apart. You are standing on one. Please try not to fall off it.
+
+obj.altitude.read = Take an altitude reading (1)
+obj.altitude.map = Show the contours on the map
+obj.altitude.guess = Guess somewhere at the same height
+
+explain.altitude = You were {altitude} above the sea, right on a contour line: anywhere along it would do.
+fail.altitude = The ground there is {guessed} above the sea, and your altimeter read {altitude}. Follow the contour line instead.
+
+# ------------------------------------------------------------------ 5. plants and animals
+
+msg.wildlife.intro = Exercise five. You have been issued an identification kit. Press 1 to hold up the magnifying glass, and look at the local wildlife through it until each one is named. Identify five plants and five animals. Do not attempt to pet the animals. Bites are not covered.
+msg.wildlife.maps = Well done. You have been given maps of where these two species live. Show each of them on your map. Only one region of the planet has plenty of both. Find it.
+
+obj.wildlife.plants = Identify plants ({count} of 5)
+obj.wildlife.animals = Identify animals ({count} of 5)
+obj.wildlife.plantmap = Show where the {plant} grows
+obj.wildlife.animalmap = Show where the {animal} lives
+obj.wildlife.guess = Guess where both are plentiful
+
+explain.wildlife = Only one region has plenty of both the {plant} and the {animal}: the one shown in green.
+fail.wildlife = Both the {plant} and the {animal} are plentiful in only one region. Show both maps and look for where they overlap.
+
+# ------------------------------------------------------------------ 6. rain
+
+msg.rainfall.intro = Exercise six. Rain. Wet places have more cloud, more rain, more rivers, and more of everything green. Dry places have less of everything, including hope. You have been given the rainfall map and the rivers. Look about you, decide how wet it is here, and guess somewhere just as wet.
+
+obj.rainfall.map = Show the rainfall map
+obj.rainfall.rivers = Show the rivers
+obj.rainfall.guess = Guess somewhere as wet as here
+
+explain.rainfall = About {rainfall} of rain falls here a year: anywhere the rainfall map shows about the same would do.
+fail.rainfall = The rainfall map there doesn't match here. Was it wet or dry? Look at the sky, the rivers and the plants.
+
+# ------------------------------------------------------------------ 7. the ground
+
+msg.ground.intro = Exercise seven. The ground. The colour of the soil, and how many rocks lie on it, change from place to place. You have been given the soil colour map and the rock maps. Look down. Yes, at the ground. Then guess somewhere with the same soil and as many rocks.
+
+obj.ground.soil = Show the soil colour map
+obj.ground.rocks = Show the rock frequency map
+obj.ground.guess = Guess somewhere the ground matches
+
+explain.ground = Places where both the soil's colour and the number of rocks match here would do.
+fail.ground = The soil or the rocks there don't match here. Compare both maps with the ground at your feet.
+
+# ------------------------------------------------------------------ 8. grass
+
+msg.grass.intro = Exercise eight. Grass. It is thicker, taller, greener or browner from one place to the next. You have been given the grass maps. Compare the grass at your feet with them. This is, genuinely, part of your job.
+
+obj.grass.colour = Show the grass colour map
+obj.grass.height = Show the grass height map
+obj.grass.guess = Guess somewhere the grass matches
+
+explain.grass = Places where the grass is the same colour and height as here would do.
+fail.grass = The grass there isn't the same colour or height as here. Compare it again.
+
+# ------------------------------------------------------------------ 9. wealth
+
+msg.wealth.intro = Exercise nine. Money. Some places are richer than others, with bigger houses, better roads and more shops. You have been given the wealth map, with the roads, buildings and shops. Look at the town around you, judge how well off it is, and guess. You are reminded that you cannot afford anything here.
+
+obj.wealth.map = Show the wealth map
+obj.wealth.buildings = Show the buildings
+obj.wealth.guess = Guess somewhere as well off as here
+
+explain.wealth = Places about as well off as here would do.
+fail.wealth = That place is richer or poorer than here. Look at the houses again.
+
+# ------------------------------------------------------------------ 10. nations
+
+msg.flags.intro = Exercise ten. Nations. Each nation flies its own flag and writes in its own script. You have been given the flags and the languages maps. Find a flag or a sign, match it to the map, and guess anywhere in the right nation.
+
+obj.flags.map = Show the flags map
+obj.flags.languages = Show the languages map
+obj.flags.guess = Guess in the right nation
+
+explain.flags = You were in the nation shown in green: anywhere inside its borders would do.
+fail.flags = That's another nation. Find a flag or a sign and match it to the map.
+
+# ------------------------------------------------------------------ 11. the roadside
+
+msg.roadside.intro = Exercise eleven. Roadside furniture. Bollards, road markings and utility poles are built differently from region to region. You have been given maps of all three. Inspect the roadside. Yes, really. Then guess somewhere they are built the same way.
+
+obj.roadside.bollards = Show the bollards map
+obj.roadside.lines = Show the road lines map
+obj.roadside.guess = Guess where the roadside matches
+
+explain.roadside = Places with the same bollards and the same road markings as here would do.
+fail.roadside = The bollards or the road markings there are different. Look at the roadside again.
+
+# ------------------------------------------------------------------ 12. architecture
+
+msg.architecture.intro = Exercise twelve. Architecture. Houses are built in styles that change between nations, and within them. You have been given the architecture map. Look at the houses, find their style on the map, and guess.
+
+obj.architecture.map = Show the architecture map
+obj.architecture.guess = Guess where houses look like these
+
+explain.architecture = Places where the houses are built in the same style as here would do.
+fail.architecture = The houses there are built in another style. Compare them with the map's pictures.
+
+# ------------------------------------------------------------------ 13. landmarks
+
+msg.landmarks.intro = Final exercise. Landmarks. A few famous places exist nowhere else. If you can see one, you know exactly where you are, which makes this the easiest exercise, and the one trainees most often fail. You have been given the landmarks map. Find the landmark, look it up, and guess.
+
+obj.landmarks.map = Show the landmarks map
+obj.landmarks.guess = Guess at the landmark
+
+explain.landmarks = That was {landmark}: anywhere near it would do.
+fail.landmarks = That's not near {landmark}. Find it on the landmarks map.
+
+msg.finish = Congratulations. You have completed the Xenocorp Training Programme, and are now qualified for deployment. Your certificate has been sent to your next of kin.
+
+# ------------------------------------------------------------------ the results
+
+verdict.pass = Exercise passed
+verdict.fail = Not quite
+button.next = Next exercise
+button.retry = Try again
+button.finish = Finish training

@@ -177,7 +177,7 @@ public class XenoGuesser extends JFrame {
     System.setProperty("sun.java2d.noddraw", "true");
 
     // 3. The main menu first; the loading screen then covers everything until the round's first frame
-    mainMenu = new MainMenu(this::chooseSingleplayer, this::startMultiplayer, this::shutdownGame, () -> openProfile(false));
+    mainMenu = new MainMenu(this::chooseSingleplayer, this::startMultiplayer, this::startTutorial, this::shutdownGame, () -> openProfile(false));
     // The planet's name is said (for the message from Xenocorp) while the menu is up, and the
     // player's own (M58), should its recording not have been kept
     TransmissionMessage.prepare(worldSeed);
@@ -237,7 +237,9 @@ public class XenoGuesser extends JFrame {
     // Developer aid: -Dxenoguesser.skipmenu (or taking the menu's picture) goes straight to loading
     boolean skipMenu = Dev.property("xenoguesser.skipmenu") != null || Dev.property("xenoguesser.menushot") != null;
     if (skipMenu) {
-      startSingleplayer();
+      // (=tutorial: the tutorial, from exercise -Dxenoguesser.tutorialstage, 0 the first)
+      if ("tutorial".equals(Dev.property("xenoguesser.skipmenu"))) startTutorial();
+      else startSingleplayer();
     }
     // A player with no name yet is asked for one first (M58); not on the developer runs that
     // go straight on, which play as Profile's stand-in
@@ -374,6 +376,22 @@ public class XenoGuesser extends JFrame {
 
   /** The loading screen replaces the menu while a world is generated, in the game mode and map chosen. */
   void startSingleplayer() {
+    startGame(false);
+  }
+
+  /**
+   * The tutorial (Xenocorp's training programme, see Tutorial): always the same planet, walked
+   * about on (whatever mode was chosen, given back afterwards), loaded as any other.
+   */
+  void startTutorial() {
+    if (loadingScreen != null) return;
+    Tutorial.active = true;
+    worldSeed = TutorialPlan.SEED;
+    menuGameMode = GameMode.current();
+    menuMapKind = MapKind.current();
+    GameMode.choose(GameMode.MOVE);
+    gameOver = false;
+    TransmissionMessage.prepare(worldSeed);
     startGame(false);
   }
 
@@ -568,7 +586,10 @@ glEventListener.setGameHUD(gameHUD);
     shopPanel = new ShopPanel(gameHUD);
     quarterPanel = new QuarterPanel();
     minimap.setOnProceedToShop(this::afterResults);
-    minimap.setProceedLabel(() -> multiplayerScore != null
+    // The tutorial: its messages over the game, its exercises judged, and its results' button on or again
+    listener.tutorial.setMessenger(this::showMessage);
+    if (Tutorial.active) minimap.setJudge(listener.tutorial::judge);
+    minimap.setProceedLabel(() -> Tutorial.active && glEventListener != null ? glEventListener.tutorial.buttonLabel() : multiplayerScore != null
         ? (multiplayerScore.gameWinner(gameHUD.getRound()) != null ? "See the result" : "Proceed to shop")
         : gameHUD.isQuarterEnd() ? "End of quarter" : "Proceed to shop");
 
@@ -759,7 +780,11 @@ glEventListener.setGameHUD(gameHUD);
     // A shop before January (a HUD test run skips it), opened under the cockpit before it goes,
     // so the round isn't glimpsed in between; otherwise the world's straight in view
     String test = Dev.property("xenoguesser.hudtest");
-    if (test == null || test.contains("firstshop")) openFirstShop();
+    // (the tutorial has no shop: straight into its first exercise)
+    if (Tutorial.active) {
+      glEventListener.setWorldHidden(false);
+      glEventListener.tutorial.roundStarted();
+    } else if (test == null || test.contains("firstshop")) openFirstShop();
     else glEventListener.setWorldHidden(false);
     layeredPane.remove(loadingScreen);
     layoutComponents();
@@ -1087,6 +1112,12 @@ glEventListener.setGameHUD(gameHUD);
    * (failed, the game is lost; the last quarter passed, it's won), then on to the shop.
    */
   private void afterResults() {
+    // The tutorial: on to the next exercise (passed) or this one again, or, the last passed, the end of the training
+    if (Tutorial.active) {
+      if (glEventListener.tutorial.afterResults()) glEventListener.tutorial.finish(this::returnToMenu);
+      else minimap.requestNextRound();
+      return;
+    }
     Multiplayer session = Multiplayer.active();
     if (session != null && multiplayerScore != null) {
       multiplayerAfterResults(session, multiplayerScore);
@@ -1413,6 +1444,8 @@ glEventListener.setGameHUD(gameHUD);
 
   private void backToMenuFromGame() {
     withdrawControls();
+    // (the tutorial, finished or left, is over)
+    Tutorial.active = false;
     // Multiplayer: the room is left (the partner hears so) and this player's own menu choices come back
     Multiplayer session = Multiplayer.active();
     if (session != null) session.leave();
@@ -1452,7 +1485,7 @@ glEventListener.setGameHUD(gameHUD);
     loadingScreen = null;
     // (the next game is on a new world)
     if (FIXED_SEED == null) worldSeed = Math.max(System.currentTimeMillis(), worldSeed + 1);
-    mainMenu = new MainMenu(this::chooseSingleplayer, this::startMultiplayer, this::shutdownGame, () -> openProfile(false));
+    mainMenu = new MainMenu(this::chooseSingleplayer, this::startMultiplayer, this::startTutorial, this::shutdownGame, () -> openProfile(false));
     TransmissionMessage.prepare(worldSeed);
     layeredPane.add(mainMenu, JLayeredPane.DRAG_LAYER);
     layoutComponents();
