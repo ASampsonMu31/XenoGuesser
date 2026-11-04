@@ -1625,8 +1625,34 @@ public class InfrastructureManager extends InfraGeometry {
         BuildingStyle[] forms = formStyles.get(nationId);
         if (forms == null) return null;
         ArchitectureStyle arch = architectureWorld.style(design);
-        BuildingStyle.WallVariant walls = wallVariants.get(typicalWall(nationId, arch.pattern));
-        return arch.picture(height, forms[0], walls);
+        return arch.picture(height, forms[regionForm(nationId, design)], wallVariants.get(regionWall(nationId, design)));
+    }
+
+    /**
+     * The one house form a region builds (a nation building one of the world's designs, as the
+     * architecture map keys it), so every house there but the towers looks like its picture: the
+     * nation's traditional house in its main design, and elsewhere one of the world's forms it
+     * builds, the commoner ones likelier.
+     */
+    int regionForm(int nationId, int design) {
+        BuildingStyle[] forms = formStyles.get(nationId);
+        if (architectureWorld.isMain(nationId, design)) return 0;
+        float[] weights = forms[0].formWeights;
+        Random rand = new Random(worldSeed * 61L + nationId * 7919L + design * 104729L);
+        float total = 0f;
+        for (int f = 1; f < forms.length; f++) if (!forms[f].tower) total += weights[f];
+        float pick = rand.nextFloat() * total;
+        for (int f = 1; f < forms.length; f++) {
+            if (forms[f].tower) continue;
+            pick -= weights[f];
+            if (pick <= 0f) return f;
+        }
+        return 0;
+    }
+
+    /** The one wall variety a region's houses are built of: the nation's commonest in its design's favourite masonry. */
+    int regionWall(int nationId, int design) {
+        return typicalWall(nationId, architectureWorld.style(design).pattern);
     }
 
     /**

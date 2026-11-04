@@ -11,7 +11,7 @@ import com.xenoguesser.math.Vector3;
  * looks up at them: noise fixed to the world (so walking under them, they pass overhead) and
  * drifting with the wind, stretched along it and streaked across it so they look fibrous.
  * How much of the sky they cover, and how dark they are, follow the rainfall where the player
- * is: wetter places have more cloud and darker.
+ * is: wetter places have more cloud and darker, and a cloudier planet more again (PlanetClimate).
  * <p>
  * The cloud noise is laid out on the day's wind circle: the great circle through where the
  * round starts, running along the wind. A place's cloud coordinates are its distance along
@@ -86,6 +86,8 @@ public final class SphereWeather {
     private float snowShare = -1f;
     private float freshSnow, coldness, swayTime;
     private final java.util.Random rand;
+    // How much more of the sky this planet's clouds cover than the rain alone gives (see PlanetClimate)
+    private final float cloudiness;
 
     private final Shader cloudShader, rainShader, snowShader;
     private final int emptyVao, rainVao, rainVbo;
@@ -93,6 +95,7 @@ public final class SphereWeather {
 
     public SphereWeather(GL3 gl, long seed) {
         rand = new java.util.Random(seed * 0x6A09E667F3BCC909L);
+        cloudiness = PlanetClimate.of(seed).cloudiness();
         cloudShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_sky.txt", GamePaths.HOME + "assets/shaders/fs_sphere_cloud.txt");
         rainShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_rain.txt", GamePaths.HOME + "assets/shaders/fs_sphere_rain.txt");
         snowShader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_sphere_snow.txt", GamePaths.HOME + "assets/shaders/fs_sphere_snow.txt");
@@ -302,8 +305,8 @@ public final class SphereWeather {
      * Moves the weather on and lets the rain fall. Today's cloud cover is drawn at random about
      * the place's average rainfall (rainfallHere, 0 to 1, looked up now and then rather than
      * every frame): the wetter the place, the likelier a cloudy day, though any place can have
-     * a clear day or an overcast one. The more cloud there is, the darker it is, and so the
-     * more it rains.
+     * a clear day or an overcast one, and a cloudier planet's days are cloudier. The more cloud
+     * there is, the darker it is, and so the more it rains.
      *
      * Everything here is set by the day, the place and the time alone, never eased from where
      * the player has been: in multiplayer the two PCs share the day and the round's clock, so
@@ -323,7 +326,7 @@ public final class SphereWeather {
             // (the rainfall map is smooth enough that the cover changes over tens of seconds as
             // the player walks, without easing)
             float rainfall = (float) rainfallHere.getAsDouble();
-            coverage = Math.max(0.03f, Math.min(1f, 0.05f + 0.9f * rainfall + dayWetness));
+            coverage = Math.max(0.03f, Math.min(1f, 0.05f + 0.9f * rainfall + cloudiness + dayWetness));
             darkness = smoothstep(0.3f, 0.95f, coverage);
             freshSnow = freshSnowAt(here[0], here[1], time);
         }

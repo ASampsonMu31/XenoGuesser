@@ -180,6 +180,8 @@ final class HudRenderer extends GamePart {
         }
 
         game.identificationLens.drawLensFinds(scale);
+        // The readings taken this round, down the left below the score
+        game.measurementLog.drawNotebook(scale, rescaled);
 
         // An achievement just unlocked (M53): at the bottom right, just above the map
         Object[] toast = Achievements.toast();

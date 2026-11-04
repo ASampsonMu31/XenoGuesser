@@ -37,6 +37,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
     final LandmarkPhotos landmarkPhotos = new LandmarkPhotos(this);
     final FloraSpecies floraSpecies = new FloraSpecies(this);
     final SpectatorCam spectatorCam = new SpectatorCam(this);
+    final MeasurementLog measurementLog = new MeasurementLog(this);
 
     /** Space: jump, if standing on something (not mid-air or swimming). */
     public void jump() {
@@ -351,12 +352,10 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         }
         this.freezingPoint = freezingPoint(worldSeed);
 
-        // (world units from the sea)
-        float GRASS_WATER_MEAN = 0f;
-        float GRASS_WATER_STD_DEV = 8000.0f;
                 this.GRASS_BASE_ABUNDANCE = 1050f;
 
-        this.grassMoistureFactor = this.regionalManager.createWaterPreference(GRASS_WATER_MEAN, GRASS_WATER_STD_DEV);
+        // (the moisture carrying further inland on a wetter planet, the plants following it)
+        this.grassMoistureFactor = this.regionalManager.createMoistureMap();
         // The rainfall follows the moisture (with the temperature)
         this.regionalManager.setMoistureMap(this.grassMoistureFactor);
         // The grass's old noise tracks, too broad to vary across the planet: still drawn, so the
@@ -415,34 +414,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         this.soilVariantAFactor = this.regionalManager.createNoiseMap(0.7e-5f);
         this.soilVariantBFactor = this.regionalManager.createNoiseMap(1.05e-5f);
         this.organismManager = new OrganismManager(worldSeed, PHYSICAL_CHUNK_SIZE, seaLevelHeight, worldNoise, regionalManager);
-        // The groves among the landmarks, found before any plant is placed (they thicken them)
-        infraManager.landmarks().findGroves(worldSeed, landPoints, p -> TerrainMesh.getLayeredHeight(p, worldNoise), seaLevelHeight,
-                nationManager::getNationAt, new Landmarks.Plants() {
-                    public int count() {
-                        return NUM_SPECIES;
-                    }
-
-                    public float raw(int species, GeodesicChunkGrid.Direction place) {
-                        return floraSpecies.floraRaw(species, place);
-                    }
-
-                    public float share(int species, float raw) {
-                        return floraSpecies.floraRanges[species].share(raw);
-                    }
-
-                    public String name(int species) {
-                        return floraName(species);
-                    }
-
-                    public Vector3 leaves(int species) {
-                        return speciesConfigs[species].healthyColor;
-                    }
-
-                    public Vector3 trunk(int species) {
-                        return speciesConfigs[species].trunkColor;
-                    }
-                });
-        // Then the summit and the landforms the land was shaped for, so every landmark's known
+        // The natural landmarks: the summit and the landforms the land was shaped for, so every landmark's known
         // before the world's loaded (to be photographed while it loads: see LandmarkPhotos)
         infraManager.landmarks().findLandforms(worldSeed, landPoints, p -> TerrainMesh.getLayeredHeight(p, worldNoise), seaLevelHeight,
                 nationManager::getNationAt, worldNoise.landforms);
@@ -913,6 +885,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // (breaking up and coming back together as the player returns to the pod)
         if (ownView) playerMotion.teleportFizzle.apply(gl, screenWidth, screenHeight, playerMotion.fizzleStrength());
         if (!hideFirstPerson) hudRenderer.drawHud(drawable);
+        devShots.writeScreenShot(gl);
         speciesPictures.advancePreviews(gl);
         if (trailerDirector != null) trailerDirector.afterFrame(gl, screenWidth, screenHeight);
 
@@ -1991,10 +1964,6 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
             double attempts = range.peak * area * (1.0 - URBAN_FLORA_REDUCTION * urbanness);
             int count = (int) attempts;
             if (cRand.nextFloat() < attempts - count) count++;
-            // (in a famous grove, three times as many, kept thick all through it)
-            int usual = count;
-            boolean grove = infraManager.landmarks().groveNear(s, middle, cell.angularRadius() * Planet.radius());
-            if (grove) count = (int) Math.ceil(range.peak * area * FloraSpecies.GROVE_THICKNESS);
             for (int i = 0; i < count; i++) {
                 SpherePosition at = SphereMath.atAltitude(cell.point(cRand.nextDouble(), cRand.nextDouble()), 0.0);
                 // (every plant draws the same numbers whether or not it's kept, so each is always the same)
@@ -2002,8 +1971,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 float scale = 0.70f + cRand.nextFloat() * 0.60f;
                 float rotation = cRand.nextFloat() * 360.0f;
                 float kept = cRand.nextFloat();
-                float keep = i < usual ? range.keep(floraSpecies.floraRaw(s, SphereMath.direction(at))) : 0f;
-                if (grove) keep = Math.max(keep, 0.9f * infraManager.landmarks().groveBoost(s, at));
+                float keep = range.keep(floraSpecies.floraRaw(s, SphereMath.direction(at)));
                 if (kept >= keep) continue;
                 float ground = TerrainMesh.getLayeredHeight(at, worldNoise);
                 if (ground <= seaLevelHeight + 0.1f || playerMotion.slopeAt(at) >= 0.9f || roundSpawner.podCovers(at, 8f) || underFreshWater(at, ground)) continue;
@@ -2940,6 +2908,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 (float) (currentHeight * 0.5 / Math.tan(fieldOfView() / 2.0)));
         // --- THE POD'S BEACON, up into the sky over everything but what stands in front of it ---
         podBeacon.render(gl, sphereViewProjection, eye, landingPod, skyColour);
+        // --- THE PINS LEFT WHERE READINGS WERE TAKEN ---
+        measurementLog.renderPins(gl, sphereViewProjection, eye);
 
         // What's in front of what through the magnifying glass, before the body's drawn over it
         identificationLens.captureLensDepth(gl);
@@ -3019,6 +2989,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         if (gadgetsDropped) {
             gadgetsDropped = false;
             playerBody.putAwayAtOnce();
+            // (and a clean page in the notebook, the last round's pins taken up)
+            measurementLog.clear();
         }
         playerBody.hold(heldGadget());
         playerBody.setReading(temperatureAt(eye));
@@ -3026,6 +2998,7 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
         // metres: not the rock or roof stood on, so it agrees with the map
         playerBody.setAltitude(((float) groundHeightAt(eye) - seaLevelHeight) / PlayerBody.METRE);
         playerBody.update((float) deltaTime, eye, swimming);
+        measurementLog.note(playerBody.takeSettled(), eye);
         float[] deep = worldArt.palette().seaShallowTint();
         playerBody.render(gl, camera, (float) currentWidth / Math.max(1, currentHeight),
                 new Vector3(sunDir[0] * 2350f, sunDir[1] * 2350f, sunDir[2] * 2350f), sunColour,

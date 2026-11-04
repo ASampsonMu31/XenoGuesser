@@ -219,6 +219,8 @@ public class PodSequence implements GLEventListener {
         java.nio.ByteBuffer pixels = com.jogamp.common.nio.Buffers.newDirectByteBuffer(w * h * 4);
         gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
         java.io.File file = new java.io.File(new java.io.File(RunFiles.WORLD_DIR).getParentFile(), "pod_shot_" + shotsTaken + ".png");
+        // (the stage it's at, the clock the shots go by running ahead of the pod's while frames are slow)
+        String stage = timeline.where();
         Thread writer = new Thread(() -> {
             BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
             for (int y = 0; y < h; y++) {
@@ -229,7 +231,7 @@ public class PodSequence implements GLEventListener {
             }
             try {
                 javax.imageio.ImageIO.write(image, "png", file);
-                System.out.println("[POD] Saved " + file);
+                System.out.println("[POD] Saved " + file + " (" + stage + ")");
             } catch (java.io.IOException e) {
                 e.printStackTrace();
             }

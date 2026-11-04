@@ -84,6 +84,25 @@ final class DevTestRun {
         // (the third and fourth items, had from the start: the altimeter and the identification kit)
         case "altimeter": XenoGuesser.later(1200, () -> app.glEventListener.useItem(2)); break;
         case "kit": XenoGuesser.later(1200, () -> app.glEventListener.useItem(3)); break;
+        // readings: the thermometer out a moment in, then 40 m on the altimeter, then 30 m further
+        // on the compass, looking back at the pins the readings left (for checking the notebook and pins)
+        case "readings": {
+          XenoGuesser.later(1200, () -> app.glEventListener.useThermometer());
+          XenoGuesser.later(7500, () -> {
+            app.glEventListener.devShots.stepOn(40.0, false);
+            app.glEventListener.useItem(2);
+          });
+          XenoGuesser.later(13500, () -> {
+            app.glEventListener.devShots.stepOn(30.0, true);
+            app.glEventListener.useCompass();
+          });
+          // (and, with -Dxenoguesser.frameshot=name, frames saved along the way as name_<ms>.png)
+          String name = Dev.property("xenoguesser.frameshot");
+          for (int ms : new int[] { 4500, 6300, 11000, 12800, 15500, 17500 }) {
+            if (name != null) XenoGuesser.later(ms, () -> app.glEventListener.devShots.saveNextScreen(new java.io.File(name + "_" + ms + ".png")));
+          }
+          break;
+        }
         // Multiplayer: face the partner (level), -Dxenoguesser.partnerdelay ms in (default 1500); look
         // down at this player's own body; and frameshot: the drawn frame saved (from the GL, so another
         // window over this one doesn't spoil it) to -Dxenoguesser.frameshot=file, -Dxenoguesser.frameshotdelay ms in (default 4000)

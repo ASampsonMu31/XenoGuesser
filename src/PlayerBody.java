@@ -100,6 +100,15 @@ public class PlayerBody {
     private static final int PRINT_W = 2048, PRINT_H = 1024, SPREAD_H = 712;
     // How far up the print the spread reaches down to, in texture coordinates
     private static final float SPREAD_V = 1f - SPREAD_H / (float) PRINT_H;
+    // The compass needle's letters, each on a square tile below the book's spread (N white on
+    // the red, S black on the white): the tiles' size in pixels and in texture coordinates, and
+    // where each tile's left edge is
+    private static final int LETTER_TILE = 256;
+    private static final float LETTER_TILE_U = LETTER_TILE / (float) PRINT_W, LETTER_TILE_V = LETTER_TILE / (float) PRINT_H;
+    private static final float NORTH_LETTER_U = PRINT_H / (float) PRINT_W, SOUTH_LETTER_U = NORTH_LETTER_U + LETTER_TILE_U;
+    // The letters on the needle: how far out from the pivot each starts, how big it is, and how
+    // high over the needle's middle it lies (just clear of its top)
+    private static final float LETTER_FROM_PIVOT = 0.035f, LETTER_SIZE = 0.085f, LETTER_RISE = 0.0225f;
 
     // The thermometer: a glass rod (up its own +Z, its front to +Y) with its scale printed on
     // it, a red bulb at the bottom and the red column running up the front of the rod
@@ -109,6 +118,8 @@ public class PlayerBody {
     // The scale, coldest to hottest, and where along the board those are
     public static final float SCALE_LOW = -30f, SCALE_HIGH = 50f;
     private static final float SCALE_LOW_Z = 0.45f, SCALE_HIGH_Z = 2.0f;
+    // The size of the numbers printed beside the scale's every ten degrees, in pixels of its picture
+    private static final int SCALE_NUMBER_SIZE = 46;
     // Held to the right of the middle of the view, a little low, at this distance
     private static final float THERMOMETER_REACH = 4.4f;
     // How far the compass hand is tipped towards the eyes (radians): always, and extra when held up high
@@ -199,7 +210,17 @@ public class PlayerBody {
     private float reading = 15f, shown = 15f;
     private Texture scale;
     // The height the altimeter reads and its needle easing to it (metres), and the top of its scale
-    private float altitude, shownAltitude, altimeterTop = 1000f;
+    // (a usual world's, about its highest ground, until this world's is worked out: see setAltimeterTop)
+    private float altitude, shownAltitude, altimeterTop = 110f;
+    // Whether the thermometer's and the altimeter's reading has settled since each was taken out
+    // (a reading is taken once each time), and the last to settle, waiting for takeSettled
+    private boolean temperatureSettled, altitudeSettled;
+    private Settled settled;
+    // How near its reading the column or needle must come to have settled: degrees, and metres
+    private static final float SETTLED_DEGREES = 0.1f, SETTLED_METRES = 0.5f;
+
+    /** A reading just settled: which gadget (GADGET_THERMOMETER or GADGET_ALTIMETER) and what it reads, in degrees or metres. */
+    record Settled(int gadget, float value) { }
     // The pictures in the identification kit's book, and the magnifying glass's lens as last
     // posed {x, y, z, radius} in the world
     private java.util.List<java.awt.Image> bookPictures = java.util.List.of();
@@ -310,6 +331,8 @@ public class PlayerBody {
             b.lathe(8, 6, (t, out) -> needleHalf(t, needle, out));
             b.part(OrganismMesh.PART_NEEDLE_SOUTH);
             b.lathe(8, 6, (t, out) -> needleHalf(t, -needle, out));
+            needleLetter(b, 1f, NORTH_LETTER_U);
+            needleLetter(b, -1f, SOUTH_LETTER_U);
             // The pivot cap
             b.transform(Affine.rotationX((float) -Math.PI / 2)).part(OrganismMesh.PART_BRASS);
             b.lathe(10, 8, puck(0.05f, 0.04f));
@@ -444,6 +467,25 @@ public class PlayerBody {
         b.resetTransform();
     }
 
+    /**
+     * The letter on one half of the compass needle (way 1 the north half, -1 the south): a little
+     * square of the print laid on its top near the pivot, read with its top towards that half's
+     * point, its tile's left edge at u in the print (see drawNeedleLetters).
+     */
+    private static void needleLetter(OrganismMesh.Builder b, float way, float u) {
+        b.part(OrganismMesh.PART_PRINT);
+        float near = LETTER_FROM_PIVOT * way, far = (LETTER_FROM_PIVOT + LETTER_SIZE) * way, half = LETTER_SIZE * 0.5f;
+        // (the letter's right is to -x along the north half and to +x along the south, seen from above)
+        float inset = LETTER_TILE_U * 0.1f, u0 = u + inset, u1 = u + LETTER_TILE_U - inset;
+        float v0 = LETTER_TILE_V * 0.1f, v1 = LETTER_TILE_V * 0.9f;
+        int a = b.vertex(half * way, LETTER_RISE, near, 0f, 1f, 0f, u0, v0);
+        int c = b.vertex(-half * way, LETTER_RISE, near, 0f, 1f, 0f, u1, v0);
+        int d = b.vertex(-half * way, LETTER_RISE, far, 0f, 1f, 0f, u1, v1);
+        int e = b.vertex(half * way, LETTER_RISE, far, 0f, 1f, 0f, u0, v1);
+        b.triangle(a, c, d);
+        b.triangle(a, d, e);
+    }
+
     /** Half the compass needle, from the pivot out to a point at z = length (negative for the south half). */
     private static void needleHalf(float t, float length, float[] out) {
         out[0] = 0f;
@@ -466,6 +508,7 @@ public class PlayerBody {
     public void putAwayAtOnce() {
         wantedGadget = NO_GADGET;
         java.util.Arrays.fill(gadgetOut, 0f);
+        settled = null;
     }
 
     /**
@@ -492,11 +535,24 @@ public class PlayerBody {
                 needleSpin = 0f;
             }
             // the column creeps up or down to the reading from 0
-            case GADGET_THERMOMETER -> shown = 0f;
+            case GADGET_THERMOMETER -> {
+                shown = 0f;
+                temperatureSettled = false;
+            }
             // the needle swings up from 0
-            case GADGET_ALTIMETER -> shownAltitude = 0f;
+            case GADGET_ALTIMETER -> {
+                shownAltitude = 0f;
+                altitudeSettled = false;
+            }
             default -> { }
         }
+    }
+
+    /** The reading that last settled (see Settled), once: null if none has since this was last asked. */
+    Settled takeSettled() {
+        Settled s = settled;
+        settled = null;
+        return s;
     }
 
     /** What the altimeter reads where the player stands: metres above the sea. */
@@ -571,7 +627,7 @@ public class PlayerBody {
         float stretch = acrossPerUnit / alongPerUnit;
         float front = w * 0.25f, column = COLUMN_RADIUS * acrossPerUnit * 1.05f;
         g.setColor(new java.awt.Color(20, 22, 28));
-        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, 30);
+        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, SCALE_NUMBER_SIZE);
         for (int t = (int) SCALE_LOW; t <= (int) SCALE_HIGH; t += 2) {
             float z = SCALE_LOW_Z + (t - SCALE_LOW) / (SCALE_HIGH - SCALE_LOW) * (SCALE_HIGH_Z - SCALE_LOW_Z);
             float y = h * (1f - (0.25f + 0.5f * (z - TUBE_START) / rodLength));
@@ -589,8 +645,15 @@ public class PlayerBody {
                 g.translate(front + metrics.getAscent() * stretch * 0.5f, y);
                 g.rotate(-Math.PI / 2);
                 g.scale(1f, stretch);
-                String label = Integer.toString(t);
-                g.drawString(label, -metrics.stringWidth(label) * 0.5f, 0f);
+                // Below zero, a long, thick bar for the minus (the font's own is a short dash, easily missed)
+                String label = Integer.toString(Math.abs(t));
+                float minus = t < 0 ? SCALE_NUMBER_SIZE * 0.5f : 0f, gap = t < 0 ? SCALE_NUMBER_SIZE * 0.1f : 0f;
+                float left = -(minus + gap + metrics.stringWidth(label)) * 0.5f;
+                if (t < 0) {
+                    float thick = SCALE_NUMBER_SIZE * 0.15f;
+                    g.fill(new java.awt.geom.Rectangle2D.Float(left, -metrics.getAscent() * 0.36f - thick * 0.5f, minus, thick));
+                }
+                g.drawString(label, left + minus + gap, 0f);
                 g.setTransform(before);
             }
         }
@@ -685,6 +748,16 @@ public class PlayerBody {
         // The column creeps to the reading rather than jumping
         shown += (reading - shown) * Math.min(1f, dt * 1.5f);
         shownAltitude += (altitude - shownAltitude) * Math.min(1f, dt * 2f);
+        // A reading's taken the moment the column or needle comes to rest by what it reads (out
+        // in the hand, not half way out of the pocket), at what it reads then
+        if (!temperatureSettled && gadgetOut[GADGET_THERMOMETER] >= 1f && Math.abs(reading - shown) < SETTLED_DEGREES) {
+            temperatureSettled = true;
+            settled = new Settled(GADGET_THERMOMETER, reading);
+        }
+        if (!altitudeSettled && gadgetOut[GADGET_ALTIMETER] >= 1f && Math.abs(altitude - shownAltitude) < SETTLED_METRES) {
+            altitudeSettled = true;
+            settled = new Settled(GADGET_ALTIMETER, altitude);
+        }
         if (gadgetOut[GADGET_COMPASS] > 0f) {
             // The needle is a damped pendulum pulled towards north; its heading is kept in
             // the local frame (north is local -z), so it holds steady as the body turns under
@@ -1213,6 +1286,7 @@ public class PlayerBody {
         drawDial(g, top);
         g.translate(PRINT_H, 0);
         drawPages(g, pictures, seed);
+        drawNeedleLetters(g);
         g.dispose();
         return image;
     }
@@ -1228,36 +1302,38 @@ public class PlayerBody {
         g.setStroke(new java.awt.BasicStroke(8f));
         float ring = size * 0.47f;
         g.draw(new java.awt.geom.Arc2D.Float(cx - ring, cy - ring, ring * 2, ring * 2, 90f - 135f, 270f, java.awt.geom.Arc2D.OPEN));
-        // Numbers every step, ticks between: the smallest step of 10, 20, 25 or 50 metres (or
-        // those times a power of ten) that goes into the top exactly, at most 13 numbers
-        double step = top;
-        search:
-        for (double power = 1; power <= top; power *= 10) {
-            for (double k : new double[] { 10, 20, 25, 50 }) {
-                double candidate = k * power;
-                double count = top / candidate;
-                if (Math.abs(count - Math.round(count)) < 1e-6 && count <= 13) {
-                    step = candidate;
-                    break search;
-                }
-            }
-        }
-        int labels = (int) Math.round(top / step);
-        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, labels > 8 ? 62 : 76);
-        g.setFont(font);
+        // Numbers every 10 metres, always (a taller world gets more of them, not a coarser
+        // step), with ticks between: every 2 metres while there's room, every 5 once the numbers
+        // crowd, none once they crowd further; the numbers smaller the more of them there are
+        double step = 10;
+        int labels = Math.max(1, (int) Math.round(top / step));
+        // (the numbers just inside the long ticks, as big as fit side by side round there)
+        float tickSpacing = ring * DIAL_SWEEP / labels;
+        float majorLength = Math.min(70f, Math.max(40f, tickSpacing)), minorLength = majorLength * 0.5f;
+        String widest = String.valueOf((long) (step * labels));
+        int fontSize = 78;
+        float labelRadius, spacing;
+        do {
+            fontSize -= 2;
+            g.setFont(new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, fontSize));
+            labelRadius = ring - majorLength - 10f - fontSize * 0.85f;
+            spacing = labelRadius * DIAL_SWEEP / labels;
+        } while (fontSize > 18 && g.getFontMetrics().stringWidth(widest) > spacing * 0.85f);
         java.awt.FontMetrics fm = g.getFontMetrics();
-        int ticks = labels * 5;
+        int between = spacing > 60f ? 5 : spacing > 24f ? 2 : 1;
+        int ticks = labels * between;
+        float majorWidth = Math.min(10f, Math.max(3f, spacing * 0.18f));
         for (int i = 0; i <= ticks; i++) {
             double a = -DIAL_SWEEP * 0.5 + DIAL_SWEEP * i / (double) ticks;
             float sx = (float) Math.sin(a), cyDir = (float) -Math.cos(a);
-            boolean major = i % 5 == 0;
-            float r0 = ring - (major ? 70f : 36f), r1 = ring;
-            g.setStroke(new java.awt.BasicStroke(major ? 10f : 5f));
+            boolean major = i % between == 0;
+            float r0 = ring - (major ? majorLength : minorLength), r1 = ring;
+            g.setStroke(new java.awt.BasicStroke(major ? majorWidth : majorWidth * 0.5f));
             g.draw(new java.awt.geom.Line2D.Float(cx + sx * r0, cy + cyDir * r0, cx + sx * r1, cy + cyDir * r1));
             if (major) {
-                double value = step * (i / 5);
+                double value = step * (i / between);
                 String label = value >= 10000 ? String.format("%.0fk", value / 1000) : value % 1 == 0 ? String.valueOf((long) value) : String.valueOf(value);
-                float rl = ring - 135f;
+                float rl = labelRadius;
                 float lx = cx + sx * rl, ly = cy + cyDir * rl;
                 g.drawString(label, lx - fm.stringWidth(label) * 0.5f, ly + fm.getAscent() * 0.38f);
             }
@@ -1268,6 +1344,30 @@ public class PlayerBody {
         g.setFont(new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.PLAIN, 64));
         fm = g.getFontMetrics();
         g.drawString("m", cx - fm.stringWidth("m") * 0.5f, cy + size * 0.3f);
+    }
+
+    /**
+     * The compass needle's two letters, side by side at the bottom left of the print's right
+     * half: a white N on the needle's red, and a black S on its white, each filling its tile.
+     */
+    private static void drawNeedleLetters(java.awt.Graphics2D g) {
+        int y = PRINT_H - LETTER_TILE;
+        java.awt.Font font = new java.awt.Font(java.awt.Font.SANS_SERIF, java.awt.Font.BOLD, Math.round(LETTER_TILE * 0.95f));
+        g.setFont(font);
+        java.awt.font.FontRenderContext context = g.getFontRenderContext();
+        String[] letters = { "N", "S" };
+        java.awt.Color[] grounds = { new java.awt.Color(217, 31, 26), new java.awt.Color(230, 230, 235) };
+        java.awt.Color[] inks = { java.awt.Color.WHITE, new java.awt.Color(12, 12, 14) };
+        for (int i = 0; i < 2; i++) {
+            int x = i * LETTER_TILE;
+            g.setColor(grounds[i]);
+            g.fillRect(x, y, LETTER_TILE, LETTER_TILE);
+            // (centred by the glyph's own outline, not the font's line, so it sits in the middle of the needle)
+            java.awt.geom.Rectangle2D bounds = font.createGlyphVector(context, letters[i]).getVisualBounds();
+            g.setColor(inks[i]);
+            g.drawString(letters[i], (float) (x + (LETTER_TILE - bounds.getWidth()) * 0.5 - bounds.getX()),
+                    (float) (y + (LETTER_TILE - bounds.getHeight()) * 0.5 - bounds.getY()));
+        }
     }
 
     /** The book's open spread, PRINT_H wide (the right half of the print) and SPREAD_H tall, from the top. */

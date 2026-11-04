@@ -22,8 +22,8 @@ Players have a username and suit colour (`Profile`), said in Xenocorp's messages
 | Play pressed: pod opens, loading screen | `XenoGuesser.startGame` → `openPod`, `PodSequence`, `LoadingScreen`, `LoadingProgress` | EDT |
 | Writing systems (ML glyphs, slow) | `WritingSystems.generate` → `GlyphGenerator` (DJL/PyTorch, `models/`) | own |
 | Terrain, sea level, landforms, map join | `XenoGuesser.generateWorld`: `PerlinNoise`, `TerrainMesh.getLayeredHeight`, `XenoGuesser_GLEventListener.precalculateSeaLevel`, `Landforms.shape` (the natural landmarks' pinnacles, bay stacks and spit, laid on the land), `MapProjection.chooseJoin` | `world-generation` |
-| Climate, rivers | `RegionalGenerationManager`, `Rivers.generate` | world-generation |
-| World layout | `new XenoGuesser_GLEventListener(...)` (constructor): regional factors, `FloraSpecies.createFloraSpecies`, `NationGenerationManager`, `SettlementManager`, `InfrastructureManager` (+ `prepareRoadNetwork`), `Inhabitants`, `OrganismManager`, natural landmarks (`Landmarks.findGroves`, `findLandforms`), collision sources, flora/grass `CellStream`s, then `MapOverlays.startBirdsEyeMapRendering` | world-generation (+ `birds-eye-map-renderer`, `utility-poles`, `sign-map-artist`) |
+| Climate, rivers | `RegionalGenerationManager` (its rain and cloud set per planet by `PlanetClimate`), `Rivers.generate` | world-generation |
+| World layout | `new XenoGuesser_GLEventListener(...)` (constructor): regional factors, `FloraSpecies.createFloraSpecies`, `NationGenerationManager`, `SettlementManager`, `InfrastructureManager` (+ `prepareRoadNetwork`), `Inhabitants`, `OrganismManager`, natural landmarks (`Landmarks.findLandforms`), collision sources, flora/grass `CellStream`s, then `MapOverlays.startBirdsEyeMapRendering` | world-generation (+ `birds-eye-map-renderer`, `utility-poles`, `sign-map-artist`) |
 | Textures | `WorldArtGenerator.generate` (+ `InfrastructureManager.textureJobs`) → files in `RunFiles.WORLD_DIR` | `world-art` pool |
 | Map panel, game window | `new MapPanel(...)`, `XenoGuesser.buildGameWindow` | EDT |
 | GL set-up, a step per frame | `XenoGuesser_GLEventListener.display` → `advanceLoading` → `coreSteps`, flora models, `finishSteps`, surroundings built, landmarks photographed (`LandmarkPhotos`), maps ready (+ `MapOverlays.showLandmarks`), rocks | GL (JOGL `FPSAnimator`) |
@@ -93,6 +93,7 @@ Parts extend `GamePart` (field `game`).
 | `SpeciesPictures` | Portraits/turning previews of plants and animals |
 | `IdentificationLens` | The magnifying glass's finds |
 | `HudRenderer` | The HUD over the 3D view |
+| `MeasurementLog` | The round's readings (a temperature or height taken as the thermometer or altimeter settles, `PlayerBody.takeSettled`): the metrologist's notebook down the HUD's left, and a pin left standing where each was taken, its value written large |
 | `SnowCover` | Snow on the ground |
 | `FloraSpecies` | Plant species generation and ranges (`SpeciesConfig`, `SphereFlora`) |
 | `DevShots` | Saved frames, menu picture, sign/vehicle shots, dev viewpoints |
@@ -108,12 +109,12 @@ Parts extend `GamePart` (field `game`).
   `ShopPanel`, `QuarterPanel`, `GameHUD`, `HudStyle`, `HudOverlay`, `MessageStrip`/`MessageTicker`,
   `WindowTitleBar`/`WindowResizer`, `Achievements`, `GameSettings`, `GameMode`, `MapKind`, `GameClock`.
 - **Map**: `MapPanel` (minimap/large map, guessing, results; `Layer`), `MapLayersPanel`, `MapMarkers`,
-  `MapTiles`, `MapProjection`, `MapColours`, `BirdsEyeMaps` (layer images), `RevealGlobe` (results
+  `MapTiles`, `MapProjection`, `MapColours`, `BirdsEyeMaps` (layer images), `ContourLabels` (the heights written along the contours), `RevealGlobe` (results
   globe), `PreviewCard`.
 - **Sphere toolkit**: `Planet`, `SpherePosition`, `SphereMath`, `SphereFrame`, `GeodesicChunkGrid`,
   `CellIndex`, `CellStream`, `SphereRaster`, `GeodesicCollision`, `Viewpoint`, `Camera`.
 - **Terrain, water, sky, weather**: `TerrainMesh`, `PerlinNoise`, `Landforms`, `Rivers`, `RiverRenderer`,
-  `RegionalGenerationManager`, `RegionalFactor`, `SpeciesRange`, `SphereSkyRenderer`,
+  `RegionalGenerationManager`, `PlanetClimate`, `RegionalFactor`, `SpeciesRange`, `SphereSkyRenderer`,
   `SphereWeather`, `StarSystem` (the sun's size, the moon, what the pod meets on the way in), `SkyMoon`, `RainSound`, `ShadowMaps`, `RockField`, `WorldPalette`, `ProceduralTextures`,
   `TileableNoise`, `WorldArtGenerator`, `PlanetGlobeTexture`.
 - **Plants**: `Flora` (a species' branching meshes and LODs, `Flora.Design`), `FloraForms` (the non-tree forms), `FloraSpecies`.

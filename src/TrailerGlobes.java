@@ -29,7 +29,7 @@ public final class TrailerGlobes {
             // (the rivers cut its coasts, as in the game)
             RegionalGenerationManager climate = new RegionalGenerationManager(seed, sea);
             climate.precalculateWaterDistanceField(noise);
-            climate.setMoistureMap(climate.createWaterPreference(0f, 8000f));
+            climate.setMoistureMap(climate.createMoistureMap());
             noise.rivers = Rivers.generate(noise, sea, climate.rainfallMap::evaluate);
             java.io.ByteArrayOutputStream png = new java.io.ByteArrayOutputStream();
             javax.imageio.ImageIO.write(PlanetGlobeTexture.make(noise, sea, seed), "png", png);

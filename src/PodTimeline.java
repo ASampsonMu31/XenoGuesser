@@ -9,11 +9,13 @@ import java.util.Random;
  * streaming past; dropping out of it, the stars slowing to points and the planet's star ahead;
  * on the way in, as the world's star system has it (StarSystem), through an asteroid belt (a few
  * small rocks striking the glass) or swung round a gas giant by its gravity, or both; closing on
- * the planet as it grows ahead, its moon beside it if it has one; swerving past it and swinging
- * round into orbit, the window facing the planet as it turns below, at least half way round; let
- * go from the ship with a clunk and turned, its top to the planet, on its thrusters, still going
- * round; the roar of the air as it comes in, the window fogging; turned upright again through the
- * fog; coming down; and landing with a jolt.
+ * the planet along a line that passes to one side of it, its moon beside it if it has one, the
+ * window kept on the planet as it grows and swings from ahead to beside, so the pod's top comes
+ * round to the way it's going; curving into orbit round it, the window facing it as it turns
+ * below, at least half way round; let go from the ship with a clunk and spiralling down, tighter
+ * and lower, turned on its thrusters over the last of the spiral so its top's to the planet and
+ * its window looks back the way it came; the roar of the air as it comes in, the window fogging;
+ * turned upright again through the fog; coming down; and landing with a jolt.
  *
  * Each stage lasts at least so long and some end only once the loading's near enough its end
  * that what's left of the way down takes as long as what's left of the loading (the waiting done
@@ -36,7 +38,7 @@ public class PodTimeline {
     // How long each stage lasts at least (the drop out of lightspeed, the belt, the giant and the
     // approach exactly; the orbit's at least ORBIT_LEAST radians round, going once round in ORBIT_TIME)
     private static final float CRUISE_TIME = 8f, DROPOUT_TIME = 6f, BELT_TIME = 16f, FLYBY_TIME = 18f, APPROACH_TIME = 12f,
-            ORBIT_TIME = 20f, RELEASE_TIME = 5f, REENTRY_TIME = 10f, UPRIGHT_TIME = 5f, DESCENT_TIME = 3f;
+            ORBIT_TIME = 20f, RELEASE_TIME = 16f, REENTRY_TIME = 10f, UPRIGHT_TIME = 5f, DESCENT_TIME = 3f;
     private static final float ORBIT_LEAST = (float) Math.PI;
     // The cruise ends with this many seconds of loading to spare beyond the least the rest takes,
     // waited out in orbit (so a guess of the time left that's a little short is made up there)
@@ -56,29 +58,47 @@ public class PodTimeline {
     // ahead and going as far behind; turned (at most GIANT_LOOK radians) to keep it in the window;
     // the way to the planet GIANT_COURSE off to the other side at first, swung ahead by it
     private static final float GIANT_NEAREST = 2.4f, GIANT_FAR = 15f, GIANT_LOOK = 1.1f, GIANT_COURSE = 0.7f;
-    // The approach as it really looks: the pod flies straight at the planet, its distance falling
-    // from APPROACH_FAR to APPROACH_NEAR (by the same share each moment). The star is
+    // The approach as it really looks: the pod flies in along a straight line passing SIDE of the
+    // planet's radii from its middle, its distance falling from APPROACH_FAR to APPROACH_NEAR (by
+    // the same share each moment), turned all the while to keep its window on the planet. The star is
     // STAR_FROM_PLANET beyond it, off to one side (STAR_SIDE): from far off the two are lined up,
     // the star in the middle of the view; closing in, the planet grows fast while the star, so
     // much further, hardly grows and slides away to the side, until it's out beside the pod,
     // lighting the planet's face towards it (a little behind the pod, so its day side's seen). Sizes are radii, in the same units
     // (the star looks from the planet as the game's sun does from the ground)
-    private static final float APPROACH_FAR = 30f, APPROACH_NEAR = 0.012f;
+    private static final float APPROACH_FAR = 30f, APPROACH_NEAR = 0.016f;
     // How the approach is spread over its time: more of it far off, the star in the middle, before
     // the planet comes up fast (the share of the way, in log distance, is the share of time to this power)
     private static final float FAR_LINGER = 1.6f;
     // How far below level (radians) the way ahead is, seen from the cabin: the door's middle from standing
     private static final float AHEAD_TIP = 0.33f;
-    // So where it'll land isn't given away: from this far through the approach the pod steers off
-    // to pass the planet on its right, turned ORBIT_TURN aside by the end (the planet off to the
-    // left of the door); then, over ORBIT_SETTLE seconds, it swings round to face it from its
-    // orbit, ORBIT_DISTANCE from its middle, going round once in ORBIT_TIME and on round at that
-    // rate (the stars sweeping past) until the window's fogged
-    private static final float ORBIT_FROM = 0.7f, ORBIT_TURN = 0.36f, ORBIT_SETTLE = 8f, ORBIT_DISTANCE = 0.0065f;
-    // How fast the swerve's turning as the approach ends (it turns ever faster: ORBIT_TURN by the square of the way through it)
-    private static final float SWERVE_RATE = 2f * ORBIT_TURN / ((1f - ORBIT_FROM) * APPROACH_TIME);
+    // ...and once it's turned its top to the planet, this many times as far (the window looking
+    // back the way it came and down a little, so the planet's edge is across the door)
+    private static final float ENTRY_TIP = 2.2f;
+    // The way down drawn as one curve, in the plane of the pod's top and window (so the pod only
+    // ever pitches): the line in, until it's beside the planet; given over, from there, through
+    // a further LINE_HANDOVER radians round, to the orbit, which it meets curving a little wide;
+    // round at ORBIT_HIGH of the planet's radii from its middle until the pod's let go; then
+    // spiralling in to ORBIT_LOW over SPIRAL_TIME seconds (through its release, as low as it goes
+    // as the window starts to fog), quickening as it gets lower (by the height's share to the
+    // power SPIRAL_QUICKEN, a gentle Kepler)
+    private static final float SIDE = 2.4f, LINE_HANDOVER = (float) (Math.PI * 0.6), ORBIT_HIGH = 2.4f, ORBIT_LOW = 1.25f;
+    private static final float SPIRAL_TIME = RELEASE_TIME + 2f, SPIRAL_QUICKEN = 0.75f;
+    // Going round once in ORBIT_TIME (the stars sweeping past), the pace it reaches over ORBIT_SETTLE
+    // seconds from the pace it came in at off the line (nearly the same)
+    private static final float ORBIT_SETTLE = 6f;
     private static final float ORBIT_RATE = (float) (Math.PI * 2.0 / ORBIT_TIME);
     private static final float STAR_FROM_PLANET = 1f, PLANET_RADIUS = 0.002f;
+    // How far round the planet (radians, from where it's straight ahead) the pod is as the line
+    // in starts and as the approach ends, and how fast it's going round there (the line's turning
+    // as the distance falls by its share each moment, at the approach's end)
+    private static final float ROUND_FAR = (float) Math.asin(SIDE * PLANET_RADIUS / APPROACH_FAR),
+            ROUND_NEAR = (float) Math.asin(SIDE * PLANET_RADIUS / APPROACH_NEAR);
+    private static final float LINE_RATE = (float) (Math.tan(ROUND_NEAR) * Math.log(APPROACH_FAR / APPROACH_NEAR) * FAR_LINGER / APPROACH_TIME);
+    // The pod's let go and the spiral begun; then, from TURN_FROM to TURN_TO seconds into it, it's
+    // turned its top to the planet over the last of the spiral, done before the air fogs the
+    // window (from 2 s into the entry)
+    private static final float TURN_FROM = 10.5f, TURN_TO = RELEASE_TIME - 0.5f;
     private static final float[] STAR_SIDE = Affine.normalise(new float[] { 0.9f, 0.15f, -0.45f });
     // While cruising, the computer notes something routine every so often (seconds)
     private static final float CHATTER_EVERY = 11f;
@@ -95,6 +115,9 @@ public class PodTimeline {
 
     Phase phase = Phase.CRUISE;
     private float inPhase, approach, angle, spin, heading, orbitAngle;
+    // How far round the planet the pod has come (radians, from where it was straight ahead on the
+    // line in), how far it is from the planet's middle (units), and how long it's been spiralling down
+    private float round = ROUND_FAR, distance = APPROACH_FAR, spiralling;
     // How much faster than usual the pod's going down (1 for not hurried)
     private float hurry = 1f;
     private final boolean ignoreProgress;
@@ -133,7 +156,17 @@ public class PodTimeline {
         }
         ignoreProgress = START != null;
         phase = included(start) ? start : following(start);
-        if (phase.ordinal() > Phase.APPROACH.ordinal()) approach = 1f;
+        if (phase.ordinal() > Phase.APPROACH.ordinal()) {
+            approach = 1f;
+            round = ROUND_NEAR;
+            distance = APPROACH_NEAR;
+        }
+        // (started part way: as far round as it'd have come, and as far down the spiral)
+        if (phase.ordinal() > Phase.ORBIT.ordinal()) {
+            orbitAngle = ORBIT_LEAST;
+            round += ORBIT_LEAST;
+        }
+        if (phase.ordinal() > Phase.RELEASE.ordinal()) spiralling = RELEASE_TIME;
         begin(phase);
     }
 
@@ -145,6 +178,11 @@ public class PodTimeline {
     /** The rock that's to strike the glass (with Event.STRIKE): {when, u, v, cracks (1 or 0), seed}. */
     float[] nextStrike() {
         return strikesDue.poll();
+    }
+
+    /** The stage it's at and how far into it (seconds, unpaced), for the developers' pictures of the pod. */
+    String where() {
+        return String.format("%s %.1f s in", phase, inPhase / PACE);
     }
 
     boolean landed() {
@@ -249,26 +287,42 @@ public class PodTimeline {
             }
         }
         t = inPhase / PACE;
-        // Off the straight line at the planet; then round, facing it, in orbit
-        if (phase == Phase.FLYBY) {
-            heading = flybyHeading(t / FLYBY_TIME);
-        } else if (phase == Phase.APPROACH) {
-            float x = Math.max(0f, (approach - ORBIT_FROM) / (1f - ORBIT_FROM));
-            heading = ORBIT_TURN * x * x;
-        } else if (phase.ordinal() >= Phase.ORBIT.ordinal()) {
-            // One smooth curve from the swerve into the orbit: carrying on turning as fast as the
-            // swerve ended (curving out further), easing back round to face the planet, while the
-            // orbit's own turning builds from nothing up to its rate
-            float x = phase == Phase.ORBIT ? Math.min(1f, t / ORBIT_SETTLE) : 1f;
-            float m = SWERVE_RATE * ORBIT_SETTLE;
-            heading = ORBIT_TURN * (2f * x * x * x - 3f * x * x + 1f) + m * (x * x * x - 2f * x * x + x);
-            orbitAngle += ORBIT_RATE * smooth(x) * dt / PACE;
-        } else {
-            heading = 0f;
-        }
+        heading = phase == Phase.FLYBY ? flybyHeading(t / FLYBY_TIME) : 0f;
+        travel(t, dt / PACE);
         narrate(t);
         pose(t, dt);
         show(t, view);
+    }
+
+    /**
+     * Where the pod is on its way down, t seconds into the stage, having gone on by dt (unpaced):
+     * how far round the planet and how far from it. Along the line in, the distance by the clock
+     * and how far round from that; from the orbit on, how far round by the clock (the pace kept
+     * from the line's, easing to the orbit's and quickening down the spiral) and the distance from that.
+     */
+    private void travel(float t, float dt) {
+        if (phase == Phase.APPROACH) {
+            distance = APPROACH_FAR * (float) Math.pow(APPROACH_NEAR / APPROACH_FAR, Math.pow(approach, FAR_LINGER));
+            round = (float) Math.asin(Math.min(1.0, SIDE * PLANET_RADIUS / distance));
+            return;
+        }
+        if (phase.ordinal() < Phase.ORBIT.ordinal()) return;
+        if (phase.ordinal() >= Phase.RELEASE.ordinal()) spiralling += dt;
+        float high = height();
+        float pace = phase == Phase.ORBIT ? LINE_RATE + (ORBIT_RATE - LINE_RATE) * smooth(t / ORBIT_SETTLE) : ORBIT_RATE;
+        float turned = pace * (float) Math.pow(ORBIT_HIGH / high, SPIRAL_QUICKEN) * dt;
+        round += turned;
+        if (phase == Phase.ORBIT) orbitAngle += turned;
+        // (the line, in the same terms, given over smoothly to the orbit once it's passed beside the planet)
+        float line = 1f - smooth((round - (float) Math.PI * 0.5f) / LINE_HANDOVER);
+        float nearness = line * (float) Math.sin(round) / SIDE + (1f - line) / high;
+        distance = PLANET_RADIUS / nearness;
+    }
+
+    /** How high the orbit is now (in the planet's radii, from its middle): its own height, then falling down the spiral. */
+    private float height() {
+        float down = smooth(spiralling / SPIRAL_TIME);
+        return ORBIT_HIGH * (float) Math.pow(ORBIT_LOW / ORBIT_HIGH, down);
     }
 
     /** The least a stage takes, from its start (the orbit's from the start of its turning round); none for one this world's way in leaves out. */
@@ -280,8 +334,7 @@ public class PodTimeline {
             case BELT -> BELT_TIME;
             case FLYBY -> FLYBY_TIME;
             case APPROACH -> APPROACH_TIME;
-            // (its turning eases in over ORBIT_SETTLE, half as far as at its full rate)
-            case ORBIT -> ORBIT_LEAST / ORBIT_RATE + ORBIT_SETTLE * 0.5f;
+            case ORBIT -> ORBIT_LEAST / ORBIT_RATE;
             case RELEASE -> RELEASE_TIME;
             case REENTRY -> REENTRY_TIME;
             case UPRIGHT -> UPRIGHT_TIME;
@@ -300,7 +353,7 @@ public class PodTimeline {
     /** The least the rest of the way down takes from here, t seconds into this stage (seconds, as paced). */
     private float leastLeft(float t) {
         float here = phase == Phase.ORBIT
-                ? Math.max(0f, ORBIT_LEAST - orbitAngle) / ORBIT_RATE + Math.max(0f, ORBIT_SETTLE - t) * 0.5f
+                ? Math.max(0f, ORBIT_LEAST - orbitAngle) / ORBIT_RATE
                 : Math.max(0f, least(phase) - t);
         return (here + after(phase)) * PACE;
     }
@@ -374,15 +427,16 @@ public class PodTimeline {
                 if (once(0, t >= APPROACH_TIME * 0.35f)) {
                     if (system.hasMoon) note("Moon sighted");
                     now("Closing on planet");
-                } else if (once(1, approach >= ORBIT_FROM)) now("Steering for orbit");
+                } else if (once(1, approach >= 0.7f)) now("Steering for orbit");
             }
             case ORBIT -> {
                 if (once(0, t >= ORBIT_SETTLE)) now("Orbit stable");
                 else if (once(1, t >= ORBIT_SETTLE + 4f)) now("Choosing landing site");
             }
             case RELEASE -> {
-                if (once(0, t >= 0.8f)) now("Pod released: reorienting");
-                else if (once(1, t >= RELEASE_TIME - 1f)) now("Heat shield to planet");
+                if (once(0, t >= 0.8f)) now("Pod released: descending");
+                else if (once(1, t >= TURN_FROM)) now("Reorienting for entry");
+                else if (once(2, t >= TURN_TO)) now("Heat shield to planet");
             }
             case REENTRY -> {
                 if (once(0, t >= 3f)) now("Hull temperature high");
@@ -476,15 +530,16 @@ public class PodTimeline {
                 shake = 0.04f + 0.1f * engine;
             }
             case RELEASE -> {
-                // Let go, then turned on its thrusters, its top to the planet
-                float turn = smooth((t - 0.9f) / (RELEASE_TIME - 1.4f));
+                // Let go, spiralling down a while, then turned slowly on its thrusters, its top to the planet
+                float turn = smooth((t - TURN_FROM) / (TURN_TO - TURN_FROM));
                 angle = (float) (Math.PI * 0.5) * turn;
-                if (t > 0.8f && !thrustersFired) {
+                float firing = TURN_FROM - 0.1f;
+                if (t > firing && !thrustersFired) {
                     thrustersFired = true;
                     events.add(Event.THRUSTERS);
                 }
-                engine = t > 0.8f ? Math.min(1f, (t - 0.8f) * 3f) * (1f - smooth((t - RELEASE_TIME + 0.6f) / 0.6f)) : 0f;
-                shake = t < 0.4f ? 0.5f : 0.08f + 0.25f * engine;
+                engine = t > firing ? Math.min(1f, (t - firing) * 3f) * (1f - smooth((t - TURN_TO + 0.4f) / 0.6f)) : 0f;
+                shake = t < 0.4f ? 0.5f : 0.06f + 0.25f * engine;
             }
             case REENTRY -> {
                 angle = (float) (Math.PI * 0.5);
@@ -521,8 +576,16 @@ public class PodTimeline {
             }
         }
         // (out in space the way it flies is tipped down a little, so what's ahead is in the middle of
-        // the door for someone standing in the cabin; once it's upright again, level)
-        float tip = phase.ordinal() < Phase.UPRIGHT.ordinal() ? 1f : phase == Phase.UPRIGHT ? 1f - smooth(t / UPRIGHT_TIME) : 0f;
+        // the door for someone standing in the cabin; turned top to the planet, tipped further as
+        // it turns, ENTRY_TIP times as far, so the planet's edge stays across the door into the
+        // fog; once it's upright again, level)
+        float tip = switch (phase) {
+            case RELEASE -> 1f + (ENTRY_TIP - 1f) * smooth((t - TURN_FROM) / (TURN_TO - TURN_FROM));
+            case REENTRY -> ENTRY_TIP;
+            case UPRIGHT -> ENTRY_TIP * (1f - smooth(t / UPRIGHT_TIME));
+            case DESCENT, LANDED -> 0f;
+            default -> 1f;
+        };
         float[] turn = Affine.rotationX(angle - AHEAD_TIP * tip);
         System.arraycopy(turn, 0, podToSpace, 0, 16);
         // Gravity: as the cabin's own (the pod spins it up, or the planet's once it's down),
@@ -542,12 +605,12 @@ public class PodTimeline {
 
     /**
      * The planet, its star and its moon as seen from distance away from the planet (facing it,
-     * along +z), orbit radians round it: where each is and how wide each looks, and the way the
-     * star's light falls (the star, the moon and the light turned about the planet's middle with
-     * the orbit).
+     * along +z), orbit radians round it (from where the line in started, in the plane of the
+     * pod's top and window): where each is and how wide each looks, and the way the star's light
+     * falls (the star, the moon and the light turned about the planet's middle with the orbit).
      */
     private void place(PodSpaceView view, float distance, float orbit) {
-        float[] round = Affine.rotationY(orbit);
+        float[] round = PodSpaceView.orbitTurn(orbit);
         float[] side = Affine.transformDirection(round, STAR_SIDE[0], STAR_SIDE[1], STAR_SIDE[2]);
         float[] star = { side[0] * STAR_FROM_PLANET, side[1] * STAR_FROM_PLANET, distance + side[2] * STAR_FROM_PLANET };
         float starDistance = Affine.length(star);
@@ -580,13 +643,12 @@ public class PodTimeline {
     private void show(float t, PodSpaceView view) {
         System.arraycopy(podToSpace, 0, view.podToSpace, 0, 16);
         view.heading = heading;
-        view.orbitAngle = orbitAngle;
+        view.orbitAngle = round - ROUND_FAR;
         view.planetSpin = spin;
         view.course = 0f;
         view.belt = 0f;
         view.giantShown = false;
         System.arraycopy(STARLIGHT, 0, view.streakTint, 0, 3);
-        float a = approach;
         // (until the giant's swung it round, the way to the planet's off to one side)
         float off = system.giant && phase.ordinal() < Phase.FLYBY.ordinal() ? -system.giantSide * GIANT_COURSE : 0f;
         switch (phase) {
@@ -633,25 +695,14 @@ public class PodTimeline {
                 view.course = -system.giantSide * GIANT_COURSE * (1f - smooth((f - 0.2f) / 0.6f));
                 view.space = 1f;
             }
-            case APPROACH -> {
+            case APPROACH, ORBIT, RELEASE -> {
                 still(view);
-                place(view, APPROACH_FAR * (float) Math.pow(APPROACH_NEAR / APPROACH_FAR, Math.pow(a, FAR_LINGER)), 0f);
-                view.space = 1f;
-            }
-            case ORBIT -> {
-                still(view);
-                // (closing in from the end of the approach to the orbit's height as it swings round)
-                place(view, APPROACH_NEAR + (ORBIT_DISTANCE - APPROACH_NEAR) * smooth(t / ORBIT_SETTLE), orbitAngle);
-                view.space = 1f;
-            }
-            case RELEASE -> {
-                still(view);
-                place(view, ORBIT_DISTANCE, orbitAngle);
+                place(view, distance, round - ROUND_FAR);
                 view.space = 1f;
             }
             case REENTRY -> {
                 still(view);
-                place(view, ORBIT_DISTANCE, orbitAngle);
+                place(view, distance, round - ROUND_FAR);
                 view.space = 1f - smooth((t - 2f) / (REENTRY_TIME * 0.6f));
             }
             default -> view.space = 0f;

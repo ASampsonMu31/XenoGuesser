@@ -14,11 +14,15 @@ import com.xenoguesser.math.Vector3;
  * The built ones are planned with the roads, before the houses are (which keep off them), all
  * from the world's seed so every PC has the same: a great spire in the busiest, richest streets
  * of a few of the richest nations; grand ruins out in the country, each in its region's
- * architecture; and circles of standing stones in the wilds, well away from the towns. The
- * natural ones are found from the land once it's known: the planet's highest summit and the
- * groves where two of its plants grow thickest; and where the land was shaped for them (see
- * Landforms), its most sheltered bay with its stacks of rock, a spit of sand built out into the
- * shallows, and fields of steep pointed hills.
+ * architecture; circles of standing stones in the wilds, well away from the towns; and
+ * colossal statues up on the high ground at the towns' edges, looking out over them. The
+ * natural ones are found from the land once it's known: the planet's highest summit, a beacon
+ * raised on a cairn at its top; and where
+ * the land was shaped for them (see Landforms), its most sheltered bay with its stacks of rock,
+ * a spit of sand built out into the shallows, and fields of steep pointed hills.
+ * <p>
+ * Every one is something a player stood before can be sure of (nothing like where a plant or
+ * creature merely grows thickest, which can't be told on the ground).
  */
 public final class Landmarks {
 
@@ -60,9 +64,12 @@ public final class Landmarks {
     // The built ones (fixed once planned), and the natural ones (once found)
     private final List<Landmark> built = new ArrayList<>();
     private volatile List<Landmark> natural = List.of();
+    // Everything standing in the world: the built ones, then the peak's beacon (once found)
+    private final List<Landmark> standing = new ArrayList<>();
     private final CellIndex<Landmark> index = new CellIndex<>();
-    // Which batch cell each built one is drawn with (see InfrastructureManager.generateForCell)
+    // Which batch cell each standing one is drawn with (see InfrastructureManager.generateForCell)
     private final Map<Long, List<Integer>> byCell = new HashMap<>();
+    private java.util.function.ToLongFunction<SpherePosition> cellOf;
     // The world's sea level
     private float seaLevel;
 
@@ -113,11 +120,25 @@ public final class Landmarks {
             List<RoadSpot> some = wild.subList(from, Math.min(wild.size(), from + 60));
             if (place(Landmark.Kind.STONES, some.get(0).nation(), some, rand, world, ground, seaLevel, 8f * M, 40f * M, 6f * M)) made++;
         }
+        // Statues: in two or three nations, on the highest ground beside the roads at their towns' edges
+        List<Integer> raisers = new ArrayList<>(byNation.keySet());
+        raisers.sort(Integer::compare);
+        java.util.Collections.shuffle(raisers, rand);
+        int statues = 2 + rand.nextInt(2);
+        for (int k = 0, made = 0; k < raisers.size() && made < statues; k++) {
+            int nation = raisers.get(k);
+            List<RoadSpot> edge = new ArrayList<>();
+            for (RoadSpot s : byNation.get(nation)) {
+                float urban = world.urbanness(s.place());
+                if (urban > 0.03f && urban < 0.3f) edge.add(s);
+            }
+            edge.sort(Comparator.comparingDouble(s -> -ground.applyAsDouble(s.place())));
+            if (place(Landmark.Kind.STATUE, nation, edge.subList(0, Math.min(150, edge.size())), rand, world, ground, seaLevel, 6f * M, 30f * M, 4f * M)) made++;
+        }
 
-        for (int i = 0; i < built.size(); i++) {
-            Landmark lm = built.get(i);
-            index.add(lm.place(), lm.reach, lm);
-            byCell.computeIfAbsent(cellOf.applyAsLong(lm.place()), c -> new ArrayList<>()).add(i);
+        this.cellOf = cellOf;
+        for (Landmark lm : built) {
+            stand(lm);
             System.out.printf(java.util.Locale.ROOT, "[LANDMARKS] %s in nation %d at %s%n", lm.name, lm.nation, lm.place());
         }
         System.out.printf("[LANDMARKS] %d built landmarks planned in %d ms%n", built.size(), System.currentTimeMillis() - start);
@@ -141,7 +162,8 @@ public final class Landmarks {
                 long seed = rand.nextLong();
                 // (sized first, to know how far off the road its middle has to be)
                 Landmark trial = new Landmark(kind, SphereFrame.at(spot.place()), nation, seed, null, new Vector3(0.8f, 0.8f, 0.8f), new Vector3(0.8f, 0.8f, 0.8f));
-                float out = spot.halfWidth() + (kind == Landmark.Kind.RUIN ? trial.halfDepth + 12f * M : kind == Landmark.Kind.SPIRE ? trial.halfWidth : trial.reach) + offset;
+                float out = spot.halfWidth() + (kind == Landmark.Kind.RUIN ? trial.halfDepth + 12f * M
+                        : kind == Landmark.Kind.SPIRE || kind == Landmark.Kind.STATUE ? trial.halfWidth : trial.reach) + offset;
                 SpherePosition site = road.toSphere(0.0, 0.0, side * out);
                 if (Math.abs(Planet.latitude(site)) > MapProjection.CLIP_LATITUDE * 0.9) continue;
                 if (world.nationAt(site) != nation) continue;
@@ -160,6 +182,14 @@ public final class Landmarks {
             }
         }
         return false;
+    }
+
+    /** Files one that stands in the world, to be drawn with its batch cell and kept clear of. */
+    private void stand(Landmark lm) {
+        int i = standing.size();
+        standing.add(lm);
+        index.add(lm.place(), lm.reach, lm);
+        byCell.computeIfAbsent(cellOf.applyAsLong(lm.place()), c -> new ArrayList<>()).add(i);
     }
 
     /** Whether a landmark's ground is all dry, in its nation, clear of the roads and level enough. */
@@ -184,67 +214,6 @@ public final class Landmarks {
     }
 
     // ------------------------------------------------------------------ the natural ones
-
-    /** What the natural ones need to know about the plants. */
-    public interface Plants {
-        int count();
-
-        /** A plant's abundance before its range is applied (higher is thicker). */
-        float raw(int species, GeodesicChunkGrid.Direction place);
-
-        /** Where on its range's scale a raw abundance comes, 0 to 1. */
-        float share(int species, float raw);
-
-        String name(int species);
-
-        Vector3 leaves(int species);
-
-        Vector3 trunk(int species);
-    }
-
-    /**
-     * Finds the groves, over the land (points spread evenly over it, see SpeciesRange.land):
-     * quick, and done before any plant is placed, as the groves thicken them.
-     */
-    public void findGroves(long seed, List<GeodesicChunkGrid.Direction> land, ToDoubleFunction<SpherePosition> ground, float seaLevel,
-                           java.util.function.ToIntFunction<SpherePosition> nationAt, Plants plants) {
-        this.seaLevel = seaLevel;
-        List<Landmark> found = new ArrayList<>(natural);
-        java.util.function.Function<GeodesicChunkGrid.Direction, Float> height = d -> (float) ground.applyAsDouble(SphereMath.atAltitude(d, 0.0));
-        // The groves: where two of the plants grow thicker than anywhere else
-        if (plants != null && plants.count() > 0) {
-            float[] best = new float[plants.count()];
-            GeodesicChunkGrid.Direction[] where = new GeodesicChunkGrid.Direction[plants.count()];
-            for (int s = 0; s < plants.count(); s++) {
-                best[s] = -Float.MAX_VALUE;
-                for (int i = 0; i < land.size(); i += 3) {
-                    float raw = plants.raw(s, land.get(i));
-                    if (raw > best[s] && height.apply(land.get(i)) > seaLevel + 3f * M) {
-                        best[s] = raw;
-                        where[s] = land.get(i);
-                    }
-                }
-            }
-            List<Integer> order = new ArrayList<>();
-            for (int s = 0; s < plants.count(); s++) if (where[s] != null) order.add(s);
-            // (the most outstanding first: thickest beyond even its heartland)
-            order.sort(Comparator.comparingDouble(s -> -plants.share(s, best[s]) - best[s] * 1e-3f));
-            int groves = 0;
-            for (int s : order) {
-                SpherePosition p = SphereMath.atAltitude(where[s], 0.0);
-                if (groves >= 2 || !clearOf(found, p)) continue;
-                Landmark grove = natural(Landmark.Kind.GROVE, p, nationAt, seed + 10 + s, 900f, ground, seaLevel);
-                grove.species = s;
-                grove.leaves = plants.leaves(s);
-                grove.trunk = plants.trunk(s);
-                grove.name = "The " + plants.name(s) + " Grove";
-                grove.caption = "Where the " + plants.name(s) + " grows thicker than anywhere else on the planet.";
-                found.add(grove);
-                groves++;
-            }
-        }
-        natural = List.copyOf(found);
-    }
 
     /**
      * Finds the natural landforms: the highest summit over the land (points spread evenly over
@@ -273,8 +242,12 @@ public final class Landmarks {
         Landmark peak = natural(Landmark.Kind.SUMMIT, summit, nationAt, seed + 1, 9000f, ground, seaLevel);
         float metres = (peak.groundAt(0f, 0f) - seaLevel) / M;
         peak.name = "Mount " + PlanetName.forSeed(seed * 101L + 7L).spelling;
-        peak.caption = String.format(java.util.Locale.ROOT, "The planet's highest summit, %,d m above the sea.", Math.round(metres));
+        peak.caption = String.format(java.util.Locale.ROOT, "The planet's highest summit, %,d m above the sea, a beacon burning on the cairn at its top.",
+                Math.round(metres));
         found.add(peak);
+        // (its beacon, raised on its very top)
+        peak.settle(ground, seaLevel);
+        if (cellOf != null) stand(peak);
 
         // The bay with its stacks, the spit and the fields of pinnacles, where the land was shaped for them
         int fields = 0;
@@ -320,13 +293,6 @@ public final class Landmarks {
         return lm;
     }
 
-    /** Whether a place is well away from every landmark found so far. */
-    private boolean clearOf(List<Landmark> found, SpherePosition place) {
-        for (Landmark lm : found) if (SphereMath.distance(lm.place(), place) < APART * 2) return false;
-        for (Landmark lm : built) if (SphereMath.distance(lm.place(), place) < APART) return false;
-        return true;
-    }
-
     /** Uphill from a place, in ever shorter steps, to the top of its hill. */
     private static SpherePosition climb(SpherePosition from, ToDoubleFunction<SpherePosition> ground) {
         SpherePosition here = from;
@@ -357,6 +323,7 @@ public final class Landmarks {
             case SPIRE -> "The " + word + " Spire";
             case STONES -> "The " + word + " Monoliths";
             case RUIN -> "The Ruins of " + word;
+            case STATUE -> "The Colossus of " + word;
             default -> word;
         };
     }
@@ -366,6 +333,7 @@ public final class Landmarks {
             case SPIRE -> String.format(java.util.Locale.ROOT, "%s, soaring %d m over the city, far above its tallest towers.", lm.looks, Math.round(lm.height / M));
             case STONES -> lm.looks + (lm.looks2.isEmpty() ? "" : ", " + lm.looks2) + ", raised by hands long forgotten.";
             case RUIN -> lm.looks + ", left by a people long gone.";
+            case STATUE -> String.format(java.util.Locale.ROOT, "%s, towering %d m over the land on its pedestal.", lm.looks, Math.round(lm.tallest() / M));
             default -> "";
         };
     }
@@ -384,27 +352,27 @@ public final class Landmarks {
         return list;
     }
 
-    /** The built ones drawn with a batch cell. */
+    /** The standing ones drawn with a batch cell. */
     public List<Landmark> inCell(long cell) {
         List<Integer> ids = byCell.get(cell);
         if (ids == null) return List.of();
         List<Landmark> list = new ArrayList<>(ids.size());
-        for (int i : ids) list.add(built.get(i));
+        for (int i : ids) list.add(standing.get(i));
         return list;
     }
 
-    /** A built one by its number (see part). */
+    /** A standing one by its number (see part). */
     public Landmark get(int i) {
-        return built.get(i);
+        return standing.get(i);
     }
 
     public int indexOf(Landmark lm) {
-        return built.indexOf(lm);
+        return standing.indexOf(lm);
     }
 
-    /** Whether a place is within clearance of a built one's ground. */
+    /** Whether a place is within clearance of a standing one's ground. */
     public boolean covers(SpherePosition place, float clearance) {
-        if (built.isEmpty()) return false;
+        if (standing.isEmpty()) return false;
         SpherePosition at = SphereMath.atAltitude(place, 0.0);
         for (Landmark lm : index.near(at, clearance)) {
             if (SphereMath.distance(lm.place(), at) <= lm.reach + clearance) return true;
@@ -414,7 +382,7 @@ public final class Landmarks {
 
     /** The height above the datum of a built one's floor (its steps and platform) at a place; NaN if none is there. */
     public float floorAt(SpherePosition place) {
-        if (built.isEmpty()) return Float.NaN;
+        if (standing.isEmpty()) return Float.NaN;
         SpherePosition at = SphereMath.atAltitude(place, 0.0);
         for (Landmark lm : index.near(at, 0.0)) {
             if (lm.floors.isEmpty()) continue;
@@ -423,26 +391,5 @@ public final class Landmarks {
             if (!Float.isNaN(floor)) return floor;
         }
         return Float.NaN;
-    }
-
-    /** Whether a plant's grove comes within reach of a place. */
-    public boolean groveNear(int species, SpherePosition place, double reach) {
-        for (Landmark lm : natural) {
-            if (lm.kind == Landmark.Kind.GROVE && lm.species == species && SphereMath.distance(lm.place(), SphereMath.atAltitude(place, 0.0)) < lm.reach + reach) return true;
-        }
-        return false;
-    }
-
-    /**
-     * How much a grove thickens its plant at a place: 1 in its middle, fading to 0 at its edge
-     * (and beyond, or for another plant).
-     */
-    public float groveBoost(int species, SpherePosition place) {
-        for (Landmark lm : natural) {
-            if (lm.kind != Landmark.Kind.GROVE || lm.species != species) continue;
-            double d = SphereMath.distance(lm.place(), SphereMath.atAltitude(place, 0.0));
-            if (d < lm.reach) return (float) (1.0 - d / lm.reach);
-        }
-        return 0f;
     }
 }

@@ -1,0 +1,12 @@
+#version 330 core
+
+// A reading's pin, its picture as it is whatever the light (it's there to be read), clear round its outline
+in vec2 uv;
+out vec4 fragColour;
+uniform sampler2D picture;
+
+void main() {
+    vec4 c = texture(picture, uv);
+    if (c.a < 0.02) discard;
+    fragColour = c;
+}

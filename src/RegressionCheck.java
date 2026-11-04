@@ -96,7 +96,7 @@ public final class RegressionCheck {
         put("world.basics", new Fingerprint().add(totalRegionWidth).add(sea).add(joinLand));
         RegionalGenerationManager climate = new RegionalGenerationManager(SEED, sea);
         climate.precalculateWaterDistanceField(worldNoise);
-        climate.setMoistureMap(climate.createWaterPreference(0f, 8000f));
+        climate.setMoistureMap(climate.createMoistureMap());
         worldNoise.rivers = Rivers.generate(worldNoise, sea, climate.rainfallMap::evaluate);
         climate.addRivers(worldNoise.rivers);
         worldNoise.climate = climate;

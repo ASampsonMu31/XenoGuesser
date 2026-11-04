@@ -559,7 +559,8 @@ public class BuildingStyle {
         for (Map.Entry<Integer, BuildingStyle> entry : styles.entrySet()) {
             int n = entry.getKey();
             float[] weights = new float[forms.size() + 1];
-            // (the traditional house about two in three, so it's what the map shows and what's seen)
+            // (the traditional house about two in three; each region builds just one of these forms,
+            // the nation's main design its traditional one: see InfrastructureManager.regionForm)
             weights[0] = 4.5f;
             float total = weights[0];
             for (int f = 0; f < forms.size(); f++) {

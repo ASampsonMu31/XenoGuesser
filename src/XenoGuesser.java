@@ -472,8 +472,9 @@ public class XenoGuesser extends JFrame {
       long riversStarted = System.currentTimeMillis();
       // (the climate first: streams rise more readily, and run fuller, where it's wet)
       RegionalGenerationManager climate = new RegionalGenerationManager(worldSeed, seaLevelHeight);
+      System.out.println("[PLANET] Rain and cloud: " + climate.rain.describe());
       climate.precalculateWaterDistanceField(worldNoise);
-      climate.setMoistureMap(climate.createWaterPreference(0f, 8000f));
+      climate.setMoistureMap(climate.createMoistureMap());
       worldNoise.rivers = Rivers.generate(worldNoise, seaLevelHeight, climate.rainfallMap::evaluate);
       // (and the moisture they bring to the land round them)
       climate.addRivers(worldNoise.rivers);

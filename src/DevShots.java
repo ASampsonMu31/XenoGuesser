@@ -292,6 +292,22 @@ final class DevShots extends GamePart {
     static final int FRAME_SEQUENCE = Dev.integer("xenoguesser.framesequence", 0);
 
     /** Developer aid: turns the view to face the partner, level (or pitchDegrees up), for checking how they're drawn. */
+    /**
+     * Developer aid: steps metres on along the way the view faces, onto the ground there, and
+     * (back) turns round to look at where it was, a little down.
+     */
+    public void stepOn(double metres, boolean back) {
+        SpherePosition here = game.camera.getSpherePosition();
+        float[] f = game.camera.getLocalForward();
+        SpherePosition on = SphereMath.moveToward(here, f[0], f[2], metres * PlayerBody.METRE);
+        on = SphereMath.atAltitude(on, Math.max(game.seaLevelHeight, game.groundHeightAt(on)) + game.playerEyeHeight);
+        if (back) {
+            game.camera.setSphereView(on, (float) Math.toDegrees(Math.atan2(f[2], f[0])) + 180f, -8f);
+        } else {
+            game.camera.setSpherePosition(on);
+        }
+    }
+
     /** Developer aid: faces the nearest herd (stepping in to about 90 away if it's further), a little down, and logs how far it was. */
     public void lookAtHerd() {
         SpherePosition here = game.camera.getSpherePosition();
@@ -333,6 +349,21 @@ final class DevShots extends GamePart {
     // Developer aid: a picture of the next frame as drawn (read back from the GL, so another
     // window over this one doesn't spoil it) is saved here, then this is cleared
     volatile java.io.File frameShot;
+    // Developer aid: the next frame saved here as shown, the HUD and all (see saveNextScreen)
+    volatile java.io.File screenShot;
+
+    /** Developer aid: saves the next frame as it's shown on screen, the HUD over it, to file. */
+    public void saveNextScreen(java.io.File file) {
+        screenShot = file;
+    }
+
+    /** Once the HUD's drawn: the frame saved, if one's been asked for. */
+    void writeScreenShot(GL3 gl) {
+        java.io.File file = screenShot;
+        if (file == null) return;
+        screenShot = null;
+        saveFrameTo(gl, file);
+    }
 
     public void saveNextFrame(java.io.File file) {
         frameShot = file;

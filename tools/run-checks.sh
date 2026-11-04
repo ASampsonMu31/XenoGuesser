@@ -2,7 +2,7 @@
 # Compiles the game and runs its self-checks (see CLAUDE.md, "Checking a change"):
 #   SphereToolkitCheck  the sphere maths, frames, cells and collision            (seconds)
 #   PlanningCheck       world planning: nations, towns, roads, houses, vehicles  (~30 s;
-#                       4 checks were already failing before the refactor: see CLAUDE.md)
+#                       7 known failures: see CLAUDE.md)
 #   RegressionCheck     fingerprints of everything seed 123's world is made of,  (~2 min, ~10 GB)
 #                       against checks/regression-fingerprints.txt
 # Usage (Git Bash, from anywhere):  tools/run-checks.sh [sphere|planning|regression|write]
@@ -24,7 +24,7 @@ if [ "$what" = all ] || [ "$what" = sphere ]; then
   java -cp "$CP" SphereToolkitCheck || status=1
 fi
 if [ "$what" = all ] || [ "$what" = planning ]; then
-  echo "== PlanningCheck (4 known failures)"
+  echo "== PlanningCheck (7 known failures)"
   java -Xmx8g -cp "$CP" PlanningCheck | grep -E "FAILED|checks,"
 fi
 if [ "$what" = all ] || [ "$what" = regression ]; then

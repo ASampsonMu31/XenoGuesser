@@ -1117,10 +1117,42 @@ public class MapPanel extends JPanel {
         repaint();
     }
 
-    public void setLegend(float[][] colours, String[] labels) {
+    /** Where a value comes on the key's colours (0 to 1) and the value itself, with its units, for the pointer under the key. */
+    record LegendReading(float share, String label) {
+    }
+
+    // What the key reads at a direction (for the guess's marker), or null for an overlay with no key
+    private volatile java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> legendReader;
+
+    // The key's last reading and the marker and reader it was taken for (the reading's only taken again when either changes)
+    private LegendReading legendReading;
+    private GeodesicChunkGrid.Direction legendReadingPin;
+    private java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> legendReadingReader;
+
+    /** The key shown under the overlay's name, and how to read it under the guess's marker (null for no pointer). */
+    public void setLegend(float[][] colours, String[] labels, java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> reader) {
         this.legendColours = colours;
         this.legendLabels = labels;
+        this.legendReader = reader;
         repaint();
+    }
+
+    /**
+     * What the key reads under the guess's marker, or null with no marker down, no way to read
+     * it, or the marker out at sea (where the heatmaps aren't drawn: see composeChunkHeatmap).
+     */
+    private LegendReading legendReadingAtPin() {
+        java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> reader = legendReader;
+        GeodesicChunkGrid.Direction at = hasPin ? pin : null;
+        if (reader == null || at == null || mapImage == null) return null;
+        int px = Math.max(0, Math.min(mapImage.getWidth() - 1, (int) pinX)), py = Math.max(0, Math.min(mapImage.getHeight() - 1, (int) pinY));
+        if (mapImage.getRGB(px, py) == oceanRGB) return null;
+        if (at != legendReadingPin || reader != legendReadingReader) {
+            legendReading = reader.apply(at);
+            legendReadingPin = at;
+            legendReadingReader = reader;
+        }
+        return legendReading;
     }
 
     public void setOverlay(BufferedImage composed, String name, boolean flags) {
@@ -1428,6 +1460,29 @@ public class MapPanel extends JPanel {
         g2d.drawString(labels[0], barX, textY);
         g2d.drawString(labels[1], barX + (barW - fm.stringWidth(labels[1])) / 2, textY);
         g2d.drawString(labels[2], barX + barW - fm.stringWidth(labels[2]), textY);
+        // The value under the guess's marker: a tick across the bar where it comes, and a
+        // pointer under the key up to it with the value written beneath
+        LegendReading reading = legendReadingAtPin();
+        if (reading == null) return;
+        int at = barX + Math.round(Math.max(0f, Math.min(1f, reading.share())) * (barW - 1));
+        g2d.setColor(new Color(25, 25, 27, 230));
+        g2d.fillRect(at - 2, barY - 2, 5, barH + 5);
+        g2d.setColor(Color.WHITE);
+        g2d.fillRect(at - 1, barY - 1, 3, barH + 3);
+        g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
+        FontMetrics bold = g2d.getFontMetrics();
+        int tipY = top + boxH + 2, arrowH = 7;
+        int valueW = bold.stringWidth(reading.label()) + 12, valueH = bold.getAscent() + 6;
+        // (the value kept under the key, its pointer still at the value's place)
+        int valueX = Math.max(boxX, Math.min(boxX + boxW - valueW, at - valueW / 2)), valueY = tipY + arrowH;
+        Polygon arrow = new Polygon(new int[] { at, at - 6, at + 6 }, new int[] { tipY, tipY + arrowH, tipY + arrowH }, 3);
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillPolygon(arrow);
+        g2d.fillRoundRect(valueX, valueY, valueW, valueH, 8, 8);
+        g2d.setColor(new Color(255, 255, 255, 70));
+        g2d.drawRoundRect(valueX, valueY, valueW, valueH, 8, 8);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(reading.label(), valueX + 6, valueY + 3 + bold.getAscent() - 1);
     }
 
     public BufferedImage composeOverlay(BufferedImage heatmap) {

@@ -13,24 +13,24 @@ import com.xenoguesser.math.Vector3;
 /**
  * One of the world's famous landmarks (see Landmarks): built ones that stand out from
  * everything round them (a great spire many times the height of the tallest towers, a circle
- * of standing stones, a grand pillared ruin dressed in its region's ornaments) and natural ones
- * (the planet's highest peak, its most sheltered bay with stacks of rock standing in it, a
- * ribbon of sand with the sea either side, fields of steep pointed hills, the grove where a
- * plant grows thicker than anywhere else: the land shaped for all but the peak and the grove,
- * see Landforms).
+ * of standing stones, a grand pillared ruin dressed in its region's ornaments, a colossal
+ * statue on its pedestal) and natural ones (the planet's highest peak, its most sheltered bay
+ * with stacks of rock standing in it, a ribbon of sand with the sea either side, fields of
+ * steep pointed hills: the land shaped for all but the peak, see Landforms). The peak has a
+ * beacon raised on a cairn at its very top, so it can't be mistaken for any lesser one. Each
+ * is plainly one of a kind when stood before it, so a player can be sure it's the one on the map.
  * <p>
  * A built one is laid out in a frame of its own (local +z its front, y its height above its
  * base) from its seed, as faces of a few colours (see SLOTS), drawn both in the world (see
  * InfrastructureManager); with its floors (steps that can be walked up) and what's solid. A
- * natural one is only somewhere. Its picture for the map is a photograph of it taken in the
+ * natural one is only somewhere (but for the peak's beacon, built like the built ones). Its picture for the map is a photograph of it taken in the
  * world itself (see LandmarkPhotos); render draws one without the world, should that fail.
  */
 public final class Landmark {
 
     public enum Kind {
-        SPIRE("Great spire", true), STONES("Ancient monoliths", true), RUIN("Ancient ruin", true),
-        SUMMIT("Highest peak", false), BAY("Sheltered bay", false), SPIT("Sand spit", false), GROVE("Famous grove", false),
-        PINNACLES("Stone pinnacles", false);
+        SPIRE("Great spire", true), STONES("Ancient monoliths", true), RUIN("Ancient ruin", true), STATUE("Colossal statue", true),
+        SUMMIT("Highest peak", false), BAY("Sheltered bay", false), SPIT("Sand spit", false), PINNACLES("Stone pinnacles", false);
 
         public final String label;
         public final boolean built;
@@ -65,17 +65,18 @@ public final class Landmark {
     final float[] shine = new float[SLOTS];
     // The style it's built in
     final int sides;
-    // Which of its kind's forms it takes (see buildSpire, buildStones, buildRuin)
+    // Which of its kind's forms it takes (see buildSpire, buildStones, buildRuin, buildStatue)
     final int variant;
     final ArchitectureStyle.Crest crest;
     final float ornateness;
     // What it looks like, in words (for its description)
     String looks = "";
-    // Its size: a spire's height, a stone circle's radius, a ruin's half width and half depth
+    // Its size: a spire's height, a stone circle's radius, a ruin's half width and half depth, a
+    // statue's figure's height and its pedestal's radius
     final float height, radius, halfWidth, halfDepth;
-    // A grove's species and its leaves' and trunk's colours; how far round a natural one's picture shows
-    public int species = -1;
-    Vector3 leaves, trunk;
+    // A statue's pedestal's top above its base (the figure stands on it)
+    float pedestal;
+    // How far round a natural one's picture shows
     float span;
     // How many hills or stacks a natural one has, and the way it runs or is best seen (a spit's
     // out from its root, a field's by the sea from the land towards it), as a heading (NaN for none)
@@ -142,6 +143,16 @@ public final class Landmark {
                 radius = 0f;
                 reach = (float) Math.hypot(halfWidth, halfDepth + 12f * M) + 6f * M;
             }
+            case STATUE -> {
+                variant = rand.nextInt(4);
+                sides = 4 + rand.nextInt(5);
+                height = (24f + rand.nextFloat() * 12f) * M;
+                pedestal = 2 * STEP + (4.5f + rand.nextFloat() * 3f) * M;
+                // (the pedestal wide enough for the figure's feet, or its throne)
+                radius = height * 0.27f + 1f * M;
+                halfWidth = halfDepth = radius + 5f * M;
+                reach = halfWidth + 3f * M;
+            }
             default -> throw new IllegalArgumentException(kind + " is not built");
         }
         crest = style != null ? style.crest : ArchitectureStyle.Crest.ORBS;
@@ -164,6 +175,21 @@ public final class Landmark {
         shine[ORN] = kind == Kind.STONES ? 24f : ornamentShine;
         shine[GLASS] = 64f;
         shine[DARK] = 2f;
+        if (kind == Kind.STATUE) {
+            // The figure: of green bronze, gilded, pale marble or dark polished stone, on a
+            // pedestal of the nation's own stone
+            material = rand.nextInt(4);
+            colours[STONE2] = main;
+            colours[STONE] = switch (material) {
+                case BRONZE -> new Vector3(0.28f, 0.5f, 0.43f);
+                case GILT -> new Vector3(0.86f, 0.66f, 0.24f);
+                case MARBLE -> new Vector3(0.88f, 0.86f, 0.82f);
+                default -> new Vector3(0.12f, 0.12f, 0.14f);
+            };
+            shine[STONE] = material == GILT ? 48f : material == MARBLE ? 8f : 24f;
+            // (its crown, staff and the like stand out from it)
+            if (material == GILT) colours[ORN] = new Vector3(glow[0], glow[1], glow[2]);
+        }
     }
 
     /** A natural one, at a place on the datum. */
@@ -177,8 +203,24 @@ public final class Landmark {
         this.variant = 0;
         this.crest = ArchitectureStyle.Crest.NONE;
         this.ornateness = 0f;
-        this.height = this.radius = this.halfWidth = this.halfDepth = 0f;
-        this.reach = kind == Kind.GROVE ? span * 0.5f : 0f;
+        this.radius = this.halfWidth = this.halfDepth = 0f;
+        // (the peak's beacon: its height, and the ground its cairn covers)
+        this.height = kind == Kind.SUMMIT ? 19f * M : 0f;
+        this.reach = kind == Kind.SUMMIT ? 6f * M : 0f;
+        if (kind == Kind.SUMMIT) {
+            // Grey rock for the cairn, black iron for the tower, and its fire some bright colour of its own
+            Random rand = new Random(seed);
+            colours[STONE] = new Vector3(0.52f, 0.5f, 0.47f);
+            colours[STONE2] = new Vector3(0.38f, 0.36f, 0.34f);
+            colours[FOUND] = colours[STONE2];
+            float[] fire = WorldPalette.hsv(rand.nextFloat(), 0.75f, 1f);
+            colours[ORN] = new Vector3(fire[0], fire[1], fire[2]);
+            colours[GLASS] = colours[ORN];
+            colours[DARK] = new Vector3(0.09f, 0.085f, 0.08f);
+            shine[STONE] = shine[STONE2] = shine[FOUND] = 3f;
+            shine[ORN] = shine[GLASS] = 12f;
+            shine[DARK] = 30f;
+        }
     }
 
     private static Vector3 mix(Vector3 a, Vector3 b, float t) {
@@ -204,7 +246,7 @@ public final class Landmark {
                     // (the platform's rectangle, with its obelisks in front)
                     points.add(new float[] { (float) Math.sin(a) * (halfWidth + 2f * M) * share, (float) Math.cos(a) * (halfDepth + 10f * M) * share });
                 } else {
-                    float r = kind == Kind.SPIRE ? halfWidth : reach;
+                    float r = kind == Kind.SPIRE || kind == Kind.STATUE ? halfWidth : kind == Kind.SUMMIT ? 3.5f * M : reach;
                     points.add(new float[] { (float) Math.sin(a) * r * share, (float) Math.cos(a) * r * share });
                 }
             }
@@ -231,7 +273,7 @@ public final class Landmark {
             low = Math.min(low, h);
             high = Math.max(high, h);
         }
-        base = kind == Kind.STONES ? groundAt(0f, 0f) : high + 0.1f * M;
+        base = kind == Kind.STONES ? groundAt(0f, 0f) : kind == Kind.SUMMIT ? peakFloor() : high + 0.1f * M;
         drop = base - low + 1.5f * M;
         Geometry g = new Geometry();
         Random rand = new Random(seed * 31L + 5L);
@@ -239,10 +281,26 @@ public final class Landmark {
             case SPIRE -> buildSpire(g, rand);
             case STONES -> buildStones(g, rand);
             case RUIN -> buildRuin(g, rand);
+            case STATUE -> buildStatue(g, rand);
+            case SUMMIT -> buildBeacon(g, rand);
             default -> {
             }
         }
         geometry = g;
+    }
+
+    /**
+     * Where the peak's cairn stands: level with the ground a little way down from the very top
+     * (the summit's often a needle, falling steeply all round), so its rocks are heaped round
+     * the needle's tip rather than perched on it.
+     */
+    private float peakFloor() {
+        float sum = 0f;
+        for (int k = 0; k < 16; k++) {
+            double a = Math.PI * k / 8;
+            sum += groundAt((float) Math.sin(a) * 3.5f * M, (float) Math.cos(a) * 3.5f * M);
+        }
+        return Math.min(groundAt(0f, 0f), sum / 16f);
     }
 
     /** The height of its floor above the datum at a local point, or NaN off its floors. */
@@ -261,6 +319,8 @@ public final class Landmark {
             case SPIRE -> height;
             case STONES -> 8f * M;
             case RUIN -> height + 6f * M;
+            case STATUE -> pedestal + height * (variant == SEATED ? 1f : 1.2f);
+            case SUMMIT -> height;
             default -> 0f;
         };
     }
@@ -951,6 +1011,209 @@ public final class Landmark {
         if (tallest > 0f) walls.add(new float[] { x0, z0, x1, z1, 0.8f * M, floor + tallest });
     }
 
+    // ------------------------------------------------------------------ the colossal statue
+
+    // How the figure stands: leaning on a great staff, holding a glowing orb aloft, seated on
+    // a throne, or with its arms spread wide
+    static final int STAFF = 0, ALOFT = 1, SEATED = 2, SPREAD = 3;
+    // What it's made of (see the constructor)
+    private static final int BRONZE = 0, GILT = 1, MARBLE = 2, BASALT = 3;
+    int material;
+
+    /**
+     * A figure many times a house's height, roughly one of the planet's people (an upright body,
+     * a head crowned, horned, hooded or haloed), on a tall pedestal over a broad stepped
+     * platform with steps up its front.
+     */
+    private void buildStatue(Geometry g, Random rand) {
+        float H = height;
+        int n = sides, round = n * 2;
+        float turn = (float) Math.PI / n;
+        // The platform: foundations, two broad steps, and a flight down to the ground in front
+        float plinth = halfWidth - 1f * M;
+        g.tube(FOUND, 0f, -drop, 0f, 0f, plinth + 1.2f * M, plinth + 1.2f * M, round, turn, false, true);
+        for (int k = 0; k < 2; k++) {
+            float r = plinth - k * 1.8f * M;
+            g.tube(STONE2, 0f, k * STEP, 0f, (k + 1) * STEP, r, r, round, turn, false, true);
+            floors.add(new float[] { 0f, 0f, r * (float) Math.cos(Math.PI / round), -1f, (k + 1) * STEP });
+        }
+        frontSteps(g, plinth * (float) Math.cos(Math.PI / round), plinth * 0.4f);
+        // The pedestal: a plain shaft between a broad foot and a cornice of the ornament
+        float y0 = 2 * STEP, top = pedestal;
+        g.tube(STONE2, 0f, y0, 0f, y0 + 1f * M, radius * 1.12f, radius * 1.05f, n, turn, false, true);
+        g.tube(STONE2, 0f, y0 + 1f * M, 0f, top - 0.8f * M, radius * 0.96f, radius * 0.92f, n, turn, false, false);
+        g.tube(ORN, 0f, top - 0.8f * M, 0f, top - 0.5f * M, radius * 1.02f, radius * 1.02f, n, turn, true, true);
+        g.tube(STONE2, 0f, top - 0.5f * M, 0f, top, radius * 1.08f, radius * 1.08f, n, turn, true, true);
+        circles.add(new float[] { 0f, 0f, radius * 1.12f });
+
+        // The body: slender or stocky, broad shouldered or not
+        float girth = 0.85f + rand.nextFloat() * 0.35f, shoulders = (0.17f + rand.nextFloat() * 0.05f) * H;
+        boolean robed = variant == SEATED || rand.nextFloat() < 0.5f;
+        float hip = top + (variant == SEATED ? 0.3f : 0.47f) * H;
+        float neck = hip + 0.32f * H;
+        if (variant == SEATED) {
+            // (on a throne: its legs bent forward over the seat, its feet on the pedestal)
+            float back = -0.13f * H;
+            g.box(STONE2, 0f, (top + hip) * 0.5f, back * 0.3f, shoulders * 1.25f, (hip - top) * 0.5f, 0.15f * H, 0f, 0f, 0f);
+            g.box(STONE2, 0f, hip + 0.22f * H, back - 0.04f * H, shoulders * 1.25f, 0.24f * H, 0.035f * H, 0f, 0f, 0f);
+            for (float side : new float[] { -1f, 1f }) {
+                float x = side * 0.1f * H;
+                float[][] leg = { { x, hip, 0f }, { x, hip + 0.02f * H, 0.22f * H }, { x * 1.1f, top, 0.25f * H } };
+                g.curve(STONE, leg, 0.075f * H * girth, 0.05f * H * girth, 8);
+                g.box(STONE, x * 1.1f, top + 0.02f * H, 0.28f * H, 0.045f * H, 0.02f * H, 0.07f * H, 0f, 0f, 0f);
+            }
+        } else if (robed) {
+            // (a robe to its feet, flaring out over them)
+            g.tube(STONE, 0f, top, 0f, 0f, hip + 0.06f * H, 0f, 0.21f * H * girth, 0.13f * H * girth, 10, 0f, true, false);
+        } else {
+            for (float side : new float[] { -1f, 1f }) {
+                float x = side * 0.1f * H;
+                float[][] leg = { { x, hip, 0f }, { x * 1.1f, hip - 0.24f * H, 0.01f * H }, { x * 1.35f, top + 0.03f * H, 0f } };
+                g.curve(STONE, leg, 0.07f * H * girth, 0.045f * H * girth, 8);
+                g.box(STONE, x * 1.35f, top + 0.02f * H, 0.03f * H, 0.045f * H, 0.02f * H, 0.08f * H, 0f, 0f, 0f);
+            }
+        }
+        g.tube(STONE, 0f, hip - 0.03f * H, 0f, 0f, neck - 0.03f * H, 0f, 0.12f * H * girth, shoulders * 0.85f, 10, 0f, true, true);
+        g.sphere(STONE, -shoulders * 0.82f, neck - 0.04f * H, 0f, 0.055f * H * girth, 4);
+        g.sphere(STONE, shoulders * 0.82f, neck - 0.04f * H, 0f, 0.055f * H * girth, 4);
+        g.tube(STONE, 0f, neck - 0.04f * H, 0f, 0f, neck + 0.05f * H, 0f, 0.045f * H, 0.04f * H, 8, 0f, false, false);
+
+        // The arms, each from its shoulder by its elbow to its hand
+        float arm = 0.045f * H * girth, wrist = 0.032f * H * girth;
+        float sy = neck - 0.04f * H;
+        float[] hand = null;
+        for (float side : new float[] { -1f, 1f }) {
+            float sx = side * shoulders * 0.82f;
+            float[] elbow, at;
+            switch (variant) {
+                case STAFF -> {
+                    // (one hand on the staff, the other at its side)
+                    elbow = side > 0 ? new float[] { sx + 0.05f * H, sy - 0.15f * H, 0.06f * H } : new float[] { sx - 0.02f * H, sy - 0.16f * H, 0f };
+                    at = side > 0 ? new float[] { sx + 0.07f * H, sy - 0.22f * H, 0.16f * H } : new float[] { sx - 0.01f * H, sy - 0.32f * H, 0.03f * H };
+                }
+                case ALOFT -> {
+                    elbow = side > 0 ? new float[] { sx + 0.06f * H, sy + 0.15f * H, 0.02f * H } : new float[] { sx - 0.02f * H, sy - 0.16f * H, 0.02f * H };
+                    at = side > 0 ? new float[] { sx + 0.04f * H, sy + 0.31f * H, 0.03f * H } : new float[] { sx - 0.01f * H, sy - 0.3f * H, 0.06f * H };
+                }
+                case SEATED -> {
+                    // (its hands resting on its knees)
+                    elbow = new float[] { sx * 1.05f, sy - 0.15f * H, 0.02f * H };
+                    at = new float[] { side * 0.11f * H, hip + 0.05f * H, 0.19f * H };
+                }
+                default -> {
+                    elbow = new float[] { sx + side * 0.15f * H, sy + 0.02f * H, 0.03f * H };
+                    at = new float[] { sx + side * 0.3f * H, sy + 0.06f * H, 0.08f * H };
+                }
+            }
+            g.curve(STONE, new float[][] { { sx, sy, 0f }, elbow, at }, arm, wrist, 7);
+            g.sphere(STONE, at[0], at[1], at[2], wrist * 1.4f, 3);
+            if (side > 0) hand = at;
+        }
+        // What it holds
+        String holds = switch (variant) {
+            case STAFF -> {
+                g.tube(ORN, hand[0], top, hand[2], hand[0], hand[1] + 0.32f * H, hand[2], wrist * 0.55f, wrist * 0.45f, 6, 0f, false, true);
+                g.sphere(ORN, hand[0], hand[1] + 0.36f * H, hand[2], wrist * 1.6f, 4);
+                yield "leaning on a great staff";
+            }
+            case ALOFT -> {
+                g.sphere(ORN, hand[0], hand[1] + 0.07f * H, hand[2], 0.065f * H, 5);
+                yield "holding a glowing orb aloft";
+            }
+            case SEATED -> "enthroned";
+            default -> "its arms spread wide over the land";
+        };
+
+        // The head, its jaw jutting forward, and what crowns it
+        float head = 0.075f * H;
+        float hy = neck + 0.05f * H + head * 0.9f, hz = 0.01f * H;
+        g.sphere(STONE, 0f, hy, hz, head, 5);
+        g.box(STONE, 0f, hy - head * 0.35f, hz + head * 0.55f, head * 0.55f, head * 0.45f, head * 0.5f, 0f, 0f, 0f);
+        String crowned = switch (rand.nextInt(4)) {
+            case 0 -> {
+                for (float side : new float[] { -1f, 1f }) {
+                    float[][] horn = { { side * head * 0.6f, hy + head * 0.5f, hz }, { side * head * 1.6f, hy + head * 1.3f, hz - head * 0.3f },
+                            { side * head * 1.3f, hy + head * 2.4f, hz - head * 0.2f } };
+                    g.curve(ORN, horn, head * 0.28f, head * 0.06f, 6);
+                }
+                yield "horned";
+            }
+            case 1 -> {
+                g.tube(ORN, 0f, hy + head * 0.6f, hz, hy + head * 1f, head * 0.85f, head * 0.95f, 10, 0f, false, false);
+                for (int k = 0; k < 7; k++) {
+                    float a = (float) (Math.PI * 2 * k / 7);
+                    float x = (float) Math.sin(a) * head * 0.9f, z = (float) Math.cos(a) * head * 0.9f;
+                    g.tube(ORN, x, hy + head * 0.95f, hz + z, x * 1.25f, hy + head * 1.9f, hz + z * 1.25f, head * 0.14f, 0f, 4, 0f, false, false);
+                }
+                yield "crowned";
+            }
+            case 2 -> {
+                g.tube(STONE, 0f, hy - head * 0.6f, hz - head * 0.25f, 0f, hy + head * 1.9f, hz - head * 0.4f, head * 1.25f, 0f, 9, 0f, false, false);
+                yield "hooded";
+            }
+            default -> {
+                g.ring(ORN, 0f, hy + head * 0.3f, hz - head * 1.4f, 0f, 0f, 1f, head * 1.9f, head * 0.16f, 20);
+                yield "haloed";
+            }
+        };
+        String made = switch (material) {
+            case BRONZE -> "green bronze";
+            case GILT -> "gold";
+            case MARBLE -> "white marble";
+            default -> "black stone";
+        };
+        looks = "A " + crowned + (robed && variant != SEATED ? ", robed" : "") + " colossus of " + made + ", " + holds;
+    }
+
+    // ------------------------------------------------------------------ the peak's beacon
+
+    /**
+     * A beacon on the highest peak: a great cairn of piled rocks, and on it an iron tower
+     * holding a brazier aloft, its fire a colour of its own, seen from far off down the slopes.
+     */
+    private void buildBeacon(Geometry g, Random rand) {
+        // (its footings no wider than its lowest rocks, and boulders tumbled down the slopes round it)
+        g.tube(FOUND, 0f, -drop, 0f, 0f, 3.6f * M, 3.6f * M, 9, 0f, false, true);
+        for (int i = 0; i < 14; i++) {
+            float a = rand.nextFloat() * 6.3f, d = (4.2f + rand.nextFloat() * 4.5f) * M, size = (0.6f + rand.nextFloat() * 0.7f) * M;
+            float x = (float) Math.sin(a) * d, z = (float) Math.cos(a) * d;
+            g.blob(i % 2 == 0 ? STONE : STONE2, rand, x, groundAt(x, z) - base + size * 0.3f, z, size, size * 0.7f, size, 3, 0.3f);
+        }
+        // The cairn: rings of rocks, each narrower and higher, about a core of rubble
+        g.tube(STONE2, 0f, 0f, 0f, 5.2f * M, 3.6f * M, 0.7f * M, 9, 0f, false, true);
+        float[][] layers = { { 0.7f, 3.2f, 9, 1.3f }, { 1.9f, 2.4f, 7, 1.1f }, { 3.0f, 1.6f, 6, 0.95f }, { 4.1f, 0.8f, 4, 0.8f } };
+        for (float[] layer : layers) {
+            float offset = rand.nextFloat() * 6.3f;
+            for (int i = 0; i < (int) layer[2]; i++) {
+                float a = offset + (float) (Math.PI * 2 * i / layer[2]), size = layer[3] * (0.8f + rand.nextFloat() * 0.4f) * M;
+                g.blob(i % 3 == 0 ? STONE2 : STONE, rand, (float) Math.sin(a) * layer[1] * M, layer[0] * M, (float) Math.cos(a) * layer[1] * M,
+                        size, size * 0.75f, size, 4, 0.3f);
+            }
+        }
+        g.blob(STONE, rand, 0f, 5.1f * M, 0f, 1f * M, 0.8f * M, 1f * M, 4, 0.25f);
+        circles.add(new float[] { 0f, 0f, 3.8f * M });
+        // The tower: four iron legs leaning in, hooped as they rise
+        float foot = 4.4f * M, top = 14.5f * M;
+        for (int k = 0; k < 4; k++) {
+            float a = (float) (Math.PI * (k + 0.5f) / 2);
+            float sx = (float) Math.sin(a), sz = (float) Math.cos(a);
+            g.tube(DARK, sx * 1.5f * M, foot - 0.6f * M, sz * 1.5f * M, sx * 0.45f * M, top, sz * 0.45f * M, 0.16f * M, 0.12f * M, 5, 0f, false, true);
+        }
+        for (float t : new float[] { 0.25f, 0.55f, 0.85f }) {
+            float y = foot + (top - foot) * t, r = (1.5f + (0.45f - 1.5f) * (y - foot + 0.6f * M) / (top - foot + 0.6f * M)) * M;
+            g.hoop(DARK, 0f, y, 0f, r, 0.1f * M, 12);
+        }
+        // The brazier, and its fire leaping out of it
+        g.tube(DARK, 0f, top, 0f, top + 1.4f * M, 0.6f * M, 1.6f * M, 10, 0f, true, false);
+        g.blob(ORN, rand, 0f, top + 1.6f * M, 0f, 1.3f * M, 0.9f * M, 1.3f * M, 4, 0.2f);
+        for (int k = 0; k < 5; k++) {
+            float a = rand.nextFloat() * 6.3f, d = k == 0 ? 0f : 0.7f * M;
+            float x = (float) Math.sin(a) * d, z = (float) Math.cos(a) * d;
+            g.tube(ORN, x, top + 1.2f * M, z, x * 1.3f, top + (k == 0 ? 4.5f : 2.6f + rand.nextFloat()) * M, z * 1.3f,
+                    (k == 0 ? 0.9f : 0.5f) * M, 0f, 6, 0f, false, false);
+        }
+    }
+
     // ------------------------------------------------------------------ its picture
 
     // The light in the pictures: from the front right, a little above
@@ -965,18 +1228,19 @@ public final class Landmark {
         SoftwareRenderer r = new SoftwareRenderer(widthPx, heightPx, 3);
         float aspect = widthPx / (float) heightPx;
         if (kind.built) {
-            // Seen from the front, off to one side, from a little way up
-            float extent = kind == Kind.SPIRE ? height * 0.56f : reach * (kind == Kind.STONES ? 0.62f : 0.7f);
-            float elevation = (float) Math.toRadians(kind == Kind.SPIRE ? 6 : kind == Kind.STONES ? 24 : 20);
+            // Seen from the front, off to one side, from a little way up (a tall one from low down)
+            boolean tall = tallPicture();
+            float extent = tall ? tallest() * 0.56f : reach * (kind == Kind.STONES ? 0.62f : 0.7f);
+            float elevation = (float) Math.toRadians(tall ? 6 : kind == Kind.STONES ? 24 : 20);
             float fov = 32f;
-            float fit = kind == Kind.SPIRE ? extent : extent / Math.min(1f, aspect * 0.8f);
+            float fit = tall ? extent : extent / Math.min(1f, aspect * 0.8f);
             float distance = fit / (float) Math.tan(Math.toRadians(fov * 0.5f)) * 1.05f;
-            float azimuth = (float) Math.toRadians(kind == Kind.SPIRE ? 28 : 34);
-            float[] target = { 0f, kind == Kind.SPIRE ? height * 0.48f : tallest() * 0.25f, 0f };
+            float azimuth = (float) Math.toRadians(tall ? 28 : 34);
+            float[] target = { 0f, tall ? tallest() * 0.48f : tallest() * 0.25f, 0f };
             float[] eye = { target[0] + (float) (Math.sin(azimuth) * Math.cos(elevation)) * distance,
                     target[1] + (float) Math.sin(elevation) * distance, target[2] + (float) (Math.cos(azimuth) * Math.cos(elevation)) * distance };
             r.lookAt(eye, target, fov);
-            land(r, kind == Kind.SPIRE ? height * 1.6f : reach * 3f, 40, 0f, 1f, null);
+            land(r, tallPicture() ? tallest() * 1.6f : reach * 3f, 40, 0f, 1f);
             for (int i = 0; i < geometry.faces.size(); i++) {
                 float[][] corners = geometry.faces.get(i);
                 float[] n = geometry.normals.get(i);
@@ -996,16 +1260,15 @@ public final class Landmark {
                 case SPIT -> 40;
                 default -> 22;
             });
-            float rise = kind == Kind.SUMMIT ? 1.35f : kind == Kind.GROVE ? 1f : 2.2f;
+            float rise = kind == Kind.SUMMIT ? 1.35f : 2.2f;
             float peak = kind == Kind.SUMMIT ? (groundAt(0f, 0f) - seaLevel) * rise : 0f;
             float[] target = { 0f, kind == Kind.SUMMIT ? peak * 0.45f : 0f, kind == Kind.SUMMIT ? 0f : -span * 0.05f };
-            float distance = span * (kind == Kind.GROVE ? 0.75f : 0.95f);
+            float distance = span * 0.95f;
             float azimuth = (float) Math.toRadians(20);
             float[] eye = { (float) (Math.sin(azimuth) * Math.cos(elevation)) * distance, target[1] + (float) Math.sin(elevation) * distance,
                     (float) (Math.cos(azimuth) * Math.cos(elevation)) * distance };
             r.lookAt(eye, target, 40f);
-            base = seaLevel;
-            land(r, span * 1.6f, 72, seaLevel, rise, kind == Kind.GROVE ? new Random(seed) : null);
+            land(r, span * 1.6f, 72, seaLevel, rise);
         }
         BufferedImage drawn = r.image();
         // On a sky, in a frame
@@ -1019,9 +1282,9 @@ public final class Landmark {
         return framed(out);
     }
 
-    /** Whether its picture is tall (a spire's) rather than wide. */
+    /** Whether its picture is tall (a spire's or a statue's) rather than wide. */
     boolean tallPicture() {
-        return kind == Kind.SPIRE;
+        return kind == Kind.SPIRE || kind == Kind.STATUE;
     }
 
     /** A picture's width for its height, by its shape. */
@@ -1044,9 +1307,11 @@ public final class Landmark {
     /**
      * The land round it into a picture: a grid of the ground's heights (above base, raised by
      * rise) span across, coloured as it is (sand by the sea, grass, rock on the steeps, snow up
-     * high), the sea level across it; and for a grove, its trees.
+     * high), the sea level across it.
      */
-    private void land(SoftwareRenderer r, float across, int cells, float sea, float rise, Random trees) {
+    private void land(SoftwareRenderer r, float across, int cells, float sea, float rise) {
+        // (a natural one's land from the sea up, whatever's built on it)
+        float base = kind.built ? this.base : seaLevel;
         float[][] h = new float[cells + 1][cells + 1];
         for (int i = 0; i <= cells; i++) {
             for (int j = 0; j <= cells; j++) {
@@ -1081,29 +1346,6 @@ public final class Landmark {
         float far = across * 60f;
         flat(r, far, edgeLow - 0.5f, look.distance(), 2f);
         if (seaY > minOf(h) - 1f || seaY > edgeLow) flat(r, far, seaY, look.sea(), 32f);
-        if (trees == null) return;
-        // The grove: its trees standing thick all about
-        Geometry g = new Geometry();
-        for (int k = 0; k < 140; k++) {
-            float x = (trees.nextFloat() - 0.5f) * across * 0.8f, z = (trees.nextFloat() - 0.5f) * across * 0.8f;
-            float y = (groundAt(x, z) - base) * rise;
-            if (y <= seaY + 0.5f) continue;
-            float tall = across * (0.035f + trees.nextFloat() * 0.025f);
-            g.tube(STONE2, x, y, z, x, y + tall * 0.45f, z, tall * 0.06f, tall * 0.045f, 5, 0f, false, false);
-            if (trees.nextBoolean()) g.sphere(STONE, x, y + tall * 0.68f, z, tall * 0.3f, 4);
-            else g.tube(STONE, x, y + tall * 0.25f, z, x, y + tall * 1.1f, z, tall * 0.3f, 0f, 7, 0f, true, false);
-        }
-        Vector3[] grove = { leaves != null ? leaves : new Vector3(0.25f, 0.45f, 0.2f), trunk != null ? trunk : new Vector3(0.35f, 0.25f, 0.15f) };
-        for (int i = 0; i < g.faces.size(); i++) {
-            float[][] corners = g.faces.get(i);
-            float[] n = g.normals.get(i);
-            float[] lit = shade(grove[g.slots.get(i)], n, 4f);
-            SoftwareRenderer.SurfaceShader shader = (p, normal, u, v) -> lit;
-            float[] a = SoftwareRenderer.vertex(corners[0], n, 0, 0);
-            for (int k = 1; k < corners.length - 1; k++) {
-                r.triangle(a, SoftwareRenderer.vertex(corners[k], n, 0, 0), SoftwareRenderer.vertex(corners[k + 1], n, 0, 0), shader);
-            }
-        }
     }
 
     /** A level square across the picture, its middle under the landmark, at height y. */
