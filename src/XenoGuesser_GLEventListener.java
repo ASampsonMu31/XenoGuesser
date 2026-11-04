@@ -438,6 +438,8 @@ public class XenoGuesser_GLEventListener implements GLEventListener {
                 .onChange(added -> { for (SphereFlora tree : added) trees.add(tree.position(), tree.trunk(), tree); },
                         removed -> { for (SphereFlora tree : removed) trees.remove(tree.position(), tree); });
         grassStream = new CellStream<>(VEGETATION_LEVEL, GRASS_VIEW_DISTANCE * PHYSICAL_CHUNK_SIZE, PHYSICAL_CHUNK_SIZE * 1.5, this::buildGrassCell);
+        // (the tutorial: whether its cache is of this very world, before anything's read from it)
+        TutorialCache.check(this);
         mapOverlays.startBirdsEyeMapRendering();
     }
 

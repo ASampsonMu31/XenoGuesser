@@ -24,7 +24,8 @@ final class TutorialChecks extends GamePart {
     static final float TEMPERATURE_TOLERANCE = 2.5f, ALTITUDE_TOLERANCE = 8f, SHARE_TOLERANCE = 0.08f;
     // A plant's or animal's share of its range from where it's plentiful (green on its map)
     static final float PLENTIFUL = 0.6f;
-    // How far a coast's line may be turned from the site's and still match (degrees), and the
+    // How far a coast may be turned from the site's (the way inland, so which side the sea is on
+    // counts) and still match (degrees), and the
     // distance its run is measured over either way (world units, before the chart's stretching)
     static final double COAST_ANGLE_TOLERANCE = 20.0, COAST_RUN = 1500.0;
     // How near the landmark a guess must be (world units)
@@ -280,8 +281,9 @@ final class TutorialChecks extends GamePart {
                 long s = rect(sum, n, x0, y0, x1, y1);
                 if (s == 0) continue;
                 double cx = rect(sumX, n, x0, y0, x1, y1) / (double) s - x, cy = rect(sumY, n, x0, y0, x1, y1) / (double) s - y;
-                // (the land lies towards its centre: the coast runs square to that)
-                line[i] = fold(Math.atan2(cy, cx) + Math.PI / 2);
+                // (the land lies towards its centre: the way inland, a whole turn's worth, so a
+                // coast with the sea to the north is told from one with it to the south)
+                line[i] = Math.atan2(cy, cx);
             }
         }
         // Every cell's distance along the ground to its nearest coast cell, and which that is
@@ -310,9 +312,9 @@ final class TutorialChecks extends GamePart {
             int c = nearest[i];
             if (c < 0 || Double.isNaN(line[c])) continue;
             double reach = land[i] ? 4.0 * distance : 2.0 * distance;
-            pass[i] = dist[i] <= reach + cell * 0.5 && angleApart(line[c], siteLine) <= Math.toRadians(COAST_ANGLE_TOLERANCE);
+            pass[i] = dist[i] <= reach + cell * 0.5 && turnApart(line[c], siteLine) <= Math.toRadians(COAST_ANGLE_TOLERANCE);
         }
-        return new Coast(pass, describeLine(siteLine), distance);
+        return new Coast(pass, describeCoast(siteLine), distance);
     }
 
     private static long rect(long[] sums, int n, int x0, int y0, int x1, int y1) {
@@ -346,6 +348,19 @@ final class TutorialChecks extends GamePart {
     static double angleApart(double a, double b) {
         double d = Math.abs(fold(a) - fold(b));
         return Math.min(d, Math.PI - d);
+    }
+
+    /** How far apart two ways are, 0 to pi (a whole turn: opposite ways are as far apart as can be). */
+    static double turnApart(double a, double b) {
+        return Math.abs(Math.IEEEremainder(a - b, 2 * Math.PI));
+    }
+
+    /** A coast in words, from the way inland (radians from east towards south): "north to south, the sea to the west". */
+    static String describeCoast(double inland) {
+        String[] sides = { "east", "south-east", "south", "south-west", "west", "north-west", "north", "north-east" };
+        // (the sea's the other way from inland)
+        int sea = (int) Math.floorMod(Math.round(Math.toDegrees(inland + Math.PI) / 45.0), 8L);
+        return describeLine(inland + Math.PI / 2) + ", the sea to the " + sides[sea];
     }
 
     /** A line (radians from east towards south) in words: "north to south", "north-east to south-west"... */

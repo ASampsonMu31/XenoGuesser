@@ -146,7 +146,9 @@ Parts extend `GamePart` (field `game`).
 - **Tutorial**: `Tutorial` (a part, above), `TutorialPlan` (the seed, the exercises, the rounds
   file), `TutorialChecks`, `TutorialText` (`assets/text/tutorial_messages.txt`, recorded by
   `tools/record_tutorial.py` into `assets/audio/tutorial`), `TutorialSites` + `TutorialFinder`
-  (main class: `tools/find-tutorial.sh`).
+  (main class: `tools/find-tutorial.sh`), `TutorialCache` (`assets/tutorial_cache`: the tutorial
+  world's writing systems, textures, photographs and heatmaps, read instead of made while its key
+  matches the world; written by `tools/write-tutorial-cache.sh`).
 - **Checks** (main classes, not part of the game): `SphereToolkitCheck`, `PlanningCheck`,
   `MultiplayerCheck`, `RegressionCheck` + `Fingerprint`.
 

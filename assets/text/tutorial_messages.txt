@@ -18,12 +18,12 @@ msg.pod = Training deployment in progress. You are being sent to Xenocorp's desi
 
 # ------------------------------------------------------------------ 1. the sun
 
-msg.sun.welcome = Welcome to the Xenocorp Training Programme. You have been selected for training on the basis of having applied. Over the following exercises you will learn to work out where you are using only your standard-issue equipment and a minimum of complaint. Your progress is being monitored. Your mistakes are being recorded. Several already have been.
+msg.sun.welcome = Welcome to the Xenocorp Training Programme. You have been selected for training on the basis of having applied. Over the following exercises you will learn to work out where you are by using only your standard-issue equipment. Your progress is being monitored. Your mistakes are being recorded. Several already have been observed.
 msg.sun.walk = A marker has been placed in the ground ahead of you. Walk to it using W, A, S and D. When you arrive, turn a full circle on the spot using the mouse. This is to confirm that you can walk and turn, which, regrettably, can no longer be assumed.
 msg.sun.spun.clockwise = Thank you. Most trainees, when asked to turn on the spot, turn anticlockwise. You, on the other hand, turned clockwise. Our psychologists describe this as a bit odd. It has been noted on your file.
 msg.sun.spun.anticlockwise = Thank you. Most trainees, when asked to turn on the spot, turn clockwise. You, on the other hand, turned anticlockwise. Our psychologists describe this as a bit odd. It has been noted on your file.
-msg.sun.compass = You have been issued a compass. Press 1 to hold it up, then turn until you are facing the sun. When the sun is in the north of the sky, you are in the planet's southern hemisphere. When it is in the south of the sky, you are in the northern hemisphere. When it is hidden by cloud, you are, in the technical sense, on your own. Today's sky has been cleared for you at considerable expense.
-msg.sun.map = Good. Now press Tab to expand your map. Scroll to zoom in and out, and click to place a marker where you think you are, then confirm your guess. For this exercise, any guess in the correct hemisphere will be accepted. Standards will rise.
+msg.sun.compass = You have been issued a compass. Press 1 to hold it up, then turn until you are facing the sun. When the sun is in the north of the sky, you are in the planet's southern hemisphere. When it is in the south of the sky, you are in the northern hemisphere. When it is hidden by cloud, you are, in the technical sense, fu**ed. Today's sky has been cleared for you at considerable expense. Don't forget, the red needle points north, some trainees needed this to be explained not to name any names … Frank.
+msg.sun.map = Good. Now press Tab to expand your map. Scroll to zoom in and out, and click to place a marker where you think you are, then confirm your guess. For this exercise, any guess in the correct hemisphere will be accepted.
 
 obj.sun.walk = Walk to the marker (W, A, S, D)
 obj.sun.spin = Turn a full circle on the marker
@@ -31,25 +31,26 @@ obj.sun.compass = Face the sun with your compass (1)
 obj.sun.expand = Expand the map (Tab)
 obj.sun.guess = Guess in the right hemisphere
 
-explain.sun = The sun stood in the {sunside} of the sky, so you were in the {hemisphere} hemisphere: anywhere in it would do.
+explain.sun = The sun was in the {sunside} of the sky, so you were in the {hemisphere} hemisphere: anywhere in it would do.
 fail.sun = That's the wrong hemisphere. The sun was in the {sunside}: think again about which half of the planet that puts you in.
 
 # ------------------------------------------------------------------ 2. the coast
 
 msg.coast.intro = Exercise two. You have landed near the coast. Coastlines are long, wiggly and, for our purposes, extremely useful. Walk to the marker on the shore.
-msg.coast.compass = Now hold up your compass and look along the coastline, so that the needle tells you which way it runs. Then find a stretch of coast on your map that runs the same way, and guess about as far from the sea as you landed. Note that the map is not the coast. The coast is the coast.
+msg.coast.compass = Now hold up your compass and look along the coastline, so that the needle tells you which way it runs. Then find a stretch of coast on your map that runs the same way and place your marker on the map.
 
 obj.coast.walk = Walk to the marker on the shore
 obj.coast.line = Look along the coast with your compass (1)
 obj.coast.guess = Guess on a coast running the same way
 
 explain.coast = The coast here runs {coastline}, and the pod came down {coastdistance} from the sea: anywhere about as near a coast running that way would do.
-fail.coast = The coast there doesn't run {coastline}, or you guessed too far from it. Line the coast up with your compass again.
+fail.coast = The coast there doesn't run {coastline}, or you guessed too far from it. Line the coast up with your compass again, and note which side the sea is on.
 
 # ------------------------------------------------------------------ 3. temperature
 
-msg.temperature.intro = Exercise three. Your compass has been withdrawn, so that you do not come to depend on it. You have been issued a thermometer. Press 1 to hold it up and wait for the reading to settle. Then open your map, show the temperature heatmap, and guess somewhere exactly as warm as here.
-msg.temperature.read = Good. The heatmap shows the planet's average. Mornings are colder, afternoons warmer, summers warmer still, and winters best not discussed. Today, by happy coincidence, is exactly average. Find the colour that matches your reading.
+msg.temperature.intro = Exercise three. Your compass has been withdrawn, so that you do not come to depend on it. You have been issued a thermometer. Although the red fluid in the thermometer may look tasty, we advise you not to attempt to drink it, it is, surprisingly, highly toxic. Press 1 to hold it up and wait for the reading to settle.
+Then open your map, show the temperature heatmap, and guess somewhere exactly as warm as here.
+msg.temperature.read = Good. The heatmap shows the planet's average temperature, although this does change from day to day and season to season, despite multiple complaints about this no attempts have been made to rectify this inconvenience, something about fixing the planet in permanent day upsets the locals. Anyways, find the colour on the map that matches your reading.
 
 obj.temperature.read = Take a temperature reading (1)
 obj.temperature.map = Show the temperature heatmap
@@ -71,17 +72,18 @@ fail.altitude = The ground there is {guessed} above the sea, and your altimeter 
 
 # ------------------------------------------------------------------ 5. plants and animals
 
-msg.wildlife.intro = Exercise five. You have been issued an identification kit. Press 1 to hold up the magnifying glass, and look at the local wildlife through it until each one is named. Identify five plants and five animals. Do not attempt to pet the animals. Bites are not covered.
+msg.wildlife.intro = Exercise five. You have been issued an identification kit. Press 1 to hold up the magnifying glass, and look at the local wildlife through it until each one is named. First, identify five of the plant named in your objectives. Other plants do not count, however much you like them.
+msg.wildlife.animals = Thank you. Now identify five of the animal named in your objectives. Do not attempt to pet it. Bites are not covered.
 msg.wildlife.maps = Well done. You have been given maps of where these two species live. Show each of them on your map. Only one region of the planet has plenty of both. Find it.
 
-obj.wildlife.plants = Identify plants ({count} of 5)
-obj.wildlife.animals = Identify animals ({count} of 5)
+obj.wildlife.plants = Identify the {plant} ({count} of 5)
+obj.wildlife.animals = Identify the {animal} ({count} of 5)
 obj.wildlife.plantmap = Show where the {plant} grows
 obj.wildlife.animalmap = Show where the {animal} lives
 obj.wildlife.guess = Guess where both are plentiful
 
-explain.wildlife = Only one region has plenty of both the {plant} and the {animal}: the one shown in green.
-fail.wildlife = Both the {plant} and the {animal} are plentiful in only one region. Show both maps and look for where they overlap.
+explain.wildlife = Both the {plant} and the {animal} are plentiful only where the map is green: anywhere there would do.
+fail.wildlife = The {plant} and the {animal} aren't both plentiful there. Show both maps and look for where they overlap.
 
 # ------------------------------------------------------------------ 6. rain
 

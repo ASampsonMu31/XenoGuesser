@@ -18,8 +18,11 @@ public final class TutorialFinder {
         long seed = TutorialPlan.SEED;
         long started = System.currentTimeMillis();
         RunFiles.prepare();
-        // As XenoGuesser.generateWorld makes the world
-        WritingSystems.generate(seed).join();
+        // As XenoGuesser.generateWorld makes the world: from the cache's writing systems if
+        // there are any (so the places are found on just the world the tutorial loads)
+        java.nio.file.Path cachedAlphabets = java.nio.file.Path.of(TutorialCache.DIR, "alphabets");
+        if (java.nio.file.Files.isDirectory(cachedAlphabets)) TutorialCache.copyTree(cachedAlphabets, java.nio.file.Path.of(RunFiles.ALPHABETS_DIR), true);
+        else WritingSystems.generate(seed).join();
         PerlinNoise worldNoise = new PerlinNoise(seed);
         float physicalChunkSize = 100.0f;
         float totalRegionWidth = 150_000f * (0.92f + 0.16f * new Random(seed * 104_729L + 17L).nextFloat());
@@ -45,6 +48,10 @@ public final class TutorialFinder {
         SwingUtilities.invokeAndWait(() -> { });
         System.out.printf("[TUTORIAL] World made in %d s%n", (System.currentTimeMillis() - started) / 1000);
 
+        // (whether the cache is of this very world: if not, it's to be written again, see the skill)
+        File keyFile = new File(TutorialCache.DIR, "key.txt");
+        boolean cacheMatches = keyFile.exists() && java.nio.file.Files.readString(keyFile.toPath()).equals(TutorialCache.key(listener));
+        System.out.println(cacheMatches ? "[TUTORIAL] The cache is of this world" : "[TUTORIAL] CACHE STALE OR MISSING: write it again (tools/write-tutorial-cache.sh)");
         TutorialSites finder = new TutorialSites(listener);
         List<TutorialPlan.Site> sites = finder.findAll();
         File out = new File(args.length > 0 ? args[0] : TutorialPlan.FILE);

@@ -106,9 +106,9 @@ public class PlayerBody {
     private static final int LETTER_TILE = 256;
     private static final float LETTER_TILE_U = LETTER_TILE / (float) PRINT_W, LETTER_TILE_V = LETTER_TILE / (float) PRINT_H;
     private static final float NORTH_LETTER_U = PRINT_H / (float) PRINT_W, SOUTH_LETTER_U = NORTH_LETTER_U + LETTER_TILE_U;
-    // The letters on the needle: how far out from the pivot each starts, how big it is, and how
-    // high over the needle's middle it lies (just clear of its top)
-    private static final float LETTER_FROM_PIVOT = 0.035f, LETTER_SIZE = 0.085f, LETTER_RISE = 0.0225f;
+    // The letters on the needle: how far out from the pivot each starts, and how big it is (each
+    // bent over the needle's top: see needleLetter)
+    private static final float LETTER_FROM_PIVOT = 0.056f, LETTER_SIZE = 0.08f;
 
     // The thermometer: a glass rod (up its own +Z, its front to +Y) with its scale printed on
     // it, a red bulb at the bottom and the red column running up the front of the rod
@@ -328,11 +328,11 @@ public class PlayerBody {
             b.resetTransform();
             float needle = COMPASS_RADIUS * 0.72f;
             b.bone(NEEDLE).part(OrganismMesh.PART_NEEDLE_NORTH);
-            b.lathe(8, 6, (t, out) -> needleHalf(t, needle, out));
+            b.lathe(NEEDLE_SIDES, 6, (t, out) -> needleHalf(t, needle, out));
             b.part(OrganismMesh.PART_NEEDLE_SOUTH);
-            b.lathe(8, 6, (t, out) -> needleHalf(t, -needle, out));
-            needleLetter(b, 1f, NORTH_LETTER_U);
-            needleLetter(b, -1f, SOUTH_LETTER_U);
+            b.lathe(NEEDLE_SIDES, 6, (t, out) -> needleHalf(t, -needle, out));
+            needleLetter(b, 1f, NORTH_LETTER_U, needle);
+            needleLetter(b, -1f, SOUTH_LETTER_U, needle);
             // The pivot cap
             b.transform(Affine.rotationX((float) -Math.PI / 2)).part(OrganismMesh.PART_BRASS);
             b.lathe(10, 8, puck(0.05f, 0.04f));
@@ -467,23 +467,67 @@ public class PlayerBody {
         b.resetTransform();
     }
 
+    // How many sides the needle's cross-section has (see OrganismMesh.Builder.lathe): its letters
+    // lie on just those faces; and how far over them (a hair, so they never flicker into them)
+    private static final int NEEDLE_SIDES = 16;
+    private static final float LETTER_LIFT = 0.0012f;
+
     /**
      * The letter on one half of the compass needle (way 1 the north half, -1 the south): a little
-     * square of the print laid on its top near the pivot, read with its top towards that half's
-     * point, its tile's left edge at u in the print (see drawNeedleLetters).
+     * square of the print laid over its top near the pivot, bent over the needle's faces as they
+     * curve away to either side (and narrow towards the point), read with its top towards that
+     * half's point; its tile's left edge at u in the print (see drawNeedleLetters).
      */
-    private static void needleLetter(OrganismMesh.Builder b, float way, float u) {
+    private static void needleLetter(OrganismMesh.Builder b, float way, float u, float length) {
         b.part(OrganismMesh.PART_PRINT);
-        float near = LETTER_FROM_PIVOT * way, far = (LETTER_FROM_PIVOT + LETTER_SIZE) * way, half = LETTER_SIZE * 0.5f;
+        float half = LETTER_SIZE * 0.5f;
         // (the letter's right is to -x along the north half and to +x along the south, seen from above)
         float inset = LETTER_TILE_U * 0.1f, u0 = u + inset, u1 = u + LETTER_TILE_U - inset;
         float v0 = LETTER_TILE_V * 0.1f, v1 = LETTER_TILE_V * 0.9f;
-        int a = b.vertex(half * way, LETTER_RISE, near, 0f, 1f, 0f, u0, v0);
-        int c = b.vertex(-half * way, LETTER_RISE, near, 0f, 1f, 0f, u1, v0);
-        int d = b.vertex(-half * way, LETTER_RISE, far, 0f, 1f, 0f, u1, v1);
-        int e = b.vertex(half * way, LETTER_RISE, far, 0f, 1f, 0f, u0, v1);
-        b.triangle(a, c, d);
-        b.triangle(a, d, e);
+        int across = 12, along = 6;
+        int[][] at = new int[along + 1][across + 1];
+        for (int j = 0; j <= along; j++) {
+            float out = LETTER_FROM_PIVOT + LETTER_SIZE * j / along;
+            float t = out / length, z = out * way;
+            float[] r = new float[5];
+            needleHalf(t, length, r);
+            for (int i = 0; i <= across; i++) {
+                float x = half * way * (1f - 2f * i / across);
+                float[] top = needleTop(x, r[3], r[4]);
+                at[j][i] = b.vertex(x, top[0] + LETTER_LIFT, z, top[1], top[2], 0f,
+                        u0 + (u1 - u0) * i / across, v0 + (v1 - v0) * j / along);
+            }
+        }
+        for (int j = 0; j < along; j++) {
+            for (int i = 0; i < across; i++) {
+                // (wound facing up, as a flat tile of the print would be)
+                b.triangle(at[j][i], at[j][i + 1], at[j + 1][i + 1]);
+                b.triangle(at[j][i], at[j + 1][i + 1], at[j + 1][i]);
+            }
+        }
+    }
+
+    /**
+     * The top of the needle's cross-section (the lathe's NEEDLE_SIDES-sided ring round an
+     * ellipse wide across and tall high) at x across it: {its height, and the face's normal there
+     * (x, y)}. Beyond its width, its edge.
+     */
+    private static float[] needleTop(float x, float wide, float tall) {
+        float ax = Math.min(Math.abs(x), wide);
+        // The ring's corners on the upper half, from the top (angle pi/2) out to the side (0)
+        int quarter = NEEDLE_SIDES / 4;
+        for (int k = 0; k < quarter; k++) {
+            double a0 = Math.PI / 2 - Math.PI * 2 * k / NEEDLE_SIDES, a1 = Math.PI / 2 - Math.PI * 2 * (k + 1) / NEEDLE_SIDES;
+            float x0 = (float) Math.cos(a0) * wide, y0 = (float) Math.sin(a0) * tall;
+            float x1 = (float) Math.cos(a1) * wide, y1 = (float) Math.sin(a1) * tall;
+            if (ax > x1 && k < quarter - 1) continue;
+            float f = x1 - x0 < 1e-6f ? 0f : (ax - x0) / (x1 - x0);
+            float y = y0 + (y1 - y0) * f;
+            // (the face's outward normal: square to it, upwards, to the side x is on)
+            float nx = (y0 - y1), ny = (x1 - x0), n = (float) Math.sqrt(nx * nx + ny * ny);
+            return new float[] { y, Math.signum(x) * nx / n, ny / n };
+        }
+        return new float[] { 0f, 0f, 1f };
     }
 
     /** Half the compass needle, from the pivot out to a point at z = length (negative for the south half). */

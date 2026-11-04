@@ -81,6 +81,11 @@ final class LandmarkPhotos extends GamePart {
     float step() {
         switch (stage) {
             case WAITING_TO_START -> {
+                // (the tutorial's, already taken, from its cache: see TutorialCache)
+                if (TutorialCache.restorePhotos(game)) {
+                    stage = Stage.DONE;
+                    return 1f;
+                }
                 for (Landmark lm : game.infraManager.landmarks().all()) {
                     int height = MapOverlays.LANDMARK_PICTURE_HEIGHT;
                     subjects.add(new Subject(lm.name, lm.kind.name().toLowerCase(), lm, null, lm.pictureWidth(height), height,

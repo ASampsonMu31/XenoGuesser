@@ -1,0 +1,84 @@
+format 1
+seed 20261104
+sea -67.8611 width 148981.61
+towns 340 houses 9880 roads 64775 nations 8
+houses at b07841f61be8fae2
+rivers 846 lakes 113
+landmark SPIRE The Dooman Spire
+landmark SPIRE The Thardia Spire
+landmark RUIN The Ruins of Kumpor
+landmark RUIN The Ruins of Klailta
+landmark STONES The Zidrin Monoliths
+landmark STONES The Borndoth Monoliths
+landmark STATUE The Colossus of Faimba
+landmark STATUE The Colossus of Klayza
+landmark SUMMIT Mount Gagra
+landmark BAY Silmia Bay
+landmark SPIT Krebran Sands
+landmark PINNACLES The Koothin Needles
+landmark PINNACLES The Bibrus Pinnacles
+plant Glabron
+plant Smelnan
+plant Varkria
+plant Kreezus
+plant Roandia
+plant Nekra
+plant Mosna
+plant Thoanza
+animal Pleldan
+animal Yasmix
+animal Peevia
+animal Jaylia
+animal Spopron
+animal Mepra
+animal Hekrus
+animal Bampax
+texture curtains_0
+texture curtains_1
+texture curtains_2
+texture curtains_3
+texture fence_nation1
+texture fence_nation2
+texture fence_nation3
+texture fence_nation4
+texture fence_nation5
+texture fence_nation6
+texture fence_nation7
+texture fence_nation8
+texture flag_nation1
+texture flag_nation2
+texture flag_nation3
+texture flag_nation4
+texture flag_nation5
+texture flag_nation6
+texture flag_nation7
+texture flag_nation8
+texture packaging_nation1
+texture packaging_nation2
+texture packaging_nation3
+texture packaging_nation4
+texture packaging_nation5
+texture packaging_nation6
+texture packaging_nation7
+texture packaging_nation8
+texture roof_nation1
+texture roof_nation2
+texture roof_nation3
+texture roof_nation4
+texture roof_nation5
+texture roof_nation6
+texture roof_nation7
+texture roof_nation8
+texture wall_variant0
+texture wall_variant1
+texture wall_variant10
+texture wall_variant11
+texture wall_variant12
+texture wall_variant2
+texture wall_variant3
+texture wall_variant4
+texture wall_variant5
+texture wall_variant6
+texture wall_variant7
+texture wall_variant8
+texture wall_variant9

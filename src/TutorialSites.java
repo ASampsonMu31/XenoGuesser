@@ -390,19 +390,105 @@ final class TutorialSites {
 
     // ------------------------------------------------------------------ plants and animals
 
+    // How far from any road or house the plants and animals are looked at (metres), the furthest first
+    private static final float[] WILD_CLEARANCES = { 150f, 100f, 60f };
+
     // The grid the plants' and animals' regions are found on, and the least a region must be to count
     private static final int REGION_GRID = 300, LEAST_REGION = 4;
 
     /**
-     * A plant and an animal plentiful together in only one region of the planet, and a place in
-     * that region where both are at their thickest and no other plant or animal is about.
+     * A plant and an animal both plentiful (on their maps) at a place out in the wild, with no
+     * other species common there, and their overlap in as few regions of the planet as can be
+     * found (one, ideally). In order: as far from roads and houses as finds anything (see
+     * WILD_CLEARANCES), then no other species common (OTHERS_SCARCE), then the fewest regions,
+     * then the other species scarcest.
      */
     private TutorialPlan.Site wildlife(Random rand) {
+        // (for the notes: how much of the land each species is plentiful on)
+        StringBuilder spread = new StringBuilder("wildlife: plentiful over");
+        for (int kind = 0; kind < 2; kind++) {
+            int count = kind == 0 ? g.NUM_SPECIES : g.organismManager.speciesCount();
+            for (int t = 0; t < count; t++) {
+                MapOverlay o = new MapOverlay(kind == 0 ? FactorName.FLORA : FactorName.ANIMAL_POPULATION, t);
+                int plentiful = 0;
+                for (GeodesicChunkGrid.Direction d : land) if (share(o, d) >= TutorialChecks.PLENTIFUL) plentiful++;
+                spread.append(String.format(Locale.ROOT, " %s%d %s %.0f%%,", kind == 0 ? "plant" : "animal", t,
+                        kind == 0 ? g.speciesConfigs[t].design.kind() : "", 100f * plentiful / Math.max(1, land.size())));
+            }
+        }
+        notes.add(spread.toString());
+        for (float clearance : WILD_CLEARANCES) {
+            Wild best = wildlife(rand, clearance * PlayerBody.METRE);
+            if (best == null) continue;
+            notes.add(String.format(Locale.ROOT, "wildlife: %.0f m or more from any road or house; both plentiful in %d region%s; "
+                    + "the commonest other species there at %.0f%% of its range%s", clearance, best.regions, best.regions == 1 ? "" : "s",
+                    best.others * 100f, best.others > OTHERS_SCARCE ? " (MORE THAN WANTED: nowhere better)" : ""));
+            return best.site;
+        }
+        return null;
+    }
+
+    // How common (a share of its range) any other species may be at the wildlife exercise's place: not plentiful
+    private static final float OTHERS_SCARCE = TutorialChecks.PLENTIFUL - 0.01f;
+
+    /** A wildlife place found: how many regions its two species overlap in, how common the commonest other is there, and the site. */
+    private record Wild(int regions, float others, float both, TutorialPlan.Site site) {
+
+        /** Whether this is a better place than that (see wildlife). */
+        boolean beats(Wild that) {
+            if (that == null) return true;
+            boolean scarce = others <= OTHERS_SCARCE, thatScarce = that.others <= OTHERS_SCARCE;
+            if (scarce != thatScarce) return scarce;
+            // (neither clear of other species: the clearer first, then the fewer regions)
+            if (!scarce && Math.abs(others - that.others) > 0.05f) return others < that.others;
+            if (regions != that.regions) return regions < that.regions;
+            if (Math.abs(others - that.others) > 0.02f) return others < that.others;
+            return both > that.both;
+        }
+    }
+
+    // Each cell's two commonest plants and animals (their shares and species), so the commonest
+    // species other than a pair's comes at once (worked out once, the first time it's wanted)
+    private float[][] topShares;
+    private int[][] topSpecies;
+
+    private void findTopSpecies(int plants, int animals) {
+        int n = REGION_GRID * REGION_GRID;
+        topShares = new float[4][n];
+        topSpecies = new int[2][n];
+        java.util.stream.IntStream.range(0, n).parallel().forEach(k -> {
+            GeodesicChunkGrid.Direction d = gridDirection(k % REGION_GRID, k / REGION_GRID);
+            if (d == null) return;
+            for (int kind = 0; kind < 2; kind++) {
+                int count = kind == 0 ? plants : animals;
+                float first = 0f, second = 0f;
+                int firstOf = -1;
+                for (int t = 0; t < count; t++) {
+                    float v = share(new MapOverlay(kind == 0 ? FactorName.FLORA : FactorName.ANIMAL_POPULATION, t), d);
+                    if (v > first) {
+                        second = first;
+                        first = v;
+                        firstOf = t;
+                    } else if (v > second) second = v;
+                }
+                topShares[kind * 2][k] = first;
+                topShares[kind * 2 + 1][k] = second;
+                topSpecies[kind][k] = firstOf;
+            }
+        });
+    }
+
+    /** How common the commonest plant other than s, and animal other than i, is in cell k. */
+    private float othersAt(int k, int s, int i) {
+        float plant = topSpecies[0][k] == s ? topShares[1][k] : topShares[0][k];
+        float animal = topSpecies[1][k] == i ? topShares[3][k] : topShares[2][k];
+        return Math.max(plant, animal);
+    }
+
+    private Wild wildlife(Random rand, float wildClearance) {
         int plants = g.NUM_SPECIES, animals = g.organismManager.speciesCount();
-        TutorialPlan.Site best = null;
-        // (the best so far: the other species there scarcest, then the two thickest)
-        float bestScore = -Float.MAX_VALUE, bestOthers = 1f;
-        int[] why = new int[4];
+        if (topShares == null) findTopSpecies(plants, animals);
+        Wild best = null;
         for (int s = 0; s < plants; s++) {
             String kind = g.speciesConfigs[s].design.kind();
             if (!kind.equals("Tree") && !kind.equals("Shrub")) continue;
@@ -416,8 +502,7 @@ final class TutorialSites {
                     if (d == null || TerrainMesh.getLayeredHeight(d, g.worldNoise) <= g.seaLevelHeight) continue;
                     both[y * REGION_GRID + x] = Math.min(share(plant, d), share(animal, d));
                 }
-                // The least "plentiful" (from PLENTIFUL up) at which the two overlap in only one region
-                for (float plentiful = TutorialChecks.PLENTIFUL; plentiful <= 0.95f; plentiful += 0.05f) {
+                for (float plentiful = TutorialChecks.PLENTIFUL; plentiful <= 0.975f; plentiful += 0.025f) {
                     boolean[] in = new boolean[both.length];
                     int count = 0;
                     for (int k = 0; k < both.length; k++) if (both[k] >= plentiful) {
@@ -425,48 +510,39 @@ final class TutorialSites {
                         count++;
                     }
                     if (count < LEAST_REGION) break;
-                    why[0]++;
+                    // Its regions (eight-way joined; specks too small to count fold into the rest)
                     int[] region = new int[both.length];
-                    int regions = 0, biggest = 0, biggestId = 0;
+                    int regions = 0, counted = 0;
+                    java.util.Map<Integer, Integer> sizes = new java.util.HashMap<>();
                     for (int k = 0; k < both.length; k++) {
                         if (!in[k] || region[k] != 0) continue;
                         int size = flood(in, region, k, ++regions);
-                        if (size > biggest) {
-                            biggest = size;
-                            biggestId = regions;
-                        }
+                        sizes.put(regions, size);
+                        if (size >= LEAST_REGION) counted++;
                     }
-                    if (biggest < LEAST_REGION || count - biggest > Math.max(1, biggest / 12)) continue;
-                    why[1]++;
-                    // The best place in it: both thickest, nothing else about
+                    if (counted == 0) continue;
+                    // The best place in any region big enough
                     for (int k = 0; k < both.length; k++) {
-                        if (region[k] != biggestId) continue;
+                        if (region[k] == 0 || sizes.get(region[k]) < LEAST_REGION) continue;
+                        if (best != null && best.regions < counted && best.others <= OTHERS_SCARCE) continue;
+                        if (best != null && best.others > OTHERS_SCARCE && othersAt(k, s, i) > best.others + 0.05f) continue;
                         GeodesicChunkGrid.Direction d = gridDirection(k % REGION_GRID, k / REGION_GRID);
-                        float others = 0f;
-                        for (int t = 0; t < plants; t++) if (t != s) others = Math.max(others, share(new MapOverlay(FactorName.FLORA, t), d));
-                        for (int a = 0; a < animals; a++) if (a != i) others = Math.max(others, share(new MapOverlay(FactorName.ANIMAL_POPULATION, a), d));
-                        // (other species scarcer here by a clear margin wins; much the same, the two thicker)
-                        float score = both[k] - 2f * others;
-                        if (score <= bestScore) continue;
-                        why[2]++;
+                        float others = othersAt(k, s, i);
+                        Wild candidate = new Wild(counted, others, both[k], null);
+                        if (!candidate.beats(best)) continue;
                         SpherePosition p = standNear(SphereMath.atAltitude(d, 0.0), rand, 40 * PlayerBody.METRE);
                         double heading = rand.nextDouble() * Math.PI * 2;
-                        if (p == null || !onMap(p) || !podFits(p, heading)) continue;
+                        // (out in the wild: no townsfolk to take for animals, nothing built in the way)
+                        if (p == null || !onMap(p) || !remote(p, wildClearance) || !podFits(p, heading)) continue;
                         Map<String, String> extra = new LinkedHashMap<>();
                         extra.put("plant", Integer.toString(s));
                         extra.put("animal", Integer.toString(i));
-                        extra.put("plentiful", String.format(Locale.ROOT, "%.2f", plentiful));
-                        bestScore = score;
-                        bestOthers = others;
-                        best = site(TutorialPlan.Stage.WILDLIFE, p, heading, -0.6, 0.0, -2f, extra);
+                        extra.put("plentiful", String.format(Locale.ROOT, "%.3f", plentiful));
+                        best = new Wild(counted, others, both[k], site(TutorialPlan.Stage.WILDLIFE, p, heading, -0.6, 0.0, -2f, extra));
                     }
-                    break;
                 }
             }
         }
-        if (best == null) notes.add(String.format(Locale.ROOT, "wildlife: %d pairs and thresholds overlap, %d in one region, %d places considered",
-                why[0], why[1], why[2]));
-        else notes.add(String.format(Locale.ROOT, "wildlife: the commonest other species there is at %.0f%% of its range (0 is none about)", bestOthers * 100f));
         return best;
     }
 

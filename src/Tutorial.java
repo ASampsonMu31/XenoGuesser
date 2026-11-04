@@ -185,7 +185,6 @@ final class Tutorial extends GamePart {
             }
             case WILDLIFE -> {
                 add("obj.wildlife.plants", "count", "0");
-                add("obj.wildlife.animals", "count", "0");
                 step = Step.IDENTIFY;
                 say("msg.wildlife.intro", null);
             }
@@ -425,7 +424,7 @@ final class Tutorial extends GamePart {
     private double linedUp;
     private long lastFrame;
     // The plants and animals identified (where they were), each counted once
-    private final List<SpherePosition> plantsFound = new ArrayList<>(), animalsFound = new ArrayList<>();
+    private final List<SpherePosition> plantsFound = new ArrayList<>();
 
     private void resetProgress() {
         step = Step.NONE;
@@ -435,7 +434,7 @@ final class Tutorial extends GamePart {
         removeMarker();
         synchronized (plantsFound) {
             plantsFound.clear();
-            animalsFound.clear();
+            animalsSeen.clear();
         }
         hush();
     }
@@ -526,37 +525,57 @@ final class Tutorial extends GamePart {
         if (gadget == PlayerBody.GADGET_ALTIMETER) complete("obj.altitude.read");
     }
 
-    // How far apart two plants (or animals) identified must be to count as two
-    private static final double SAME_PLANT = 1.5 * PlayerBody.METRE, SAME_ANIMAL = 6.0 * PlayerBody.METRE;
+    // How far apart two plants identified must stand to be two (a tree can be built afresh as the
+    // ground round it streams in, so it's known by where it stands); and how many of each
+    private static final double SAME_PLANT = 1.0 * PlayerBody.METRE;
     private static final int TO_IDENTIFY = 5;
+    // The animals identified, each known by itself (its outline, which is its own for as long as it lives)
+    private final java.util.Set<Object> animalsSeen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
-    /** Something's been named through the identification kit's glass: a plant or an animal, where it is. */
-    void identified(boolean plant, SpherePosition at) {
+    /**
+     * Something's been named through the identification kit's glass: an animal or a plant, its
+     * species, something that's always the same for it, and where it is. Only the exercise's own
+     * plant counts, five of them, and then only its own animal, five of those.
+     */
+    void identified(boolean animal, int species, Object key, SpherePosition at) {
         if (!active || step != Step.IDENTIFY) return;
-        List<SpherePosition> found = plant ? plantsFound : animalsFound;
-        double apart = plant ? SAME_PLANT : SAME_ANIMAL;
+        TutorialPlan.Site site = site();
+        if (site == null) return;
+        boolean plantsDone = done("obj.wildlife.plants");
+        if (animal != plantsDone) return;
+        if (species != site.integer(animal ? "animal" : "plant", -1)) return;
         int count;
         synchronized (plantsFound) {
-            for (SpherePosition p : found) if (SphereMath.distance(p, at) < apart) return;
-            if (found.size() >= TO_IDENTIFY) return;
-            found.add(at);
-            count = found.size();
+            if (animal) {
+                if (!animalsSeen.add(key)) return;
+                count = animalsSeen.size();
+            } else {
+                for (SpherePosition p : plantsFound) if (SphereMath.distance(p, at) < SAME_PLANT) return;
+                plantsFound.add(at);
+                count = plantsFound.size();
+            }
         }
-        String key = plant ? "obj.wildlife.plants" : "obj.wildlife.animals";
-        Objective o = objective(key);
+        if (count > TO_IDENTIFY) return;
+        String objKey = animal ? "obj.wildlife.animals" : "obj.wildlife.plants";
+        Objective o = objective(objKey);
         if (o != null) {
-            o.label = label(key, "count", Integer.toString(count));
+            o.label = label(objKey, "count", Integer.toString(count));
             objectivesVersion++;
         }
-        if (count >= TO_IDENTIFY) complete(key);
-        if (done("obj.wildlife.plants") && done("obj.wildlife.animals")) {
-            step = Step.SPECIES_MAPS;
-            giveSpeciesMaps();
-            add("obj.wildlife.plantmap");
-            add("obj.wildlife.animalmap");
-            add("obj.wildlife.guess");
-            say("msg.wildlife.maps", null);
+        if (count < TO_IDENTIFY) return;
+        complete(objKey);
+        if (!animal) {
+            // The plant's done: now its animal
+            add("obj.wildlife.animals", "count", "0");
+            say("msg.wildlife.animals", null);
+            return;
         }
+        step = Step.SPECIES_MAPS;
+        giveSpeciesMaps();
+        add("obj.wildlife.plantmap");
+        add("obj.wildlife.animalmap");
+        add("obj.wildlife.guess");
+        say("msg.wildlife.maps", null);
     }
 
     // ------------------------------------------------------------------ the results

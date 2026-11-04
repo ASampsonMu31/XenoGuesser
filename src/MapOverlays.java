@@ -88,6 +88,12 @@ final class MapOverlays extends GamePart {
     void startBirdsEyeMapRendering() {
         Thread mapThread = new Thread(() -> {
             BirdsEyeMaps maps = new BirdsEyeMaps(BIRDS_EYE_MAP_RESOLUTION, game.TOTAL_REGION_WIDTH, game.seaLevelHeight, game.worldNoise);
+            // (the tutorial's heatmaps' ranges, already worked out, from its cache: see TutorialCache)
+            java.util.Map<String, float[]> cachedRanges = TutorialCache.ranges();
+            if (!cachedRanges.isEmpty()) for (MapOverlay o : allOverlays()) {
+                float[] range = cachedRanges.get(TutorialCache.rangeName(o));
+                if (range != null) heatmapRanges.put(o, range);
+            }
             birdsEyeMaps = maps;
             long startTime = System.currentTimeMillis();
 
@@ -740,6 +746,16 @@ final class MapOverlays extends GamePart {
     // Each overlay as worked out, a pixel a chunk (before being laid over the land for the map)
     private final Map<MapOverlay, BufferedImage> rawOverlays = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** An overlay as worked out, a pixel a chunk (null if it hasn't been, or is the flags'): for the tutorial's cache. */
+    BufferedImage rawOverlay(MapOverlay o) {
+        return rawOverlays.get(o);
+    }
+
+    /** A heatmap's lowest and highest values on the land, if they've been worked out yet: for the tutorial's cache. */
+    float[] knownRange(MapOverlay o) {
+        return heatmapRanges.get(o);
+    }
+
     /** How to draw an overlay in tiles when the map is zoomed in close; null if it can't be yet. */
     private MapTiles.Renderer overlayTiles(MapOverlay factorName) {
         BirdsEyeMaps maps = birdsEyeMaps;
@@ -764,7 +780,9 @@ final class MapOverlays extends GamePart {
                 BirdsEyeMaps maps = birdsEyeMaps;
                 return maps != null ? maps.renderNationOverlay(game.nationManager) : null;
             }
-            BufferedImage heatmap = f == FactorName.SOIL_COLOUR ? soilColourMap()
+            // (the tutorial's, already worked out, from its cache: see TutorialCache)
+            BufferedImage cached = TutorialCache.rawOverlay(o);
+            BufferedImage heatmap = cached != null ? cached : f == FactorName.SOIL_COLOUR ? soilColourMap()
                     : game.regionalManager.generateHeatmap(game.TOTAL_REGION_WIDTH, game.PHYSICAL_CHUNK_SIZE, factorFor(o), overlayLabel(o), spectrumFor(o));
             // (kept as it is too, a pixel a chunk, for drawing the overlay in tiles when zoomed in)
             rawOverlays.put(o, heatmap);

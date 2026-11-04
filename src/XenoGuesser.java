@@ -465,9 +465,10 @@ public class XenoGuesser extends JFrame {
     boolean receiving = session != null && session.role == Multiplayer.Role.JOIN;
     try {
       if (!receiving) {
-        // (the host's were begun when Host game was pressed: this waits for that same job)
+        // (the host's were begun when Host game was pressed: this waits for that same job; the
+        // tutorial's are kept in its cache, see TutorialCache)
         loadingProgress.begin(LoadingProgress.Stage.WRITING_SYSTEMS);
-        WritingSystems.generate(worldSeed).join();
+        if (!TutorialCache.restoreAlphabets()) WritingSystems.generate(worldSeed).join();
       }
 
       loadingProgress.begin(LoadingProgress.Stage.SEA_LEVEL);
@@ -534,7 +535,10 @@ public class XenoGuesser extends JFrame {
       );
 
       loadingProgress.begin(LoadingProgress.Stage.WORLD_ART);
-      WorldArtGenerator art = WorldArtGenerator.generate(worldSeed, listener.getSpeciesCount(), listener.getNationTextureJobs(), loadingProgress);
+      // (the tutorial's textures from its cache, if it's of this world: see TutorialCache)
+      WorldArtGenerator cachedArt = TutorialCache.restoreArt(listener);
+      WorldArtGenerator art = cachedArt != null ? cachedArt
+          : WorldArtGenerator.generate(worldSeed, listener.getSpeciesCount(), listener.getNationTextureJobs(), loadingProgress);
             listener.setWorldArt(art);
       listener.buildSoilRegions(art.palette());
 
@@ -761,6 +765,21 @@ glEventListener.setGameHUD(gameHUD);
   private void onWorldReady() {
     // (the heap held from now to what the game holds, not all the PC could spare for making it)
     MemoryBudget.worldMade();
+    // Developer aid: -Dxenoguesser.tutorialcache=write saves the tutorial's cache, made afresh, then quits
+    if (TutorialCache.writing()) {
+      XenoGuesser_GLEventListener made = glEventListener;
+      Thread write = new Thread(() -> {
+        try {
+          TutorialCache.write(made);
+        } catch (Exception e) {
+          System.err.println("[TUTORIAL] Couldn't write the cache: " + e);
+          e.printStackTrace();
+        }
+        SwingUtilities.invokeLater(this::shutdownGame);
+      }, "tutorial-cache");
+      write.start();
+      return;
+    }
     // Multiplayer: the partner hears this PC is loaded (their Begin waits for it, M16)
     Multiplayer session = Multiplayer.active();
     if (session != null) session.sendWorldReady();
