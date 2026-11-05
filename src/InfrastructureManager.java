@@ -470,8 +470,8 @@ public class InfrastructureManager extends InfraGeometry {
     }
 
     /**
-     * How well off a nation is, 0.1 to 0.9: the same for the whole world's life. Its towns are
-     * richer than its countryside (see areaRichness).
+     * How well off a nation is, 0.1 to 0.9: the same for the whole world's life. Some of its
+     * regions are richer than others (see areaRichness).
      */
     public float nationRichness(int nationId) {
         return 0.1f + 0.8f * nationRandom(131L, nationId).nextFloat();
@@ -480,15 +480,37 @@ public class InfrastructureManager extends InfraGeometry {
     // How much poorer people right on the equator are (see SettlementManager.tropicality)
     private static final float TROPICAL_POVERTY = 0.18f;
 
+    /**
+     * How well off people are at a place, 0 to 1: mostly their nation's richness (or their
+     * island's), poorer on the equator and on a fenced border, with broad richer and poorer
+     * regions within each nation (REGIONAL_WEALTH: a province's worth of land each); how built
+     * up the place is barely matters (a town is only a little better off than its own
+     * countryside), and how big its city is not at all.
+     */
     public float areaRichness(int nationId, float urbanness, SpherePosition place) {
         RoadNetworkBuilder islands = islandWealth;
         float island = islands == null ? Float.NaN : islands.islandRichnessAt(place);
         float base = (Float.isNaN(island) ? nationRichness(nationId) : island)
                 * (1f - TROPICAL_POVERTY * SettlementManager.tropicality(place));
-        // (big cities draw the money: the bigger the city, the richer its people)
-        float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, settlementManager.getCitySize(SphereMath.direction(place)));
-        return Math.min(1f, base * (0.55f + 0.9f * urbanness) * (1f + BIG_CITY_WEALTH * big))
-                * (1f - BORDER_POVERTY * borderBlight(place));
+        double length = Math.max(1e-9, place.length()), r = Planet.radius();
+        float[] surface = { (float) (place.x() / length * r), (float) (place.y() / length * r), (float) (place.z() / length * r) };
+        float regional = wealthNoise().onSphere(surface, REGION_FREQUENCY, 11.3f, 5.7f);
+        float rich = (base + REGIONAL_WEALTH * regional) * (1f - TOWN_WEALTH + 2f * TOWN_WEALTH * urbanness);
+        return Math.max(0f, Math.min(1f, rich)) * (1f - BORDER_POVERTY * borderBlight(place));
+    }
+
+    // How far a region's richness strays from its nation's (either way, at most about), how big
+    // the regions are (a frequency in world units: provinces some 9 km across), and how much
+    // richer the middle of a town is than its countryside, and poorer that countryside (each a share)
+    private static final float REGIONAL_WEALTH = 0.3f, REGION_FREQUENCY = 1f / 9000f, TOWN_WEALTH = 0.1f;
+
+    // The regions' richness (see areaRichness): its own noise, from the world's seed
+    private volatile PerlinNoise wealthNoise;
+
+    private PerlinNoise wealthNoise() {
+        PerlinNoise n = wealthNoise;
+        if (n == null) wealthNoise = n = new PerlinNoise(worldSeed * 0x2545F4914F6CDD1DL + 0x77L);
+        return n;
     }
 
     // How much of their wealth people right on a fenced border have lost, and how far (in
@@ -1385,9 +1407,46 @@ public class InfrastructureManager extends InfraGeometry {
             // (in the country far from any house; in town with one near)
             if (kind == MapKind.RURAL && isBuildingLocation(centre, RURAL_HOUSE_CLEARANCE)) continue;
             if (kind == MapKind.URBAN && !isBuildingLocation(centre, URBAN_HOUSE_NEAR)) continue;
-            return viewpoint(segment.frame, cx + dirX * standsAt, cz + dirZ * standsAt, dirX, dirZ);
+            Viewpoint site = viewpoint(segment.frame, cx + dirX * standsAt, cz + dirZ * standsAt, dirX, dirZ);
+            // (and the way off the stairs open: nothing there the player can't get past)
+            if (!stairsWayClear(site, standsAt, reach)) continue;
+            return site;
         }
         return null;
+    }
+
+    // The way off a landing pod's stairs kept open (see stairsWayClear): how far out past their
+    // foot, how wide either side of their middle, and every how far it's looked along and across
+    static final float STAIRS_WAY_OUT = 80f, STAIRS_WAY_HALF_WIDTH = 14f;
+    private static final float STAIRS_WAY_STEP = 6f;
+
+    /**
+     * Whether the player can walk down a landing pod's stairs and away: from where they stand on
+     * them (site, its heading down them; the pod's middle standsAt behind, the stairs' foot reach
+     * out from it) to STAIRS_WAY_OUT past the foot, STAIRS_WAY_HALF_WIDTH either side, nothing
+     * they couldn't get past: a raised road's side or a bridge (see blocksWalker), a bridge's
+     * deck, a guard rail, a garden's fence or a building.
+     */
+    public boolean stairsWayClear(Viewpoint site, float standsAt, float reach) {
+        double toFoot = reach - standsAt;
+        SpherePosition stands = SphereMath.atAltitude(site.place(), 0.0);
+        for (double out = 0.0; out <= toFoot + STAIRS_WAY_OUT; out += STAIRS_WAY_STEP) {
+            SpherePosition along = SphereMath.move(stands, site.heading(), out);
+            double heading = SphereMath.carryHeading(stands, along, site.heading());
+            for (double side = -STAIRS_WAY_HALF_WIDTH; side <= STAIRS_WAY_HALF_WIDTH + 1e-6; side += STAIRS_WAY_HALF_WIDTH / 2) {
+                SpherePosition p = side == 0.0 ? along : SphereMath.move(along, heading + Math.PI / 2, side);
+                float ground = TerrainMesh.getLayeredHeight(p, terrainNoise);
+                if (blocksWalker(p, ground, ground + 18f)) return false;
+                if (bridges.bridgeDeckAt(p, BODY_MARGIN) != null) return false;
+                if (isPrivateGround(p, 2f) || isBuildingLocation(p, 2f)) return false;
+                for (RoadSegment segment : segmentsNear(p, 6f + MAX_ROAD_HALF_WIDTH)) {
+                    if (!segment.railed) continue;
+                    float limit = segment.width * 0.5f + 6f;
+                    if (distanceSquaredToSegment(p, segment) <= limit * limit) return false;
+                }
+            }
+        }
+        return true;
     }
 
     // Out in the country (MapKind.RURAL): no more urban than this, nor a house this near; a made

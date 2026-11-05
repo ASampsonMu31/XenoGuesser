@@ -592,6 +592,9 @@ glEventListener.setGameHUD(gameHUD);
     minimap.setOnProceedToShop(this::afterResults);
     // The tutorial: its messages over the game, its exercises judged, and its results' button on or again
     listener.tutorial.setMessenger(this::showMessage);
+    listener.tutorial.setSilencer(() -> {
+      if (messageStrip != null) messageStrip.stop();
+    });
     if (Tutorial.active) minimap.setJudge(listener.tutorial::judge);
     minimap.setProceedLabel(() -> Tutorial.active && glEventListener != null ? glEventListener.tutorial.buttonLabel() : multiplayerScore != null
         ? (multiplayerScore.gameWinner(gameHUD.getRound()) != null ? "See the result" : "Proceed to shop")

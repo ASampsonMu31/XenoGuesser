@@ -10,25 +10,26 @@
 # wildlife: plentiful over plant0 Orb tree 32%, plant1 Giant mushroom 20%, plant2 Palm 26%, plant3 Weeping tree 13%, plant4 Shrub 42%, plant5 Orb bush 33%, plant6 Cactus 39%, plant7 Fern 9%, animal0  43%, animal1  33%, animal2  35%, animal3  55%, animal4  41%, animal5  58%, animal6  41%, animal7  13%,
 # wildlife: 150 m or more from any road or house; both plentiful in 14 regions; the commonest other species there at 53% of its range
 # wildlife: -14.83, -72.10; 10.6% of the land passes
-# rainfall: -7.04, -0.51; 22.9% of the land passes
-# ground: 49.63, -180.00; 5.9% of the land passes
-# grass: -40.75, 147.77; 6.0% of the land passes
-# wealth: -34.70, -74.10; 2.0% of the land passes
-# flags: -30.77, 36.36; 9.8% of the land passes
-# roadside: -17.50, -121.30; 16.4% of the land passes
-# architecture: 49.68, -38.94; 9.8% of the land passes
-# landmarks: -26.02, 157.30; 1.1% of the land passes
+# rainfall: 30.02, -117.74; 50.0% of the land passes
+# ground: its soil 0.43 from the land's usual colour (0 the same, 1.7 black from white)
+# ground: -63.39, 14.76; 1.0% of the land passes
+# grass: -47.21, 149.58; 6.2% of the land passes
+# wealth: 14.90, 64.03; 16.4% of the land passes
+# flags: -16.83, 10.66; 9.8% of the land passes
+# roadside: 15.98, -27.03; 10.4% of the land passes
+# architecture: 46.18, -28.77; 9.8% of the land passes
+# landmarks: -54.81, -128.63; 0.7% of the land passes
 world sea=-67.86108 width=148981.61
-sun lat=-53.018016 lon=117.250257 heading=2.13418 hour=-0.55000 declination=0.00000 wetness=-3.00
+sun lat=-53.018016 lon=117.250257 heading=2.91958 hour=-0.55000 declination=0.00000 wetness=-3.00
 coast lat=59.094148 lon=-130.090729 heading=-1.56212 hour=-0.70000 declination=0.00000 wetness=-2.50 markerLat=59.915694 markerLon=-130.076509 coastLine=0.00868
 temperature lat=0.645643 lon=83.646386 heading=4.03103 hour=-0.97080 declination=0.00000 wetness=-1.50
 altitude lat=-13.399909 lon=-79.243612 heading=4.31969 hour=-0.90000 declination=0.00000 wetness=-2.50
 wildlife lat=-14.831531 lon=-72.100000 heading=3.62293 hour=-0.60000 declination=0.00000 wetness=-2.00 plant=4 animal=4 plentiful=0.600
-rainfall lat=-7.036104 lon=-0.508545 heading=-1.64119 hour=-0.60000 declination=0.00000 wetness=2.40
-ground lat=49.632845 lon=-179.999507 heading=-1.84444 hour=-0.60000 declination=0.00000 wetness=-2.00
-grass lat=-40.748747 lon=147.772735 heading=0.57098 hour=-0.60000 declination=0.00000 wetness=-1.50
-wealth lat=-34.701213 lon=-74.099977 heading=2.10607 hour=-0.60000 declination=0.00000 wetness=-2.00
-flags lat=-30.770132 lon=36.359271 heading=-2.08023 hour=-0.60000 declination=0.00000 wetness=-2.00
-roadside lat=-17.498071 lon=-121.303346 heading=-2.90958 hour=-0.60000 declination=0.00000 wetness=-2.00
-architecture lat=49.676478 lon=-38.939444 heading=0.27953 hour=-0.60000 declination=0.00000 wetness=-2.00
-landmarks lat=-26.016391 lon=157.303696 heading=-2.31206 hour=-0.50000 declination=0.00000 wetness=-3.00 landmark=3
+rainfall lat=30.020561 lon=-117.740108 heading=-1.73688 hour=-0.60000 declination=0.00000 wetness=2.60 wetterHalf=0.7661
+ground lat=-63.386372 lon=14.755852 heading=1.69163 hour=-0.60000 declination=0.00000 wetness=-2.00
+grass lat=-47.213717 lon=149.578085 heading=-2.26688 hour=-0.60000 declination=0.00000 wetness=-1.50
+wealth lat=14.901402 lon=64.025942 heading=2.17024 hour=-0.60000 declination=0.00000 wetness=-2.00
+flags lat=-16.830485 lon=10.662172 heading=-0.73068 hour=-0.60000 declination=0.00000 wetness=-2.00
+roadside lat=15.979290 lon=-27.030639 heading=1.70060 hour=-0.60000 declination=0.00000 wetness=-2.00
+architecture lat=46.177906 lon=-28.767268 heading=2.73445 hour=-0.60000 declination=0.00000 wetness=-2.00
+landmarks lat=-54.809430 lon=-128.625250 heading=0.40788 hour=-0.50000 declination=0.00000 wetness=-3.00 landmark=0

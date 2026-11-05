@@ -132,19 +132,22 @@ final class TutorialChecks extends GamePart {
                 vars = new String[] { "plant", game.floraName(plant), "animal", game.organismManager.speciesName(animal) };
             }
             case RAINFALL -> {
+                // (a very wet place, but how wet can't be measured: anywhere in the wetter half of
+                // the land will do, the rainfall map's share above its land's middle, found with the site)
                 MapOverlay rain = MapOverlay.of(FactorName.RAINFALL);
-                float wet = share(rain, here);
-                pass = d -> land(d) && Math.abs(share(rain, d) - wet) <= SHARE_TOLERANCE;
+                float wetterHalf = (float) site.number("wetterHalf", 0.5);
+                pass = d -> land(d) && share(rain, d) >= wetterHalf;
                 float mm = game.mapOverlays.heatmapMeasure(rain).sample(here);
                 vars = new String[] { "rainfall", Math.round(mm / 50f) * 50 + " mm" };
             }
             case GROUND -> {
                 WorldPalette palette = game.worldArt != null ? game.worldArt.palette() : new WorldPalette(game.worldSeed);
                 int soil = game.mapOverlays.soilColourAt(palette, here);
-                MapOverlay rocks = MapOverlay.of(FactorName.ROCKS);
-                float rocky = share(rocks, here);
-                pass = d -> land(d) && colourDistance(game.mapOverlays.soilColourAt(palette, d), soil) <= 0.06f
-                        && Math.abs(share(rocks, d) - rocky) <= 2f * SHARE_TOLERANCE;
+                // (the soil's colour, how many rocks and how small: all three maps, at opposite ends of their scales)
+                MapOverlay rocks = MapOverlay.of(FactorName.ROCKS), size = MapOverlay.of(FactorName.ROCK_SIZE);
+                float rocky = share(rocks, here), big = share(size, here);
+                pass = d -> land(d) && colourDistance(game.mapOverlays.soilColourAt(palette, d), soil) <= 0.08f
+                        && Math.abs(share(rocks, d) - rocky) <= 2f * SHARE_TOLERANCE && Math.abs(share(size, d) - big) <= 2f * SHARE_TOLERANCE;
                 vars = new String[0];
             }
             case GRASS -> {

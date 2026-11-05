@@ -91,6 +91,67 @@ final class MeasurementLog extends GamePart {
         markerChanged = true;
     }
 
+    // The tutorial's circle on the ground (to turn in), its middle and radius (world units), or
+    // null; and its picture, made the first time it's drawn
+    private volatile SpherePosition circleAt;
+    private volatile float circleRadius;
+    private int circleTexture;
+
+    /** Lays the tutorial's circle on the ground round a place, radius world units across (null takes it up). */
+    void setCircle(SpherePosition at, float radius) {
+        circleRadius = radius;
+        circleAt = at;
+    }
+
+    // The circle's rings and spokes as drawn (each vertex on the ground there), and how far over the ground it lies
+    private static final int CIRCLE_RINGS = 6, CIRCLE_SPOKES = 40;
+    private static final double CIRCLE_LIFT = 0.12 * PlayerBody.METRE;
+
+    /**
+     * The circle as triangles of {camera-relative x, y, z, u, v}: a disc on the ground (each of
+     * its points at the ground's height there, so it lies over bumps), its picture laid flat
+     * across it.
+     */
+    private float[] circleVertices(SpherePosition centre, float radius, SpherePosition eye) {
+        SphereFrame frame = SphereFrame.at(SphereMath.atAltitude(centre, 0.0));
+        double[][][] grid = new double[CIRCLE_RINGS + 1][CIRCLE_SPOKES][];
+        for (int r = 0; r <= CIRCLE_RINGS; r++) {
+            for (int k = 0; k < CIRCLE_SPOKES; k++) {
+                double a = k * Math.PI * 2 / CIRCLE_SPOKES, out = radius * r / (double) CIRCLE_RINGS;
+                double x = Math.cos(a) * out, z = Math.sin(a) * out;
+                SpherePosition flat = frame.toWorld(x, 0.0, z);
+                SpherePosition p = SphereMath.atAltitude(flat, game.groundHeightAt(flat) + CIRCLE_LIFT);
+                grid[r][k] = new double[] { p.x() - eye.x(), p.y() - eye.y(), p.z() - eye.z(), 0.5 + x / (2 * radius), 0.5 + z / (2 * radius) };
+            }
+        }
+        float[] out = new float[CIRCLE_RINGS * CIRCLE_SPOKES * 6 * FLOATS];
+        int n = 0;
+        for (int r = 0; r < CIRCLE_RINGS; r++) {
+            for (int k = 0; k < CIRCLE_SPOKES; k++) {
+                double[][] quad = { grid[r][k], grid[r][(k + 1) % CIRCLE_SPOKES], grid[r + 1][(k + 1) % CIRCLE_SPOKES],
+                        grid[r][k], grid[r + 1][(k + 1) % CIRCLE_SPOKES], grid[r + 1][k] };
+                for (double[] v : quad) for (double c : v) out[n++] = (float) c;
+            }
+        }
+        return out;
+    }
+
+    /** The circle's picture: a gold ring with a faint gold wash inside, clear beyond. */
+    private static BufferedImage circleImage() {
+        int size = 512;
+        BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = image.createGraphics();
+        HudStyle.smooth(g);
+        float edge = size * 0.035f;
+        g.setColor(new Color(MARKER_PIN.getRed(), MARKER_PIN.getGreen(), MARKER_PIN.getBlue(), 70));
+        g.fill(new Ellipse2D.Float(edge, edge, size - edge * 2, size - edge * 2));
+        g.setStroke(new BasicStroke(edge * 1.6f));
+        g.setColor(new Color(MARKER_PIN.getRed(), MARKER_PIN.getGreen(), MARKER_PIN.getBlue(), 235));
+        g.draw(new Ellipse2D.Float(edge, edge, size - edge * 2, size - edge * 2));
+        g.dispose();
+        return image;
+    }
+
     /** A clean page (a new round): every reading forgotten and its pin taken up. */
     void clear() {
         for (Reading r : readings) forget(r);
@@ -213,13 +274,19 @@ final class MeasurementLog extends GamePart {
             SpherePosition at = markerWanted;
             marker = at == null ? null : new Reading(MARKER, 0f, at);
         }
-        if (readings.isEmpty() && marker == null) return;
+        SpherePosition circleNow = circleAt;
+        if (readings.isEmpty() && marker == null && circleNow == null) return;
         if (shader == null) initialise(gl);
         List<Reading> order = new ArrayList<>(readings);
         if (marker != null) order.add(marker);
         order.sort((a, b) -> Double.compare(squaredFrom(eye, b.at), squaredFrom(eye, a.at)));
-        float[] vertices = new float[order.size() * 6 * FLOATS];
-        int count = 0;
+        // (the tutorial's circle first, on the ground under everything else)
+        float[] disc = circleNow == null ? new float[0] : circleVertices(circleNow, circleRadius, eye);
+        if (circleNow != null && circleTexture == 0) circleTexture = upload(gl, circleImage());
+        float[] vertices = new float[disc.length + order.size() * 6 * FLOATS];
+        System.arraycopy(disc, 0, vertices, 0, disc.length);
+        int count = disc.length;
+        int discVertices = disc.length / FLOATS;
         for (Reading r : order) {
             if (r.texture == 0) r.texture = upload(gl, pinImage(r));
             double bx = r.at.x() - eye.x(), by = r.at.y() - eye.y(), bz = r.at.z() - eye.z();
@@ -251,9 +318,13 @@ final class MeasurementLog extends GamePart {
         gl.glBlendFunc(GL.GL_SRC_ALPHA, GL.GL_ONE_MINUS_SRC_ALPHA);
         gl.glDepthMask(false);
         gl.glDisable(GL.GL_CULL_FACE);
+        if (discVertices > 0) {
+            gl.glBindTexture(GL.GL_TEXTURE_2D, circleTexture);
+            gl.glDrawArrays(GL.GL_TRIANGLES, 0, discVertices);
+        }
         for (int i = 0; i < order.size(); i++) {
             gl.glBindTexture(GL.GL_TEXTURE_2D, order.get(i).texture);
-            gl.glDrawArrays(GL.GL_TRIANGLES, i * 6, 6);
+            gl.glDrawArrays(GL.GL_TRIANGLES, discVertices + i * 6, 6);
         }
         gl.glEnable(GL.GL_CULL_FACE);
         gl.glDepthMask(true);

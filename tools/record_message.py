@@ -21,6 +21,8 @@ Usage (from the project's folder):
 e.g.
     python tools/record_message.py xenocorp_january xenocorp_gift "You have one new message..." IQ="I Q"
 Each word=spoken says that word as the spoken text instead (the transcript keeps the word).
+A spoken text BLEEP:<before>:<after> censors the word: the phonemes before (eSpeak IPA, one
+character each), a bleep, then the phonemes after, e.g. fu**ed=BLEEP:f:t.
 """
 import json
 import sys
@@ -36,6 +38,8 @@ MODEL = "assets/audio/voice/bryce.onnx"
 SCALES = np.array([0.6, 0.6, 0.7], dtype=np.float32)
 # Silence before the first word, and after a phrase ending in each mark (seconds)
 LEAD = 0.35
+# A censored word's bleep (see BLEEP: in the usage): how long, its pitch and how loud
+BLEEP_SECONDS, BLEEP_HZ, BLEEP_LEVEL = 0.32, 1000.0, 0.55
 PAUSE = {",": 0.12, ":": 0.28, ";": 0.2, ".": 0.38, "!": 0.38, "?": 0.38}
 
 
@@ -76,8 +80,11 @@ def main():
         return [p for sentence in voice.phonemize(text) for p in sentence]
 
     def say(text):
+        return say_phonemes(phonemes(text))
+
+    def say_phonemes(said):
         sequence = [ids["^"][0], ids["_"][0]]
-        for p in phonemes(text):
+        for p in said:
             if p in ids:
                 sequence += [ids[p][0], ids["_"][0]]
         sequence.append(ids["$"][0])
@@ -107,22 +114,55 @@ def main():
     audio = [np.zeros(int(lead * rate))]
     timings = []
     t = lead
-    for phrase in phrases:
-        clean = [w.strip(",.:;!?\"") for w, _ in phrase]
-        spoken = [spoken_as.get(c, c) for c in clean]
-        sound = say(" ".join(spoken))
+    def trimmed(sound):
         # (trimmed of silence at either end, a little kept)
         loud = np.nonzero(np.abs(sound) > 0.015)[0]
         if len(loud):
             sound = sound[max(0, loud[0] - rate // 50): min(len(sound), loud[-1] + rate // 20)]
-        weights = [max(1, len([p for p in phonemes(s) if p.strip()])) for s in spoken]
-        total, before = float(sum(weights)), 0.0
-        length = len(sound) / rate
-        for (word, char), weight in zip(phrase, weights):
-            timings.append((int(round((offset + t + length * before / total) * 1000)), char))
-            before += weight
-        audio.append(sound)
-        t += length
+        return sound
+
+    def censored(rule):
+        # BLEEP:<phonemes before>:<phonemes after>: the word's start, a bleep over the middle, its end
+        _, before_ph, after_ph = rule.split(":")
+        parts = []
+        if before_ph:
+            parts.append(trimmed(say_phonemes(list(before_ph))))
+        n = int(BLEEP_SECONDS * rate)
+        ramp = np.minimum(1.0, np.minimum(np.arange(n), np.arange(n)[::-1]) / (0.008 * rate))
+        parts.append(BLEEP_LEVEL * np.sin(2 * np.pi * BLEEP_HZ * np.arange(n) / rate) * ramp)
+        if after_ph:
+            parts.append(trimmed(say_phonemes(list(after_ph))))
+        return np.concatenate(parts)
+
+    for phrase in phrases:
+        clean = [w.strip(",.:;!?\"") for w, _ in phrase]
+        spoken = [spoken_as.get(c, c) for c in clean]
+        # The phrase in runs: words said together, and each censored word on its own
+        runs, current = [], []
+        for item in zip(phrase, spoken):
+            if item[1].startswith("BLEEP:"):
+                if current:
+                    runs.append(current)
+                runs.append([item])
+                current = []
+            else:
+                current.append(item)
+        if current:
+            runs.append(current)
+        for run in runs:
+            if run[0][1].startswith("BLEEP:"):
+                sound = censored(run[0][1])
+                timings.append((int(round((offset + t) * 1000)), run[0][0][1]))
+            else:
+                sound = trimmed(say(" ".join(s for _, s in run)))
+                weights = [max(1, len([p for p in phonemes(s) if p.strip()])) for _, s in run]
+                total, before = float(sum(weights)), 0.0
+                length = len(sound) / rate
+                for ((word, char), _), weight in zip(run, weights):
+                    timings.append((int(round((offset + t + length * before / total) * 1000)), char))
+                    before += weight
+            audio.append(sound)
+            t += len(sound) / rate
         pause = PAUSE.get(phrase[-1][0][-1], 0.0)
         audio.append(np.zeros(int(pause * rate)))
         t += pause

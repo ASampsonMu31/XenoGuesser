@@ -118,18 +118,25 @@ afresh) but loses the fast loading.
 ### The exercises, in order
 1. **Sun (hemisphere)**. Somewhere cold (coldest fifth of the land), far from roads and houses,
    clear sky, sun clearly in the north or south (latitude above ~22 degrees). A marker pin
-   (like the readings' pins) is put in the ground 10 m ahead of the pod's stairs; then the
-   welcome; then walk to it (WASD) and turn a full circle on it (mouse). The turn's direction is
-   detected, and the next message says most trainees turn the other way and the player is odd.
-   Then a compass is given at once: face the sun with it (detected: compass out, view within
-   12 degrees of the sun for 0.8 s). Then expanding the map (Tab), zooming and guessing are
-   explained. Pass: the right hemisphere (the whole of it goes green). Trying again skips the
-   walking and turning.
+   (like the readings' pins) is put far off ahead of the pod's stairs (`Tutorial.MARKER_AHEAD`,
+   70 m; the way there must be walkable: dry, never too steep, nothing built); then the welcome;
+   then walk to it (WASD; the message says Shift sprints). Reaching it, the pin goes and a flat
+   circle is laid on the ground where it stood; turn a full circle inside it (mouse): the whole
+   turn must be done inside the circle (jumping is fine; stepping out starts the count again).
+   The turn's direction is detected, and the next message says most trainees turn the other way
+   and the player is odd. Then jump (Space), with a message on what jumping is for (rocks,
+   fences, guard rails; and expressing joy at one's work). Then a compass is given at once: face
+   the sun with it (compass out, view within 12 degrees of the sun for 0.8 s). Then expanding
+   the map (Tab), zooming and guessing are explained. Pass: the right hemisphere (the whole of
+   it goes green). Trying again skips the walking, turning and jumping. The compass message's
+   censored swear is said f + bleep + t (`SPOKEN_AS` in `tools/record_tutorial.py`).
 2. **Coast**. Very rural, 30-70 m from the sea, on a very straight coast (the coast within 1.5 km
    lying along one line), compass only, no heatmaps. A marker on the shore ahead; reaching it
    removes it; then line the compass up along the coast (detected both ways along it). Pass: a
    guess no further from a coast than four times the pod's distance from the sea (out to sea,
-   twice), where that coast (measured over 1.5 km) runs within 20 degrees of the site's.
+   twice), where that coast (measured over 1.5 km) runs within 20 degrees of the site's *with
+   the sea on the same side* (the way inland compared, a whole turn: a coast with the sea to the
+   north never matches one with it to the south).
 3. **Temperature**. Near the equator, low and level, thermometer only, temperature heatmap only.
    At the equinox and the hour when the day's warming is zero, so the thermometer reads what
    the heatmap shows (within 0.5 C). Pass: the heatmap at the guess within 2.5 C of the reading;
@@ -137,13 +144,30 @@ afresh) but loses the fast loading.
 4. **Altitude**. Scenic, on a mountainside with a view downhill, exactly on a 10 m contour about
    75% of the planet's highest ground; altimeter only, contours only. Pass: ground within 8 m of
    the reading.
-5. **Plants and animals**. One plant and one animal plentiful here, no other species about;
-   identification kit only. First identify 5 plants and 5 animals; then their two maps are given.
-   The pair is chosen so that only one region of the planet has plenty of both. Pass: in it.
+5. **Plants and animals**. Out in the wild (150 m from any road or house if anywhere is, then
+   100, then 60: no townsfolk to mistake for animals, nothing built in the way), one plant
+   (a tree or shrub) and one animal plentiful there and, as far as the planet allows, no other
+   species plentiful (below the plentiful share); then as few regions of overlap as can be
+   found. Identification kit only. First identify 5 of *that plant* (other plants don't count;
+   each plant once), then 5 of *that animal* (each animal once, known by itself); then their two
+   maps are given. The intro says to hold Space to climb slopes, and that broken legs aren't
+   covered by the health insurance. Pass: anywhere both are plentiful (all of it green).
 6. **The other maps**, one exercise each, in the same format (intro message giving the maps,
-   objectives to show each, then guess), each at a fitting, good-looking place where the map
-   tells the place apart from much of the planet (2-25% of the land passes):
-   rainfall + rivers (a wet place, raining), soil colour + rocks (rocky), grass (lush, tall),
-   wealth + roads/buildings/shops (a rich town), flags + languages (a town), bollards + road lines
-   + utility poles (on a road with them), architecture (among houses), landmarks (in view of one).
+   objectives to show each, then guess):
+   - rainfall + rivers: very wet (the wettest 5% of the land), raining. Pass: anywhere in the
+     wetter half of the land (rain can't be measured by eye).
+   - soil colour + rock frequency + rock size: soil of a colour as far from the land's usual as
+     can be found (bright red, say), many small rocks (opposite ends of the two rock maps).
+     Pass: the same soil, as many and as small rocks.
+   - grass: lush and tall.
+   - wealth + roads/buildings/shops: a *poor* town (damaged, dirty houses: the message says
+     these mean poverty), at least 500 m from any landmark.
+   - flags + languages (a town); bollards + road lines + utility poles (on a road with them);
+     architecture (among houses); landmarks (in view of one).
+   Unless said otherwise above, each where the map tells the place apart from much of the planet
+   (2-25% of the land passes), at a fitting, good-looking place.
+7. **Every exercise**: the pod's stairs lead out into the open: nothing the player can't get
+   past between their foot and 8 m beyond (`InfrastructureManager.stairsWayClear`, used for
+   every landing site in the game). A new exercise stops whatever message the last was saying,
+   and anything still waiting to be said.
    Every map the game has must be covered by some exercise.

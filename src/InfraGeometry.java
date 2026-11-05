@@ -428,9 +428,8 @@ abstract class InfraGeometry {
      * How well off the people at a point are: the nation's richness, more so in town, and far
      * less near a fenced border (see borderBlight), on both sides of it.
      */
-    // A city counts as big from this size to fully big at this (1 the planet's largest), and the
-    // biggest are this much richer than the nation's usual towns
-    static final float BIG_CITY_FROM = 0.3f, BIG_CITY_TO = 0.75f, BIG_CITY_WEALTH = 0.8f;
+    // A city counts as big from this size to fully big at this (1 the planet's largest)
+    static final float BIG_CITY_FROM = 0.3f, BIG_CITY_TO = 0.75f;
 
     /**
      * Generators for every nation's wall, roof and fence textures, keyed by texture name,

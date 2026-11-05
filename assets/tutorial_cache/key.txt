@@ -1,17 +1,19 @@
 format 1
 seed 20261104
 sea -67.8611 width 148981.61
-towns 340 houses 9880 roads 64775 nations 8
-houses at b07841f61be8fae2
+towns 340 houses 9931 roads 64776 nations 8
+houses at daa777c12541ee8a
 rivers 846 lakes 113
-landmark SPIRE The Dooman Spire
-landmark SPIRE The Thardia Spire
-landmark RUIN The Ruins of Kumpor
-landmark RUIN The Ruins of Klailta
-landmark STONES The Zidrin Monoliths
-landmark STONES The Borndoth Monoliths
-landmark STATUE The Colossus of Faimba
-landmark STATUE The Colossus of Klayza
+landmark SPIRE The Stusnoth Spire
+landmark SPIRE The Quibrek Spire
+landmark RUIN The Ruins of Strebria
+landmark RUIN The Ruins of Timpa
+landmark RUIN The Ruins of Zaydix
+landmark STONES The Drogra Monoliths
+landmark STONES The Boatron Monoliths
+landmark STATUE The Colossus of Slelva
+landmark STATUE The Colossus of Drolta
+landmark STATUE The Colossus of Faydia
 landmark SUMMIT Mount Gagra
 landmark BAY Silmia Bay
 landmark SPIT Krebran Sands

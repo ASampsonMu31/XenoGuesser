@@ -154,7 +154,6 @@ final class Tutorial extends GamePart {
                 }
                 if (!retry) say("msg.sun.welcome", () -> {
                     add("obj.sun.walk");
-                    add("obj.sun.spin");
                     step = Step.WALK;
                     say("msg.sun.walk", null);
                 });
@@ -271,7 +270,7 @@ final class Tutorial extends GamePart {
     private static List<String> mapObjectives(TutorialPlan.Stage stage) {
         return switch (stage) {
             case RAINFALL -> List.of("obj.rainfall.map", "obj.rainfall.rivers");
-            case GROUND -> List.of("obj.ground.soil", "obj.ground.rocks");
+            case GROUND -> List.of("obj.ground.soil", "obj.ground.rocks", "obj.ground.size");
             case GRASS -> List.of("obj.grass.colour", "obj.grass.height");
             case WEALTH -> List.of("obj.wealth.map", "obj.wealth.buildings");
             case FLAGS -> List.of("obj.flags.map", "obj.flags.languages");
@@ -298,6 +297,7 @@ final class Tutorial extends GamePart {
             case "obj.rainfall.rivers" -> map.isLayerShown(MapPanel.Layer.RIVERS);
             case "obj.ground.soil" -> f == FactorName.SOIL_COLOUR;
             case "obj.ground.rocks" -> f == FactorName.ROCKS;
+            case "obj.ground.size" -> f == FactorName.ROCK_SIZE;
             case "obj.grass.colour" -> f == FactorName.GRASS_COLOUR;
             case "obj.grass.height" -> f == FactorName.GRASS_HEIGHT;
             case "obj.wealth.map" -> f == FactorName.WEALTH;
@@ -317,6 +317,14 @@ final class Tutorial extends GamePart {
     // The messages waiting to be said, each with what's done once it's ended
     private final java.util.ArrayDeque<Object[]> queued = new java.util.ArrayDeque<>();
     private boolean speaking;
+    // Counts each hush, so a message from before one (still loading, or its ending) is let go
+    private int spoken;
+    // Stops whatever message is playing over the game (the window's: see XenoGuesser)
+    private volatile Runnable silencer;
+
+    void setSilencer(Runnable silencer) {
+        this.silencer = silencer;
+    }
 
     /** Says a message once those before it have been (or skipped), then does then (on the UI thread; null for nothing). */
     void say(String key, Runnable then) {
@@ -330,7 +338,9 @@ final class Tutorial extends GamePart {
 
     private void sayNext() {
         Object[] next;
+        int heard;
         synchronized (queued) {
+            heard = spoken;
             next = queued.poll();
             if (next == null) {
                 speaking = false;
@@ -342,7 +352,14 @@ final class Tutorial extends GamePart {
         Thread load = new Thread(() -> {
             TransmissionMessage message = text().message(key);
             java.util.function.BiConsumer<TransmissionMessage, java.util.function.Consumer<Boolean>> m = messenger;
+            synchronized (queued) {
+                // (hushed while it was loading: it's not said)
+                if (heard != spoken) return;
+            }
             java.util.function.Consumer<Boolean> ended = skipped -> {
+                synchronized (queued) {
+                    if (heard != spoken) return;
+                }
                 if (then != null) then.run();
                 sayNext();
             };
@@ -353,11 +370,15 @@ final class Tutorial extends GamePart {
         load.start();
     }
 
-    /** Forgets any messages waiting (a new round, or the tutorial left). */
+    /** Stops the message being said and forgets any waiting, and what they'd have done after (a new round, or the tutorial left). */
     void hush() {
         synchronized (queued) {
             queued.clear();
+            spoken++;
+            speaking = false;
         }
+        Runnable stop = silencer;
+        if (stop != null) javax.swing.SwingUtilities.invokeLater(stop);
     }
 
     // ------------------------------------------------------------------ objectives
@@ -397,11 +418,19 @@ final class Tutorial extends GamePart {
 
     // ------------------------------------------------------------------ the marker
 
-    // The first marker's distance ahead of the pod's stairs (world units: 10 m), and how near it
-    // counts as being at it; and how far off the marker the turning still counts
-    private static final double MARKER_AHEAD = 10.0 * PlayerBody.METRE, AT_MARKER = 2.6 * PlayerBody.METRE, ON_MARKER = 5.0 * PlayerBody.METRE;
+    // The first marker's distance ahead of the pod's stairs (world units: far off, a walk away;
+    // TutorialSites checks the way there can be walked), and how near it counts as being at it;
+    // and the circle on the ground it leaves for the turning, which must all be done inside it
+    static final double MARKER_AHEAD = 70.0 * PlayerBody.METRE;
+    private static final double AT_MARKER = 2.6 * PlayerBody.METRE, CIRCLE_RADIUS = 2.5 * PlayerBody.METRE;
 
-    private volatile SpherePosition marker;
+    private volatile SpherePosition marker, circle;
+
+    /** Lays the circle to turn in on the ground round a place (null takes it up). */
+    private void placeCircle(SpherePosition at) {
+        circle = at;
+        game.measurementLog.setCircle(at, (float) CIRCLE_RADIUS);
+    }
 
     private void placeMarker(SpherePosition at) {
         SpherePosition ground = SphereMath.atAltitude(at, game.groundHeightAt(at));
@@ -416,7 +445,7 @@ final class Tutorial extends GamePart {
 
     // ------------------------------------------------------------------ each frame
 
-    private enum Step { NONE, WALK, SPIN, FACE_SUN, LINE_COAST, READ, IDENTIFY, SPECIES_MAPS, MAPS, GUESS }
+    private enum Step { NONE, WALK, SPIN, JUMP, FACE_SUN, LINE_COAST, READ, IDENTIFY, SPECIES_MAPS, MAPS, GUESS }
 
     private volatile Step step = Step.NONE;
     private float lastYaw = Float.NaN, turned;
@@ -432,6 +461,7 @@ final class Tutorial extends GamePart {
         turned = 0f;
         linedUp = 0.0;
         removeMarker();
+        placeCircle(null);
         synchronized (plantsFound) {
             plantsFound.clear();
             animalsSeen.clear();
@@ -459,9 +489,14 @@ final class Tutorial extends GamePart {
             case WALK -> {
                 if (toMarker < AT_MARKER) {
                     if (stage() == TutorialPlan.Stage.SUN) {
+                        // The pin goes, and a circle's left on the ground where it stood, to turn in
                         complete("obj.sun.walk");
+                        removeMarker();
+                        placeCircle(m);
+                        add("obj.sun.spin");
                         step = Step.SPIN;
                         turned = 0f;
+                        say("msg.sun.spin", null);
                     } else {
                         complete("obj.coast.walk");
                         // (the shore's marker goes once it's reached)
@@ -472,7 +507,10 @@ final class Tutorial extends GamePart {
                 }
             }
             case SPIN -> {
-                if (toMarker > ON_MARKER) {
+                // (the whole turn inside the circle, jumping or not: stepping out of it starts it again)
+                SpherePosition c = circle;
+                double fromCircle = c == null ? Double.MAX_VALUE : SphereMath.distance(SphereMath.atAltitude(eye, 0.0), SphereMath.atAltitude(c, 0.0));
+                if (fromCircle > CIRCLE_RADIUS) {
                     turned = 0f;
                 } else {
                     turned += turnedNow;
@@ -480,11 +518,19 @@ final class Tutorial extends GamePart {
                         complete("obj.sun.spin");
                         // (headings turn from east towards south: clockwise seen from above)
                         boolean clockwise = turned > 0f;
-                        removeMarker();
-                        step = Step.NONE;
+                        placeCircle(null);
+                        add("obj.sun.jump");
+                        step = Step.JUMP;
                         say(clockwise ? "msg.sun.spun.clockwise" : "msg.sun.spun.anticlockwise", null);
-                        javax.swing.SwingUtilities.invokeLater(this::startSunCompass);
+                        say("msg.sun.jump", null);
                     }
+                }
+            }
+            case JUMP -> {
+                if (game.playerMotion.airborne) {
+                    complete("obj.sun.jump");
+                    step = Step.NONE;
+                    javax.swing.SwingUtilities.invokeLater(this::startSunCompass);
                 }
             }
             case FACE_SUN -> {

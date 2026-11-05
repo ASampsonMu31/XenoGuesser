@@ -18,7 +18,10 @@ MESSAGES = "assets/text/tutorial_messages.txt"
 OUT = "assets/audio/tutorial"
 SETTINGS_FROM = "xenocorp_gift"
 # How some words are said (word=spoken), as record_message.py takes them
-SPOKEN_AS = []
+SPOKEN_AS = [
+    # (the swear in the sun's exercise, censored: the f of "frog", a bleep, the t-sounding end of "ducked")
+    "fu**ed=BLEEP:f:t",
+]
 
 
 def entries():

@@ -430,7 +430,13 @@ public class LandingPod {
 
     /** Whether a place is within margin of the pod's ground plan. */
     public boolean covers(SpherePosition position, double margin) {
-        return placed && SphereMath.distance(position, frame.origin()) < Math.max(40f, REACH) + margin;
+        if (!placed) return false;
+        if (SphereMath.distance(position, frame.origin()) < Math.max(40f, REACH) + margin) return true;
+        // (and the way off the stairs, out past their foot, so no rock or tree is left in it:
+        // see InfrastructureManager.stairsWayClear)
+        double[] local = frame.toLocal(SphereMath.atAltitude(position, SphereMath.altitude(frame.origin())));
+        return local[2] > 0.0 && local[2] < REACH + InfrastructureManager.STAIRS_WAY_OUT + margin
+                && Math.abs(local[0]) < InfrastructureManager.STAIRS_WAY_HALF_WIDTH + margin;
     }
 
     /** The pod's own frame: origin under its middle on the ground, local z the way its stairs run. */

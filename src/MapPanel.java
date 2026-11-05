@@ -356,6 +356,8 @@ public class MapPanel extends JPanel {
         if (Dev.flag("xenoguesser.flatmaps")) mapGlobe = revealGlobe = false;
         this.physicalChunkSize = physicalChunkSize;
         this.listener = listener;
+        this.heightNoise = noise;
+        this.heightSea = seaLevelHeight;
 
         this.setOpaque(false);
         this.setLayout(null); 
@@ -1501,6 +1503,45 @@ public class MapPanel extends JPanel {
      * A chunk-resolution overlay laid over the land of the map (the sea left as it is),
      * ready to show. Slow-ish, so done in the background: it only reads the plain map.
      */
+    // The land's heights and the sea's level, for the contours' reading under the marker (see drawContourHeight)
+    private final PerlinNoise heightNoise;
+    private final float heightSea;
+    // The last height read and the marker it was read under
+    private GeodesicChunkGrid.Direction heightPin;
+    private String heightText;
+
+    /**
+     * With the contours shown and a marker down on land: how high the ground is there (in
+     * metres above the sea, as the altimeter reads it), in the map's bottom left corner, clear
+     * of the heatmap's key at the top and the zoom at the bottom right.
+     */
+    private void drawContourHeight(Graphics2D g2d, int mapX, int mapY) {
+        GeodesicChunkGrid.Direction at = hasPin ? pin : null;
+        if (at == null || heightNoise == null || !shownLayers.contains(Layer.CONTOURS)) return;
+        if (at != heightPin) {
+            heightPin = at;
+            float ground = TerrainMesh.getLayeredHeight(at, heightNoise);
+            heightText = ground <= heightSea ? null : "Height " + Math.round((ground - heightSea) / PlayerBody.METRE) + " m";
+        }
+        String text = heightText;
+        if (text == null) return;
+        g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
+        FontMetrics fm = g2d.getFontMetrics();
+        int icon = 12, boxW = icon + 10 + fm.stringWidth(text) + 12, boxH = fm.getAscent() + 8;
+        int boxX = mapX + 8, boxY = mapY + mapHeight() - boxH - 8;
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillRoundRect(boxX, boxY, boxW, boxH, 8, 8);
+        g2d.setColor(new Color(255, 255, 255, 70));
+        g2d.drawRoundRect(boxX, boxY, boxW, boxH, 8, 8);
+        // (a little hill of contour rings beside it)
+        int ix = boxX + 7, iy = boxY + (boxH - icon) / 2;
+        g2d.setColor(new Color(150, 220, 130));
+        g2d.drawOval(ix, iy + 2, icon, icon - 4);
+        g2d.drawOval(ix + 3, iy + 4, icon - 6, icon - 8);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(text, ix + icon + 6, boxY + 4 + fm.getAscent() - 1);
+    }
+
     /** The overlay's key (see setLegend), centred on x below y: a bar of its colours, with its values and units beneath. */
     private void drawLegend(Graphics2D g2d, int centreX, int top) {
         float[][] colours = legendColours;
@@ -2086,6 +2127,8 @@ public class MapPanel extends JPanel {
                 g2d.setColor(Color.WHITE);
                 g2d.drawString(zoomLabel, zoomX + 6, zoomY + zoomFm.getAscent() + 3);
             }
+
+            if (!plain) drawContourHeight(g2d, mapX, mapY);
 
             String heatmapName = plain ? null : this.gradientName, picturesShown = plain ? null : this.picturesName;
             if (picturesShown != null) heatmapName = heatmapName == null ? picturesShown : heatmapName + "  ·  " + picturesShown;

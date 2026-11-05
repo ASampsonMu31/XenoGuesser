@@ -67,11 +67,13 @@ final class TutorialSites {
             case TEMPERATURE -> temperature(rand);
             case ALTITUDE -> altitude(rand);
             case WILDLIFE -> wildlife(rand);
-            case RAINFALL -> mapSite(stage, rand, MapKind.RURAL, d -> share(MapOverlay.of(FactorName.RAINFALL), d) > 0.72f, 2.4f);
-            case GROUND -> mapSite(stage, rand, MapKind.RURAL, d -> share(MapOverlay.of(FactorName.ROCKS), d) > 0.55f, -2f);
+            case RAINFALL -> rainfall(rand);
+            case GROUND -> ground(rand);
             case GRASS -> mapSite(stage, rand, MapKind.RURAL, d -> share(MapOverlay.of(FactorName.GRASS_HEIGHT), d) > 0.6f
                     && g.grassAbundanceFactor.evaluate(d) > 0.6f, -1.5f);
-            case WEALTH -> mapSite(stage, rand, MapKind.URBAN, d -> share(MapOverlay.of(FactorName.WEALTH), d) > 0.7f, -2f);
+            // (a poor town, its houses damaged and dirty, well away from any landmark)
+            case WEALTH -> mapSite(stage, rand, MapKind.URBAN, d -> share(MapOverlay.of(FactorName.WEALTH), d) < 0.2f
+                    && farFromLandmarks(SphereMath.atAltitude(d, 0.0), 500f * PlayerBody.METRE), -2f);
             case FLAGS -> mapSite(stage, rand, MapKind.URBAN, d -> true, -2f);
             case ROADSIDE -> mapSite(stage, rand, MapKind.BALANCED, d -> {
                 int n = g.nationManager.getNationAt(d);
@@ -120,7 +122,23 @@ final class TutorialSites {
         if (!dry(stairs) || !dry(pod)) return false;
         for (int leg = 0; leg < 4; leg++) if (!dry(SphereMath.move(pod, Math.PI * 0.25 + leg * Math.PI * 0.5, 36.0))) return false;
         if (g.infraManager.isRoadLocation(pod, LandingPod.REACH) || g.infraManager.isPrivateGround(pod, LandingPod.REACH)) return false;
+        // (and nothing in the way off the stairs that the player can't get past)
+        if (!g.infraManager.stairsWayClear(new Viewpoint(stairs, heading), LandingPod.SPAWN_DISTANCE, LandingPod.REACH)) return false;
         return walkable(stairs);
+    }
+
+    /** Whether the way from a place along a heading can be walked all the way (dry, never too steep to climb, nothing built), every 3 m. */
+    private boolean walkableWay(SpherePosition from, double heading, double distance) {
+        double step = 3 * PlayerBody.METRE;
+        SpherePosition last = SphereMath.atAltitude(from, height(from));
+        for (double out = step; out <= distance; out += step) {
+            SpherePosition p = SphereMath.move(from, heading, out);
+            if (!dry(p) || g.infraManager.isRoadLocation(p, 2 * PlayerBody.METRE) || g.infraManager.isBuildingLocation(p, 2 * PlayerBody.METRE)) return false;
+            SpherePosition here = SphereMath.atAltitude(p, height(p));
+            if (g.playerMotion.sphereTooSteep(last, here)) return false;
+            last = here;
+        }
+        return true;
     }
 
     /** Whether at least six ways of eight from a place can be walked (none too steep for the player, over 3 m). */
@@ -182,17 +200,28 @@ final class TutorialSites {
         for (GeodesicChunkGrid.Direction d : land) temps.add(checks.heatmapTemperature(d));
         java.util.Collections.sort(temps);
         float cold = temps.isEmpty() ? 0f : temps.get(temps.size() / 5);
+        int[] why = new int[3];
         for (int attempt = 0; attempt < 200_000; attempt++) {
             SpherePosition p = randomLand(rand, Math.toRadians(62));
             if (p == null) return null;
             double lat = Math.abs(Math.toDegrees(Planet.latitude(p)));
             if (lat < 22 || !onMap(p) || checks.heatmapTemperature(SphereMath.direction(p)) > cold) continue;
             if (!remote(p, 200f * PlayerBody.METRE) || !level(p, 15 * PlayerBody.METRE, 1.5f * PlayerBody.METRE)) continue;
-            double heading = rand.nextDouble() * Math.PI * 2;
-            SpherePosition marker = SphereMath.move(p, heading, 10 * PlayerBody.METRE);
-            if (!dry(marker) || !podFits(p, heading)) continue;
-            return site(TutorialPlan.Stage.SUN, p, heading, -0.55, 0.0, -3f, new LinkedHashMap<>());
+            why[0]++;
+            // (the marker far ahead, the way there dry and walkable all along, and level where
+            // it's reached for turning on: each of eight ways tried, from a random one)
+            double first = rand.nextDouble() * Math.PI * 2;
+            for (int k = 0; k < 8; k++) {
+                double heading = first + k * Math.PI / 4;
+                if (!walkableWay(p, heading, Tutorial.MARKER_AHEAD)) continue;
+                why[1]++;
+                if (!level(SphereMath.move(p, heading, Tutorial.MARKER_AHEAD), 4 * PlayerBody.METRE, 1.2f * PlayerBody.METRE)) continue;
+                why[2]++;
+                if (!podFits(p, heading)) continue;
+                return site(TutorialPlan.Stage.SUN, p, heading, -0.55, 0.0, -3f, new LinkedHashMap<>());
+            }
         }
+        notes.add(String.format(Locale.ROOT, "sun: cold and remote %d, a walkable way %d, level at the marker %d (then the pod didn't fit)", why[0], why[1], why[2]));
         return null;
     }
 
@@ -611,6 +640,78 @@ final class TutorialSites {
                 best = site;
             }
         }
+        return best;
+    }
+
+    /** Whether a place is at least this far (world units) from every landmark. */
+    private boolean farFromLandmarks(SpherePosition p, float distance) {
+        for (Landmark lm : g.infraManager.landmarks().all()) if (SphereMath.distance(p, SphereMath.atAltitude(lm.place(), 0.0)) < distance) return false;
+        return true;
+    }
+
+    /** The share of the land (spread evenly) a measure is below: its value at that quantile. */
+    private float quantile(java.util.function.ToDoubleFunction<GeodesicChunkGrid.Direction> measure, float q) {
+        List<Double> values = new ArrayList<>();
+        for (GeodesicChunkGrid.Direction d : land) values.add(measure.applyAsDouble(d));
+        java.util.Collections.sort(values);
+        return values.isEmpty() ? 0f : values.get(Math.min(values.size() - 1, Math.round(q * (values.size() - 1)))).floatValue();
+    }
+
+    /**
+     * Somewhere very wet (among the wettest twentieth of the land), in the country, on a rainy
+     * day; passed anywhere in the wetter half of the land (how wet can't be measured by eye),
+     * the rainfall map's middle value over the land kept with it.
+     */
+    private TutorialPlan.Site rainfall(Random rand) {
+        MapOverlay rain = MapOverlay.of(FactorName.RAINFALL);
+        float wettest = quantile(d -> share(rain, d), 0.95f), middle = quantile(d -> share(rain, d), 0.5f);
+        Viewpoint v = g.infraManager.landingSite(rand, LandingPod.SPAWN_DISTANCE, LandingPod.REACH,
+                q -> dry(q) && onMap(q) && share(rain, q) >= wettest, MapKind.RURAL);
+        if (v == null || share(rain, v.place()) < wettest) return null;
+        Map<String, String> extra = new LinkedHashMap<>();
+        extra.put("wetterHalf", String.format(Locale.ROOT, "%.4f", middle));
+        return site(TutorialPlan.Stage.RAINFALL, v.place(), v.heading(), -0.6, 0.0, 2.6f, extra);
+    }
+
+    /**
+     * Somewhere the ground stands out on every one of its maps: soil of a colour far from the
+     * land's usual (bright red, say), and a great many small rocks. In the country, the pod
+     * where it can stand.
+     */
+    private TutorialPlan.Site ground(Random rand) {
+        WorldPalette palette = g.worldArt != null ? g.worldArt.palette() : new WorldPalette(g.worldSeed);
+        MapOverlay rocks = MapOverlay.of(FactorName.ROCKS), size = MapOverlay.of(FactorName.ROCK_SIZE);
+        // The land's usual soil colour (its average)
+        double r = 0, gr = 0, b = 0;
+        for (GeodesicChunkGrid.Direction d : land) {
+            int c = g.mapOverlays.soilColourAt(palette, d);
+            r += c >> 16 & 255;
+            gr += c >> 8 & 255;
+            b += c & 255;
+        }
+        int n = Math.max(1, land.size());
+        float[] usual = { (float) (r / n / 255), (float) (gr / n / 255), (float) (b / n / 255) };
+        float manyRocks = quantile(d -> share(rocks, d), 0.75f), smallRocks = quantile(d -> share(size, d), 0.35f);
+        TutorialPlan.Site best = null;
+        float bestApart = -1f;
+        for (int attempt = 0; attempt < 30_000; attempt++) {
+            SpherePosition p = randomLand(rand, Math.toRadians(70));
+            if (p == null) break;
+            GeodesicChunkGrid.Direction d = SphereMath.direction(p);
+            if (!onMap(p) || share(rocks, d) < manyRocks || share(size, d) > smallRocks) continue;
+            int c = g.mapOverlays.soilColourAt(palette, d);
+            float dr = (c >> 16 & 255) / 255f - usual[0], dg = (c >> 8 & 255) / 255f - usual[1], db = (c & 255) / 255f - usual[2];
+            float apart = (float) Math.sqrt(dr * dr + dg * dg + db * db);
+            if (apart <= bestApart || !remote(p, 40f * PlayerBody.METRE)) continue;
+            double heading = rand.nextDouble() * Math.PI * 2;
+            if (!podFits(p, heading)) continue;
+            TutorialPlan.Site site = site(TutorialPlan.Stage.GROUND, p, heading, -0.6, 0.0, -2f, new LinkedHashMap<>());
+            float share = passingShare(site);
+            if (share < 0.01f || share > 0.25f) continue;
+            bestApart = apart;
+            best = site;
+        }
+        if (best != null) notes.add(String.format(Locale.ROOT, "ground: its soil %.2f from the land's usual colour (0 the same, 1.7 black from white)", bestApart));
         return best;
     }
 
