@@ -699,6 +699,8 @@ final class TutorialSites {
             if (p == null) break;
             GeodesicChunkGrid.Direction d = SphereMath.direction(p);
             if (!onMap(p) || share(rocks, d) < manyRocks || share(size, d) > smallRocks) continue;
+            // (no snow lying over the soil to hide its colour: well above freezing there)
+            if (averageCelsius(p) < g.freezingPoint + SNOWLESS_MARGIN) continue;
             int c = g.mapOverlays.soilColourAt(palette, d);
             float dr = (c >> 16 & 255) / 255f - usual[0], dg = (c >> 8 & 255) / 255f - usual[1], db = (c & 255) / 255f - usual[2];
             float apart = (float) Math.sqrt(dr * dr + dg * dg + db * db);
@@ -713,6 +715,18 @@ final class TutorialSites {
         }
         if (best != null) notes.add(String.format(Locale.ROOT, "ground: its soil %.2f from the land's usual colour (0 the same, 1.7 black from white)", bestApart));
         return best;
+    }
+
+    // How far above the planet's freezing point a place must be on average to have no snow lying
+    // (snow thins out over the 5 degrees above it, see SnowCover, and its map is smoothed)
+    private static final float SNOWLESS_MARGIN = 6f;
+
+    /** A place's average temperature at its own height (as the snow's lying is worked out, see SnowCover). */
+    private float averageCelsius(SpherePosition p) {
+        GeodesicChunkGrid.Direction d = SphereMath.direction(p);
+        float up = Math.max(0f, height(p) - g.seaLevelHeight);
+        return -30f + 70f * (g.regionalManager.temperatureMap.evaluate(d) + g.regionalManager.altitudeChill(d)
+                - up * RegionalGenerationManager.ALTITUDE_CHILL);
     }
 
     /** In view of one of the landmarks (the pod a little way off, facing it), the natural ones' and the built alike. */

@@ -151,6 +151,8 @@ final class Tutorial extends GamePart {
                     // The marker first, ahead of the pod's stairs, then the welcome
                     Viewpoint stairs = site != null ? site.viewpoint() : new Viewpoint(game.camera.getSpherePosition(), Math.toRadians(game.camera.getYaw()));
                     placeMarker(SphereMath.move(stairs.place(), stairs.heading(), MARKER_AHEAD));
+                    // (facing it from the start: no looking round needed until the circle)
+                    faceWanted = marker;
                 }
                 if (!retry) say("msg.sun.welcome", () -> {
                     add("obj.sun.walk");
@@ -161,7 +163,10 @@ final class Tutorial extends GamePart {
             case COAST -> {
                 TutorialPlan.Site site = site();
                 SpherePosition shore = site == null ? null : site.placeOf("marker");
-                if (shore != null) placeMarker(shore);
+                if (shore != null) {
+                    placeMarker(shore);
+                    faceWanted = marker;
+                }
                 add("obj.coast.walk");
                 add("obj.coast.line");
                 add("obj.coast.guess");
@@ -397,6 +402,20 @@ final class Tutorial extends GamePart {
         return text().get(key, all.toArray(new String[0]));
     }
 
+    /**
+     * Whether a guess may be made yet: every objective but the guess itself done (an exercise
+     * whose guess isn't asked for yet, as the sun's until its compass is used, may not be guessed).
+     */
+    boolean guessAllowed() {
+        if (!active) return true;
+        boolean asked = false;
+        for (Objective o : objectives) {
+            if (o.key.endsWith(".guess")) asked = true;
+            else if (!o.done) return false;
+        }
+        return asked;
+    }
+
     private Objective objective(String key) {
         for (Objective o : objectives) if (o.key.equals(key)) return o;
         return null;
@@ -448,6 +467,10 @@ final class Tutorial extends GamePart {
     private enum Step { NONE, WALK, SPIN, JUMP, FACE_SUN, LINE_COAST, READ, IDENTIFY, SPECIES_MAPS, MAPS, GUESS }
 
     private volatile Step step = Step.NONE;
+    // Whether the player was off the ground last frame (a jump counts from its take-off)
+    private volatile boolean leftGround;
+    // Where the view's to be turned to face, next frame (the marker, as an exercise starts), or null
+    private volatile SpherePosition faceWanted;
     private float lastYaw = Float.NaN, turned;
     // How long the compass has been held lined up (seconds)
     private double linedUp;
@@ -479,6 +502,13 @@ final class Tutorial extends GamePart {
         double dt = lastFrame == 0L ? 0.0 : Math.min(0.1, (now - lastFrame) * 1e-9);
         lastFrame = now;
         SpherePosition eye = game.camera.getSpherePosition();
+        SpherePosition face = faceWanted;
+        if (face != null) {
+            // (level with the eyes, straight at it)
+            faceWanted = null;
+            game.camera.lookAt(SphereMath.atAltitude(face, SphereMath.altitude(eye)));
+            lastYaw = Float.NaN;
+        }
         float yaw = game.camera.getYaw();
         float turnedNow = Float.isNaN(lastYaw) ? 0f : (float) Math.IEEEremainder(yaw - lastYaw, 360.0);
         lastYaw = yaw;
@@ -519,15 +549,22 @@ final class Tutorial extends GamePart {
                         // (headings turn from east towards south: clockwise seen from above)
                         boolean clockwise = turned > 0f;
                         placeCircle(null);
-                        add("obj.sun.jump");
-                        step = Step.JUMP;
-                        say(clockwise ? "msg.sun.spun.clockwise" : "msg.sun.spun.anticlockwise", null);
-                        say("msg.sun.jump", null);
+                        step = Step.NONE;
+                        // (the jumping's only asked for, and counted, once the turning's been remarked on)
+                        say(clockwise ? "msg.sun.spun.clockwise" : "msg.sun.spun.anticlockwise", () -> {
+                            add("obj.sun.jump");
+                            leftGround = true;
+                            step = Step.JUMP;
+                            say("msg.sun.jump", null);
+                        });
                     }
                 }
             }
             case JUMP -> {
-                if (game.playerMotion.airborne) {
+                // (a jump begun from now: one already in the air when it was asked for doesn't count)
+                boolean up = game.playerMotion.airborne, takeOff = up && !leftGround;
+                leftGround = up;
+                if (takeOff) {
                     complete("obj.sun.jump");
                     step = Step.NONE;
                     javax.swing.SwingUtilities.invokeLater(this::startSunCompass);

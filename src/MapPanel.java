@@ -554,7 +554,7 @@ public class MapPanel extends JPanel {
                     }
                     if (isGuessed) return;
                     else if (isLarge && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                        if (hasPin) {
+                        if (hasPin && guessAllowed()) {
                             startRevealSequence();
                         }
                     }
@@ -694,6 +694,11 @@ public class MapPanel extends JPanel {
 
     public void setJudge(java.util.function.Function<GeodesicChunkGrid.Direction, Tutorial.Verdict> judge) {
         this.judge = judge;
+    }
+
+    /** Whether a guess may be made now: always, but in the tutorial only once its exercise's objectives are done. */
+    private boolean guessAllowed() {
+        return !Tutorial.active || listener == null || listener.tutorial.guessAllowed();
     }
 
     /** The plain map the results show: washed green where the tutorial's exercise passes, if it does. */
@@ -2176,8 +2181,10 @@ public class MapPanel extends JPanel {
                     HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), roundNote() != null ? "Edit note" : "Add note",
                             null, true, false, hoveredButton == 2, 1f);
                 } else if (!spectating) {
-                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), "Guess", null, hasPin, true,
-                            hoveredButton == 2, 1f);
+                    // (the tutorial: greyed, and saying why, until the exercise's objectives are done)
+                    boolean allowed = guessAllowed();
+                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), allowed ? "Guess" : "Guess (complete objectives first)",
+                            null, hasPin && allowed, true, hoveredButton == 2, 1f);
                 }
                 g2d.setStroke(stroke);
             }

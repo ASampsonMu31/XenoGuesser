@@ -110,6 +110,8 @@ afresh) but loses the fast loading.
   threatening about budgets, insurance and the airlock; British English.
 - R5. Objectives are listed on the HUD's right, white until done, then gold; above them a bar
   shows how far through the whole programme the player is.
+- R5b. The map's Guess button is greyed out and does nothing, reading "Guess (complete
+  objectives first)", until every objective but the guess itself is done (`Tutorial.guessAllowed`).
 - R6. Passed: the results show, in green on the globe, every place that would have passed, and
   a concise explanation at the bottom of how it could have been worked out (`explain.*`); the
   button goes on ("Next exercise", "Finish training" at the end). Failed: "Try again", which
@@ -120,11 +122,13 @@ afresh) but loses the fast loading.
    clear sky, sun clearly in the north or south (latitude above ~22 degrees). A marker pin
    (like the readings' pins) is put far off ahead of the pod's stairs (`Tutorial.MARKER_AHEAD`,
    70 m; the way there must be walkable: dry, never too steep, nothing built); then the welcome;
-   then walk to it (WASD; the message says Shift sprints). Reaching it, the pin goes and a flat
+   then walk to it (WASD; the message says Shift sprints), the view turned to face it as the
+   exercise starts (no looking about needed until the circle). Reaching it, the pin goes and a flat
    circle is laid on the ground where it stood; turn a full circle inside it (mouse): the whole
    turn must be done inside the circle (jumping is fine; stepping out starts the count again).
    The turn's direction is detected, and the next message says most trainees turn the other way
-   and the player is odd. Then jump (Space), with a message on what jumping is for (rocks,
+   and the player is odd. Only then jump (Space; nothing says jumping before this, and only a
+   take-off after that message counts), with a message on what jumping is for (rocks,
    fences, guard rails; and expressing joy at one's work). Then a compass is given at once: face
    the sun with it (compass out, view within 12 degrees of the sun for 0.8 s). Then expanding
    the map (Tab), zooming and guessing are explained. Pass: the right hemisphere (the whole of
@@ -157,8 +161,10 @@ afresh) but loses the fast loading.
    - rainfall + rivers: very wet (the wettest 5% of the land), raining. Pass: anywhere in the
      wetter half of the land (rain can't be measured by eye).
    - soil colour + rock frequency + rock size: soil of a colour as far from the land's usual as
-     can be found (bright red, say), many small rocks (opposite ends of the two rock maps).
-     Pass: the same soil, as many and as small rocks.
+     can be found (bright red, say), many small rocks (opposite ends of the two rock maps), and
+     no snow lying to hide the soil (6 C above freezing on average). The message doesn't say how
+     many or how big the rocks are: that's for the player to see. Pass: the same soil, as many
+     and as small rocks.
    - grass: lush and tall.
    - wealth + roads/buildings/shops: a *poor* town (damaged, dirty houses: the message says
      these mean poverty), at least 500 m from any landmark.

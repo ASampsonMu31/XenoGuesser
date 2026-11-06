@@ -20,10 +20,10 @@ msg.pod = Training deployment in progress. You are being sent to Xenocorp's desi
 
 msg.sun.welcome = Welcome to the Xenocorp Training Programme. You have been selected for training on the basis of having applied. Over the following exercises you will learn to work out where you are by using only your standard-issue equipment. Your progress is being monitored. Your mistakes are being recorded. Several already have been observed.
 msg.sun.walk = A marker has been placed in the distance ahead of you. Walk to it using W, A, S and D. Should you find walking tedious, hold Shift to sprint. Xenocorp does not pay overtime to slow walkers.
-msg.sun.spin = This circle marks the spot. Stand in it and turn a full circle using the mouse. You may jump if you must, but you may not leave the circle. This is to confirm that you can turn on the spot, which, regrettably, can no longer be assumed.
-msg.sun.spun.clockwise = Thank you. Most trainees, when asked to turn on the spot, turn anticlockwise. You, on the other hand, turned clockwise. Our psychologists describe this as a bit odd. It has been noted on your file.
-msg.sun.spun.anticlockwise = Thank you. Most trainees, when asked to turn on the spot, turn clockwise. You, on the other hand, turned anticlockwise. Our psychologists describe this as a bit odd. It has been noted on your file.
-msg.sun.jump = Now press Space to jump. Jumping is useful for getting over rocks, fences and guard rails. It is also recommended for those moments when you find your work too enjoyable and need some way to express it. Such moments are expected to be rare.
+msg.sun.spin = This circle marks the spot. Stand in it and turn a full circle using the mouse. You may not leave the circle until you have finished. This is to confirm that you can turn on the spot, which, regrettably, can no longer be assumed.
+msg.sun.spun.clockwise = Thank you. Most trainees, when asked to turn on the spot, turn anticlockwise. You, on the other hand, turned clockwise. Our psychologists describe this as a bit strange. It has been noted on your file.
+msg.sun.spun.anticlockwise = Thank you. Most trainees, when asked to turn on the spot, turn clockwise. You, on the other hand, turned anticlockwise. Our psychologists describe this as a bit strange. It has been noted on your file.
+msg.sun.jump = Now press Space to jump. Jumping is useful for getting over rocks, fences and guard rails. It is also recommended for those moments when you find your work too enjoyable and need some way to express it.
 msg.sun.compass = You have been issued a compass. Press 1 to hold it up, then turn until you are facing the sun. When the sun is in the north of the sky, you are in the planet's southern hemisphere. When it is in the south of the sky, you are in the northern hemisphere. When it is hidden by cloud, you are, in the technical sense, fu**ed. Today's sky has been cleared for you at considerable expense. Don't forget, the red needle points north, some trainees needed this to be explained not to name any names … Frank.
 msg.sun.map = Good. Now press Tab to expand your map. Scroll to zoom in and out, and click to place a marker where you think you are, then confirm your guess. For this exercise, any guess in the correct hemisphere will be accepted.
 
@@ -75,7 +75,7 @@ fail.altitude = The ground there is {guessed} above the sea, and your altimeter 
 # ------------------------------------------------------------------ 5. plants and animals
 
 msg.wildlife.intro = Exercise five. You have been issued an identification kit. Press 1 to hold up the magnifying glass, and look at the local wildlife through it until each one is named. First, identify five of the plant named in your objectives. Other plants do not count, however much you like them. Should the wildlife be up a slope, hold Space to help you climb. Some slopes are too steep to climb at all, and you are reminded that broken legs from falling down mountains are not covered by your Xenocorp health insurance.
-msg.wildlife.animals = Thank you. Now identify five of the animal named in your objectives. Do not attempt to pet it. Bites are not covered.
+msg.wildlife.animals = Thank you. Now identify five of the animal named in your objectives. Do not attempt to catch it and pet it. They do not like it, and bites are not covered.
 msg.wildlife.maps = Well done. You have been given maps of where these two species live. Show each of them on your map, and find where both of them are plentiful.
 
 obj.wildlife.plants = Identify the {plant} ({count} of 5)
@@ -100,7 +100,7 @@ fail.rainfall = That's in the drier half of the planet. Look at the rainfall map
 
 # ------------------------------------------------------------------ 7. the ground
 
-msg.ground.intro = Exercise seven. The ground. The colour of the soil, and how many rocks lie on it and how big they are, change from place to place. You have been given the soil colour map and the rock maps. Look down. Yes, at the ground. The soil here is an unusual colour and the rocks are many and small, so use every one of the maps, then guess somewhere the ground is the same.
+msg.ground.intro = Exercise seven. The ground. The colour of the soil, and how many rocks lie on it and how big they are, change from place to place. You have been given the soil colour map and the rock maps. Look down. Yes, at the ground. Look closely at both, use every one of the maps, then guess somewhere the ground is the same.
 
 obj.ground.soil = Show the soil colour map
 obj.ground.rocks = Show the rock frequency map

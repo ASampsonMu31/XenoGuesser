@@ -11,8 +11,8 @@
 # wildlife: 150 m or more from any road or house; both plentiful in 14 regions; the commonest other species there at 53% of its range
 # wildlife: -14.83, -72.10; 10.6% of the land passes
 # rainfall: 30.02, -117.74; 50.0% of the land passes
-# ground: its soil 0.43 from the land's usual colour (0 the same, 1.7 black from white)
-# ground: -63.39, 14.76; 1.0% of the land passes
+# ground: its soil 0.35 from the land's usual colour (0 the same, 1.7 black from white)
+# ground: -49.57, 34.30; 1.3% of the land passes
 # grass: -47.21, 149.58; 6.2% of the land passes
 # wealth: 14.90, 64.03; 16.4% of the land passes
 # flags: -16.83, 10.66; 9.8% of the land passes
@@ -26,7 +26,7 @@ temperature lat=0.645643 lon=83.646386 heading=4.03103 hour=-0.97080 declination
 altitude lat=-13.399909 lon=-79.243612 heading=4.31969 hour=-0.90000 declination=0.00000 wetness=-2.50
 wildlife lat=-14.831531 lon=-72.100000 heading=3.62293 hour=-0.60000 declination=0.00000 wetness=-2.00 plant=4 animal=4 plentiful=0.600
 rainfall lat=30.020561 lon=-117.740108 heading=-1.73688 hour=-0.60000 declination=0.00000 wetness=2.60 wetterHalf=0.7661
-ground lat=-63.386372 lon=14.755852 heading=1.69163 hour=-0.60000 declination=0.00000 wetness=-2.00
+ground lat=-49.570488 lon=34.300258 heading=3.24302 hour=-0.60000 declination=0.00000 wetness=-2.00
 grass lat=-47.213717 lon=149.578085 heading=-2.26688 hour=-0.60000 declination=0.00000 wetness=-1.50
 wealth lat=14.901402 lon=64.025942 heading=2.17024 hour=-0.60000 declination=0.00000 wetness=-2.00
 flags lat=-16.830485 lon=10.662172 heading=-0.73068 hour=-0.60000 declination=0.00000 wetness=-2.00
