@@ -220,6 +220,24 @@ final class DevTestRun {
           }
           break;
         }
+        // screenshots: as frameshots, but the frames saved as shown (the HUD and all), each with
+        // the frame rate then logged; with "kit" too, the identification kit's taken out three
+        // seconds before each (the frame rate logged just before as well), for its markers and what they cost
+        case "screenshots": {
+          for (String at : Dev.property("xenoguesser.frameshotsat", "4000").split(",")) {
+            int ms = Integer.parseInt(at.trim());
+            XenoGuesser.later(ms - 3300, () -> app.glEventListener.devShots.lookAtHerd());
+            if (test.contains("kit")) XenoGuesser.later(ms - 3000, () -> {
+              System.out.printf("[SHOT] %d ms: %d fps, nothing out%n", ms - 3000, app.gameHUD != null ? app.gameHUD.getGameFps() : 0);
+              app.glEventListener.useItem(3);
+            });
+            XenoGuesser.later(ms, () -> {
+              System.out.printf("[SHOT] %d ms: %d fps%n", ms, app.gameHUD != null ? app.gameHUD.getGameFps() : 0);
+              app.glEventListener.devShots.saveNextScreen(new java.io.File(Dev.property("xenoguesser.frameshot", "frame") + "_" + ms + ".png"));
+            });
+          }
+          break;
+        }
         // bigmap: the map enlarged, as M does, a moment in
         case "bigmap": XenoGuesser.later(1200, () -> app.minimap.toggleSize()); break;
         // zoom: the map zoomed right in (-Dxenoguesser.mapzoomat=u,v to say where; the middle otherwise)
