@@ -426,12 +426,18 @@ final class Tutorial extends GamePart {
         return o != null && o.done;
     }
 
-    /** Marks an objective done (gold); returns whether it wasn't already. */
+    /** Marks an objective done (gold), with its ping; returns whether it wasn't already. */
     private boolean complete(String key) {
+        return complete(key, true);
+    }
+
+    /** Marks an objective done, pinging or not (not where its sound's already been made: see identified). */
+    private boolean complete(String key, boolean ping) {
         Objective o = objective(key);
         if (o == null || o.done) return false;
         o.done = true;
         objectivesVersion++;
+        if (ping) TutorialSounds.ping();
         return true;
     }
 
@@ -440,7 +446,7 @@ final class Tutorial extends GamePart {
     // The first marker's distance ahead of the pod's stairs (world units: far off, a walk away;
     // TutorialSites checks the way there can be walked), and how near it counts as being at it;
     // and the circle on the ground it leaves for the turning, which must all be done inside it
-    static final double MARKER_AHEAD = 70.0 * PlayerBody.METRE;
+    static final double MARKER_AHEAD = 140.0 * PlayerBody.METRE;
     private static final double AT_MARKER = 2.6 * PlayerBody.METRE, CIRCLE_RADIUS = 2.5 * PlayerBody.METRE;
 
     private volatile SpherePosition marker, circle;
@@ -639,6 +645,8 @@ final class Tutorial extends GamePart {
             }
         }
         if (count > TO_IDENTIFY) return;
+        // A boop a step higher for each one, and the last's followed by the objective's ping
+        TutorialSounds.boop(count, count == TO_IDENTIFY);
         String objKey = animal ? "obj.wildlife.animals" : "obj.wildlife.plants";
         Objective o = objective(objKey);
         if (o != null) {
@@ -646,7 +654,7 @@ final class Tutorial extends GamePart {
             objectivesVersion++;
         }
         if (count < TO_IDENTIFY) return;
-        complete(objKey);
+        complete(objKey, false);
         if (!animal) {
             // The plant's done: now its animal
             add("obj.wildlife.animals", "count", "0");
@@ -670,6 +678,8 @@ final class Tutorial extends GamePart {
     /** The verdict on a guess at pin (null: no guess), or null if the check isn't ready (the round's then judged as usual). */
     Verdict judge(GeodesicChunkGrid.Direction pin) {
         if (!active) return null;
+        // (the guess is made and the reveal's begun: whatever the instructor was saying is cut off)
+        hush();
         TutorialChecks.Check c = checksByStage.get(stage());
         // (the next round, built from now on behind the results, is the next exercise or this one again)
         boolean ok = c != null && c.passes(pin);

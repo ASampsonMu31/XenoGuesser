@@ -245,11 +245,20 @@ public class PodSequence implements GLEventListener {
         space.setGlobe(globe);
     }
 
-    /** The share of the world loaded on both PCs (the less of the two). */
-    private float loadedEverywhere() {
-        float here = progress.overallFraction();
+    /**
+     * Roughly how long loading has left, as the pod's way down is paced by: from the share of the
+     * world loaded and how long loading's expected to take. In multiplayer, the average of the two
+     * PCs' shares and of their expected times, so both PCs reckon the same and their pods (and what's
+     * out of their windows) keep together; 0 once the world's ready everywhere.
+     */
+    private float secondsLeftEverywhere() {
+        if (readyEverywhere()) return 0f;
+        float here = progress.overallFraction(), expected = progress.expectedSeconds();
         Multiplayer session = multiplayer ? Multiplayer.active() : null;
-        return session == null ? here : Math.min(here, session.remoteProgress());
+        if (session == null) return (1f - here) * expected;
+        float theirs = session.remoteExpectedSeconds();
+        float share = (here + session.remoteProgress()) * 0.5f, seconds = theirs > 0f ? (expected + theirs) * 0.5f : expected;
+        return (1f - share) * seconds;
     }
 
     /** The partner's share loaded (multiplayer). */
@@ -465,9 +474,8 @@ public class PodSequence implements GLEventListener {
         }
         // The way down: what's out of the window, how gravity's felt, and the jolts on the way
         Multiplayer session = multiplayer ? Multiplayer.active() : null;
-        if (session != null) session.publishProgress(progress.overallFraction());
-        boolean ready = readyEverywhere();
-        timeline.step(dt, ready ? 0f : progress.secondsLeftAt(loadedEverywhere()), ready, space);
+        if (session != null) session.publishProgress(progress.overallFraction(), progress.expectedSeconds());
+        timeline.step(dt, secondsLeftEverywhere(), readyEverywhere(), space);
         space.update(dt);
         System.arraycopy(timeline.gravity, 0, physics.gravity, 0, 3);
         for (PodTimeline.Event event = timeline.nextEvent(); event != null; event = timeline.nextEvent()) happened(event);

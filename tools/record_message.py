@@ -38,9 +38,11 @@ MODEL = "assets/audio/voice/bryce.onnx"
 SCALES = np.array([0.6, 0.6, 0.7], dtype=np.float32)
 # Silence before the first word, and after a phrase ending in each mark (seconds)
 LEAD = 0.35
-# A censored word's bleep (see BLEEP: in the usage): how long, its pitch and how loud
+# A censored word's bleep (see BLEEP: in the usage): how long, its pitch and how loud; and how
+# loud the whole censored word is against the words round it
 BLEEP_SECONDS, BLEEP_HZ, BLEEP_LEVEL = 0.32, 1000.0, 0.55
-PAUSE = {",": 0.12, ":": 0.28, ";": 0.2, ".": 0.38, "!": 0.38, "?": 0.38, "…": 0.7}
+CENSORED_LEVEL = 0.65
+PAUSE = {",": 0.12, ":": 0.28, ";": 0.2, ".": 0.38, "!": 0.38, "?": 0.38, "…": 0.7, "—": 0.5}
 
 
 def main():
@@ -132,10 +134,10 @@ def main():
         parts.append(BLEEP_LEVEL * np.sin(2 * np.pi * BLEEP_HZ * np.arange(n) / rate) * ramp)
         if after_ph:
             parts.append(trimmed(say_phonemes(list(after_ph))))
-        return np.concatenate(parts)
+        return np.concatenate(parts) * CENSORED_LEVEL
 
     for phrase in phrases:
-        clean = [w.strip(",.:;!?\"…") for w, _ in phrase]
+        clean = [w.strip(",.:;!?\"…—") for w, _ in phrase]
         spoken = [spoken_as.get(c, c) for c in clean]
         # The phrase in runs: words said together, and each censored word on its own
         runs, current = [], []

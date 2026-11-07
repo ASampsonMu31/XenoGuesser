@@ -6,9 +6,11 @@ import java.util.Random;
 
 /**
  * The landing pod's way down, as the world loads: cruising at lightspeed with the stars
- * streaming past; dropping out of it, the stars slowing to points and the planet's star ahead;
- * on the way in, as the world's star system has it (StarSystem), through an asteroid belt (a few
- * small rocks striking the glass) or swung round a gas giant by its gravity, or both; closing on
+ * streaming past; dropping out of it far out in the planet's star system, the stars slowing to
+ * points and the star ahead, the planet beyond it; on the way in, as the world's star system has
+ * it (StarSystem), through the asteroid belt that rings the star in the planet's plane (a few small
+ * rocks striking the glass) or swung round a gas giant by its gravity, or both; close past the
+ * star, a hundred times the planet's size, filling the window as it goes by; closing on
  * the planet along a line that passes to one side of it, its moon beside it if it has one, the
  * window kept on the planet as it grows and swings from ahead to beside, so the pod's top comes
  * round to the way it's going; curving into orbit round it, the window facing it as it turns
@@ -20,10 +22,11 @@ import java.util.Random;
  * Each stage lasts at least so long and some end only once the loading's near enough its end
  * that what's left of the way down takes as long as what's left of the loading (the waiting done
  * where it looks natural: cruising, in orbit, coming in through the air; never part way through
- * the belt, the giant or the approach), so the pod's down as the screen reads 100%: the time left
- * is reckoned from the less of this PC's share loaded and the partner's, so both players' pods
- * come down together. If the loading gets ahead of the pod anyway (a quick load, or a guess of the
- * time left that was too long) the rest of the way down is hurried, never skipped. It lands only
+ * the belt, the giant, the star or the approach), so the pod's down as the screen reads 100%, and
+ * no later. The time left is reckoned by PodSequence (in multiplayer from the average of both
+ * PCs' shares loaded, the same on both, so the two pods, and what's out of their windows, keep
+ * together). If the loading gets ahead of the pod (a quick load, or a guess of the time left that
+ * was too long) the rest of the way down is hurried to catch it up, never skipped. It lands only
  * once both worlds are ready. Each frame it sets what's seen out of the window (PodSpaceView),
  * gravity as it's felt in the cabin, how hard the cabin shakes and how loud each sound is; things
  * that happen once (the clunk, a rock on the glass, the landing) are queued for PodSequence. It
@@ -31,13 +34,14 @@ import java.util.Random;
  */
 public class PodTimeline {
 
-    enum Phase { CRUISE, DROPOUT, BELT, FLYBY, APPROACH, ORBIT, RELEASE, REENTRY, UPRIGHT, DESCENT, LANDED }
+    enum Phase { CRUISE, DROPOUT, BELT, FLYBY, STAR, APPROACH, ORBIT, RELEASE, REENTRY, UPRIGHT, DESCENT, LANDED }
 
     enum Event { DROPPED_OUT, STRIKE, RELEASED, THRUSTERS, ENTRY, UPRIGHTING, LANDED }
 
-    // How long each stage lasts at least (the drop out of lightspeed, the belt, the giant and the
-    // approach exactly; the orbit's at least ORBIT_LEAST radians round, going once round in ORBIT_TIME)
-    private static final float CRUISE_TIME = 8f, DROPOUT_TIME = 6f, BELT_TIME = 16f, FLYBY_TIME = 18f, APPROACH_TIME = 12f,
+    // How long each stage lasts at least (the drop out of lightspeed, the belt, the giant, the pass
+    // by the star and the approach exactly, the approach's reckoned below; the orbit's at least
+    // ORBIT_LEAST radians round, going once round in ORBIT_TIME)
+    private static final float CRUISE_TIME = 3f, DROPOUT_TIME = 6f, BELT_TIME = 16f, FLYBY_TIME = 18f, STAR_TIME = 14f,
             ORBIT_TIME = 20f, RELEASE_TIME = 16f, REENTRY_TIME = 10f, UPRIGHT_TIME = 5f, DESCENT_TIME = 3f;
     private static final float ORBIT_LEAST = (float) Math.PI;
     // The cruise ends with this many seconds of loading to spare beyond the least the rest takes,
@@ -45,31 +49,44 @@ public class PodTimeline {
     private static final float ORBIT_HOLD = 10f;
     // Hurrying: the rest of the way down goes at most MOST_HURRY times as fast, aiming to be done
     // as the loading is, or HURRY_WITHIN seconds after it's done; the pace eased in, not jumped to
-    private static final float MOST_HURRY = 3f, HURRY_WITHIN = 1f, HURRY_EASE = 2f;
-    // ...but through the belt and past the giant at most this, so they're seen (what's lost made up after)
-    private static final float MOST_HURRY_SIGHTS = 1.5f;
+    private static final float MOST_HURRY = 5f, HURRY_WITHIN = 1f, HURRY_EASE = 2f;
+    // ...but through the belt, past the giant and by the star at most this, so they're seen (what's lost made up after)
+    private static final float MOST_HURRY_SIGHTS = 3f;
     // How fast the pod's going while it cruises (for the streaks); dropping out of that the
     // streaks slow to nothing and the stars, still now, fill in all round as a dome
     private static final float CRUISE_SPEED = 6000f;
-    // The belt: how fast its rocks come past, the dust's streaks, and the dust's colour
-    private static final float ROCK_SPEED = 330f, DUST_SPEED = 260f;
+    // The belt: how fast its rocks come past (small and quick: a rock a few times the pod's size
+    // is gone in a moment), the dust's streaks, and the dust's colour
+    private static final float ROCK_SPEED = 1400f, DUST_SPEED = 1100f;
     private static final float[] DUST = { 0.78f, 0.66f, 0.55f }, STARLIGHT = { 0.9f, 0.92f, 1f };
-    // The giant: the pod passes GIANT_NEAREST of its radii from its middle, coming from GIANT_FAR
-    // ahead and going as far behind; turned (at most GIANT_LOOK radians) to keep it in the window;
-    // the way to the planet GIANT_COURSE off to the other side at first, swung ahead by it
-    private static final float GIANT_NEAREST = 2.4f, GIANT_FAR = 15f, GIANT_LOOK = 1.1f, GIANT_COURSE = 0.7f;
-    // The approach as it really looks: the pod flies in along a straight line passing SIDE of the
-    // planet's radii from its middle, its distance falling from APPROACH_FAR to APPROACH_NEAR (by
-    // the same share each moment), turned all the while to keep its window on the planet. The star is
-    // STAR_FROM_PLANET beyond it, off to one side (STAR_SIDE): from far off the two are lined up,
-    // the star in the middle of the view; closing in, the planet grows fast while the star, so
-    // much further, hardly grows and slides away to the side, until it's out beside the pod,
-    // lighting the planet's face towards it (a little behind the pod, so its day side's seen). Sizes are radii, in the same units
-    // (the star looks from the planet as the game's sun does from the ground)
-    private static final float APPROACH_FAR = 30f, APPROACH_NEAR = 0.016f;
-    // How the approach is spread over its time: more of it far off, the star in the middle, before
-    // the planet comes up fast (the share of the way, in log distance, is the share of time to this power)
-    private static final float FAR_LINGER = 1.6f;
+    // The giant: the pod passes GIANT_NEAREST of its radii from its middle (further than it passes
+    // the star in the star's, so the star looks the bigger), coming from GIANT_FAR ahead and going
+    // as far behind; turned (at most GIANT_LOOK radians) to keep it in the window; the way to the
+    // planet GIANT_COURSE off to the other side at first, swung ahead by it
+    private static final float GIANT_NEAREST = 3.2f, GIANT_FAR = 15f, GIANT_LOOK = 1.1f, GIANT_COURSE = 0.7f;
+    // The star system to scale, in one set of units (the planet's radius PLANET_RADIUS). The star
+    // is STAR_FROM_PLANET from the planet and looks from it as the game's sun does from the ground,
+    // so it's some hundred times the planet's size. The pod comes in along one straight line in the
+    // plane the planet goes round the star in, aimed to pass STAR_PASS of the star's radii from its
+    // middle (on the giant's side) and on to the planet beyond: dropping out of lightspeed
+    // DROP_FROM star-to-planet distances from the star, through the belt that rings the star between
+    // BELT_OUTER and BELT_INNER of them (where its rocks are), past the giant until STAR_FROM of
+    // them off, then by the star, turned (at most STAR_LOOK radians) to keep it in the window as it
+    // swells and slides past, and on (the star behind now, lighting the planet's face ahead) to
+    // the approach. That plane's tipped STAR_TIP from level, seen from the cabin
+    private static final float STAR_FROM_PLANET = 3.4f, PLANET_RADIUS = 0.002f;
+    private static final float STAR_PASS = 2.2f, STAR_LOOK = 1.25f, STAR_TIP = 0.12f;
+    private static final float DROP_FROM = 5f, BELT_OUTER = 3.2f, BELT_INNER = 2.2f, STAR_FROM = 1f;
+    // The approach as it really looks: on along the line, passing SIDE of the planet's radii from
+    // its middle, its distance falling from APPROACH_FAR (just past the star) to APPROACH_NEAR (by
+    // the same share each moment), turned all the while to keep its window on the planet, which
+    // grows from a point to fill it. Sizes are radii, in the same units
+    private static final float APPROACH_FAR = 2.6f, APPROACH_NEAR = 0.016f;
+    // How the approach is spread over its time: going on at first as fast as it came past the star
+    // (LINE_START_SPEED units a second), then braking, more of it far off before the planet comes up
+    // fast (the share of the way, in log distance, is partly the share of time and partly the share
+    // of time to the power FAR_LINGER)
+    private static final float LINE_START_SPEED = 0.3f, FAR_LINGER = 2.5f;
     // How far below level (radians) the way ahead is, seen from the cabin: the door's middle from standing
     private static final float AHEAD_TIP = 0.33f;
     // ...and once it's turned its top to the planet, this many times as far (the window looking
@@ -88,18 +105,23 @@ public class PodTimeline {
     // seconds from the pace it came in at off the line (nearly the same)
     private static final float ORBIT_SETTLE = 6f;
     private static final float ORBIT_RATE = (float) (Math.PI * 2.0 / ORBIT_TIME);
-    private static final float STAR_FROM_PLANET = 1f, PLANET_RADIUS = 0.002f;
     // How far round the planet (radians, from where it's straight ahead) the pod is as the line
-    // in starts and as the approach ends, and how fast it's going round there (the line's turning
-    // as the distance falls by its share each moment, at the approach's end)
+    // in starts and as the approach ends
     private static final float ROUND_FAR = (float) Math.asin(SIDE * PLANET_RADIUS / APPROACH_FAR),
             ROUND_NEAR = (float) Math.asin(SIDE * PLANET_RADIUS / APPROACH_NEAR);
-    private static final float LINE_RATE = (float) (Math.tan(ROUND_NEAR) * Math.log(APPROACH_FAR / APPROACH_NEAR) * FAR_LINGER / APPROACH_TIME);
+    // The approach takes as long as it must for the line's turning round the planet at its end (as
+    // the distance falls by its share each moment) to be the orbit's own pace, given it starts at
+    // LINE_START_SPEED; the share of its way that's even in time (the rest by FAR_LINGER); and how
+    // fast it's going round the planet at its end
+    private static final double LOG_WAY = Math.log(APPROACH_FAR / APPROACH_NEAR);
+    private static final float APPROACH_TIME = (float) (Math.tan(ROUND_NEAR) * LOG_WAY * FAR_LINGER
+            / (ORBIT_RATE + Math.tan(ROUND_NEAR) * (FAR_LINGER - 1f) * LINE_START_SPEED / APPROACH_FAR));
+    private static final float LINE_EVEN = (float) (LINE_START_SPEED * APPROACH_TIME / (APPROACH_FAR * LOG_WAY));
+    private static final float LINE_RATE = (float) (Math.tan(ROUND_NEAR) * LOG_WAY * (LINE_EVEN + (1f - LINE_EVEN) * FAR_LINGER) / APPROACH_TIME);
     // The pod's let go and the spiral begun; then, from TURN_FROM to TURN_TO seconds into it, it's
     // turned its top to the planet over the last of the spiral, done before the air fogs the
     // window (from 2 s into the entry)
     private static final float TURN_FROM = 10.5f, TURN_TO = RELEASE_TIME - 0.5f;
-    private static final float[] STAR_SIDE = Affine.normalise(new float[] { 0.9f, 0.15f, -0.45f });
     // While cruising, the computer notes something routine every so often (seconds)
     private static final float CHATTER_EVERY = 11f;
     private static final String[] CHATTER = { "Course check: on track", "Hull integrity 100%", "Drive core stable",
@@ -117,12 +139,17 @@ public class PodTimeline {
     private float inPhase, approach, angle, spin, heading, orbitAngle;
     // How far round the planet the pod has come (radians, from where it was straight ahead on the
     // line in), how far it is from the planet's middle (units), and how long it's been spiralling down
-    private float round = ROUND_FAR, distance = APPROACH_FAR, spiralling;
+    private float round = ROUND_FAR, distance, spiralling;
     // How much faster than usual the pod's going down (1 for not hurried)
     private float hurry = 1f;
     private final boolean ignoreProgress;
     private final Deque<Event> events = new ArrayDeque<>();
     private final StarSystem system;
+    // The star's radius, and where it is from the planet (the line in runs along the z axis to the
+    // planet, the pod at 0, 0, -distance); the plane it, the planet, the line in and the belt are in,
+    // across (level, more or less) and square to it
+    private final float starRadius;
+    private final float[] starAt, plane, planeNormal;
     // The rocks still to strike the glass, in turn, and the next one due
     private final Deque<float[]> strikesDue = new ArrayDeque<>();
     private int nextStrike;
@@ -146,6 +173,12 @@ public class PodTimeline {
     public PodTimeline(StarSystem system) {
         this.system = system;
         chatter = WorldPalette.rng(system.worldSeed, 0xC4A7L);
+        starRadius = (float) Math.tan(system.sunAngle()) * STAR_FROM_PLANET;
+        float side = system.giantSide, pass = STAR_PASS * starRadius;
+        plane = new float[] { side * (float) Math.cos(STAR_TIP), (float) Math.sin(STAR_TIP), 0f };
+        planeNormal = new float[] { -side * (float) Math.sin(STAR_TIP), (float) Math.cos(STAR_TIP), 0f };
+        float behind = (float) Math.sqrt(STAR_FROM_PLANET * STAR_FROM_PLANET - pass * pass);
+        starAt = new float[] { plane[0] * pass, plane[1] * pass, -behind };
         Phase start = Phase.CRUISE;
         if (START != null) {
             try {
@@ -156,6 +189,7 @@ public class PodTimeline {
         }
         ignoreProgress = START != null;
         phase = included(start) ? start : following(start);
+        distance = lineFrom(Phase.DROPOUT);
         if (phase.ordinal() > Phase.APPROACH.ordinal()) {
             approach = 1f;
             round = ROUND_NEAR;
@@ -236,7 +270,7 @@ public class PodTimeline {
         if (ignoreProgress) {
             secondsLeft = 0f;
         } else if (phase != Phase.LANDED) {
-            float most = phase == Phase.BELT || phase == Phase.FLYBY ? MOST_HURRY_SIGHTS : MOST_HURRY;
+            float most = phase == Phase.BELT || phase == Phase.FLYBY || phase == Phase.STAR ? MOST_HURRY_SIGHTS : MOST_HURRY;
             wanted = Math.max(1f, Math.min(most, leastLeft(inPhase / PACE) / Math.max(secondsLeft, HURRY_WITHIN)));
         }
         hurry += (wanted - hurry) * Math.min(1f, dt * HURRY_EASE);
@@ -261,6 +295,9 @@ public class PodTimeline {
             }
             case FLYBY -> {
                 if (t >= FLYBY_TIME) next();
+            }
+            case STAR -> {
+                if (t >= STAR_TIME) next();
             }
             case APPROACH -> {
                 // Steadily, by the clock: never held part way in (the orbit waits on the loading)
@@ -287,8 +324,8 @@ public class PodTimeline {
             }
         }
         t = inPhase / PACE;
-        heading = phase == Phase.FLYBY ? flybyHeading(t / FLYBY_TIME) : 0f;
         travel(t, dt / PACE);
+        heading = phase == Phase.FLYBY ? flybyHeading(t / FLYBY_TIME) : phase == Phase.STAR ? starHeading(t / STAR_TIME) : 0f;
         narrate(t);
         pose(t, dt);
         show(t, view);
@@ -296,17 +333,36 @@ public class PodTimeline {
 
     /**
      * Where the pod is on its way down, t seconds into the stage, having gone on by dt (unpaced):
-     * how far round the planet and how far from it. Along the line in, the distance by the clock
+     * how far round the planet and how far from it. Through the star system, steadily along the
+     * line from where the stage begins to where the next does (dropping out of lightspeed, from
+     * fast to the next stage's pace); along the line in to the planet, the distance by the clock
      * and how far round from that; from the orbit on, how far round by the clock (the pace kept
      * from the line's, easing to the orbit's and quickening down the spiral) and the distance from that.
      */
     private void travel(float t, float dt) {
+        if (phase.ordinal() < Phase.APPROACH.ordinal()) {
+            if (phase == Phase.CRUISE) {
+                distance = lineFrom(Phase.DROPOUT);
+                return;
+            }
+            Phase after = following(phase);
+            float from = lineFrom(phase), to = lineFrom(after), x = Math.min(1f, t / least(phase));
+            if (phase == Phase.DROPOUT) {
+                // (slowing hard out of lightspeed, to come into the next stage at its pace)
+                float onward = (lineFrom(after) - lineFrom(following(after))) / least(after) * DROPOUT_TIME;
+                float left = 1f - x;
+                distance = to + onward * left + (from - to - onward) * left * left * left;
+            } else {
+                distance = from + (to - from) * x;
+            }
+            return;
+        }
         if (phase == Phase.APPROACH) {
-            distance = APPROACH_FAR * (float) Math.pow(APPROACH_NEAR / APPROACH_FAR, Math.pow(approach, FAR_LINGER));
+            double share = LINE_EVEN * approach + (1f - LINE_EVEN) * Math.pow(approach, FAR_LINGER);
+            distance = APPROACH_FAR * (float) Math.pow(APPROACH_NEAR / APPROACH_FAR, share);
             round = (float) Math.asin(Math.min(1.0, SIDE * PLANET_RADIUS / distance));
             return;
         }
-        if (phase.ordinal() < Phase.ORBIT.ordinal()) return;
         if (phase.ordinal() >= Phase.RELEASE.ordinal()) spiralling += dt;
         float high = height();
         float pace = phase == Phase.ORBIT ? LINE_RATE + (ORBIT_RATE - LINE_RATE) * smooth(t / ORBIT_SETTLE) : ORBIT_RATE;
@@ -317,6 +373,26 @@ public class PodTimeline {
         float line = 1f - smooth((round - (float) Math.PI * 0.5f) / LINE_HANDOVER);
         float nearness = line * (float) Math.sin(round) / SIDE + (1f - line) / high;
         distance = PLANET_RADIUS / nearness;
+    }
+
+    /**
+     * How far from the planet the pod is (along the line in) as a stage through the star system
+     * begins: where the belt's outer edge is, its inner, the star STAR_FROM off, just past the star.
+     */
+    private float lineFrom(Phase p) {
+        return switch (p) {
+            case CRUISE, DROPOUT -> nearStar(DROP_FROM);
+            case BELT -> nearStar(BELT_OUTER);
+            case FLYBY -> nearStar(BELT_INNER);
+            case STAR -> nearStar(STAR_FROM);
+            default -> APPROACH_FAR;
+        };
+    }
+
+    /** How far from the planet the pod is (along the line in, before it reaches the star) once it's away star-to-planet distances from the star. */
+    private float nearStar(float away) {
+        float pass = Affine.length(new float[] { starAt[0], starAt[1], 0f }), r = away * STAR_FROM_PLANET;
+        return -starAt[2] + (float) Math.sqrt(Math.max(0f, r * r - pass * pass));
     }
 
     /** How high the orbit is now (in the planet's radii, from its middle): its own height, then falling down the spiral. */
@@ -333,6 +409,7 @@ public class PodTimeline {
             case DROPOUT -> DROPOUT_TIME;
             case BELT -> BELT_TIME;
             case FLYBY -> FLYBY_TIME;
+            case STAR -> STAR_TIME;
             case APPROACH -> APPROACH_TIME;
             case ORBIT -> ORBIT_LEAST / ORBIT_RATE;
             case RELEASE -> RELEASE_TIME;
@@ -391,6 +468,10 @@ public class PodTimeline {
                 note("Gas giant ahead");
                 now("Gravity assist burn");
             }
+            case STAR -> {
+                note("Star close approach");
+                now("Heat shield to star");
+            }
             case APPROACH -> {
                 note("Planet acquired");
                 now("Braking burn");
@@ -421,7 +502,11 @@ public class PodTimeline {
             }
             case FLYBY -> {
                 if (once(0, t >= FLYBY_TIME * 0.45f)) now("Slingshot round giant");
-                else if (once(1, t >= FLYBY_TIME * 0.85f)) now("Course set for planet");
+                else if (once(1, t >= FLYBY_TIME * 0.85f)) now("Course set for star");
+            }
+            case STAR -> {
+                if (once(0, t >= STAR_TIME * 0.4f)) now("Passing star: hull hot");
+                else if (once(1, t >= STAR_TIME * 0.8f)) now("Course set for planet");
             }
             case APPROACH -> {
                 if (once(0, t >= APPROACH_TIME * 0.35f)) {
@@ -480,6 +565,19 @@ public class PodTimeline {
         return look * smooth(f / 0.1f) * (1f - smooth((f - 0.72f) / 0.28f));
     }
 
+    /** Where the star is from the pod (in the frame it flies in, before the orbit turns it). */
+    private float[] starFromPod() {
+        return new float[] { starAt[0], starAt[1], starAt[2] + distance };
+    }
+
+    /** How far the pod's turned to keep the star in the window as it goes by, f of the way past it, easing back once it's behind. */
+    private float starHeading(float f) {
+        float[] s = starFromPod();
+        float seen = (float) Math.atan2(Math.abs(s[0]), s[2]);
+        float look = Math.signum(s[0]) * Math.min(STAR_LOOK, 0.85f * seen);
+        return -look * smooth(f / 0.15f) * (1f - smooth((f - 0.7f) / 0.3f));
+    }
+
     /** The pod's turn, gravity, the shaking and the sounds, t seconds into the stage. */
     private void pose(float t, float dt) {
         float before = angle;
@@ -516,6 +614,13 @@ public class PodTimeline {
                 aside = system.giantSide * 10f * pull;
                 engine = 0.3f * pull;
                 shake = 0.05f + 0.1f * pull;
+            }
+            case STAR -> {
+                angle = 0f;
+                // Close by the star: the hull ticking and buffeted in its wind, a little thrust to hold the line
+                float near = Math.min(1f, 1.5f * starRadius / Affine.length(starFromPod()));
+                engine = 0.12f;
+                shake = 0.05f + 0.15f * near * near;
             }
             case APPROACH -> {
                 angle = 0f;
@@ -604,20 +709,32 @@ public class PodTimeline {
     }
 
     /**
-     * The planet, its star and its moon as seen from distance away from the planet (facing it,
-     * along +z), orbit radians round it (from where the line in started, in the plane of the
-     * pod's top and window): where each is and how wide each looks, and the way the star's light
-     * falls (the star, the moon and the light turned about the planet's middle with the orbit).
+     * The planet, its star, its moon and the belt round the star as seen from distance away from
+     * the planet (facing it, along +z), orbit radians round it (from where the line in started, in
+     * the plane of the pod's top and window): where each is and how wide each looks, and the way
+     * the star's light falls on the planet and on what's by the pod (the star, the moon, the belt and
+     * the light turned about the planet's middle with the orbit).
      */
     private void place(PodSpaceView view, float distance, float orbit) {
         float[] round = PodSpaceView.orbitTurn(orbit);
-        float[] side = Affine.transformDirection(round, STAR_SIDE[0], STAR_SIDE[1], STAR_SIDE[2]);
-        float[] star = { side[0] * STAR_FROM_PLANET, side[1] * STAR_FROM_PLANET, distance + side[2] * STAR_FROM_PLANET };
+        float[] side = Affine.transformDirection(round, starAt[0], starAt[1], starAt[2]);
+        float[] star = { side[0], side[1], distance + side[2] };
         float starDistance = Affine.length(star);
         float[] d = Affine.normalise(star);
         System.arraycopy(d, 0, view.starDirection, 0, 3);
-        // (as big as the world's sun looks from the ground, from the planet)
-        view.starAngle = (float) Math.atan(Math.tan(system.sunAngle()) * STAR_FROM_PLANET / starDistance);
+        // (as big as the world's sun looks from the ground, from the planet; and filling much of the sky close by)
+        view.starAngle = (float) Math.asin(Math.min(0.9, starRadius / starDistance));
+        view.starLight[0] = -d[0];
+        view.starLight[1] = -d[1];
+        view.starLight[2] = -d[2];
+        // The belt, round the star in the planet's plane
+        view.beltDust = system.belt ? 1f : 0f;
+        System.arraycopy(star, 0, view.beltCentre, 0, 3);
+        System.arraycopy(Affine.transformDirection(round, plane[0], plane[1], plane[2]), 0, view.beltAcross, 0, 3);
+        System.arraycopy(Affine.transformDirection(round, 0f, 0f, 1f), 0, view.beltAlong, 0, 3);
+        System.arraycopy(Affine.transformDirection(round, planeNormal[0], planeNormal[1], planeNormal[2]), 0, view.beltNormal, 0, 3);
+        view.beltInner = BELT_INNER * STAR_FROM_PLANET;
+        view.beltOuter = BELT_OUTER * STAR_FROM_PLANET;
         view.planetDirection[0] = 0f;
         view.planetDirection[1] = 0f;
         view.planetDirection[2] = 1f;
@@ -634,9 +751,10 @@ public class PodTimeline {
             view.moonAngle = 0f;
         }
         // (from the star to the planet)
-        view.light[0] = -side[0];
-        view.light[1] = -side[1];
-        view.light[2] = -side[2];
+        float[] lit = Affine.normalise(side);
+        view.light[0] = -lit[0];
+        view.light[1] = -lit[1];
+        view.light[2] = -lit[2];
     }
 
     /** What's seen out of the window, t seconds into the stage. */
@@ -659,6 +777,7 @@ public class PodTimeline {
                 view.starAngle = 0f;
                 view.planetAngle = 0f;
                 view.moonAngle = 0f;
+                view.beltDust = 0f;
                 view.space = 1f;
             }
             case DROPOUT -> {
@@ -667,7 +786,7 @@ public class PodTimeline {
                 view.speed = CRUISE_SPEED * slowing * slowing;
                 view.streaming = slowing;
                 view.dome = smooth((t / DROPOUT_TIME - 0.15f) / 0.6f);
-                place(view, APPROACH_FAR, 0f);
+                place(view, distance, 0f);
                 view.course = off;
                 view.space = 1f;
             }
@@ -680,7 +799,7 @@ public class PodTimeline {
                 view.speed = DUST_SPEED;
                 view.streaming = 0.45f * thick;
                 System.arraycopy(DUST, 0, view.streakTint, 0, 3);
-                place(view, APPROACH_FAR, 0f);
+                place(view, distance, 0f);
                 view.course = off;
                 view.space = 1f;
             }
@@ -690,12 +809,12 @@ public class PodTimeline {
                 view.giantShown = true;
                 System.arraycopy(giantAt(f), 0, view.giantCentre, 0, 3);
                 view.giantSpin = spin * 4f;
-                place(view, APPROACH_FAR, 0f);
+                place(view, distance, 0f);
                 // (swung round to the planet as it passes)
                 view.course = -system.giantSide * GIANT_COURSE * (1f - smooth((f - 0.2f) / 0.6f));
                 view.space = 1f;
             }
-            case APPROACH, ORBIT, RELEASE -> {
+            case STAR, APPROACH, ORBIT, RELEASE -> {
                 still(view);
                 place(view, distance, round - ROUND_FAR);
                 view.space = 1f;
@@ -705,7 +824,10 @@ public class PodTimeline {
                 place(view, distance, round - ROUND_FAR);
                 view.space = 1f - smooth((t - 2f) / (REENTRY_TIME * 0.6f));
             }
-            default -> view.space = 0f;
+            default -> {
+                view.space = 0f;
+                view.beltDust = 0f;
+            }
         }
         // Up, through the fog: away from the planet (which is ahead, +z, in the frame it flies in)
         float[] up = Affine.transformDirection(PodFurniture.invertRigid(podToSpace), 0f, 0f, -1f);

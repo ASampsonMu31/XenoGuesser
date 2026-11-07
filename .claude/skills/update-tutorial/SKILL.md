@@ -121,7 +121,7 @@ afresh) but loses the fast loading.
 1. **Sun (hemisphere)**. Somewhere cold (coldest fifth of the land), far from roads and houses,
    clear sky, sun clearly in the north or south (latitude above ~22 degrees). A marker pin
    (like the readings' pins) is put far off ahead of the pod's stairs (`Tutorial.MARKER_AHEAD`,
-   70 m; the way there must be walkable: dry, never too steep, nothing built); then the welcome;
+   140 m; the way there must be walkable: dry, never too steep, nothing built); then the welcome;
    then walk to it (WASD; the message says Shift sprints), the view turned to face it as the
    exercise starts (no looking about needed until the circle). Reaching it, the pin goes and a flat
    circle is laid on the ground where it stood; turn a full circle inside it (mouse): the whole
@@ -146,13 +146,18 @@ afresh) but loses the fast loading.
    the heatmap shows (within 0.5 C). Pass: the heatmap at the guess within 2.5 C of the reading;
    the matching land should be a modest share (4-25%) of the planet.
 4. **Altitude**. Scenic, on a mountainside with a view downhill, exactly on a 10 m contour about
-   75% of the planet's highest ground; altimeter only, contours only. Pass: ground within 8 m of
-   the reading.
+   75% of the planet's highest ground; altimeter only, contours only. Pass: within 5 m of the
+   reading, by the ground's true height or by the height the contour map shows there (its
+   lines are traced over slightly smoothed heights), judged at the very point guessed.
+   No exercise shows the last round's marker on the map (nor does multiplayer).
 5. **Plants and animals**. Out in the wild (150 m from any road or house if anywhere is, then
-   100, then 60: no townsfolk to mistake for animals, nothing built in the way), one plant
-   (a tree or shrub) and one animal plentiful there and, as far as the planet allows, no other
-   species plentiful (below the plentiful share); then as few regions of overlap as can be
-   found. Identification kit only. First identify 5 of *that plant* (other plants don't count;
+   100, then 60: no townsfolk to mistake for animals, nothing built in the way), on a
+   mountainside (at least half the highest ground's height, the ground within 600 m rising or
+   falling a third of it), one plant (a tree or shrub of any form, not a mushroom or cactus) and
+   one animal thick on the ground there (about 20 of the plant and 8 of the animal within 80 m,
+   so five of each are easy to find), each plentiful over as little of the land as can be found
+   (`SPREAD_CAPS`, 12% up to 35%), and, as far as the planet allows, no other species plentiful
+   (below the plentiful share); then as few regions of overlap as can be found. Identification kit only. First identify 5 of *that plant* (other plants don't count;
    each plant once), then 5 of *that animal* (each animal once, known by itself); then their two
    maps are given. The intro says to hold Space to climb slopes, and that broken legs aren't
    covered by the health insurance. Pass: anywhere both are plentiful (all of it green).

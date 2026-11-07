@@ -96,6 +96,7 @@ public class BirdsEyeMaps {
     public BufferedImage[] renderContourLayer() {
         int n = detailResolution;
         float[] heights = smoothed(getDetailHeights(), n, 2);
+        contourHeights = heights;
         float highest = seaLevelHeight + 1f;
         for (float h : heights) highest = Math.max(highest, h);
         float rise = highest - seaLevelHeight;
@@ -931,6 +932,27 @@ public class BirdsEyeMaps {
             }
         }
         return canvas;
+    }
+
+    // The heights the contours were traced over (the detail grid's, smoothed: see
+    // renderContourLayer), once they've been drawn; null before
+    private volatile float[] contourHeights;
+
+    /**
+     * The ground's height (world units) at chart point (x, z) as the contour map shows it: from
+     * the smoothed heights its lines were traced over, between their grid points. NaN before
+     * the contours are drawn.
+     */
+    float contourHeightAt(double x, double z) {
+        float[] h = contourHeights;
+        if (h == null) return Float.NaN;
+        int n = detailResolution;
+        float px = (float) ((x + halfRegion) / totalRegionWidth * n - 0.5), py = (float) ((z + halfRegion) / totalRegionWidth * n - 0.5);
+        int x0 = Math.max(0, Math.min(n - 2, (int) Math.floor(px))), y0 = Math.max(0, Math.min(n - 2, (int) Math.floor(py)));
+        float fx = Math.max(0f, Math.min(1f, px - x0)), fy = Math.max(0f, Math.min(1f, py - y0));
+        float top = h[y0 * n + x0] + (h[y0 * n + x0 + 1] - h[y0 * n + x0]) * fx;
+        float bottom = h[(y0 + 1) * n + x0] + (h[(y0 + 1) * n + x0 + 1] - h[(y0 + 1) * n + x0]) * fx;
+        return top + (bottom - top) * fy;
     }
 
     private synchronized float[] getDetailHeights() {

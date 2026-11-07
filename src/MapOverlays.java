@@ -746,6 +746,14 @@ final class MapOverlays extends GamePart {
     // Each overlay as worked out, a pixel a chunk (before being laid over the land for the map)
     private final Map<MapOverlay, BufferedImage> rawOverlays = new java.util.concurrent.ConcurrentHashMap<>();
 
+    /** The ground's height (world units) in a direction as the contour map shows it (see BirdsEyeMaps.contourHeightAt); NaN before it's drawn. */
+    float contourHeightAt(GeodesicChunkGrid.Direction d) {
+        BirdsEyeMaps maps = birdsEyeMaps;
+        if (maps == null) return Float.NaN;
+        double[] at = MapProjection.toMap(d);
+        return maps.contourHeightAt(at[0], at[1]);
+    }
+
     /** An overlay as worked out, a pixel a chunk (null if it hasn't been, or is the flags'): for the tutorial's cache. */
     BufferedImage rawOverlay(MapOverlay o) {
         return rawOverlays.get(o);

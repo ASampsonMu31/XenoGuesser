@@ -21,7 +21,7 @@ final class TutorialChecks extends GamePart {
 
     // How near the guess must come to the reading or the map's value at the site: degrees, metres,
     // and shares of a heatmap's colours
-    static final float TEMPERATURE_TOLERANCE = 2.5f, ALTITUDE_TOLERANCE = 8f, SHARE_TOLERANCE = 0.08f;
+    static final float TEMPERATURE_TOLERANCE = 2.5f, ALTITUDE_TOLERANCE = 5f, SHARE_TOLERANCE = 0.08f;
     // A plant's or animal's share of its range from where it's plentiful (green on its map)
     static final float PLENTIFUL = 0.6f;
     // How far a coast may be turned from the site's (the way inland, so which side the sea is on
@@ -32,11 +32,16 @@ final class TutorialChecks extends GamePart {
     static final double LANDMARK_REACH = 3000.0;
 
     /** What passes: a cell of the grid each place that does, the wash showing them, and the words for the explanation. */
-    record Check(boolean[] pass, BufferedImage wash, String[] vars) {
+    record Check(boolean[] pass, BufferedImage wash, String[] vars, Test exact) {
 
-        /** Whether a guess at a direction passes. */
+        /**
+         * Whether a guess at a direction passes: by the exercise's own rule at that very point
+         * where it has one (the grid's cells are 16 m or so: a narrow band on a steep slope can
+         * fall between their middles), otherwise by its cell of the grid (the coast's).
+         */
         boolean passes(GeodesicChunkGrid.Direction d) {
             if (d == null) return false;
+            if (exact != null && Math.abs(Math.asin(Math.max(-1.0, Math.min(1.0, d.y())))) <= MapProjection.CLIP_LATITUDE) return exact.at(d);
             int cell = cellOf(d);
             return cell >= 0 && pass[cell];
         }
@@ -73,6 +78,11 @@ final class TutorialChecks extends GamePart {
         return (TerrainMesh.getLayeredHeight(d, game.worldNoise) - game.seaLevelHeight) / PlayerBody.METRE;
     }
 
+    /** The height above the sea in metres the contour map shows in a direction (NaN before it's drawn). */
+    float mapMetresUp(GeodesicChunkGrid.Direction d) {
+        return (game.mapOverlays.contourHeightAt(d) - game.seaLevelHeight) / PlayerBody.METRE;
+    }
+
     private float share(MapOverlay overlay, GeodesicChunkGrid.Direction d) {
         RegionalFactor f = game.mapOverlays.factorFor(overlay);
         return f == null ? 0f : f.evaluate(d);
@@ -95,11 +105,11 @@ final class TutorialChecks extends GamePart {
         if (site.stage() == TutorialPlan.Stage.COAST) {
             Coast coast = coast(site);
             return new Check(coast.pass, wash(coast.pass),
-                    new String[] { "coastline", coast.described, "coastdistance", Math.round(coast.distance / PlayerBody.METRE) + " m" });
+                    new String[] { "coastline", coast.described, "coastdistance", Math.round(coast.distance / PlayerBody.METRE) + " m" }, null);
         }
         Rule rule = rule(site);
         boolean[] pass = grid(rule.test());
-        return new Check(pass, wash(pass), rule.vars());
+        return new Check(pass, wash(pass), rule.vars(), rule.test());
     }
 
     /** The rule of every exercise but the coast's (whose is worked out on the grid as a whole: see coast). */
@@ -120,8 +130,12 @@ final class TutorialChecks extends GamePart {
                 vars = new String[] { "temperature", celsius(reading), "tolerance", celsius(TEMPERATURE_TOLERANCE) };
             }
             case ALTITUDE -> {
+                // (within ALTITUDE_TOLERANCE of the reading, by the ground's own height there or by
+                // the height the contour map shows there: a guess right on the drawn line passes,
+                // though the map's heights are smoothed a little)
                 float metres = metresUp(here);
-                pass = d -> land(d) && Math.abs(metresUp(d) - metres) <= ALTITUDE_TOLERANCE;
+                pass = d -> land(d) && (Math.abs(metresUp(d) - metres) <= ALTITUDE_TOLERANCE
+                        || Math.abs(mapMetresUp(d) - metres) <= ALTITUDE_TOLERANCE);
                 vars = new String[] { "altitude", Math.round(metres) + " m" };
             }
             case WILDLIFE -> {

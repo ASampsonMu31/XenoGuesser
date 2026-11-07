@@ -132,7 +132,7 @@ public class MapPanel extends JPanel {
     private float goalY;
 
     // Where the last round was (its answer, in the map image's pixels), once a round has been
-    // played: marked on the map through the next round
+    // played: marked on the map through the next round (singleplayer games only)
     private GeodesicChunkGrid.Direction lastRound;
     private float lastRoundX, lastRoundY;
     private static final Color LAST_ROUND_COLOUR = new Color(255, 170, 40);
@@ -2279,7 +2279,8 @@ public class MapPanel extends JPanel {
             }
 
             // (over any note left there, which hangs above the spot)
-            if (lastRound != null && !isFullScreenReveal) drawLastRound(g2d, mapX, mapY);
+            // (not in the tutorial, where a retry's last round is its own answer, nor in multiplayer)
+            if (lastRound != null && !isFullScreenReveal && !Tutorial.active && !Multiplayer.isActive()) drawLastRound(g2d, mapX, mapY);
 
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();

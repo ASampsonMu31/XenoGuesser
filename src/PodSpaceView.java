@@ -13,9 +13,10 @@ import java.util.Random;
 /**
  * What's seen through the landing pod's window (see PodSequence): drawn first, behind the
  * cabin, which hides it everywhere but the door's glass. Stars streaming past as the pod
- * cruises, slowing to points; on some worlds the rocks of an asteroid belt tumbling past (a few
- * small ones striking the glass) or a gas giant, banded and perhaps ringed, swung round close;
- * the planet's star growing ahead and then the planet itself, its land and sea as on the map,
+ * cruises, slowing to points; on some worlds the belt of asteroids round the star, a ring of
+ * specks in the planet's plane, and its small rocks flashing past as the pod crosses it (a few
+ * striking the glass), or a gas giant, banded and perhaps ringed, swung round close; the
+ * planet's star growing ahead until it fills much of the window going by, and then the planet itself, its land and sea as on the map,
  * snow where it lies, its mountains standing up from it to scale and clouds over it
  * (PlanetGlobeTexture), with its moon if it has one; and, once the pod's in the air with its
  * window fogged, just a bright sky above and the ground below. What's met on the way, the star's
@@ -37,14 +38,20 @@ public class PodSpaceView {
     private static final float PLANET_DISTANCE = 4000f, STAR_DISTANCE = 20000f;
     // The gas giant's radius as drawn (where it is is given in its radii)
     private static final float GIANT_UNIT = 1000f;
-    // The belt's rocks: how many, the box they tumble through (either way, and ahead), the
-    // nearest any passes the pod's line and how big they are (units)
-    private static final int ROCKS = 90, ROCK_SHAPES = 3;
-    private static final float ROCK_SPREAD = 520f, ROCK_DEPTH = 3000f, ROCK_CLEAR = 45f, ROCK_SMALLEST = 3f, ROCK_LARGEST = 26f;
+    // The belt's rocks near the pod: how many, the slab they tumble through (either way along the
+    // belt's plane, the spread across it, and ahead), the nearest any passes the pod's line and how
+    // big they are (units): small beside the star, most no bigger than the pod, and quickly by
+    private static final int ROCKS = 160, ROCK_SHAPES = 3;
+    private static final float ROCK_SPREAD = 900f, ROCK_THICK = 160f, ROCK_DEPTH = 3000f, ROCK_CLEAR = 25f, ROCK_SMALLEST = 0.8f,
+            ROCK_LARGEST = 7f;
     // A rock that's come into the belt brightens out of the dark over ROCK_SHOWING seconds (as
-    // well as by how far off it is); one gone by dims away over ROCK_SPREAD behind the pod (out of
+    // well as by how far off it is); one gone by dims away over ROCK_FADE behind the pod (out of
     // sight there even when the pod's turned aside, past a giant), and is gone ROCK_GONE behind it
-    private static final float ROCK_SHOWING = 1.5f, ROCK_GONE = ROCK_SPREAD * 1.6f;
+    private static final float ROCK_SHOWING = 0.5f, ROCK_FADE = 520f, ROCK_GONE = ROCK_FADE * 1.6f;
+    // The rest of the belt, far off: how many specks, how thick it is (a share of its radius
+    // either way, more or less), and how far off they're drawn (beyond the star, before the stars)
+    private static final int SPECKS = 6000;
+    private static final float SPECK_THICK = 0.04f, SPECK_DISTANCE = 40000f;
     // A pebble that strikes the glass: how fast it comes (units a second, in the cabin's own units)
     // and how long it's seen coming, and how big it is
     private static final float STRIKE_SPEED = 70f, STRIKE_SEEN = 1.6f, PEBBLE = 0.35f;
@@ -73,6 +80,15 @@ public class PodSpaceView {
     float giantSpin;
     /** How thick the belt's rocks are (0 none, 1 thickest), and how fast they come past. */
     float belt, rockSpeed;
+    /** The way the star's light falls on what's by the pod (the rocks, the giant): from the star to the pod. */
+    final float[] starLight = { 0f, 0f, 1f };
+    /**
+     * The belt round the star, all of it, seen as specks of dust (0 not shown, 1 shown): its middle
+     * (the star, from the pod), two ways across its plane and the way square to it, and its inner
+     * and outer radii (in the same units).
+     */
+    float beltDust, beltInner = 1f, beltOuter = 1.5f;
+    final float[] beltCentre = { 0f, 0f, 1f }, beltAcross = { 1f, 0f, 0f }, beltAlong = { 0f, 0f, 1f }, beltNormal = { 0f, 1f, 0f };
     /** How much of space shows (1), against the fogged sky and ground (0). */
     float space = 1f;
     /** Which way is up through the fog, in the pod's own frame. */
@@ -99,7 +115,11 @@ public class PodSpaceView {
     float orbitAngle;
 
     private Shader shader;
-    private final int[] vao = new int[6], vbo = new int[6], globeIndices = new int[2];
+    private final int[] vao = new int[7], vbo = new int[7], globeIndices = new int[2];
+    // The belt's specks: where each is round it (its angle, how far out between the inner and
+    // outer edges, how far off its plane as a share of its radius) and how bright, and what's drawn
+    private final float[] specks = new float[SPECKS * 4];
+    private final float[] speckData = new float[SPECKS * 6];
     private int sphereIndexCount, reliefIndexCount;
     private int starTexture, globeTexture, moonTexture, giantTexture, ringTexture, heightTexture, cloudTexture;
     private final int[] rockFirst = new int[ROCK_SHAPES], rockCount = new int[ROCK_SHAPES];
@@ -147,6 +167,14 @@ public class PodSpaceView {
             rocks[i] = new Rock();
             respawnRock(rocks[i], true);
         }
+        // (thickest in the belt's middle, thinning to its edges and off its plane)
+        Random speck = WorldPalette.rng(worldSeed, 0xBE17_D057L);
+        for (int i = 0; i < SPECKS; i++) {
+            specks[i * 4] = speck.nextFloat() * (float) (Math.PI * 2);
+            specks[i * 4 + 1] = (speck.nextFloat() + speck.nextFloat()) * 0.5f;
+            specks[i * 4 + 2] = (float) Math.max(-3.0, Math.min(3.0, speck.nextGaussian())) * SPECK_THICK;
+            specks[i * 4 + 3] = 0.45f + 0.55f * (float) Math.pow(speck.nextFloat(), 2.0);
+        }
     }
 
     /** The planet's globe, from any thread, once it's made. */
@@ -185,21 +213,26 @@ public class PodSpaceView {
         streakBrightness[i] = 0.45f + 0.55f * rand.nextFloat();
     }
 
-    /** A rock put back far ahead (or anywhere, at the start), there or not as thick as the belt is. */
+    /**
+     * A rock put back far ahead (or anywhere, at the start), there or not as thick as the belt is:
+     * spread wide along the belt's plane (which the pod flies in) and less across it.
+     */
     private void respawnRock(Rock r, boolean anywhere) {
-        float x, y;
+        float a, b;
         do {
-            x = (rockRand.nextFloat() - 0.5f) * 2f * ROCK_SPREAD;
-            y = (rockRand.nextFloat() - 0.5f) * 2f * ROCK_SPREAD;
-        } while (x * x + y * y < ROCK_CLEAR * ROCK_CLEAR);
+            a = (rockRand.nextFloat() - 0.5f) * 2f * ROCK_SPREAD;
+            b = (float) Math.max(-2.5, Math.min(2.5, rockRand.nextGaussian())) * ROCK_THICK;
+        } while (a * a + b * b < ROCK_CLEAR * ROCK_CLEAR);
         // (now and then one comes close by the window)
         if (rockRand.nextFloat() < 0.08f) {
-            float s = ROCK_CLEAR * (1f + rockRand.nextFloat()) / (float) Math.max(1e-3, Math.hypot(x, y));
-            x *= s;
-            y *= s;
+            float s = ROCK_CLEAR * (1f + rockRand.nextFloat()) / (float) Math.max(1e-3, Math.hypot(a, b));
+            a *= s;
+            b *= s;
         }
-        r.x = x;
-        r.y = y;
+        // (along the plane is square to its normal and to the way the pod's going)
+        float[] n = Affine.normalise(new float[] { beltNormal[0], beltNormal[1], 0f });
+        r.x = a * n[1] + b * n[0];
+        r.y = -a * n[0] + b * n[1];
         r.z = anywhere ? rockRand.nextFloat() * ROCK_DEPTH : ROCK_DEPTH;
         float k = rockRand.nextFloat();
         r.size = ROCK_SMALLEST + (ROCK_LARGEST - ROCK_SMALLEST) * k * k * k;
@@ -213,8 +246,8 @@ public class PodSpaceView {
 
     public void initialise(GL3 gl) {
         shader = new Shader(gl, GamePaths.HOME + "assets/shaders/vs_pod_space.txt", GamePaths.HOME + "assets/shaders/fs_pod_space.txt");
-        gl.glGenVertexArrays(6, vao, 0);
-        gl.glGenBuffers(6, vbo, 0);
+        gl.glGenVertexArrays(7, vao, 0);
+        gl.glGenBuffers(7, vbo, 0);
         // 0: the streaking stars (a thin quad each, bright at its head), filled every frame
         setUp(gl, 0, new float[lineData.length], GL.GL_DYNAMIC_DRAW);
         // 1: the still stars, all round, far off
@@ -235,6 +268,8 @@ public class PodSpaceView {
         reliefIndexCount = globe(gl, 5, 512, 256, 1);
         // 4: the belt's rocks, a few lumpy shapes one after another (position, then the face's normal)
         setUp(gl, 4, rockShapes(), GL.GL_STATIC_DRAW);
+        // 6: the belt's specks, far off, filled every frame
+        setUp(gl, 6, new float[speckData.length], GL.GL_DYNAMIC_DRAW);
 
         // The star as the sky shows it in the game, and the fogged sky's colours, from the world's palette
         WorldPalette palette = new WorldPalette(worldSeed);
@@ -432,9 +467,9 @@ public class PodSpaceView {
     }
 
     public void dispose(GL3 gl) {
-        gl.glDeleteBuffers(6, vbo, 0);
+        gl.glDeleteBuffers(7, vbo, 0);
         gl.glDeleteBuffers(2, globeIndices, 0);
-        gl.glDeleteVertexArrays(6, vao, 0);
+        gl.glDeleteVertexArrays(7, vao, 0);
         gl.glDeleteTextures(7, new int[] { starTexture, globeTexture, moonTexture, giantTexture, ringTexture, heightTexture, cloudTexture }, 0);
     }
 
@@ -455,7 +490,7 @@ public class PodSpaceView {
             r.angle += r.spin * dt;
             if (r.z < -ROCK_GONE) respawnRock(r, false);
             // (as the belt thickens, rocks still far off enough to be dark come into it)
-            else if (!r.there && r.z > ROCK_DEPTH * 0.85f && rockRand.nextFloat() < belt * dt * 1.5f) r.there = true;
+            else if (!r.there && r.z > ROCK_DEPTH * 0.85f && rockRand.nextFloat() < belt * dt * 6f) r.there = true;
             if (r.there) {
                 r.shown = Math.min(1f, r.shown + dt / ROCK_SHOWING);
                 rocksThere++;
@@ -521,6 +556,7 @@ public class PodSpaceView {
                 gl.glDisable(GL3.GL_PROGRAM_POINT_SIZE);
             }
             shader.setFloatArray(gl, "viewProjection", inCourse.toFloatArrayForGLSL());
+            if (beltDust > 0.01f) drawSpecks(gl, visible * beltDust);
             // The star, then the planet and its moon in front of it, the further first
             if (starAngle > 0f) {
                 shader.setInt(gl, "mode", 1);
@@ -631,7 +667,7 @@ public class PodSpaceView {
         shader.setFloatArray(gl, "viewProjection", inSpace.toFloatArrayForGLSL());
         float[] centre = { giantCentre[0] * GIANT_UNIT, giantCentre[1] * GIANT_UNIT, giantCentre[2] * GIANT_UNIT };
         // (the star's light, as the course turns it)
-        float[] lit = Affine.transformDirection(Affine.rotationY(course), light[0], light[1], light[2]);
+        float[] lit = Affine.transformDirection(Affine.rotationY(course), starLight[0], starLight[1], starLight[2]);
         lit = Affine.normalise(lit);
         float[] tilt = Affine.multiply(Affine.rotationZ(system.giantTilt * system.giantSide), Affine.rotationX(0.25f));
         gl.glDepthMask(true);
@@ -666,14 +702,14 @@ public class PodSpaceView {
         gl.glBlendFunc(GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA);
         gl.glDepthMask(true);
         shader.setInt(gl, "mode", 4);
-        float[] lit = Affine.normalise(Affine.transformDirection(Affine.rotationY(course), light[0], light[1], light[2]));
+        float[] lit = Affine.normalise(Affine.transformDirection(Affine.rotationY(course), starLight[0], starLight[1], starLight[2]));
         shader.setFloat(gl, "lightDirection", lit[0], lit[1], lit[2]);
         gl.glBindVertexArray(vao[4]);
         shader.setFloatArray(gl, "viewProjection", inSpace.toFloatArrayForGLSL());
         for (Rock r : rocks) {
             if (!r.there) continue;
             float coming = Math.max(0f, Math.min(1f, (ROCK_DEPTH - r.z) / (ROCK_DEPTH * 0.35f)));
-            float gone = r.z < 0f ? 1f - smooth(-r.z / ROCK_SPREAD) : 1f;
+            float gone = r.z < 0f ? 1f - smooth(-r.z / ROCK_FADE) : 1f;
             float fade = coming * gone * smooth(r.shown);
             if (fade <= 0f) continue;
             drawRock(gl, r.x, r.y, r.z, r.size, r.axis, r.angle, r.shape, fade);
@@ -723,6 +759,43 @@ public class PodSpaceView {
         m[9] = t * a[1] * a[2] - s * a[0];
         m[10] = t * a[2] * a[2] + c;
         return m;
+    }
+
+    /**
+     * The belt round the star as specks of dust and far rocks, each where it is from the pod (so
+     * from outside it's a ring about the star, and from in it a band across the sky through the
+     * star, those nearby drifting past), brighter the nearer.
+     */
+    private void drawSpecks(GL3 gl, float visible) {
+        float[] centre = beltCentre, across = beltAcross, along = beltAlong, normal = beltNormal;
+        float reach = beltOuter - beltInner;
+        for (int i = 0; i < SPECKS; i++) {
+            float angle = specks[i * 4], radius = beltInner + reach * specks[i * 4 + 1], off = specks[i * 4 + 2] * radius;
+            float c = (float) Math.cos(angle) * radius, s = (float) Math.sin(angle) * radius;
+            float x = centre[0] + across[0] * c + along[0] * s + normal[0] * off;
+            float y = centre[1] + across[1] * c + along[1] * s + normal[1] * off;
+            float z = centre[2] + across[2] * c + along[2] * s + normal[2] * off;
+            float distance = Math.max(1e-4f, (float) Math.sqrt(x * x + y * y + z * z));
+            int o = i * 6;
+            speckData[o] = x / distance * SPECK_DISTANCE;
+            speckData[o + 1] = y / distance * SPECK_DISTANCE;
+            speckData[o + 2] = z / distance * SPECK_DISTANCE;
+            speckData[o + 3] = 0f;
+            speckData[o + 4] = 0f;
+            speckData[o + 5] = specks[i * 4 + 3] * Math.max(0.8f, Math.min(1f, 4f / distance));
+        }
+        gl.glBindVertexArray(vao[6]);
+        gl.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo[6]);
+        gl.glBufferSubData(GL.GL_ARRAY_BUFFER, 0, (long) speckData.length * Float.BYTES, FloatBuffer.wrap(speckData));
+        gl.glEnable(GL3.GL_PROGRAM_POINT_SIZE);
+        shader.setInt(gl, "mode", 0);
+        shader.setInt(gl, "asPoints", 1);
+        shader.setFloat(gl, "pointSize", 2.2f);
+        shader.setFloat(gl, "tint", 0.85f, 0.74f, 0.62f);
+        shader.setFloat(gl, "alpha", visible);
+        gl.glDrawArrays(GL.GL_POINTS, 0, SPECKS);
+        shader.setInt(gl, "asPoints", 0);
+        gl.glDisable(GL3.GL_PROGRAM_POINT_SIZE);
     }
 
     /** The stars streaming past: each a streak as long as the pod goes in a moment, a few pixels wide, brightest at its head. */

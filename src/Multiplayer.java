@@ -39,7 +39,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 9;
+    public static final int PROTOCOL_VERSION = 10;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -208,14 +208,16 @@ public final class Multiplayer {
     private volatile String remoteJavaVersion;
     private volatile long lastHeardMs;
 
-    // In the pod: this PC's share loaded, its player's pose there {x, y, z, yaw, pitch} and the
-    // chair's {x, z, vx, vz, angle} (host only), latest first, and when each last went
-    private volatile float localProgress = -1f;
+    // In the pod: this PC's share loaded and how long its loading's expected to take all told
+    // (seconds), its player's pose there {x, y, z, yaw, pitch} and the chair's {x, z, vx, vz,
+    // angle} (host only), latest first, and when each last went
+    private volatile float localProgress = -1f, localExpectedSeconds;
     private volatile float[] localPodPose, localChair;
     private long lastProgressSentMs, lastPodPoseSentMs, lastChairSentMs;
-    // ...and the partner's: their share loaded, their pose in the pod {x, y, z, yaw, pitch, when
-    // received}, the chair as the host has it, and the lights switched and chair pushed by them
-    private volatile float remoteProgress;
+    // ...and the partner's: their share loaded and expected time, their pose in the pod {x, y, z,
+    // yaw, pitch, when received}, the chair as the host has it, and the lights switched and chair
+    // pushed by them
+    private volatile float remoteProgress, remoteExpectedSeconds;
     private volatile float[] remotePodPose, remoteChair;
     private final java.util.concurrent.ConcurrentLinkedQueue<float[]> remotePodEvents = new java.util.concurrent.ConcurrentLinkedQueue<>();
 
@@ -498,6 +500,11 @@ public final class Multiplayer {
         return remoteWorldReady ? 1f : remoteProgress;
     }
 
+    /** How long the partner's loading's expected to take all told (seconds; 0 until heard). */
+    public float remoteExpectedSeconds() {
+        return remoteExpectedSeconds;
+    }
+
     /** The partner's pose in the pod {x, y, z, yaw, pitch, this PC's time it came (ms)}, or null. */
     public float[] remotePodPose() {
         return remotePodPose;
@@ -513,8 +520,9 @@ public final class Multiplayer {
         return remotePodEvents.poll();
     }
 
-    /** This PC's share loaded (sent four times a second). */
-    public void publishProgress(float progress) {
+    /** This PC's share loaded and how long its loading's expected to take all told (seconds), sent four times a second. */
+    public void publishProgress(float progress, float expectedSeconds) {
+        localExpectedSeconds = expectedSeconds;
         localProgress = progress;
     }
 
@@ -731,7 +739,7 @@ public final class Multiplayer {
         float progress = localProgress;
         if (progress >= 0f && now - lastProgressSentMs >= PROGRESS_INTERVAL_MS) {
             lastProgressSentMs = now;
-            send(message(LOAD_PROGRESS, 4).putFloat(progress), false);
+            send(message(LOAD_PROGRESS, 8).putFloat(progress).putFloat(localExpectedSeconds), false);
         }
         float[] pose = localPodPose;
         if (pose != null && now - lastPodPoseSentMs >= POD_POSE_INTERVAL_MS) {
@@ -888,9 +896,10 @@ public final class Multiplayer {
                 return false;
             }
             case LOAD_PROGRESS -> {
-                float progress = m.getFloat();
+                float progress = m.getFloat(), expected = m.getFloat();
                 if (m.hasRemaining()) return false;
                 remoteProgress = Math.max(remoteProgress, Math.max(0f, Math.min(1f, progress)));
+                if (expected > 0f && expected < 3600f) remoteExpectedSeconds = expected;
                 return false;
             }
             case POD_POSE -> {
