@@ -46,7 +46,7 @@ final class HouseBuilder extends InfraPart {
                 variant.tileWidth, variant.tileHeight);
         // Dressed in its architecture, as far as the household can afford (see ArchitectureStyle.dress)
         ArchitectureStyle arch = infra.architectureWorld.style(house.architecture);
-        ArchitectureStyle.Dress dress = arch.dress(house.seed, house.richness, house.grand, style.tower);
+        ArchitectureStyle.Dress dress = arch.dress(house.seed, house.richness, style.tower);
         // (a shop's front is its shop window, kept flat)
         boolean shaped = dress.relief && house.shop == null && !style.tower;
         if (shaped) shapeWalls(walls, house, style, arch);

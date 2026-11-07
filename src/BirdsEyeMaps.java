@@ -68,8 +68,13 @@ public class BirdsEyeMaps {
     // Each layer is drawn on a transparent canvas, to lie over the plain map (or a gradient
     // map) along with any of the others
 
-    // The contours' colours: the lowest a strong yellow, through orange, to the map's highest red
-    private static final Color LOWEST_CONTOUR = new Color(250, 200, 0), HIGHEST_CONTOUR = new Color(200, 10, 0);
+    // The contours' colours: the lowest a light green, darkening to the map's highest a deep
+    // forest green (greens, so they stand apart from the blue-to-red height maps under them)
+    private static final Color LOWEST_CONTOUR = new Color(196, 244, 150), HIGHEST_CONTOUR = new Color(6, 72, 28);
+    // The heights written beside the contours: their size (pixels of the detail canvas, and of a
+    // tile) and roughly how far apart along a line (the same)
+    private static final float CONTOUR_LABEL_PX = 22f, CONTOUR_LABEL_SPACING = 520f;
+    private static final float TILE_CONTOUR_LABEL_PX = 17f, TILE_CONTOUR_LABEL_SPACING = 300f;
     // A contour every this many metres of height above the sea, every so many of them heavier;
     // and how thick they're drawn (pixels of the detail canvas, which is shrunk DETAIL_FACTOR
     // times for the whole map)
@@ -83,13 +88,15 @@ public class BirdsEyeMaps {
 
     /**
      * Elevation as contour lines: one every CONTOUR_METRES of height above the sea, coloured
-     * from yellow (the lowest) to red (the highest on the map), every INDEX_EVERY'th a little
-     * heavier. Traced over heights smoothed a
-     * little so each line runs clean. Returns {overview, detail}.
+     * from light green (the lowest) to dark green (the highest on the map), every INDEX_EVERY'th
+     * a little heavier, their heights written beside them on the detail image (the overview is
+     * too small to read them). Traced over heights smoothed a little so each line runs clean.
+     * Returns {overview, detail}.
      */
     public BufferedImage[] renderContourLayer() {
         int n = detailResolution;
         float[] heights = smoothed(getDetailHeights(), n, 2);
+        contourHeights = heights;
         float highest = seaLevelHeight + 1f;
         for (float h : heights) highest = Math.max(highest, h);
         float rise = highest - seaLevelHeight;
@@ -106,17 +113,24 @@ public class BirdsEyeMaps {
         BufferedImage canvas = newLayer();
         Graphics2D g2 = createGraphics(canvas);
         float scale = CONTOUR_STEP;
+        List<ContourLabels.Line> labelled = new ArrayList<>();
         for (int level = 1; level <= contourLevels(rise); level++) {
             boolean index = level % INDEX_EVERY == 0;
-            g2.setColor(contourColour(level, contourLevels(rise), index));
-            g2.setStroke(new BasicStroke(index ? INDEX_CONTOUR_WIDTH : CONTOUR_WIDTH, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            Color colour = contourColour(level, contourLevels(rise), index);
+            float width = index ? INDEX_CONTOUR_WIDTH : CONTOUR_WIDTH;
+            g2.setColor(colour);
+            g2.setStroke(new BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
             for (Path2D.Float line : traceLevel(value, g, level)) {
                 line.transform(AffineTransform.getScaleInstance(scale, scale));
                 g2.draw(line);
+                labelled.add(new ContourLabels.Line(line, contourLabel(level), colour, width, index));
             }
         }
+        BufferedImage[] images = finishLayer(canvas);
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        ContourLabels.draw(g2, labelled, CONTOUR_LABEL_PX, CONTOUR_LABEL_SPACING, new Rectangle2D.Float(0, 0, n, n));
         g2.dispose();
-        return finishLayer(canvas);
+        return images;
     }
 
     /**
@@ -920,6 +934,27 @@ public class BirdsEyeMaps {
         return canvas;
     }
 
+    // The heights the contours were traced over (the detail grid's, smoothed: see
+    // renderContourLayer), once they've been drawn; null before
+    private volatile float[] contourHeights;
+
+    /**
+     * The ground's height (world units) at chart point (x, z) as the contour map shows it: from
+     * the smoothed heights its lines were traced over, between their grid points. NaN before
+     * the contours are drawn.
+     */
+    float contourHeightAt(double x, double z) {
+        float[] h = contourHeights;
+        if (h == null) return Float.NaN;
+        int n = detailResolution;
+        float px = (float) ((x + halfRegion) / totalRegionWidth * n - 0.5), py = (float) ((z + halfRegion) / totalRegionWidth * n - 0.5);
+        int x0 = Math.max(0, Math.min(n - 2, (int) Math.floor(px))), y0 = Math.max(0, Math.min(n - 2, (int) Math.floor(py)));
+        float fx = Math.max(0f, Math.min(1f, px - x0)), fy = Math.max(0f, Math.min(1f, py - y0));
+        float top = h[y0 * n + x0] + (h[y0 * n + x0 + 1] - h[y0 * n + x0]) * fx;
+        float bottom = h[(y0 + 1) * n + x0] + (h[(y0 + 1) * n + x0 + 1] - h[(y0 + 1) * n + x0]) * fx;
+        return top + (bottom - top) * fy;
+    }
+
     private synchronized float[] getDetailHeights() {
         if (detailHeights == null) {
             float[] heights = new float[detailResolution * detailResolution];
@@ -1085,7 +1120,12 @@ public class BirdsEyeMaps {
         return above <= 0f ? -1f : above / contourStep;
     }
 
-    /** A contour's colour: yellow for the first, red for the highest of all (levels), the heavier ones a little more solid. */
+    /** What's written beside the k'th contour: its height above the sea in metres. */
+    private static String contourLabel(int level) {
+        return String.valueOf(Math.round(level * CONTOUR_METRES));
+    }
+
+    /** A contour's colour: light green for the first, dark green for the highest of all (levels), the heavier ones a little more solid. */
     private static Color contourColour(int level, int levels, boolean index) {
         float t = levels <= 1 ? 0f : (level - 1) / (float) (levels - 1);
         return new Color(Math.round(LOWEST_CONTOUR.getRed() + (HIGHEST_CONTOUR.getRed() - LOWEST_CONTOUR.getRed()) * t),
@@ -1123,12 +1163,21 @@ public class BirdsEyeMaps {
             Graphics2D g2 = createGraphics(tile);
             g2.translate(-0.5f, -0.5f);
             float thicken = (float) Math.pow(tileMagnification(level, size), 0.35);
+            List<ContourLabels.Line> labelled = new ArrayList<>();
             for (int lv = 1; lv <= contourLevels(rise); lv++) {
                 boolean index = lv % INDEX_EVERY == 0;
-                g2.setColor(contourColour(lv, mapLevels, index));
-                g2.setStroke(new BasicStroke((index ? INDEX_CONTOUR_WIDTH : CONTOUR_WIDTH) / DETAIL_FACTOR * 1.6f * thicken, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-                for (Path2D.Float line : traceLevel(value, w, lv)) g2.draw(line);
+                Color colour = contourColour(lv, mapLevels, index);
+                float width = (index ? INDEX_CONTOUR_WIDTH : CONTOUR_WIDTH) / DETAIL_FACTOR * 1.6f * thicken;
+                g2.setColor(colour);
+                g2.setStroke(new BasicStroke(width, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                for (Path2D.Float line : traceLevel(value, w, lv)) {
+                    g2.draw(line);
+                    labelled.add(new ContourLabels.Line(line, contourLabel(lv), colour, width, index));
+                }
             }
+            // (each number wholly inside the tile, so none is cut off at its edge)
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            ContourLabels.draw(g2, labelled, TILE_CONTOUR_LABEL_PX, TILE_CONTOUR_LABEL_SPACING, new Rectangle2D.Float(2, 2, size - 3, size - 3));
             g2.dispose();
             return tile;
         };

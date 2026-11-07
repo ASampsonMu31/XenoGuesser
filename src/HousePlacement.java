@@ -16,14 +16,12 @@ final class HousePlacement extends InfraPart {
     }
 
     /**
-     * Picks a house's form from its nation's mix, tilted by its town's favourites; taller
-     * forms are likelier towards the middle of a town, so centres rise above the suburbs, and
-     * where people are richer, whose houses are taller and less like everyone else's (the
-     * nation's rarer forms come up more often).
+     * Picks a house's form: in the hearts of big cities mostly one of the towers, otherwise the
+     * one form its region builds (see InfrastructureManager.regionForm), so a region's houses all
+     * look like the architecture map's picture of them, differing only in size and extensions.
      */
-    private int chooseForm(SpherePosition place, int nationId, long houseSeed, float richness) {
+    private int chooseForm(SpherePosition place, int nationId, long houseSeed, float richness, int design) {
         BuildingStyle[] forms = infra.formStyles.get(nationId);
-        float[] weights = forms[0].formWeights;
         float urbanness = infra.settlementManager.getUrbanness(place);
         // In the heart of a big city, most buildings are towers, the more so the richer it is
         float big = smoothstep(BIG_CITY_FROM, BIG_CITY_TO, infra.settlementManager.getCitySize(SphereMath.direction(place)));
@@ -34,29 +32,31 @@ final class HousePlacement extends InfraPart {
             for (int f = 0; f < forms.length; f++) if (forms[f].tower) towers.add(f);
             if (!towers.isEmpty()) return towers.get(towerRoll.nextInt(towers.size()));
         }
-        SettlementManager.Settlement town = urbanness > 0.05f ? infra.settlementManager.dominantSettlementAt(place) : null;
-        Random townRand = town == null ? null : new Random(infra.worldSeed ^ (town.rank * 0xC2B2AE3D27D4EB4FL));
-        float[] tilted = new float[weights.length];
-        float total = 0;
-        for (int f = 0; f < weights.length; f++) {
-            float townBias = townRand == null ? 1.0f : (float) Math.exp(townRand.nextGaussian() * 0.7);
-            float lift = Math.max(0.0f, forms[f].wallHeight / forms[0].wallHeight - 1.0f);
-            float usual = (float) Math.pow(Math.max(1e-4f, weights[f]), 1.0f - 0.35f * richness);
-            tilted[f] = forms[f].tower ? 0f : usual * townBias * (1.0f + 3.0f * urbanness * lift + 4.0f * richness * richness * lift);
-            total += tilted[f];
-        }
-        float pick = new Random(houseSeed ^ 0x3C6EF372FE94F82AL).nextFloat() * total;
-        for (int f = 0; f < tilted.length; f++) {
-            pick -= tilted[f];
-            if (pick <= 0) return f;
-        }
-        return tilted.length - 1;
+        return infra.regionForm(nationId, design);
     }
 
     /**
-     * Picks a house's wall variety from its nation's mix, tilted by its town's own favourites,
-     * so a town has a recognisable look without every house matching; but most walls are built
-     * in the local architecture's favourite masonry (LIKED_MASONRY of them), as the map shows it.
+     * A house's depth: its form's, to its size, a little deeper or shallower for a plain box (the
+     * shape varying subtly street to street while the form stays the region's).
+     */
+    private static float depthOf(House house, BuildingStyle style) {
+        float depth = style.depth * house.sizeScale;
+        if (style.tower || style.footprint != BuildingStyle.Footprint.BOX) return depth;
+        return depth * (0.88f + 0.24f * new Random(house.seed ^ 0x6A09E667L).nextFloat());
+    }
+
+    /** A house's walls: a tower's from the nation's mix, any other house's its region's one variety. */
+    private int wallsOf(House house) {
+        if (infra.styleOf(house).tower) {
+            return chooseWallVariant(house.frame.origin(), house.nationId, house.seed, infra.architectureWorld.style(house.architecture).pattern);
+        }
+        return infra.regionWall(house.nationId, house.architecture);
+    }
+
+    /**
+     * Picks a tower's (or a border booth's) wall variety from its nation's mix, tilted by its
+     * town's own favourites, so a skyline isn't all one; but most are built in the local
+     * architecture's favourite masonry (LIKED_MASONRY of them). Houses build their region's one.
      */
     private static final float LIKED_MASONRY = 0.8f;
 
@@ -206,10 +206,11 @@ final class HousePlacement extends InfraPart {
             SpherePosition roadPlace = world(segment, roadX, roadZ);
             house.richness = infra.areaRichness(nationId, infra.settlementManager.getUrbanness(roadPlace), roadPlace);
             house.sizeScale *= 1f + 0.35f * house.richness * house.richness;
-            house.form = chooseForm(roadPlace, nationId, house.seed, house.richness);
+            house.architecture = Math.max(0, infra.architectureWorld.at(nationId, SphereMath.direction(roadPlace)));
+            house.form = chooseForm(roadPlace, nationId, house.seed, house.richness, house.architecture);
             BuildingStyle style = infra.styleOf(house);
             house.width = style.width * house.sizeScale;
-            house.depth = style.depth * house.sizeScale;
+            house.depth = depthOf(house, style);
             if (extensionRoll < style.extensionChance * (1f + house.richness)) {
                 house.extensionSide = extensionLeft ? -1 : 1;
                 house.extensionWidth = house.width * style.extensionWidthRatio;
@@ -230,9 +231,7 @@ final class HousePlacement extends InfraPart {
             if (!settleOnGround(house, style) || !isPlotClearOfRoads(house)) {
                 continue;
             }
-            house.architecture = Math.max(0, infra.architectureWorld.at(house.nationId, SphereMath.direction(house.frame.origin())));
-            house.wallVariant = chooseWallVariant(house.frame.origin(), house.nationId, house.seed,
-                    infra.architectureWorld.style(house.architecture).pattern);
+            house.wallVariant = wallsOf(house);
         decideFence(house);
         decideLook(house);
             candidates.add(house);
@@ -325,10 +324,11 @@ final class HousePlacement extends InfraPart {
         SpherePosition endPlace = world(terminal, end.x, end.z);
         house.richness = infra.areaRichness(nationId, infra.settlementManager.getUrbanness(endPlace), endPlace);
         house.sizeScale *= 1f + 0.35f * house.richness * house.richness;
-        house.form = chooseForm(endPlace, nationId, house.seed, house.richness);
+        house.architecture = Math.max(0, infra.architectureWorld.at(nationId, SphereMath.direction(endPlace)));
+        house.form = chooseForm(endPlace, nationId, house.seed, house.richness, house.architecture);
         BuildingStyle style = infra.styleOf(house);
         house.width = style.width * house.sizeScale;
-        house.depth = style.depth * house.sizeScale;
+        house.depth = depthOf(house, style);
         if (attempt == 0 && extensionRoll < style.extensionChance * (1f + house.richness)) {
             house.extensionSide = extensionLeft ? -1 : 1;
             house.extensionWidth = house.width * style.extensionWidthRatio;
@@ -349,9 +349,7 @@ final class HousePlacement extends InfraPart {
         if (!settleOnGround(house, style) || !isPlotClearOfRoads(house)) {
             return null;
         }
-        house.architecture = Math.max(0, infra.architectureWorld.at(house.nationId, SphereMath.direction(house.frame.origin())));
-        house.wallVariant = chooseWallVariant(house.frame.origin(), house.nationId, house.seed,
-                infra.architectureWorld.style(house.architecture).pattern);
+        house.wallVariant = wallsOf(house);
         decideFence(house);
         decideLook(house);
         return house;

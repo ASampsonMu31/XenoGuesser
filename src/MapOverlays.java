@@ -88,6 +88,12 @@ final class MapOverlays extends GamePart {
     void startBirdsEyeMapRendering() {
         Thread mapThread = new Thread(() -> {
             BirdsEyeMaps maps = new BirdsEyeMaps(BIRDS_EYE_MAP_RESOLUTION, game.TOTAL_REGION_WIDTH, game.seaLevelHeight, game.worldNoise);
+            // (the tutorial's heatmaps' ranges, already worked out, from its cache: see TutorialCache)
+            java.util.Map<String, float[]> cachedRanges = TutorialCache.ranges();
+            if (!cachedRanges.isEmpty()) for (MapOverlay o : allOverlays()) {
+                float[] range = cachedRanges.get(TutorialCache.rangeName(o));
+                if (range != null) heatmapRanges.put(o, range);
+            }
             birdsEyeMaps = maps;
             long startTime = System.currentTimeMillis();
 
@@ -309,6 +315,24 @@ final class MapOverlays extends GamePart {
         if (fauna) Achievements.unlock(Achievements.Achievement.ZOOLOGIST);
     }
 
+    /**
+     * The tutorial: only these maps had (each exercise its own), anything else shown on the map
+     * put away; done on the UI thread, as the map's choices are.
+     */
+    void ownMapsOnly(java.util.Set<MapPanel.Layer> layers, List<MapOverlay> overlays) {
+        javax.swing.SwingUtilities.invokeLater(() -> {
+            ownedLayers.clear();
+            ownedLayers.addAll(layers);
+            ownedOverlays.clear();
+            ownedOverlays.addAll(overlays);
+            if (game.minimap == null) return;
+            for (MapPanel.Layer layer : MapPanel.Layer.values()) if (!layers.contains(layer)) game.minimap.setLayerShown(layer, false);
+            if (currentDebugFactor != null && !overlays.contains(currentDebugFactor)) chooseGradient(null);
+            if (currentPictureMap != null && !overlays.contains(MapOverlay.of(currentPictureMap))) choosePictureMap(null);
+            refreshMapChoices();
+        });
+    }
+
     /** Lists, beside the enlarged map, the layers and overlays the player has. */
     void refreshMapChoices() {
         if (game.minimap == null) return;
@@ -479,7 +503,7 @@ final class MapOverlays extends GamePart {
      * the nations marking their roads alike); the architecture and nation together (each nation's
      * house is its own, whatever the architecture). -1 for none.
      */
-    private BirdsEyeMaps.DesignAt designKey(FactorName f) {
+    BirdsEyeMaps.DesignAt designKey(FactorName f) {
         InfrastructureManager infra = game.infraManager;
         int nations = infra.roadLineStyles.size();
         return switch (f) {
@@ -642,22 +666,22 @@ final class MapOverlays extends GamePart {
         // The key: the heatmap's colours from its lowest value anywhere on the land to its highest,
         // in real units where it has them
         if (factor == FactorName.GRASS_COLOUR) {
-            game.minimap.setLegend(grassColourSpectrum(), new String[] { "Dry", "", "Lush" });
+            game.minimap.setLegend(grassColourSpectrum(), new String[] { "Dry", "", "Lush" }, legendReader(factorName));
         } else if (factorName != null && factorName.species() >= 0) {
             // A plant's or animal's key: how many in a chunk's area at each end and the middle of its colours
             SpeciesRange range = factorName.factor() == FactorName.FLORA ? game.floraSpecies.floraRanges[factorName.species()]
                     : game.organismManager.range(factorName.species());
             game.minimap.setLegend(spectrumFor(factorName), new String[] { heatmapLabel(factorName, range.densityAtShare(0f)),
-                    heatmapLabel(factorName, range.densityAtShare(0.5f)), heatmapLabel(factorName, range.densityAtShare(1f)) });
+                    heatmapLabel(factorName, range.densityAtShare(0.5f)), heatmapLabel(factorName, range.densityAtShare(1f)) }, legendReader(factorName));
         } else if (factorName != null && heatmapMeasure(factorName) != null) {
             float[] range = heatmapRange(factorName);
             String[] labels = factor == FactorName.GRASS_ABUNDANCE ? new String[] { "Sparsest", "", "Thickest" }
                     : factor == FactorName.WEALTH ? new String[] { "Poorest", "", "Richest" }
                     : new String[] { heatmapLabel(factorName, range[0]), heatmapLabel(factorName, (range[0] + range[1]) * 0.5f),
                             heatmapLabel(factorName, range[1]) };
-            game.minimap.setLegend(spectrumFor(factorName), labels);
+            game.minimap.setLegend(spectrumFor(factorName), labels, legendReader(factorName));
         } else {
-            game.minimap.setLegend(null, null);
+            game.minimap.setLegend(null, null, null);
         }
         game.minimap.setOverlayTiles(overlayTiles(factorName), factorName == null ? null : overlayLabel(factorName));
         if (factorName == null) {
@@ -690,8 +714,6 @@ final class MapOverlays extends GamePart {
      */
     private BufferedImage soilColourMap() {
         WorldPalette palette = new WorldPalette(game.worldSeed);
-        float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
-        float[][] ranges = game.soilBlendRanges;
         int minChunkX = (int) Math.floor((-game.TOTAL_REGION_WIDTH / 2.0f) / game.PHYSICAL_CHUNK_SIZE);
         int maxChunkX = (int) Math.ceil((game.TOTAL_REGION_WIDTH / 2.0f) / game.PHYSICAL_CHUNK_SIZE);
         int size = maxChunkX - minChunkX + 1;
@@ -699,24 +721,48 @@ final class MapOverlays extends GamePart {
         java.util.stream.IntStream.range(0, size).parallel().forEach(z -> {
             float mapZ = (minChunkX + z + 0.5f) * game.PHYSICAL_CHUNK_SIZE;
             for (int x = 0; x < size; x++) {
-                GeodesicChunkGrid.Direction d = MapProjection.direction((minChunkX + x + 0.5f) * game.PHYSICAL_CHUNK_SIZE, mapZ);
-                float fa = game.soilVariantAFactor.evaluate(d), fb = game.soilVariantBFactor.evaluate(d);
-                float wa = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[0][0], ranges[0][1], fa);
-                float wb = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[1][0], ranges[1][1], fb);
-                int rgb = 0xFF;
-                for (int c = 0; c < 3; c++) {
-                    float colour = base[c] + (a[c] - base[c]) * wa;
-                    colour += (b[c] - colour) * wb;
-                    rgb = (rgb << 8) | Math.max(0, Math.min(255, Math.round(colour * 255f)));
-                }
-                image.setRGB(x, z, rgb);
+                image.setRGB(x, z, soilColourAt(palette, MapProjection.direction((minChunkX + x + 0.5f) * game.PHYSICAL_CHUNK_SIZE, mapZ)));
             }
         });
         return image;
     }
 
+    /** The soil's colour in a direction as the soil overlay shows it (opaque ARGB): see soilColourMap. */
+    int soilColourAt(WorldPalette palette, GeodesicChunkGrid.Direction d) {
+        float[] base = palette.soilBase, a = palette.soilRegionalA, b = palette.soilRegionalB;
+        float[][] ranges = game.soilBlendRanges;
+        float fa = game.soilVariantAFactor.evaluate(d), fb = game.soilVariantBFactor.evaluate(d);
+        float wa = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[0][0], ranges[0][1], fa);
+        float wb = ranges == null ? 0f : ProceduralTextures.smoothstep(ranges[1][0], ranges[1][1], fb);
+        int rgb = 0xFF;
+        for (int c = 0; c < 3; c++) {
+            float colour = base[c] + (a[c] - base[c]) * wa;
+            colour += (b[c] - colour) * wb;
+            rgb = (rgb << 8) | Math.max(0, Math.min(255, Math.round(colour * 255f)));
+        }
+        return rgb;
+    }
+
     // Each overlay as worked out, a pixel a chunk (before being laid over the land for the map)
     private final Map<MapOverlay, BufferedImage> rawOverlays = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The ground's height (world units) in a direction as the contour map shows it (see BirdsEyeMaps.contourHeightAt); NaN before it's drawn. */
+    float contourHeightAt(GeodesicChunkGrid.Direction d) {
+        BirdsEyeMaps maps = birdsEyeMaps;
+        if (maps == null) return Float.NaN;
+        double[] at = MapProjection.toMap(d);
+        return maps.contourHeightAt(at[0], at[1]);
+    }
+
+    /** An overlay as worked out, a pixel a chunk (null if it hasn't been, or is the flags'): for the tutorial's cache. */
+    BufferedImage rawOverlay(MapOverlay o) {
+        return rawOverlays.get(o);
+    }
+
+    /** A heatmap's lowest and highest values on the land, if they've been worked out yet: for the tutorial's cache. */
+    float[] knownRange(MapOverlay o) {
+        return heatmapRanges.get(o);
+    }
 
     /** How to draw an overlay in tiles when the map is zoomed in close; null if it can't be yet. */
     private MapTiles.Renderer overlayTiles(MapOverlay factorName) {
@@ -742,7 +788,9 @@ final class MapOverlays extends GamePart {
                 BirdsEyeMaps maps = birdsEyeMaps;
                 return maps != null ? maps.renderNationOverlay(game.nationManager) : null;
             }
-            BufferedImage heatmap = f == FactorName.SOIL_COLOUR ? soilColourMap()
+            // (the tutorial's, already worked out, from its cache: see TutorialCache)
+            BufferedImage cached = TutorialCache.rawOverlay(o);
+            BufferedImage heatmap = cached != null ? cached : f == FactorName.SOIL_COLOUR ? soilColourMap()
                     : game.regionalManager.generateHeatmap(game.TOTAL_REGION_WIDTH, game.PHYSICAL_CHUNK_SIZE, factorFor(o), overlayLabel(o), spectrumFor(o));
             // (kept as it is too, a pixel a chunk, for drawing the overlay in tiles when zoomed in)
             rawOverlays.put(o, heatmap);
@@ -780,7 +828,7 @@ final class MapOverlays extends GamePart {
      * lowest it is anywhere on the land the map shows (0, the key's first colour) to the highest
      * (1, its last). The grass colour map is the grass's own colour instead.
      */
-    private RegionalFactor factorFor(MapOverlay overlay) {
+    RegionalFactor factorFor(MapOverlay overlay) {
         if (overlay.factor() == FactorName.GRASS_COLOUR) {
             float[] span = game.grassColourSpan();
             return new RegionalFactor(1f, d -> XenoGuesser_GLEventListener.grassShare(span, game.grassColourFactor.evaluate(d)));
@@ -806,7 +854,7 @@ final class MapOverlays extends GamePart {
      * metres), the grass's height in centimetres, degrees Celsius, millimetres of rain a year; or
      * for the grass's abundance and wealth, their own 0 to 1. Null for the maps not on a scale.
      */
-    private RegionalFactor.Sampler heatmapMeasure(MapOverlay overlay) {
+    RegionalFactor.Sampler heatmapMeasure(MapOverlay overlay) {
         if (overlay.species() >= 0 && overlay.factor() == FactorName.FLORA) {
             int s = overlay.species();
             return d -> game.floraSpecies.floraRanges[s].density(game.floraSpecies.floraRaw(s, d));
@@ -834,6 +882,29 @@ final class MapOverlays extends GamePart {
                 yield wealthOverlay::evaluate;
             }
             default -> null;
+        };
+    }
+
+    /**
+     * What the key reads under the guess's marker: where a direction comes on a heatmap's
+     * colours (0 to 1, as factorFor colours it) and its value there, with its units; taken in
+     * the middle of the chunk it's in, as the heatmap's pixel there is, so the number matches
+     * the colour under the marker. The maps of nothing but 0 to 1 (the grass's colour and
+     * abundance, wealth) read as a percentage.
+     */
+    private java.util.function.Function<GeodesicChunkGrid.Direction, MapPanel.LegendReading> legendReader(MapOverlay overlay) {
+        RegionalFactor colouring = factorFor(overlay);
+        if (colouring == null) return null;
+        RegionalFactor.Sampler measure = overlay.factor() == FactorName.GRASS_COLOUR ? null : heatmapMeasure(overlay);
+        boolean share = measure == null || overlay.species() < 0
+                && (overlay.factor() == FactorName.GRASS_ABUNDANCE || overlay.factor() == FactorName.WEALTH);
+        float size = game.PHYSICAL_CHUNK_SIZE;
+        return d -> {
+            double[] at = MapProjection.toMap(d);
+            GeodesicChunkGrid.Direction middle = MapProjection.direction((Math.floor(at[0] / size) + 0.5) * size, (Math.floor(at[1] / size) + 0.5) * size);
+            float t = colouring.evaluate(middle);
+            String label = share ? Math.round(100f * (measure == null ? t : measure.sample(middle))) + "%" : heatmapLabel(overlay, measure.sample(middle));
+            return new MapPanel.LegendReading(t, label);
         };
     }
 
@@ -895,20 +966,29 @@ final class MapOverlays extends GamePart {
     /**
      * A heatmap's lowest and highest values anywhere on the land the map shows, found by
      * looking all over it (kept, once worked out): its map runs from the one to the other, so
-     * both ends of its key are somewhere on its map.
+     * both ends of its key are somewhere on its map. The rainfall's runs instead between the
+     * driest and wettest few percent of the land (those beyond shown as the ends): a drenched
+     * world's map would otherwise be nearly all one deep blue, and a desert world's all sand,
+     * when the player wants to tell its wetter places from its drier.
      */
     private float[] heatmapRange(MapOverlay overlay) {
         return heatmapRanges.computeIfAbsent(overlay, o -> {
             RegionalFactor.Sampler measure = heatmapMeasure(o);
-            float[] span = { Float.MAX_VALUE, -Float.MAX_VALUE };
-            forEachMapLand(90_000, d -> {
-                float v = measure.sample(d);
-                span[0] = Math.min(span[0], v);
-                span[1] = Math.max(span[1], v);
-            });
-            return span[0] > span[1] ? new float[] { 0f, 1f } : span;
+            java.util.List<Float> values = new java.util.ArrayList<>();
+            forEachMapLand(90_000, d -> values.add(measure.sample(d)));
+            if (values.isEmpty()) return new float[] { 0f, 1f };
+            java.util.Collections.sort(values);
+            int last = values.size() - 1;
+            if (o.factor() == FactorName.RAINFALL && o.species() < 0) {
+                float low = values.get(Math.round(last * RAINFALL_KEY_TAIL)), high = values.get(Math.round(last * (1f - RAINFALL_KEY_TAIL)));
+                if (high > low) return new float[] { low, high };
+            }
+            return new float[] { values.get(0), values.get(last) };
         });
     }
+
+    // The share of the land at each end of the rainfall map beyond its key (see heatmapRange)
+    private static final float RAINFALL_KEY_TAIL = 0.03f;
 
     // The rock map's colours: white where there are none, through grey to black where there are the most
     private static final float[][] ROCK_SPECTRUM = {

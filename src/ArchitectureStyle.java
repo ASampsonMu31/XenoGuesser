@@ -27,8 +27,9 @@ import com.xenoguesser.math.Vector3;
  * Few designs go round the world: neighbours share them, kindred ones above all (see
  * RegionalDesigns), and a nation may build a neighbour's near that neighbour. Within a nation one
  * province often has its own take on the nation's design (a few of its traits different). Within
- * a design's land nearly every building wears it, so it's recognisable street to street: only some
- * of the poorest houses build plain, the rich add a few extras; and only the richest towers glow.
+ * a design's land every house wears all of it, so it's recognisable street to street (and each
+ * region builds one form in one masonry: see InfrastructureManager.regionForm); only the richest
+ * towers glow.
  */
 public final class ArchitectureStyle {
     public enum Relief { NONE, PILLOW, BARREL, PINCH, CHEVRON, FLUTED, STUDDED }
@@ -145,6 +146,12 @@ public final class ArchitectureStyle {
         /** How many designs there are in all (the pool, then the provinces'). */
         public int count() {
             return styles.length;
+        }
+
+        /** Whether a design (an index into style) is a nation's main one, built across most of it in its traditional form. */
+        public boolean isMain(int nation, int index) {
+            int[] mine = designs.designsOf(nation);
+            return mine.length > 0 && mine[0] == index;
         }
 
         public String summary() {
@@ -292,13 +299,11 @@ public final class ArchitectureStyle {
     }
 
     /**
-     * What a building of this design wears, rolled from its own seed. The design is the local
-     * tradition, so most buildings wear nearly all of it (as the map pictures it) whoever lives
-     * there: only some of the poorest houses go plain (keeping just the walls' shape), and the
-     * odd house leaves out a piece. Money adds the extras: the ridge's cresting and neon under
-     * the eaves. A tower's high tech likewise, its neon only where people are well off.
+     * What a building of this design wears. The design is the local tradition, so every house
+     * wears all of it, whoever lives there, and looks like the architecture map's picture of it.
+     * Only a tower's high tech is rolled from its own seed, its neon only where people are well off.
      */
-    public Dress dress(long seed, float richness, boolean grand, boolean tower) {
+    public Dress dress(long seed, float richness, boolean tower) {
         Random rand = new Random(seed ^ 0xA4C8E7L);
         Dress d = new Dress();
         float rich = Math.max(0f, Math.min(1f, richness));
@@ -311,16 +316,13 @@ public final class ArchitectureStyle {
             d.rings = rings && rand.nextFloat() < 0.55f + 0.45f * rich;
             return d;
         }
-        d.relief = relief != Relief.NONE && rand.nextFloat() < 0.95f;
-        // (a plain house: poor, and its builders not much for finery)
-        boolean plain = !grand && rand.nextFloat() < 0.2f * (1f - rich) * (1.2f - ornateness);
-        float wears = grand ? 1f : 0.88f + 0.1f * rich;
-        d.horns = !plain && horns != Horns.NONE && rand.nextFloat() < wears;
-        d.crest = !plain && crest != Crest.NONE && rand.nextFloat() < wears;
-        d.ridgeCrest = d.crest && ridgeCrest && rand.nextFloat() < 0.6f + 0.4f * rich;
-        d.topper = !plain && topper != Topper.NONE && rand.nextFloat() < wears - 0.08f;
-        d.spikes = !plain && wallSpikes != WallSpikes.NONE && rand.nextFloat() < wears;
-        d.neonEaves = neonEaves && rich > 0.45f && rand.nextFloat() < (rich - 0.45f) * 2.5f;
+        d.relief = relief != Relief.NONE;
+        d.horns = horns != Horns.NONE;
+        d.crest = crest != Crest.NONE;
+        d.ridgeCrest = d.crest && ridgeCrest;
+        d.topper = topper != Topper.NONE;
+        d.spikes = wallSpikes != WallSpikes.NONE;
+        d.neonEaves = neonEaves;
         return d;
     }
 

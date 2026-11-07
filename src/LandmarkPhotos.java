@@ -59,8 +59,6 @@ final class LandmarkPhotos extends GamePart {
     private int next, frame;
     private Shot shot;
     private long since;
-    // Whether a grove's shot has been aimed at its plants yet
-    private boolean refined;
     // Where the camera was and the round's day, to put back
     private SpherePosition homeEye;
     private float homeYaw, homePitch, homeWetness;
@@ -83,6 +81,11 @@ final class LandmarkPhotos extends GamePart {
     float step() {
         switch (stage) {
             case WAITING_TO_START -> {
+                // (the tutorial's, already taken, from its cache: see TutorialCache)
+                if (TutorialCache.restorePhotos(game)) {
+                    stage = Stage.DONE;
+                    return 1f;
+                }
                 for (Landmark lm : game.infraManager.landmarks().all()) {
                     int height = MapOverlays.LANDMARK_PICTURE_HEIGHT;
                     subjects.add(new Subject(lm.name, lm.kind.name().toLowerCase(), lm, null, lm.pictureWidth(height), height,
@@ -106,7 +109,6 @@ final class LandmarkPhotos extends GamePart {
                 }
                 Subject subject = subjects.get(next);
                 aim(subject.shot().get(), subject);
-                refined = false;
                 since = System.currentTimeMillis();
                 stage = Stage.WAITING;
                 // (a house, drawn on its own, has nothing round it to wait for)
@@ -119,17 +121,7 @@ final class LandmarkPhotos extends GamePart {
             case WAITING -> {
                 placeCamera();
                 boolean built = game.buildRoundCamera();
-                // (a grove's looked at again once its plants are there: at the nearest of them to its middle)
                 Subject subject = subjects.get(next);
-                Landmark lm = subject.landmark();
-                if (built && lm != null && lm.kind == Landmark.Kind.GROVE && !refined) {
-                    refined = true;
-                    Shot closer = amongPlants(lm);
-                    if (closer != null) {
-                        aim(closer, subject);
-                        break;
-                    }
-                }
                 if (built || System.currentTimeMillis() - since > PATIENCE) {
                     if (!built) System.out.printf("[LANDMARKS] %s's surroundings still unbuilt after %d s: photographed as they are%n", subject.name(), PATIENCE / 1000);
                     clearDay(shot.target());
@@ -261,33 +253,6 @@ final class LandmarkPhotos extends GamePart {
         };
     }
 
-    /**
-     * A grove's shot among its own plants (once they're built): one of those nearest its middle,
-     * from far enough off to see it whole with others behind it, from about its own height,
-     * from out in the open (not in a house, nor with the land in the way).
-     */
-    private Shot amongPlants(Landmark lm) {
-        List<SphereFlora> plants = new java.util.ArrayList<>();
-        for (SphereFlora plant : game.trees.near(lm.place(), lm.reach)) if (plant.speciesIndex() == lm.species) plants.add(plant);
-        plants.sort(java.util.Comparator.comparingDouble(p -> SphereMath.distance(lm.place(), SphereMath.atAltitude(p.position(), 0.0))));
-        System.out.printf("[LANDMARKS] %s: %d of its plants found%n", lm.name, plants.size());
-        for (SphereFlora plant : plants.subList(0, Math.min(12, plants.size()))) {
-            SpherePosition at = SphereMath.atAltitude(plant.position(), 0.0);
-            // (about its height: the first few species are trees, the rest shrubs and smaller, as SpeciesPictures frames them)
-            float size = Math.max(0.5f * M, Math.min(25f * M, XenoGuesser_GLEventListener.FLORA_CULL_RADIUS * (lm.species < 4 ? 0.7f : 0.14f) * plant.scale()));
-            double ground = ground(at), toMiddle = SphereMath.distance(at, lm.place()) > 1f * M ? SphereMath.heading(lm.place(), at) : 0.0;
-            SpherePosition target = SphereMath.atAltitude(at, ground + size * 0.45);
-            // (from out beyond it looking back in towards the grove's middle, or round from there)
-            for (int k = 0; k < 8; k++) {
-                SpherePosition eye = SphereMath.move(at, toMiddle + (k % 2 == 0 ? 1 : -1) * ((k + 1) / 2) * Math.PI / 4, size * 3.5);
-                eye = SphereMath.atAltitude(eye, Math.max(ground(eye) + 1.6f * M, ground + size * 0.75));
-                if (game.infraManager.isBuildingLocation(eye, 2f * M) || hidden(eye, target, -0.3f * M) > 1) continue;
-                return new Shot(eye, target, Math.toRadians(55));
-            }
-        }
-        return null;
-    }
-
     /** The ground's height (or the sea's, over it) at a place. */
     private double ground(SpherePosition p) {
         return Math.max(game.seaLevelHeight, game.groundHeightAt(SphereMath.atAltitude(p, 0.0)));
@@ -302,10 +267,14 @@ final class LandmarkPhotos extends GamePart {
             case SPIRE -> built(lm, 100f * M, Math.toRadians(28), lm.base + lm.height * 0.38, lm.base + lm.height * 0.5, 80);
             case STONES -> built(lm, lm.reach * 2.3f, Math.toRadians(34), lm.base + lm.reach * 2.3f * 0.36, lm.base + 2f * M, 42);
             case RUIN -> built(lm, lm.reach * 2.1f, Math.toRadians(34), lm.base + lm.reach * 2.1f * 0.3, lm.base + lm.tallest() * 0.3, 44);
-            // The peak: from where the land falls furthest, a little below its top, looking up at it
+            // (a statue from far enough off to have its pedestal and the top of its head, and
+            // whatever it holds aloft or spreads wide, all in the picture)
+            case STATUE -> built(lm, lm.tallest() * 1.9f, Math.toRadians(26), lm.base + lm.tallest() * 0.35, lm.base + lm.tallest() * 0.52, 50);
+            // The peak: from where the land falls furthest, a little below its top, looking up at
+            // the beacon on it (the whole of it, and the summit under it)
             case SUMMIT -> {
                 double top = ground(middle);
-                yield clearest(middle, 0.0, 8, 80f * M, eye -> Math.max(ground(eye) + 4f * M, top - 14f * M), top - 5f * M, 50);
+                yield clearest(middle, 0.0, 8, 55f * M, eye -> Math.max(ground(eye) + 4f * M, top - 6f * M), lm.base + lm.tallest() * 0.4, 50);
             }
             // The bay: from its nearest shore, a little inland and up, across its stacks
             case BAY -> {
@@ -343,7 +312,6 @@ final class LandmarkPhotos extends GamePart {
                 yield clearest(middle, bySea ? lm.way + Math.PI : 0.0, bySea ? 3 : 8, radius + 36f * M,
                         eye -> Math.max(ground(eye) + 9f * M, sea + 12f * M), over, 58);
             }
-            case GROVE -> clearest(middle, 0.0, 8, lm.reach + 15f * M, eye -> ground(eye) + 5f * M, ground(middle) + 4f * M, 55);
         };
     }
 
@@ -371,19 +339,31 @@ final class LandmarkPhotos extends GamePart {
 
     /**
      * A built one's shot: distance out from its middle, angle round from its front (or the other
-     * side, or further round, should a house stand there or the land be in the way), the eye's
-     * and the target's heights above the datum.
+     * side, or further round, should a house stand there or between, or the land be in the
+     * way), the eye's and the target's heights above the datum.
      */
     private Shot built(Landmark lm, float distance, double angle, double eyeHeight, double targetHeight, double degrees) {
         SpherePosition target = SphereMath.atAltitude(lm.place(), targetHeight);
         Shot first = null;
-        for (double a : new double[] { angle, -angle, angle * 2, -angle * 2, angle * 3, -angle * 3 }) {
+        for (double a : new double[] { angle, -angle, angle * 2, -angle * 2, angle * 3, -angle * 3, angle * 4, -angle * 4, angle * 5, -angle * 5 }) {
             SpherePosition at = lm.frame.toSphere(Math.sin(a) * distance, 0.0, Math.cos(a) * distance);
             Shot shot = new Shot(SphereMath.atAltitude(at, Math.max(eyeHeight, ground(at) + 3f * M)), target, Math.toRadians(degrees));
             if (first == null) first = shot;
-            if (!game.infraManager.isBuildingLocation(at, 3f * M) && hidden(shot.eye(), target, 1.5f * M) == 0) return shot;
+            if (!game.infraManager.isBuildingLocation(at, 3f * M) && !housesBetween(at, lm) && hidden(shot.eye(), target, 1.5f * M) == 0) return shot;
         }
         return first;
+    }
+
+    /** Whether a house stands anywhere along the way from a place in to a landmark's ground. */
+    private boolean housesBetween(SpherePosition from, Landmark lm) {
+        SpherePosition a = SphereMath.atAltitude(from, 0.0);
+        double length = SphereMath.distance(a, lm.place());
+        for (int k = 1; k < 12; k++) {
+            double t = k / 12.0;
+            if (length * (1.0 - t) < lm.reach) break;
+            if (game.infraManager.isBuildingLocation(SphereMath.slerp(a, lm.place(), t), 2f * M)) return true;
+        }
+        return false;
     }
 
     /**

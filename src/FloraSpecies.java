@@ -238,9 +238,6 @@ final class FloraSpecies extends GamePart {
     // The most of one tree or shrub species in a chunk's area, even in its heartland
     private static final float FLORA_PEAK_CAP = 2.0f;
 
-    // How many times its peak a plant stands in its famous grove (see Landmarks)
-    static final float GROVE_THICKNESS = 3.0f;
-
     /** A plant species' abundance before its range is applied, per chunk's area. */
     float floraRaw(int species, GeodesicChunkGrid.Direction d) {
         SpeciesConfig sc = game.speciesConfigs[species];

@@ -33,6 +33,8 @@ public class MainMenu extends JComponent {
 
     private final Runnable onSingleplayer;
     private final Runnable onMultiplayer;
+    // (Xenocorp's training programme: see Tutorial)
+    private final Runnable onTutorial;
     private final Runnable onQuit;
     private final Runnable onProfile;
     // The backgrounds (frames of the game, in assets/art/menu), one chosen at random each time
@@ -55,7 +57,7 @@ public class MainMenu extends JComponent {
     private Image scaledBackground;
     private int scaledWidth = -1, scaledHeight = -1;
 
-    private final Rectangle singleButton = new Rectangle(), multiButton = new Rectangle(), quitButton = new Rectangle();
+    private final Rectangle singleButton = new Rectangle(), multiButton = new Rectangle(), tutorialButton = new Rectangle(), quitButton = new Rectangle();
     private final Rectangle profileButton = new Rectangle();
     // The graphics' buttons (see GameSettings.Quality) and the shadows' (off, on) below them
     private final Rectangle[] qualityButtons = new Rectangle[GameSettings.Quality.values().length], shadowButtons = new Rectangle[2];
@@ -76,9 +78,10 @@ public class MainMenu extends JComponent {
     private boolean dragging;
     private Rectangle spacemanBounds = new Rectangle();
 
-    public MainMenu(Runnable onSingleplayer, Runnable onMultiplayer, Runnable onQuit, Runnable onProfile) {
+    public MainMenu(Runnable onSingleplayer, Runnable onMultiplayer, Runnable onTutorial, Runnable onQuit, Runnable onProfile) {
         this.onSingleplayer = onSingleplayer;
         this.onMultiplayer = onMultiplayer;
+        this.onTutorial = onTutorial;
         this.onQuit = onQuit;
         this.onProfile = onProfile;
         setOpaque(true);
@@ -109,6 +112,9 @@ public class MainMenu extends JComponent {
                 } else if (multiButton.contains(e.getPoint())) {
                     chosen = true;
                     onMultiplayer.run();
+                } else if (tutorialButton.contains(e.getPoint())) {
+                    chosen = true;
+                    onTutorial.run();
                 } else if (quitButton.contains(e.getPoint())) {
                     onQuit.run();
                 } else if (profileButton.contains(e.getPoint())) {
@@ -151,6 +157,7 @@ public class MainMenu extends JComponent {
                         : achievement >= 0 ? achievementRows[achievement]
                         : singleButton.contains(e.getPoint()) ? singleButton
                         : multiButton.contains(e.getPoint()) ? multiButton
+                        : tutorialButton.contains(e.getPoint()) ? tutorialButton
                         : quitButton.contains(e.getPoint()) ? quitButton
                         : profileButton.contains(e.getPoint()) ? profileButton
                         : quality >= 0 ? qualityButtons[quality] : shadow >= 0 ? shadowButtons[shadow] : null;
@@ -264,13 +271,16 @@ public class MainMenu extends JComponent {
         float bw = 420 * unit, bh = 64 * unit, gap = 18 * unit;
         // (high enough for the settings' rows and Quit to fit below)
         float top = 440 * unit;
-        singleButton.setBounds(Math.round(left), Math.round(top), Math.round(bw), Math.round(bh));
-        multiButton.setBounds(Math.round(left), Math.round(top + bh + gap), Math.round(bw), Math.round(bh));
+        // The tutorial first, then the games; all three the same blue
+        tutorialButton.setBounds(Math.round(left), Math.round(top), Math.round(bw), Math.round(bh));
+        singleButton.setBounds(Math.round(left), Math.round(top + bh + gap), Math.round(bw), Math.round(bh));
+        multiButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 2), Math.round(bw), Math.round(bh));
         paintButton(g, singleButton, "Play Singleplayer", null, true, true, unit);
-        // The graphics settings below the play buttons, and Quit below them
-        float settingsHeight = paintSettings(g, left, top + (bh + gap) * 2, bw, unit);
-        quitButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 2 + settingsHeight + gap * 1.5f), Math.round(bw * 0.55f), Math.round(bh * 0.8f));
-        paintButton(g, multiButton, "Play Multiplayer", null, true, false, unit);
+        // The graphics settings below the play buttons and the tutorial, and Quit below them
+        float settingsHeight = paintSettings(g, left, top + (bh + gap) * 3, bw, unit);
+        quitButton.setBounds(Math.round(left), Math.round(top + (bh + gap) * 3 + settingsHeight + gap * 1.5f), Math.round(bw * 0.55f), Math.round(bh * 0.8f));
+        paintButton(g, multiButton, "Play Multiplayer", null, true, true, unit);
+        paintButton(g, tutorialButton, "Tutorial", null, true, true, unit);
         paintButton(g, quitButton, "Quit", null, true, false, unit);
 
         // The spaceman standing on the ground in the picture, as tall as he'd look there

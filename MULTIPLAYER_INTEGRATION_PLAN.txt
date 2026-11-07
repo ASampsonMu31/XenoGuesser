@@ -1693,3 +1693,11 @@ LOG
             out and puts them back as the player's own does. Its compass needle swings to north where
             they stand, its thermometer and altimeter read the temperature and height there, and its
             book holds the same pictures as the player's own. PROTOCOL_VERSION 9.
+2026-11-07  M64 (user). The two pods come down together, seeing the same out of their windows. The
+            pod's way down is paced by the time loading has left, and both PCs now reckon it alike:
+            from the average of the two shares loaded and the average of the two PCs' expected
+            loading times (LOAD_PROGRESS now carries the sender's expected total, in seconds, after
+            its share), where each had used its own expected time and the less of the two shares.
+            The way down is hurried harder to keep up with a quick load (up to 5 times, 3 through the
+            belt, past the giant and by the star) and cruises at least 3 s, not 8, so it's never
+            longer than the loading needs. PROTOCOL_VERSION 10.

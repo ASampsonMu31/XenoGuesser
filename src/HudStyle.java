@@ -589,6 +589,37 @@ public final class HudStyle {
         g.fill(new java.awt.geom.Ellipse2D.Float(cx - size * 0.05f, cy - size * 0.05f, size * 0.1f, size * 0.1f));
     }
 
+    /** A height: a snow-capped peak, and beside it an arrow pointing up from a level line. */
+    public static void paintAltitudeIcon(Graphics2D g, float x, float y, float size) {
+        float base = y + size * 0.9f;
+        Path2D peak = new Path2D.Float();
+        peak.moveTo(x + size * 0.02f, base);
+        peak.lineTo(x + size * 0.36f, y + size * 0.22f);
+        peak.lineTo(x + size * 0.7f, base);
+        peak.closePath();
+        g.setColor(new Color(110, 170, 235));
+        g.fill(peak);
+        Path2D snow = new Path2D.Float();
+        snow.moveTo(x + size * 0.36f, y + size * 0.22f);
+        snow.lineTo(x + size * 0.47f, y + size * 0.42f);
+        snow.lineTo(x + size * 0.36f, y + size * 0.37f);
+        snow.lineTo(x + size * 0.25f, y + size * 0.42f);
+        snow.closePath();
+        g.setColor(new Color(245, 248, 252));
+        g.fill(snow);
+        // The arrow up, from the level line it's measured from
+        float ax = x + size * 0.84f;
+        g.setColor(new Color(245, 248, 252));
+        g.setStroke(new BasicStroke(size * 0.08f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g.draw(new java.awt.geom.Line2D.Float(ax - size * 0.12f, base, ax + size * 0.12f, base));
+        g.draw(new java.awt.geom.Line2D.Float(ax, base - size * 0.08f, ax, y + size * 0.14f));
+        Path2D head = new Path2D.Float();
+        head.moveTo(ax - size * 0.13f, y + size * 0.26f);
+        head.lineTo(ax, y + size * 0.08f);
+        head.lineTo(ax + size * 0.13f, y + size * 0.26f);
+        g.draw(head);
+    }
+
     /** An open brown book with a magnifying glass over it. */
     public static void paintKitIcon(Graphics2D g, float x, float y, float size) {
         // The book, open: a brown cover, two cream pages with lines of writing

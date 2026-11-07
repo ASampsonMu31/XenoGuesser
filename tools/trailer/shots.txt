@@ -18,7 +18,7 @@ spit          subject=landmark:SPIT hour=16 wet=-2 seconds=5 from=-60,500,150 to
 spire         subject=landmark:SPIRE hour=18 wet=-1 seconds=6 from=5,900,25 to=0,520,40 aim=250,380
 stones        subject=landmark:STONES hour=8 wet=-2 seconds=5 from=-35,220,20 to=35,200,30 aim=25
 ruin          subject=landmark:RUIN hour=16.5 wet=-1 seconds=5 from=30,320,60 to=-20,260,40 aim=40
-grove         subject=landmark:GROVE hour=10 wet=-1 seconds=5 from=180,260,18 to=180,120,18 aim=30
+statue        subject=landmark:STATUE hour=17.5 wet=-2 seconds=6 from=30,700,40 to=-10,520,70 aim=150,260
 mountain      subject=view:mountain hour=16 wet=-2 seconds=6 from=180,200,30 to=180,0,120 look=ahead pitch=6,10
 shore         subject=view:shore hour=18 wet=-1 seconds=5 from=180,80,18 to=180,0,14 look=ahead pitch=-3,-2
 lake          subject=view:lake hour=8.5 wet=-2 seconds=5 from=200,60,20 to=160,60,24 look=ahead yaw=-15,15 pitch=-2,-2

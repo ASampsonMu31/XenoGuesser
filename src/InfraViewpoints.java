@@ -55,7 +55,7 @@ final class InfraViewpoints extends InfraPart {
 
     /**
      * Developer aid: in front of one of the built landmarks (of the kind -Dxenoguesser.landmark
-     * names, spire, stones or ruin, if any), far enough back to see it whole; null if there's none.
+     * names, spire, stones, ruin or statue, if any), far enough back to see it whole; null if there's none.
      */
     public Viewpoint landmarkViewpoint(Random rand) {
         String wanted = Dev.property("xenoguesser.landmark");
@@ -65,7 +65,7 @@ final class InfraViewpoints extends InfraPart {
         }
         if (built.isEmpty()) return null;
         Landmark lm = built.get(rand.nextInt(built.size()));
-        float distance = lm.kind == Landmark.Kind.SPIRE ? lm.tallest() * 0.55f : lm.reach * 1.25f;
+        float distance = lm.kind == Landmark.Kind.SPIRE ? lm.tallest() * 0.55f : lm.kind == Landmark.Kind.STATUE ? lm.tallest() * 1.3f : lm.reach * 1.25f;
         return viewpoint(lm.frame, distance * 0.08f, distance, -distance * 0.08f, -distance);
     }
 

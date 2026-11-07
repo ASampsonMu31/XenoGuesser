@@ -26,6 +26,8 @@ public class RegionalGenerationManager {
     // How much rain falls, 0 driest to 1 wettest (see rainfallAt)
     public final RegionalFactor rainfallMap;
     private final PerlinNoise rainfallNoise;
+    // How rainy and cloudy this planet is on the whole (drawn from its seed: see PlanetClimate)
+    public final PlanetClimate rain;
 
     public RegionalGenerationManager(long seed, float seaLevelHeight) {
         this.seaLevelHeight = seaLevelHeight;
@@ -49,6 +51,7 @@ public class RegionalGenerationManager {
         this.contrast = 0.6f + 0.75f * (climate.nextFloat() + climate.nextFloat()) * 0.5f;
         this.temperatureMap = new RegionalFactor(1.0f, this::temperatureAt);
         this.rainfallNoise = new PerlinNoise(seed * 613L + 97L);
+        this.rain = PlanetClimate.of(seed);
         this.rainfallMap = new RegionalFactor(1.0f, this::rainfallAt);
 
         this.coldMap = new RegionalFactor(1.0f, d -> 1.0f - this.temperatureMap.evaluate(d));
@@ -115,6 +118,17 @@ public class RegionalGenerationManager {
     // The moisture map (wettest at the water's edge, drying out inland), which the rainfall follows
     private RegionalFactor moistureMap;
 
+    // How far from the sea (world units) the moisture map falls to about 60% on a middling world
+    private static final float MOISTURE_REACH = 8000f;
+
+    /**
+     * The moisture map: wettest at the water's edge, drying out inland, the further the moisture
+     * carries the wetter this planet (see PlanetClimate.moistureReach).
+     */
+    public RegionalFactor createMoistureMap() {
+        return createWaterPreference(0f, MOISTURE_REACH * rain.moistureReach());
+    }
+
     /** Sets the moisture map the rainfall is worked out from (the map's Moisture overlay). */
     public void setMoistureMap(RegionalFactor moisture) {
         this.moistureMap = moisture;
@@ -132,6 +146,8 @@ public class RegionalGenerationManager {
      *   <li>with a little temperature: warm air can hold more water, but it's only a nudge,
      *       and the coldest places are drier.</li>
      * </ul>
+     * All of it as wet as this planet is (see PlanetClimate): its rainy regions more or less
+     * widespread and standing out more or less from its dry ones, and more or less rain over all.
      */
     private float rainfallAt(GeodesicChunkGrid.Direction d) {
         float moisture = moistureMap != null ? moistureMap.evaluate(d) : 0.5f;
@@ -139,17 +155,22 @@ public class RegionalGenerationManager {
         float supply = 0.1f + 0.9f * moisture;
         float capacity = 0.7f + 0.3f * (float) Math.sqrt(warmth);
         float[] surface = surface(d);
-        float regional = 1f + 1.6f * rainfallNoise.onSphere(surface, 1f / 22000f, 0f, 0f) + 0.2f * rainfallNoise.onSphere(surface, 1f / 5000f, 5.1f, 2.7f);
+        float regional = 1f + rain.rainyShare() + rain.rainContrast() * 1.6f * rainfallNoise.onSphere(surface, 1f / 22000f, 0f, 0f) + 0.2f * rainfallNoise.onSphere(surface, 1f / 5000f, 5.1f, 2.7f);
         // The polar regions are wetter: storms track along the polar front, and the snow piles up
         double latitude = Math.abs(latitude(d));
         float polar = (float) Math.max(0.0, Math.min(1.0, (latitude - Math.toRadians(50)) / Math.toRadians(25)));
         regional += POLAR_WETNESS * polar * polar * (3f - 2f * polar);
-        float rain = RAINFALL_SCALE * (float) Math.pow(supply, 1.3) * capacity * Math.max(0f, regional);
-        return (float) Math.pow(Math.max(0f, Math.min(1f, rain)), 0.8);
+        float falls = RAINFALL_SCALE * rain.wetness() * (float) Math.pow(supply, 1.3) * capacity * Math.max(0f, regional);
+        // (eased towards the top rather than cut off at it, so on a wet world the wettest regions
+        // still stand out from the merely wet, on the ground and on the map)
+        if (falls > RAIN_KNEE) falls = RAIN_KNEE + (1f - RAIN_KNEE) * (1f - (float) Math.exp(-(falls - RAIN_KNEE) / (1f - RAIN_KNEE)));
+        return (float) Math.pow(falls, 0.8);
     }
 
-    // Brings the rainfall to span the scale
+    // Brings a middling world's rainfall to span the scale
     private static final float RAINFALL_SCALE = 0.62f;
+    // Where the rainfall starts to ease towards its top
+    private static final float RAIN_KNEE = 0.7f;
     // How much wetter it gets towards the poles (from 50 degrees of latitude to 75)
     private static final float POLAR_WETNESS = 0.8f;
 

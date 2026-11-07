@@ -219,6 +219,8 @@ public class PodSequence implements GLEventListener {
         java.nio.ByteBuffer pixels = com.jogamp.common.nio.Buffers.newDirectByteBuffer(w * h * 4);
         gl.glReadPixels(0, 0, w, h, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels);
         java.io.File file = new java.io.File(new java.io.File(RunFiles.WORLD_DIR).getParentFile(), "pod_shot_" + shotsTaken + ".png");
+        // (the stage it's at, the clock the shots go by running ahead of the pod's while frames are slow)
+        String stage = timeline.where();
         Thread writer = new Thread(() -> {
             BufferedImage image = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
             for (int y = 0; y < h; y++) {
@@ -229,7 +231,7 @@ public class PodSequence implements GLEventListener {
             }
             try {
                 javax.imageio.ImageIO.write(image, "png", file);
-                System.out.println("[POD] Saved " + file);
+                System.out.println("[POD] Saved " + file + " (" + stage + ")");
             } catch (java.io.IOException e) {
                 e.printStackTrace();
             }
@@ -243,11 +245,20 @@ public class PodSequence implements GLEventListener {
         space.setGlobe(globe);
     }
 
-    /** The share of the world loaded on both PCs (the less of the two). */
-    private float loadedEverywhere() {
-        float here = progress.overallFraction();
+    /**
+     * Roughly how long loading has left, as the pod's way down is paced by: from the share of the
+     * world loaded and how long loading's expected to take. In multiplayer, the average of the two
+     * PCs' shares and of their expected times, so both PCs reckon the same and their pods (and what's
+     * out of their windows) keep together; 0 once the world's ready everywhere.
+     */
+    private float secondsLeftEverywhere() {
+        if (readyEverywhere()) return 0f;
+        float here = progress.overallFraction(), expected = progress.expectedSeconds();
         Multiplayer session = multiplayer ? Multiplayer.active() : null;
-        return session == null ? here : Math.min(here, session.remoteProgress());
+        if (session == null) return (1f - here) * expected;
+        float theirs = session.remoteExpectedSeconds();
+        float share = (here + session.remoteProgress()) * 0.5f, seconds = theirs > 0f ? (expected + theirs) * 0.5f : expected;
+        return (1f - share) * seconds;
     }
 
     /** The partner's share loaded (multiplayer). */
@@ -463,9 +474,8 @@ public class PodSequence implements GLEventListener {
         }
         // The way down: what's out of the window, how gravity's felt, and the jolts on the way
         Multiplayer session = multiplayer ? Multiplayer.active() : null;
-        if (session != null) session.publishProgress(progress.overallFraction());
-        boolean ready = readyEverywhere();
-        timeline.step(dt, ready ? 0f : progress.secondsLeftAt(loadedEverywhere()), ready, space);
+        if (session != null) session.publishProgress(progress.overallFraction(), progress.expectedSeconds());
+        timeline.step(dt, secondsLeftEverywhere(), readyEverywhere(), space);
         space.update(dt);
         System.arraycopy(timeline.gravity, 0, physics.gravity, 0, 3);
         for (PodTimeline.Event event = timeline.nextEvent(); event != null; event = timeline.nextEvent()) happened(event);

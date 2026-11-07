@@ -111,6 +111,31 @@ public final class WorldArtGenerator {
         return art;
     }
 
+    /**
+     * The textures as made before (the tutorial's, kept in its cache: see TutorialCache), copied
+     * into this run's folder and read back, instead of made; null (nothing copied) unless every
+     * one the world wants is there.
+     */
+    static WorldArtGenerator fromFiles(File from, long worldSeed, int speciesCount, java.util.Set<String> extraJobs) throws java.io.IOException {
+        List<String> names = new ArrayList<>(List.of(SOIL, SOIL_TILE, SEA, SKY, SUN_GLOW, GRASS_ATLAS));
+        for (int s = 0; s < speciesCount; s++) names.add(leafName(s));
+        names.addAll(extraJobs);
+        for (String name : names) if (!new File(from, name + ".png").exists()) return null;
+        File dir = new File(OUTPUT_DIR);
+        File[] previous = dir.listFiles();
+        if (previous != null) for (File f : previous) deleteRecursively(f);
+        if (!dir.isDirectory() && !dir.mkdirs()) throw new IllegalStateException("Could not create " + dir.getAbsolutePath());
+        for (String name : names) java.nio.file.Files.copy(new File(from, name + ".png").toPath(), new File(pathFor(name)).toPath());
+        WorldArtGenerator art = new WorldArtGenerator(new WorldPalette(worldSeed));
+        art.soil = ImageIO.read(new File(pathFor(SOIL)));
+        art.sea = ImageIO.read(new File(pathFor(SEA)));
+        art.sky = ImageIO.read(new File(pathFor(SKY)));
+        art.sunGlow = ImageIO.read(new File(pathFor(SUN_GLOW)));
+        art.leaves = new BufferedImage[speciesCount];
+        for (int s = 0; s < speciesCount; s++) art.leaves[s] = ImageIO.read(new File(pathFor(leafName(s))));
+        return art;
+    }
+
     public WorldPalette palette() { return palette; }
     public BufferedImage sky() { return sky; }
     public BufferedImage sunGlow() { return sunGlow; }

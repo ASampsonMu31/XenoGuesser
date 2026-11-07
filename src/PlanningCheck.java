@@ -38,7 +38,7 @@ public final class PlanningCheck {
         regional.precalculateWaterDistanceField(noise);
         System.out.printf("Water distance field built in %d ms%n", System.currentTimeMillis() - fieldStart);
         checkWaves(regional, noise, sea);
-        regional.setMoistureMap(regional.createWaterPreference(0f, 8000f));
+        regional.setMoistureMap(regional.createMoistureMap());
         NationGenerationManager nations = new NationGenerationManager(seed, 6 + new Random(seed).nextInt(9), sea, noise);
         nations.generateTerritories(seed);
         SettlementManager settlements = new SettlementManager(seed, sea, noise, regional, nations);

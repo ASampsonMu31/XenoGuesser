@@ -120,7 +120,8 @@ public final class PlanetGlobeTexture {
      */
     private static BufferedImage clouds(long worldSeed) {
         PerlinNoise noise = new PerlinNoise(worldSeed * 7_368_787L + 31L);
-        float cover = 0.4f + 0.25f * new java.util.Random(worldSeed * 5_051L + 3L).nextFloat();
+        // (as much of the planet clouded as its own climate makes it: see PlanetClimate)
+        float cover = Math.max(0.25f, Math.min(0.8f, 0.52f + 0.9f * PlanetClimate.of(worldSeed).cloudiness()));
         int[] pixels = new int[CLOUD_WIDTH * CLOUD_HEIGHT];
         IntStream.range(0, CLOUD_HEIGHT).parallel().forEach(row -> {
             double latitude = Math.PI * 0.5 - (row + 0.5) / CLOUD_HEIGHT * Math.PI;

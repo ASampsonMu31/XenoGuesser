@@ -33,10 +33,13 @@ final class IdentificationLens extends GamePart {
 
     private int lensFrame;
 
-    /** One plant or animal considered through the lens: its name, something that stays the same for it, and points round it. */
+    /**
+     * One plant or animal considered through the lens: its name, whether it's an animal, its
+     * species, something that stays the same for it, and points round it.
+     */
     @FunctionalInterface
     private interface LensCandidate {
-        void consider(String name, Object key, float[] points);
+        void consider(String name, boolean animal, int species, Object key, float[] points);
     }
 
     /**
@@ -68,7 +71,7 @@ final class IdentificationLens extends GamePart {
         List<String> names = new ArrayList<>();
         // (its name, something to know it by, and points round it in the local frame {x, y, z, ...})
         lensFrame++;
-        LensCandidate consider = (name, key, points) -> {
+        LensCandidate consider = (name, animal, species, key, points) -> {
             if (points[0] * points[0] + points[2] * points[2] > 2500f * 2500f) return;
             float minX = Float.MAX_VALUE, minY = Float.MAX_VALUE, maxX = -Float.MAX_VALUE, maxY = -Float.MAX_VALUE;
             float sumX = 0f, sumY = 0f, sumZ = 0f;
@@ -106,6 +109,8 @@ final class IdentificationLens extends GamePart {
                 if (TerrainMesh.getLayeredHeight(along, game.worldNoise) > SphereMath.altitude(along) + 1f) passes = false;
             }
             if (passes) lensLastSeen.put(key, lensFrame);
+            // (the tutorial counts what's been named, each plant and animal once)
+            if (passes && Tutorial.active) game.tutorial.identified(animal, species, key, here.toWorld(mx, my, mz));
             Integer last = lensLastSeen.get(key);
             if (last == null || lensFrame - last > LENS_HOLD_FRAMES) return;
             boxes.add(new float[] { (float) Math.hypot(mx, mz), minX, minY, maxX, maxY });
@@ -119,7 +124,7 @@ final class IdentificationLens extends GamePart {
                 local[k + 1] = (float) l[1];
                 local[k + 2] = (float) l[2];
             }
-            consider.consider(game.organismManager.speciesName(s), points, local);
+            consider.consider(game.organismManager.speciesName(s), true, s, points, local);
         });
         if (game.floraOutlines != null) {
             game.trees.forEachNear(here.origin(), 2500.0, tree -> {
@@ -134,7 +139,7 @@ final class IdentificationLens extends GamePart {
                     local[k + 1] = (float) l[1];
                     local[k + 2] = (float) l[2];
                 }
-                consider.consider(game.floraName(tree.speciesIndex()), tree, local);
+                consider.consider(game.floraName(tree.speciesIndex()), false, tree.speciesIndex(), tree, local);
             });
         }
         // (forgetting what's not been seen for a while)

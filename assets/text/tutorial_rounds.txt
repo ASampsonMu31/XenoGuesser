@@ -1,0 +1,35 @@
+# The tutorial's rounds, found by TutorialFinder on seed 20261104 (see TutorialPlan, and
+# .claude/skills/update-tutorial). Each: the stage, the pod's stairs (lat, lon in degrees, heading in
+# radians from east towards south), the hour (radians from noon), the sun's declination (radians),
+# how wet the day is (-3 clear to 3 wet), then what the stage needs. Written again whenever the
+# game's generation changes.
+# sun: -53.02, 117.25; 51.5% of the land passes
+# coast: 59.09, -130.09; NaN% of the land passes (before the coast's own check)
+# temperature: 0.65, 83.65; 12.8% of the land passes
+# altitude: -13.40, -79.24; 0.4% of the land passes
+# wildlife: plentiful over plant0 Orb tree 32% (peak 0.267), plant1 Giant mushroom 20% (peak 0.296), plant2 Palm 26% (peak 0.236), plant3 Weeping tree 13% (peak 0.147), plant4 Shrub 42% (peak 0.687), plant5 Orb bush 33% (peak 1.172), plant6 Cactus 39% (peak 1.334), plant7 Fern 9% (peak 0.831), animal0  43% (peak 0.015), animal1  33% (peak 0.137), animal2  35% (peak 0.078), animal3  55% (peak 0.471), animal4  41% (peak 0.093), animal5  58% (peak 0.475), animal6  41% (peak 0.093), animal7  13% (peak 0.074),
+# wildlife: each plentiful over 16% of the land or less; 150 m or more from any road or house; about 115 of the plant and 11 of the animal within 80 m; 57 m up (highest 90 m); both plentiful in 9 regions; the commonest other species there at 100% of its range (MORE THAN WANTED: nowhere better)
+# wildlife: 53.16, -170.50; 8.9% of the land passes
+# rainfall: 30.02, -117.74; 50.0% of the land passes
+# ground: its soil 0.35 from the land's usual colour (0 the same, 1.7 black from white)
+# ground: -49.57, 34.30; 1.3% of the land passes
+# grass: -47.21, 149.58; 6.2% of the land passes
+# wealth: 14.90, 64.03; 16.4% of the land passes
+# flags: -16.83, 10.66; 9.8% of the land passes
+# roadside: 15.98, -27.03; 10.4% of the land passes
+# architecture: 46.18, -28.77; 9.8% of the land passes
+# landmarks: -54.81, -128.63; 0.7% of the land passes
+world sea=-67.86108 width=148981.61
+sun lat=-53.018016 lon=117.250257 heading=2.91958 hour=-0.55000 declination=0.00000 wetness=-3.00
+coast lat=59.094148 lon=-130.090729 heading=-1.56212 hour=-0.70000 declination=0.00000 wetness=-2.50 markerLat=59.915694 markerLon=-130.076509 coastLine=0.00868
+temperature lat=0.645643 lon=83.646386 heading=4.03103 hour=-0.97080 declination=0.00000 wetness=-1.50
+altitude lat=-13.399909 lon=-79.243612 heading=4.31969 hour=-0.90000 declination=0.00000 wetness=-2.50
+wildlife lat=53.162582 lon=-170.500000 heading=5.07713 hour=-0.60000 declination=0.00000 wetness=-2.00 plant=7 animal=7 plentiful=0.650
+rainfall lat=30.020561 lon=-117.740108 heading=-1.73688 hour=-0.60000 declination=0.00000 wetness=2.60 wetterHalf=0.7661
+ground lat=-49.570488 lon=34.300258 heading=3.24302 hour=-0.60000 declination=0.00000 wetness=-2.00
+grass lat=-47.213717 lon=149.578085 heading=-2.26688 hour=-0.60000 declination=0.00000 wetness=-1.50
+wealth lat=14.901402 lon=64.025942 heading=2.17024 hour=-0.60000 declination=0.00000 wetness=-2.00
+flags lat=-16.830485 lon=10.662172 heading=-0.73068 hour=-0.60000 declination=0.00000 wetness=-2.00
+roadside lat=15.979290 lon=-27.030639 heading=1.70060 hour=-0.60000 declination=0.00000 wetness=-2.00
+architecture lat=46.177906 lon=-28.767268 heading=2.73445 hour=-0.60000 declination=0.00000 wetness=-2.00
+landmarks lat=-54.809430 lon=-128.625250 heading=0.40788 hour=-0.50000 declination=0.00000 wetness=-3.00 landmark=0

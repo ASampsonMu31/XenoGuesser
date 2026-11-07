@@ -132,7 +132,7 @@ public class MapPanel extends JPanel {
     private float goalY;
 
     // Where the last round was (its answer, in the map image's pixels), once a round has been
-    // played: marked on the map through the next round
+    // played: marked on the map through the next round (singleplayer games only)
     private GeodesicChunkGrid.Direction lastRound;
     private float lastRoundX, lastRoundY;
     private static final Color LAST_ROUND_COLOUR = new Color(255, 170, 40);
@@ -254,7 +254,8 @@ public class MapPanel extends JPanel {
             partnerMsLeft -= dt;
             return;
         }
-        if (isGuessed || mainApp == null || gameHUD == null || !mainApp.roundInPlay()) return;
+        // (the tutorial has no clock: its exercises take as long as they take)
+        if (isGuessed || mainApp == null || gameHUD == null || !mainApp.roundInPlay() || Tutorial.active) return;
         Multiplayer session = Multiplayer.active();
         if (guessMsLeft < 0L) {
             if (session == null) {
@@ -355,6 +356,8 @@ public class MapPanel extends JPanel {
         if (Dev.flag("xenoguesser.flatmaps")) mapGlobe = revealGlobe = false;
         this.physicalChunkSize = physicalChunkSize;
         this.listener = listener;
+        this.heightNoise = noise;
+        this.heightSea = seaLevelHeight;
 
         this.setOpaque(false);
         this.setLayout(null); 
@@ -551,7 +554,7 @@ public class MapPanel extends JPanel {
                     }
                     if (isGuessed) return;
                     else if (isLarge && clickX >= btnX && clickX <= (btnX + btnWidth) && clickY >= btnY && clickY <= (btnY + btnHeight)) {
-                        if (hasPin) {
+                        if (hasPin && guessAllowed()) {
                             startRevealSequence();
                         }
                     }
@@ -683,6 +686,74 @@ public class MapPanel extends JPanel {
         if (Dev.ENABLED) System.out.printf(java.util.Locale.ROOT, "[MAPGOAL] %.4f %.4f%n", goalX / mapImage.getWidth(), goalY / mapImage.getHeight());
     }
 
+    // The tutorial (see Tutorial.judge): what judges a guess, the verdict on this round's, and the
+    // plain map washed green where a guess would have passed (null for none)
+    private java.util.function.Function<GeodesicChunkGrid.Direction, Tutorial.Verdict> judge;
+    private volatile Tutorial.Verdict verdict;
+    private volatile BufferedImage washedMap;
+
+    public void setJudge(java.util.function.Function<GeodesicChunkGrid.Direction, Tutorial.Verdict> judge) {
+        this.judge = judge;
+    }
+
+    /** Whether a guess may be made now: always, but in the tutorial only once its exercise's objectives are done. */
+    private boolean guessAllowed() {
+        return !Tutorial.active || listener == null || listener.tutorial.guessAllowed();
+    }
+
+    /** The plain map the results show: washed green where the tutorial's exercise passes, if it does. */
+    private BufferedImage revealImage() {
+        BufferedImage washed = washedMap;
+        return washed != null ? washed : mapImage;
+    }
+
+    /** A copy of the map with the wash (the chart's square, any size) laid over it. */
+    private static BufferedImage washed(BufferedImage map, BufferedImage wash) {
+        BufferedImage copy = new BufferedImage(map.getWidth(), map.getHeight(), BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = copy.createGraphics();
+        g.drawImage(map, 0, 0, null);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.drawImage(wash, 0, 0, map.getWidth(), map.getHeight(), null);
+        g.dispose();
+        return copy;
+    }
+
+    /**
+     * The tutorial's verdict at the bottom of the results' map: passed or not, and how the place
+     * could have been worked out (or what to look at again), wrapped to the map's width.
+     */
+    private void drawVerdict(Graphics2D g2d, int mapX, int mapY) {
+        Tutorial.Verdict v = verdict;
+        if (v == null) return;
+        Font titleFont = HudStyle.font(Font.BOLD, 20f), bodyFont = HudStyle.font(Font.PLAIN, 15f);
+        int width = Math.max(240, (int) (currentMapSize * 0.86f)), padX = 20, padY = 14;
+        g2d.setFont(bodyFont);
+        FontMetrics fm = g2d.getFontMetrics();
+        List<String> lines = new ArrayList<>();
+        StringBuilder line = new StringBuilder();
+        for (String word : v.explanation().split(" ")) {
+            if (line.length() > 0 && fm.stringWidth(line + " " + word) > width - padX * 2) {
+                lines.add(line.toString());
+                line.setLength(0);
+            }
+            if (line.length() > 0) line.append(' ');
+            line.append(word);
+        }
+        if (line.length() > 0) lines.add(line.toString());
+        int lineH = fm.getHeight(), titleH = 30;
+        int boxH = padY * 2 + titleH + lineH * lines.size();
+        int x = mapX + (currentMapSize - width) / 2, y = mapY + mapHeight() - boxH - 14;
+        Stroke stroke = g2d.getStroke();
+        HudStyle.panel(g2d, x, y, width, boxH, HudStyle.GLASS);
+        g2d.setStroke(stroke);
+        g2d.setFont(titleFont);
+        g2d.setColor(v.passed() ? HudStyle.GOLD : new Color(245, 105, 90));
+        g2d.drawString(v.title(), x + padX, y + padY + g2d.getFontMetrics().getAscent());
+        g2d.setFont(bodyFont);
+        g2d.setColor(HudStyle.VALUE);
+        for (int i = 0; i < lines.size(); i++) g2d.drawString(lines.get(i), x + padX, y + padY + titleH + fm.getAscent() + i * lineH);
+    }
+
     /** Whether what's shown now is on a globe (the results' or the map's own), rather than the flat chart. */
     private boolean globeShown() {
         return isFullScreenReveal ? revealGlobe : mapGlobe;
@@ -798,6 +869,11 @@ public class MapPanel extends JPanel {
     }
 
     private void prepareGlobeDetail(RevealGlobe shown, boolean plain, int textureWidth) {
+        // (the tutorial's green wash is on the whole texture only: its detail tiles would hide it)
+        if (plain && washedMap != null) {
+            shown.setDetail(0, java.util.Map.of(), "washed");
+            return;
+        }
         int w = currentMapSize, h = mapHeight();
         int level = shown.detailLevel(w, h, textureWidth);
         // What the tiles show: the base's (or overlay's) tiles, then each marking's
@@ -1117,10 +1193,42 @@ public class MapPanel extends JPanel {
         repaint();
     }
 
-    public void setLegend(float[][] colours, String[] labels) {
+    /** Where a value comes on the key's colours (0 to 1) and the value itself, with its units, for the pointer under the key. */
+    record LegendReading(float share, String label) {
+    }
+
+    // What the key reads at a direction (for the guess's marker), or null for an overlay with no key
+    private volatile java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> legendReader;
+
+    // The key's last reading and the marker and reader it was taken for (the reading's only taken again when either changes)
+    private LegendReading legendReading;
+    private GeodesicChunkGrid.Direction legendReadingPin;
+    private java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> legendReadingReader;
+
+    /** The key shown under the overlay's name, and how to read it under the guess's marker (null for no pointer). */
+    public void setLegend(float[][] colours, String[] labels, java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> reader) {
         this.legendColours = colours;
         this.legendLabels = labels;
+        this.legendReader = reader;
         repaint();
+    }
+
+    /**
+     * What the key reads under the guess's marker, or null with no marker down, no way to read
+     * it, or the marker out at sea (where the heatmaps aren't drawn: see composeChunkHeatmap).
+     */
+    private LegendReading legendReadingAtPin() {
+        java.util.function.Function<GeodesicChunkGrid.Direction, LegendReading> reader = legendReader;
+        GeodesicChunkGrid.Direction at = hasPin ? pin : null;
+        if (reader == null || at == null || mapImage == null) return null;
+        int px = Math.max(0, Math.min(mapImage.getWidth() - 1, (int) pinX)), py = Math.max(0, Math.min(mapImage.getHeight() - 1, (int) pinY));
+        if (mapImage.getRGB(px, py) == oceanRGB) return null;
+        if (at != legendReadingPin || reader != legendReadingReader) {
+            legendReading = reader.apply(at);
+            legendReadingPin = at;
+            legendReadingReader = reader;
+        }
+        return legendReading;
     }
 
     public void setOverlay(BufferedImage composed, String name, boolean flags) {
@@ -1400,6 +1508,45 @@ public class MapPanel extends JPanel {
      * A chunk-resolution overlay laid over the land of the map (the sea left as it is),
      * ready to show. Slow-ish, so done in the background: it only reads the plain map.
      */
+    // The land's heights and the sea's level, for the contours' reading under the marker (see drawContourHeight)
+    private final PerlinNoise heightNoise;
+    private final float heightSea;
+    // The last height read and the marker it was read under
+    private GeodesicChunkGrid.Direction heightPin;
+    private String heightText;
+
+    /**
+     * With the contours shown and a marker down on land: how high the ground is there (in
+     * metres above the sea, as the altimeter reads it), in the map's bottom left corner, clear
+     * of the heatmap's key at the top and the zoom at the bottom right.
+     */
+    private void drawContourHeight(Graphics2D g2d, int mapX, int mapY) {
+        GeodesicChunkGrid.Direction at = hasPin ? pin : null;
+        if (at == null || heightNoise == null || !shownLayers.contains(Layer.CONTOURS)) return;
+        if (at != heightPin) {
+            heightPin = at;
+            float ground = TerrainMesh.getLayeredHeight(at, heightNoise);
+            heightText = ground <= heightSea ? null : "Height " + Math.round((ground - heightSea) / PlayerBody.METRE) + " m";
+        }
+        String text = heightText;
+        if (text == null) return;
+        g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
+        FontMetrics fm = g2d.getFontMetrics();
+        int icon = 12, boxW = icon + 10 + fm.stringWidth(text) + 12, boxH = fm.getAscent() + 8;
+        int boxX = mapX + 8, boxY = mapY + mapHeight() - boxH - 8;
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillRoundRect(boxX, boxY, boxW, boxH, 8, 8);
+        g2d.setColor(new Color(255, 255, 255, 70));
+        g2d.drawRoundRect(boxX, boxY, boxW, boxH, 8, 8);
+        // (a little hill of contour rings beside it)
+        int ix = boxX + 7, iy = boxY + (boxH - icon) / 2;
+        g2d.setColor(new Color(150, 220, 130));
+        g2d.drawOval(ix, iy + 2, icon, icon - 4);
+        g2d.drawOval(ix + 3, iy + 4, icon - 6, icon - 8);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(text, ix + icon + 6, boxY + 4 + fm.getAscent() - 1);
+    }
+
     /** The overlay's key (see setLegend), centred on x below y: a bar of its colours, with its values and units beneath. */
     private void drawLegend(Graphics2D g2d, int centreX, int top) {
         float[][] colours = legendColours;
@@ -1428,6 +1575,29 @@ public class MapPanel extends JPanel {
         g2d.drawString(labels[0], barX, textY);
         g2d.drawString(labels[1], barX + (barW - fm.stringWidth(labels[1])) / 2, textY);
         g2d.drawString(labels[2], barX + barW - fm.stringWidth(labels[2]), textY);
+        // The value under the guess's marker: a tick across the bar where it comes, and a
+        // pointer under the key up to it with the value written beneath
+        LegendReading reading = legendReadingAtPin();
+        if (reading == null) return;
+        int at = barX + Math.round(Math.max(0f, Math.min(1f, reading.share())) * (barW - 1));
+        g2d.setColor(new Color(25, 25, 27, 230));
+        g2d.fillRect(at - 2, barY - 2, 5, barH + 5);
+        g2d.setColor(Color.WHITE);
+        g2d.fillRect(at - 1, barY - 1, 3, barH + 3);
+        g2d.setFont(g2d.getFont().deriveFont(Font.BOLD, 12f));
+        FontMetrics bold = g2d.getFontMetrics();
+        int tipY = top + boxH + 2, arrowH = 7;
+        int valueW = bold.stringWidth(reading.label()) + 12, valueH = bold.getAscent() + 6;
+        // (the value kept under the key, its pointer still at the value's place)
+        int valueX = Math.max(boxX, Math.min(boxX + boxW - valueW, at - valueW / 2)), valueY = tipY + arrowH;
+        Polygon arrow = new Polygon(new int[] { at, at - 6, at + 6 }, new int[] { tipY, tipY + arrowH, tipY + arrowH }, 3);
+        g2d.setColor(new Color(25, 25, 27, 215));
+        g2d.fillPolygon(arrow);
+        g2d.fillRoundRect(valueX, valueY, valueW, valueH, 8, 8);
+        g2d.setColor(new Color(255, 255, 255, 70));
+        g2d.drawRoundRect(valueX, valueY, valueW, valueH, 8, 8);
+        g2d.setColor(Color.WHITE);
+        g2d.drawString(reading.label(), valueX + 6, valueY + 3 + bold.getAscent() - 1);
     }
 
     public BufferedImage composeOverlay(BufferedImage heatmap) {
@@ -1604,6 +1774,10 @@ public class MapPanel extends JPanel {
 
     /** The guess is made: the pin locked and the map shown at the reveal's size on the globe, centred on the pin. */
     private void setUpReveal() {
+        // The tutorial: whether the guess passed its exercise, and every place that would have, in
+        // green (judged first: that decides the next round, built behind the results from now on)
+        verdict = judge == null ? null : judge.apply(pin);
+        washedMap = verdict == null || verdict.wash() == null ? null : washed(mapImage, verdict.wash());
         this.isGuessed = true;
         // The next round can be got ready behind the results from now on
         this.prepareRequested = true;
@@ -1616,7 +1790,7 @@ public class MapPanel extends JPanel {
         largeZoom = 0f;
         this.currentPhase = RevealPhase.SHOW_PLAYER_PIN;
         this.lineProgress = 0.0f;
-        globe.setTexture(mapImage);
+        globe.setTexture(revealImage());
         globe.resetZoom();
         globe.centreOn(pin != null ? pin : goal);
         this.revealStartTime = System.currentTimeMillis();
@@ -1892,8 +2066,8 @@ public class MapPanel extends JPanel {
             // (the results show just the land and sea)
             boolean plain = isFullScreenReveal;
             BufferedImage gradient = plain ? null : this.gradientImage;
-            BufferedImage mapSource = gradient != null ? gradient : mapImage;
-            if (gradient == null && zoom >= DETAIL_SWITCH_ZOOM && baseMapDetail != null) {
+            BufferedImage mapSource = gradient != null ? gradient : plain ? revealImage() : mapImage;
+            if (gradient == null && zoom >= DETAIL_SWITCH_ZOOM && baseMapDetail != null && washedMap == null) {
                 mapSource = baseMapDetail;
             }
             Shape frameClip = g2d.getClip();
@@ -1901,7 +2075,7 @@ public class MapPanel extends JPanel {
             if (globeShown()) {
                 // On the globe: the results' the plain map, the map's what the flat one shows
                 RevealGlobe shown = activeGlobe();
-                BufferedImage wrap = plain ? mapImage : globeTexture();
+                BufferedImage wrap = plain ? revealImage() : globeTexture();
                 shown.setTexture(wrap);
                 prepareGlobeDetail(shown, plain, wrap.getWidth());
                 shown.paint(g2d, mapX, mapY, currentMapSize, mapHeight());
@@ -1959,6 +2133,8 @@ public class MapPanel extends JPanel {
                 g2d.drawString(zoomLabel, zoomX + 6, zoomY + zoomFm.getAscent() + 3);
             }
 
+            if (!plain) drawContourHeight(g2d, mapX, mapY);
+
             String heatmapName = plain ? null : this.gradientName, picturesShown = plain ? null : this.picturesName;
             if (picturesShown != null) heatmapName = heatmapName == null ? picturesShown : heatmapName + "  ·  " + picturesShown;
             if (heatmapName != null) {
@@ -2005,8 +2181,10 @@ public class MapPanel extends JPanel {
                     HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), roundNote() != null ? "Edit note" : "Add note",
                             null, true, false, hoveredButton == 2, 1f);
                 } else if (!spectating) {
-                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), "Guess", null, hasPin, true,
-                            hoveredButton == 2, 1f);
+                    // (the tutorial: greyed, and saying why, until the exercise's objectives are done)
+                    boolean allowed = guessAllowed();
+                    HudStyle.button(g2d, new Rectangle(btnX, btnY, btnWidth, btnHeight), allowed ? "Guess" : "Guess (complete objectives first)",
+                            null, hasPin && allowed, true, hoveredButton == 2, 1f);
                 }
                 g2d.setStroke(stroke);
             }
@@ -2101,7 +2279,8 @@ public class MapPanel extends JPanel {
             }
 
             // (over any note left there, which hangs above the spot)
-            if (lastRound != null && !isFullScreenReveal) drawLastRound(g2d, mapX, mapY);
+            // (not in the tutorial, where a retry's last round is its own answer, nor in multiplayer)
+            if (lastRound != null && !isFullScreenReveal && !Tutorial.active && !Multiplayer.isActive()) drawLastRound(g2d, mapX, mapY);
 
             if (hasPin) {
                 Stroke originalStroke = g2d.getStroke();
@@ -2172,12 +2351,13 @@ public class MapPanel extends JPanel {
                 }
 
                 // How the guess was paid: its points as productivity, and the salary plus half of them as cash
-                if (resultsShown()) drawReckoning(g2d, mapX, mapY);
+                if (resultsShown() && verdict != null) drawVerdict(g2d, mapX, mapY);
+                else if (resultsShown()) drawReckoning(g2d, mapX, mapY);
                 if (currentPhase == RevealPhase.WAITING_FOR_PARTNER) drawWaitingForPartner(g2d, mapX, mapY);
 
                 if (shouldDrawScoreText && Multiplayer.isActive()) {
                     drawRoundWinner(g2d, mapX, mapY);
-                } else if (shouldDrawScoreText) {
+                } else if (shouldDrawScoreText && verdict == null) {
                     String pointsStr = String.format("%,d", currentDisplayScore);
                     float baseBubbleFontSize = currentMapSize * 0.15f;  
                     float dynamicFontSize = baseBubbleFontSize * currentScoreScale;
@@ -2389,7 +2569,8 @@ public class MapPanel extends JPanel {
     private void bankScore() {
         if (scoreBanked) return;
         scoreBanked = true;
-        if (gameHUD != null) gameHUD.addRound(targetRoundScore);
+        // (the tutorial's exercises earn nothing)
+        if (gameHUD != null && !Tutorial.active) gameHUD.addRound(targetRoundScore);
     }
 
     /**
@@ -2410,7 +2591,11 @@ public class MapPanel extends JPanel {
         if (gameHUD != null) {
             gameHUD.advanceRound();
         }
+        verdict = null;
+        washedMap = null;
         resetMapState();
+        // (the tutorial's next exercise, or this one again, begins)
+        if (Tutorial.active && listener != null) listener.tutorial.roundStarted();
     }
 
     /**
@@ -2526,6 +2711,7 @@ public class MapPanel extends JPanel {
      * the guess is sent, so its pop-up doesn't give the round away before the reveal.
      */
     private void awardBullseye() {
+        if (Tutorial.active) return;
         if (roundDistance <= PERFECT_DISTANCE) Achievements.unlock(Achievements.Achievement.BULLSEYE);
     }
 
