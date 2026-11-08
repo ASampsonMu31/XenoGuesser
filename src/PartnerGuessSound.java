@@ -36,7 +36,7 @@ final class PartnerGuessSound {
         try (SourceDataLine line = AudioSystem.getSourceDataLine(format)) {
             line.open(format);
             line.start();
-            line.write(bytes, 0, bytes.length);
+            GameSettings.writeAtVolume(line, bytes, 0, bytes.length);
             line.drain();
         } catch (Exception e) {
             System.err.println("Partner's guess sound unavailable: " + e.getMessage());

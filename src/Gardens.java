@@ -196,6 +196,9 @@ final class Gardens extends InfraPart {
         float dirX = (endX - startX) / length;
         float dirZ = (endZ - startZ) / length;
         float h = secure ? style.securityHeight : style.height;
+        // (a hedge is grown as tall as the household can keep up: clipped low round poor houses,
+        // standing well over head height round the richest)
+        if (!secure && style.type == FenceStyle.Type.HEDGE) h *= 0.7f + 0.9f * Math.max(0f, Math.min(1f, house.richness));
         boolean posts = secure ? style.securityType != FenceStyle.SecurityType.HIGH_WALL
                 : style.type != FenceStyle.Type.WALL && style.type != FenceStyle.Type.HEDGE;
 

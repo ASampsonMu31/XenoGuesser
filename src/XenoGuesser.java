@@ -96,6 +96,9 @@ public class XenoGuesser extends JFrame {
     int spare = Math.max(1, cores / 2);
     System.setProperty("ai.djl.pytorch.num_threads", Integer.toString(spare));
     System.setProperty("ai.djl.pytorch.num_interop_threads", "1");
+    // PyTorch's native files come bundled (pytorch-native-cpu, pytorch-jni), so DJL never needs
+    // to fetch them: offline, it can't fall back to downloading them should they fail to match
+    System.setProperty("ai.djl.offline", "true");
     SwingUtilities.invokeLater(new Runnable() {
         @Override
         public void run() {
@@ -1179,7 +1182,7 @@ glEventListener.setGameHUD(gameHUD);
 
   /**
    * Multiplayer, after a round's results (M58): the game's end once a player has won
-   * MultiplayerScore.ROUNDS_TO_WIN rounds (both PCs work it out from the same guesses, so both
+   * MultiplayerScore.roundsToWin() rounds (both PCs work it out from the same guesses, so both
    * end together), otherwise on to the shop, where the round's loser takes an upgrade.
    */
   private void multiplayerAfterResults(Multiplayer session, MultiplayerScore score) {
@@ -1205,7 +1208,7 @@ glEventListener.setGameHUD(gameHUD);
     }
     java.util.List<String> lines = new java.util.ArrayList<>();
     java.util.List<Color> colours = new java.util.ArrayList<>();
-    lines.add((won ? "You were" : session.remoteName() + " was") + " first to win " + MultiplayerScore.ROUNDS_TO_WIN + " rounds, in "
+    lines.add((won ? "You were" : session.remoteName() + " was") + " first to win " + MultiplayerScore.roundsToWin() + " rounds, in "
         + round + " rounds played");
     colours.add(HudStyle.GOLD);
     for (Multiplayer.Role player : new Multiplayer.Role[] { me, them }) {

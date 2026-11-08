@@ -48,6 +48,8 @@ public final class GameSettings {
     // (developer aid: -Dxenoguesser.shadows=on or off overrides it for this run)
     private static volatile boolean shadows = Dev.property("xenoguesser.shadows") != null
             ? !"off".equals(Dev.property("xenoguesser.shadows")) : STORE.getBoolean("shadowsOn", false);
+    // The volume, as the settings' slider stands (0 to 1): half unless chosen otherwise
+    private static volatile float volume = clamp01(STORE.getFloat("volume", 0.5f));
     // Fullscreen, or in a window: always fullscreen at startup (a window is for this game only)
     private static volatile boolean fullscreen = true;
 
@@ -114,5 +116,63 @@ public final class GameSettings {
         } catch (Exception e) {
             // Settings that can't be saved still apply for this game
         }
+    }
+
+    // The slider's place at which the sounds play at the level they were made at (they were
+    // tuned with no volume control, at what's now 70%)
+    private static final float VOLUME_UNITY = 0.7f;
+
+    private static float clamp01(float v) {
+        return Float.isNaN(v) ? 0.5f : Math.max(0f, Math.min(1f, v));
+    }
+
+    /** The volume slider's place, 0 to 1. */
+    public static float volume() {
+        return volume;
+    }
+
+    public static void setVolume(float v) {
+        volume = clamp01(v);
+        try {
+            STORE.putFloat("volume", volume);
+        } catch (Exception e) {
+            // Settings that can't be saved still apply for this game
+        }
+    }
+
+    /**
+     * What the samples are multiplied by at the slider's place. Loudness is heard roughly as the
+     * logarithm of the sound's power, so a slider straight on the amplitude would do nearly all its
+     * work in its bottom tenth; instead the amplitude goes as the slider's place squared (40 dB per
+     * tenfold, as games commonly do), which feels even along it: unity at 70%, about -6 dB at 50%,
+     * about +6 dB at the top, and silent at nought.
+     */
+    public static float volumeGain() {
+        float r = volume / VOLUME_UNITY;
+        return r * r;
+    }
+
+    /**
+     * Writes 16-bit signed little-endian PCM to a line at the volume chosen (a copy scaled, the
+     * original left as it was), peaks above full scale rounded off rather than clipped harshly.
+     */
+    public static void writeAtVolume(javax.sound.sampled.SourceDataLine line, byte[] bytes, int from, int length) {
+        float gain = volumeGain();
+        if (Math.abs(gain - 1f) < 1e-3f) {
+            line.write(bytes, from, length);
+            return;
+        }
+        byte[] scaled = new byte[length];
+        for (int i = 0; i + 1 < length; i += 2) {
+            int sample = (short) ((bytes[from + i] & 0xFF) | (bytes[from + i + 1] << 8));
+            float v = sample * gain / 32768f;
+            // (past 0.8 of full scale, eased into the top rather than cut off at it)
+            if (v > 0.8f) v = 0.8f + 0.2f * (float) Math.tanh((v - 0.8f) / 0.2f);
+            else if (v < -0.8f) v = -0.8f - 0.2f * (float) Math.tanh((-v - 0.8f) / 0.2f);
+            int out = Math.round(v * 32767f);
+            scaled[i] = (byte) out;
+            scaled[i + 1] = (byte) (out >> 8);
+        }
+        line.write(scaled, 0, length);
     }
 }

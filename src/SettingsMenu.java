@@ -14,13 +14,13 @@ import javax.swing.JPanel;
 
 /**
  * The settings, opened with Esc during the game: the graphics (Low, Medium or High), the FPS
- * counter, fullscreen or windowed, and the sun's shadows; Resume, Return to menu (while a game is
+ * counter, fullscreen or windowed, the sun's shadows and the volume; Resume, Return to menu (while a game is
  * loading or being played) and Quit game. In multiplayer, leaving either way first asks whether
  * the player's sure, as it forfeits the game.
  */
 public class SettingsMenu extends JPanel {
 
-    public static final int W = 440, H = 624;
+    public static final int W = 440, H = 686;
 
     private final Runnable onResume;
     private final Runnable onQuit, onDisplayChanged, onReturnToMenu;
@@ -40,12 +40,16 @@ public class SettingsMenu extends JPanel {
     private final Rectangle shadowsRow = new Rectangle(30, 236, W - 60, 52);
     private final Rectangle diagnosticsRow = new Rectangle(30, 298, W - 60, 52);
     private final Rectangle fullscreenRow = new Rectangle(30, 360, W - 60, 52);
-    private final Rectangle controlsRow = new Rectangle(30, 422, W - 60, 52);
+    // The volume: a slider along the right of its row, dragged or clicked
+    private final Rectangle volumeRow = new Rectangle(30, 422, W - 60, 52);
+    private final Rectangle volumeTrack = new Rectangle(volumeRow.x + 120, volumeRow.y + 18, volumeRow.width - 196, 16);
+    private boolean draggingVolume;
+    private final Rectangle controlsRow = new Rectangle(30, 484, W - 60, 52);
     // The buttons: Resume and Quit side by side, or with a game on, Resume and Return to menu, Quit under them
     private final Rectangle resumeButton = new Rectangle(), returnButton = new Rectangle(), quitButton = new Rectangle();
     // The question's buttons, while one's being asked
-    private final Rectangle confirmButton = new Rectangle(30, 510, (W - 72) / 2, 44);
-    private final Rectangle cancelButton = new Rectangle(42 + (W - 72) / 2, 510, (W - 72) / 2, 44);
+    private final Rectangle confirmButton = new Rectangle(30, 572, (W - 72) / 2, 44);
+    private final Rectangle cancelButton = new Rectangle(42 + (W - 72) / 2, 572, (W - 72) / 2, 44);
     {
         int bw = 74, gap = 6, right = qualityRow.x + qualityRow.width - 14;
         for (int k = 0; k < qualityButtons.length; k++) {
@@ -92,6 +96,7 @@ public class SettingsMenu extends JPanel {
                         : diagnosticsRow.contains(e.getPoint()) ? diagnosticsRow
                         : fullscreenRow.contains(e.getPoint()) ? fullscreenRow
                         : shadowsRow.contains(e.getPoint()) ? shadowsRow
+                        : volumeRow.contains(e.getPoint()) ? volumeRow
                         : controlsRow.contains(e.getPoint()) ? controlsRow
                         : resumeButton.contains(e.getPoint()) ? resumeButton
                         : returnButton.contains(e.getPoint()) ? returnButton
@@ -101,6 +106,16 @@ public class SettingsMenu extends JPanel {
                     setCursor(over != null ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
                     repaint();
                 }
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (draggingVolume) setVolumeAt(e.getX());
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                draggingVolume = false;
             }
 
             @Override
@@ -137,6 +152,12 @@ public class SettingsMenu extends JPanel {
                 } else if (shadowsRow.contains(e.getPoint())) {
                     GameSettings.setShadows(!GameSettings.shadows());
                     repaint();
+                } else if (volumeRow.contains(e.getPoint())) {
+                    // (anywhere along the row's slider end, a little slack either side of the track)
+                    if (e.getX() >= volumeTrack.x - 10 && e.getX() <= volumeTrack.x + volumeTrack.width + 10) {
+                        draggingVolume = true;
+                        setVolumeAt(e.getX());
+                    }
                 } else if (controlsRow.contains(e.getPoint())) {
                     if (onControls != null) onControls.run();
                 } else if (resumeButton.contains(e.getPoint())) {
@@ -150,6 +171,36 @@ public class SettingsMenu extends JPanel {
         };
         addMouseListener(mouse);
         addMouseMotionListener(mouse);
+    }
+
+    /** Sets the volume from where along the slider's track the mouse is. */
+    private void setVolumeAt(int x) {
+        GameSettings.setVolume((x - volumeTrack.x) / (float) volumeTrack.width);
+        repaint();
+    }
+
+    /** The volume's row: its name, the slider (filled to its place, a knob there) and the percentage. */
+    private void paintVolume(Graphics2D g) {
+        paintRowBackground(g, volumeRow);
+        g.setFont(HudStyle.font(Font.PLAIN, 16f));
+        g.setColor(HudStyle.VALUE);
+        g.drawString("Volume", volumeRow.x + 16, volumeRow.y + 32);
+        Rectangle t = volumeTrack;
+        float v = GameSettings.volume();
+        int cy = t.y + t.height / 2, filled = Math.round(t.width * v);
+        g.setColor(new Color(55, 62, 72));
+        g.fill(new RoundRectangle2D.Float(t.x, cy - 3, t.width, 6, 6, 6));
+        g.setColor(new Color(40, 150, 185));
+        g.fill(new RoundRectangle2D.Float(t.x, cy - 3, filled, 6, 6, 6));
+        int knob = 16;
+        g.setColor(hovered == volumeRow || draggingVolume ? Color.WHITE : new Color(215, 222, 230));
+        g.fillOval(t.x + filled - knob / 2, cy - knob / 2, knob, knob);
+        g.setColor(HudStyle.ACCENT);
+        g.setStroke(new BasicStroke(1.2f));
+        g.drawOval(t.x + filled - knob / 2, cy - knob / 2, knob, knob);
+        String percent = Math.round(v * 100) + "%";
+        HudStyle.label(g, percent, volumeRow.x + volumeRow.width - 14 - HudStyle.labelWidth(g, percent, 10f), cy + 4, 10f,
+                v > 0f ? HudStyle.ACCENT : HudStyle.DIM);
     }
 
     /** Leaves (to the menu, or quitting): at once, or in multiplayer once the player's said they're sure (confirm on the button that does it). */
@@ -175,13 +226,13 @@ public class SettingsMenu extends JPanel {
     private void layOutButtons() {
         int half = (W - 72) / 2;
         if (inGame.getAsBoolean()) {
-            resumeButton.setBounds(30, 504, half, 44);
-            returnButton.setBounds(42 + half, 504, half, 44);
-            quitButton.setBounds(30, 558, W - 60, 44);
+            resumeButton.setBounds(30, 566, half, 44);
+            returnButton.setBounds(42 + half, 566, half, 44);
+            quitButton.setBounds(30, 620, W - 60, 44);
         } else {
-            resumeButton.setBounds(30, 520, half, 44);
+            resumeButton.setBounds(30, 582, half, 44);
             returnButton.setBounds(0, 0, 0, 0);
-            quitButton.setBounds(42 + half, 520, half, 44);
+            quitButton.setBounds(42 + half, 582, half, 44);
         }
     }
 
@@ -206,6 +257,7 @@ public class SettingsMenu extends JPanel {
             paintToggle(g, shadowsRow, "Shadows", GameSettings.shadows(), "On", "Off");
             paintToggle(g, diagnosticsRow, "Show diagnostics", GameSettings.showDiagnostics(), "On", "Off");
             paintToggle(g, fullscreenRow, "Fullscreen", GameSettings.fullscreen(), "Fullscreen", "Windowed");
+            paintVolume(g);
             // Controls: opens them, an arrow at its right
             paintRowBackground(g, controlsRow);
             g.setFont(HudStyle.font(Font.PLAIN, 16f));
@@ -231,7 +283,7 @@ public class SettingsMenu extends JPanel {
     private void paintQuestion(Graphics2D g) {
         g.setColor(new Color(6, 8, 12, 200));
         g.fillRect(0, 0, W, H);
-        int top = 398;
+        int top = 460;
         g.setColor(new Color(24, 28, 36));
         g.fill(new RoundRectangle2D.Float(18, top, W - 36, H - top - 18, 14, 14));
         g.setColor(new Color(235, 140, 130));

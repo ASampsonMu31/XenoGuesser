@@ -77,7 +77,9 @@ public class GuardRailStyle {
 
             styles.put(n, new GuardRailStyle(
                 enabled, profile, banding,
-                6.5f + rand.nextFloat() * 3.0f,
+                // Low enough that a jump (about 9.8 high) clears even the deepest rail's top
+                // (8.5 at most) with room to spare, not only at the very top of the jump
+                3.0f + rand.nextFloat() * 1.5f,
                 railSize,
                 9.0f + rand.nextFloat() * 12.0f,
                 0.9f + rand.nextFloat() * 1.1f,

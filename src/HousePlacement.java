@@ -505,13 +505,14 @@ final class HousePlacement extends InfraPart {
     }
 
     /**
-     * Poorer households' houses are weathered, streaked and stained, more so the poorer; the
+     * Poorer households' houses are weathered, streaked, stained and cracked, more so the poorer
+     * (from a little below middling wealth, so it's plain street to street); the
      * richest are dressed up with pillars round the door and a cornice under the roof.
      */
     private void decideLook(House house) {
         Random rand = new Random(house.seed ^ 0x3EA7E2L);
-        float poor = Math.max(0f, Math.min(1f, (0.5f - house.richness) / 0.4f));
-        house.weathering = rand.nextFloat() < 0.2f + 0.8f * poor ? Math.min(3, Math.round(poor * (0.6f + 0.6f * rand.nextFloat()) * 3f)) : 0;
+        float poor = Math.max(0f, Math.min(1f, (0.6f - house.richness) / 0.45f));
+        house.weathering = rand.nextFloat() < 0.3f + 0.7f * poor ? Math.min(3, Math.round(poor * (0.8f + 0.6f * rand.nextFloat()) * 3f)) : 0;
         house.grand = house.richness > 0.5f && rand.nextFloat() < (house.richness - 0.5f) * 2.2f;
     }
 

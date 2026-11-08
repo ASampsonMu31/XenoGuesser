@@ -39,8 +39,8 @@ public class RockField {
     // How many rocks a chunk's area (100 by 100) has where it's rockiest
     private static final float MAX_PER_CHUNK = 26f;
     private static final float FAR_MIN_RADIUS = 2.8f;
-    // Rocks whose tops stand lower than this are stepped over; taller ones are solid
-    private static final float STEP_HEIGHT = 1.8f;
+    // Rocks whose tops stand lower than this are stepped (or waded) over; taller ones are solid
+    private static final float STEP_HEIGHT = 3.5f;
 
     private final long seed;
     private final float chunkSize;

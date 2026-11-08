@@ -40,6 +40,8 @@ final class HudRenderer extends GamePart {
 
     // How far below the top margin the tutorial's objectives begin (clear of the diagnostics)
     private static final int TUTORIAL_TOP = 92;
+    // The screen height the HUD was laid out for: taller screens draw it bigger in proportion
+    private static final float HUD_DESIGN_HEIGHT = 1080f;
 
     /**
      * The HUD over the finished frame: the round and score at the top left, the diagnostics
@@ -49,7 +51,12 @@ final class HudRenderer extends GamePart {
     void drawHud(GLAutoDrawable drawable) {
         GL3 gl = drawable.getGL().getGL3();
         // Pictures are painted at the screen's pixel density so they stay sharp when Windows scales the display
-        float scale = drawable instanceof java.awt.Component c && c.getWidth() > 0 ? game.screenWidth / (float) c.getWidth() : 1f;
+        float px = drawable instanceof java.awt.Component c && c.getWidth() > 0 ? game.screenWidth / (float) c.getWidth() : 1f;
+        // ...and drawn bigger on bigger screens, so they take the same share of the screen as on a
+        // 1080-line one (twice the size at 2160 lines) rather than shrinking to specks; where
+        // Windows already scales the display as much, its scale stands. Things placed against
+        // Swing's components (the map, the message strip) still go by px, their pixel density.
+        float scale = Math.max(px, game.screenHeight / HUD_DESIGN_HEIGHT);
         boolean rescaled = scale != hudScale;
         hudScale = scale;
         int margin = Math.round(HudStyle.HUD_MARGIN * scale);
@@ -127,7 +134,7 @@ final class HudRenderer extends GamePart {
         if (hud.has("inventory")) {
             int h = Math.round(HudStyle.inventoryHeight(gadgets.size()) * scale);
             java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
-            int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * scale);
+            int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * px);
             // (tucked into the corner, just clear of the window's edge and the strip)
             int gap = Math.round(INVENTORY_GAP * scale);
             int top = game.screenHeight - h - gap - strip;
@@ -151,7 +158,7 @@ final class HudRenderer extends GamePart {
         if (hud.has("returning")) {
             hud.setVisible("returning", returning);
             java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
-            int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * scale);
+            int strip = view == null ? 0 : Math.round(XenoGuesser.messageStripHeight(view.getHeight() + 2) * px);
             hud.move("returning", (game.screenWidth - Math.round(RETURNING_W * scale)) / 2,
                     game.screenHeight - strip - Math.round((RETURNING_H + INVENTORY_GAP) * scale));
         }
@@ -178,8 +185,8 @@ final class HudRenderer extends GamePart {
             java.awt.Rectangle map = game.minimap.getBounds();
             java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
             if (view != null) map.translate(-view.getX(), -view.getY());
-            hud.move("mapHint", Math.round((map.x + map.width - 12) * scale) - hud.width("mapHint"),
-                    Math.round((map.y - 8) * scale) - Math.round(HudStyle.HINT_H * scale));
+            hud.move("mapHint", Math.round((map.x + map.width) * px - 12 * scale) - hud.width("mapHint"),
+                    Math.round(map.y * px - 8 * scale) - Math.round(HudStyle.HINT_H * scale));
         }
 
         // The tutorial's objectives, down the right under the diagnostics
@@ -203,7 +210,7 @@ final class HudRenderer extends GamePart {
             java.awt.Component view = drawable instanceof java.awt.Component c ? c : null;
             if (view != null) map.translate(-view.getX(), -view.getY());
             hud.move("achievement", game.screenWidth - hud.width("achievement") - margin,
-                    Math.round((map.y - 16) * scale) - Math.round((Achievements.TOAST_H + HudStyle.HINT_H + 8) * scale));
+                    Math.round(map.y * px - 16 * scale) - Math.round((Achievements.TOAST_H + HudStyle.HINT_H + 8) * scale));
             hud.setAlpha("achievement", (Float) toast[1]);
         }
         if (hud.has("achievement")) hud.setVisible("achievement", toast != null);

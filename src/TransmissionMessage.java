@@ -564,7 +564,14 @@ public class TransmissionMessage {
 
     private void write(byte[] bytes, int from, int length) {
         int chunk = 4096;
-        for (int i = from; i < from + length && !stopped; i += chunk) line.write(bytes, i, Math.min(chunk, from + length - i));
+        // (the recordings are 16-bit little-endian, scaled to the volume chosen; anything else plays as it is)
+        boolean scalable = format.getSampleSizeInBits() == 16 && !format.isBigEndian()
+                && format.getEncoding() == AudioFormat.Encoding.PCM_SIGNED;
+        for (int i = from; i < from + length && !stopped; i += chunk) {
+            int n = Math.min(chunk, from + length - i);
+            if (scalable) GameSettings.writeAtVolume(line, bytes, i, n);
+            else line.write(bytes, i, n);
+        }
     }
 
     public void stop() {

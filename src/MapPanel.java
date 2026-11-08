@@ -2947,7 +2947,7 @@ public class MapPanel extends JPanel {
         // Where it flies to: the winner's next circle (their row: this player's on top)
         int targetX = centreX, targetY = centreY;
         if (winner != null && gameHUD != null) {
-            int circle = Math.min(MultiplayerScore.ROUNDS_TO_WIN - 1, gameHUD.roundsWon(winner) - (scoreBanked ? 1 : 0));
+            int circle = Math.min(MultiplayerScore.roundsToWin() - 1, gameHUD.roundsWon(winner) - (scoreBanked ? 1 : 0));
             targetX = -getX() + HudStyle.HUD_MARGIN + HudStyle.CIRCLES_X + circle * HudStyle.CIRCLE_STEP;
             targetY = -getY() + HudStyle.HUD_MARGIN + HudStyle.CIRCLES_Y + (winner == session.role ? 0 : HudStyle.CIRCLE_ROW);
         }

@@ -289,7 +289,7 @@ public final class HudStyle {
 
     /**
      * The score panel in multiplayer (M58): the round being played, and each player (this one
-     * first) with a row of ROUNDS_TO_WIN circles, filled in their suit's
+     * first) with a row of roundsToWin() circles, filled in their suit's
      * colour for each round they've won. No cash: multiplayer's shop is free (the round's loser
      * takes one).
      */
@@ -300,7 +300,7 @@ public final class HudStyle {
         g.setFont(font(Font.BOLD, 30f));
         g.setColor(VALUE);
         g.drawString(Integer.toString(round), 20, 64);
-        label(g, "First to " + MultiplayerScore.ROUNDS_TO_WIN, 72, 64, 10f, GOLD);
+        label(g, "First to " + MultiplayerScore.roundsToWin(), 72, 64, 10f, GOLD);
         g.setColor(new Color(120, 205, 235, 70));
         g.fill(new java.awt.geom.Rectangle2D.Float(150, 18, 1f, SCORE_H - 36));
         float nameRight = CIRCLES_X - CIRCLE_SIZE / 2f - 12f;
@@ -318,7 +318,7 @@ public final class HudStyle {
             g.setColor(textColours[p]);
             g.drawString(cut ? name + "..." : name, 166, cy + 5f);
             g.setStroke(new BasicStroke(1.6f));
-            for (int c = 0; c < MultiplayerScore.ROUNDS_TO_WIN; c++) {
+            for (int c = 0; c < MultiplayerScore.roundsToWin(); c++) {
                 float x = CIRCLES_X + c * CIRCLE_STEP - CIRCLE_SIZE / 2f, y = cy - CIRCLE_SIZE / 2f;
                 java.awt.geom.Ellipse2D ring = new java.awt.geom.Ellipse2D.Float(x, y, CIRCLE_SIZE, CIRCLE_SIZE);
                 if (c < won[p]) {
