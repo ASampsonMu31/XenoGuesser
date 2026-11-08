@@ -24,8 +24,9 @@ import com.xenoguesser.math.Vector3;
  * Towers in the big cities have their own high-tech dress: neon up the corners and round the
  * floors, blades down the sides, rings round them and a crown on top.
  *
- * Few designs go round the world: neighbours share them, kindred ones above all (see
- * RegionalDesigns), and a nation may build a neighbour's near that neighbour. Within a nation one
+ * Few designs go round the world: neighbours share them, kindred or not (dealt by geography alone,
+ * see RegionalDesigns.byGeography, so a design spans a patch of nearby countries rather than
+ * echoing their flags and signs), and a nation may build a neighbour's near that neighbour. Within a nation one
  * province often has its own take on the nation's design (a few of its traits different). Within
  * a design's land every house wears all of it, so it's recognisable street to street (and each
  * region builds one form in one masonry: see InfrastructureManager.regionForm); only the richest
@@ -163,7 +164,7 @@ public final class ArchitectureStyle {
 
     /** Deals the world's designs: about one for every POOL_PER_NATIONS nations, and the nations' provinces. */
     public static World generateForNations(long seed, int numNations, NationKinship kinship) {
-        RegionalDesigns designs = new RegionalDesigns(seed + 8484L, numNations, kinship, POOL_PER_NATIONS);
+        RegionalDesigns designs = RegionalDesigns.byGeography(seed + 8484L, numNations, kinship, POOL_PER_NATIONS);
         Random rand = new Random(seed + 8383L);
         ArchitectureStyle[] styles = new ArchitectureStyle[designs.poolSize + numNations];
         for (int d = 0; d < designs.poolSize; d++) {
@@ -202,7 +203,7 @@ public final class ArchitectureStyle {
         return new World(styles, designs, kinship, designs.poolSize, axis, reach);
     }
 
-    private static final float POOL_PER_NATIONS = 2.2f;
+    private static final float POOL_PER_NATIONS = 2.8f;
 
     /** A design of its own. */
     private static ArchitectureStyle fresh(Random rand) {

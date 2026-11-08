@@ -3,7 +3,7 @@
  * players' guesses (the GUESS messages, and this player's own as sent), so the two PCs always
  * agree. There are no months, quarters, productivity or points: each round is won by whoever's
  * guess was closer to the answer (a guess beats none; equally close, or neither guessing, is a
- * level round that nobody wins), and the first to win 10 rounds wins the game. The round's loser
+ * level round that nobody wins), and the first to win the host's choice of rounds (3 to 10, 7 unless chosen) wins the game. The round's loser
  * (both, in a level round) takes something from the shop for free.
  *
  * Players are named by role (the host's the same on both PCs), never as "this player", so the
@@ -11,8 +11,20 @@
  */
 public final class MultiplayerScore {
 
-    /** The rounds a player must win to win the game. */
-    public static final int ROUNDS_TO_WIN = 10;
+    /** The fewest and most rounds the host can make the game first to, and what it is unless chosen (and always in matchmaking). */
+    public static final int MIN_ROUNDS = 3, MAX_ROUNDS = 10, DEFAULT_ROUNDS = 7;
+    // The rounds a player must win to win this game: the host's choice, sent in START
+    private static volatile int roundsToWin = DEFAULT_ROUNDS;
+
+    /** The rounds a player must win to win the game being played. */
+    public static int roundsToWin() {
+        return roundsToWin;
+    }
+
+    /** Sets the rounds to win (kept within MIN_ROUNDS to MAX_ROUNDS). */
+    public static void setRoundsToWin(int rounds) {
+        roundsToWin = Math.max(MIN_ROUNDS, Math.min(MAX_ROUNDS, rounds));
+    }
 
     /** Where the guesses come from: a player's guess for a round, or null if it isn't in yet. */
     @FunctionalInterface
@@ -57,10 +69,10 @@ public final class MultiplayerScore {
         return won;
     }
 
-    /** Whoever has won ROUNDS_TO_WIN rounds by round upTo, or null if neither has yet. */
+    /** Whoever has won roundsToWin() rounds by round upTo, or null if neither has yet. */
     public Multiplayer.Role gameWinner(int upTo) {
         for (Multiplayer.Role player : Multiplayer.Role.values()) {
-            if (wins(player, upTo) >= ROUNDS_TO_WIN) return player;
+            if (wins(player, upTo) >= roundsToWin()) return player;
         }
         return null;
     }

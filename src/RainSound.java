@@ -122,7 +122,7 @@ public final class RainSound {
                     bytes[i * 2] = (byte) v;
                     bytes[i * 2 + 1] = (byte) (v >> 8);
                 }
-                line.write(bytes, 0, bytes.length);
+                GameSettings.writeAtVolume(line, bytes, 0, bytes.length);
             }
         } finally {
             line.stop();

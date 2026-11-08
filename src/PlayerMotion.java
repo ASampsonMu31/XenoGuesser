@@ -131,7 +131,7 @@ final class PlayerMotion extends GamePart {
     }
 
     // Steeper than this (rise over run) can't be walked up
-    private static final float MAX_CLIMB = 0.7f;   // about 35 degrees
+    private static final float MAX_CLIMB = 0.9f;   // about 42 degrees
 
     // Steeper than MAX_CLIMB, up to this, can be scrambled up with Space held, at SCRAMBLE_SPEED
     // times the walk; steeper still can't be climbed at all, and bare ground this steep slides

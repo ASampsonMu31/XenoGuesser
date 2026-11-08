@@ -39,7 +39,7 @@ import javax.swing.SwingUtilities;
  */
 public final class Multiplayer {
 
-    public static final int PROTOCOL_VERSION = 10;
+    public static final int PROTOCOL_VERSION = 11;
     // Rooms are only found by games with the same id (SteamTransport's lobby filter)
     public static final String BUILD_ID = "xenoguesser-" + PROTOCOL_VERSION;
 
@@ -251,8 +251,9 @@ public final class Multiplayer {
      * Hosts a new game of this world, mode and map: opens a room (the Listener hears its code),
      * then waits for the partner. Starts the transport (Steam) first if this is its first use.
      */
-    public static Multiplayer host(long worldSeed, GameMode gameMode, MapKind mapKind, Listener listener) {
+    public static Multiplayer host(long worldSeed, GameMode gameMode, MapKind mapKind, int roundsToWin, Listener listener) {
         Multiplayer session = open(Role.HOST, false, listener);
+        MultiplayerScore.setRoundsToWin(roundsToWin);
         session.worldSeed = worldSeed;
         session.gameMode = gameMode;
         session.mapKind = mapKind;
@@ -269,6 +270,8 @@ public final class Multiplayer {
      */
     public static Multiplayer matchmake(boolean ranked, long worldSeed, int modes, int maps, Listener listener) {
         Multiplayer session = open(null, ranked, listener);
+        // (matchmade games are always the usual length; a joiner takes the host's from START anyway)
+        MultiplayerScore.setRoundsToWin(MultiplayerScore.DEFAULT_ROUNDS);
         session.worldSeed = worldSeed;
         session.matchModes = modes;
         session.matchMaps = maps;
@@ -676,12 +679,13 @@ public final class Multiplayer {
 
     private void sendStart() {
         byte[] java = javaVersion(), name = localName.getBytes(StandardCharsets.UTF_8);
-        ByteBuffer m = message(START, 4 + 8 + 1 + 1 + 2 + java.length + 2 + name.length + 1 + 1 + 4).putInt(PROTOCOL_VERSION)
+        ByteBuffer m = message(START, 4 + 8 + 1 + 1 + 2 + java.length + 2 + name.length + 1 + 1 + 4 + 1).putInt(PROTOCOL_VERSION)
                 .putLong(worldSeed).put((byte) gameMode.ordinal()).put((byte) mapKind.ordinal());
         putString(m, java);
         putString(m, name);
         m.put((byte) localSuit.ordinal());
         m.put((byte) (rankedQueue ? 1 : 0)).putInt(localRating);
+        m.put((byte) MultiplayerScore.roundsToWin());
         send(m, true);
     }
 
@@ -826,6 +830,7 @@ public final class Multiplayer {
                 int suit = m.hasRemaining() ? m.get() : 0;
                 boolean ranked = m.hasRemaining() && m.get() != 0;
                 int rating = m.hasRemaining() ? m.getInt() : Rating.START;
+                int rounds = m.hasRemaining() ? m.get() : MultiplayerScore.DEFAULT_ROUNDS;
                 if (m.hasRemaining() || !expect(Role.JOIN, "START")) return false;
                 if (mode < 0 || mode >= GameMode.values().length || map < 0 || map >= MapKind.values().length) {
                     System.out.println("[MP] Ignored a START with an unknown game mode or map kind");
@@ -838,6 +843,7 @@ public final class Multiplayer {
                 worldSeed = seed;
                 gameMode = GameMode.values()[mode];
                 mapKind = MapKind.values()[map];
+                MultiplayerScore.setRoundsToWin(rounds);
                 System.out.println("[MP] World from " + remoteName() + ": seed " + seed
                         + ", " + gameMode + ", " + mapKind);
                 send(message(START_ACK, 0), true);

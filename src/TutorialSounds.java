@@ -88,7 +88,7 @@ final class TutorialSounds {
             try (SourceDataLine line = AudioSystem.getSourceDataLine(format)) {
                 line.open(format);
                 line.start();
-                line.write(bytes, 0, bytes.length);
+                GameSettings.writeAtVolume(line, bytes, 0, bytes.length);
                 line.drain();
             } catch (Exception e) {
                 System.err.println("Tutorial sound unavailable: " + e.getMessage());

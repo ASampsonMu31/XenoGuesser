@@ -46,6 +46,21 @@ public final class RegionalDesigns {
      * Random of their own, so the rest is dealt as it would be without them).
      */
     public RegionalDesigns(long seed, int numNations, NationKinship kinship, float perNation, float regions) {
+        this(seed, numNations, kinship, perNation, regions, false);
+    }
+
+    /**
+     * As the first constructor, but dealt by geography alone: every bordering neighbour is as
+     * likely to be copied as any other, kindred or hostile, more often than a design of its own is
+     * taken, and its design runs over the border more often. For what a nation builds that
+     * shouldn't give away the same kindred ties as its flags, signs and the rest (its architecture),
+     * so a design spreads across a patch of neighbouring countries.
+     */
+    public static RegionalDesigns byGeography(long seed, int numNations, NationKinship kinship, float perNation) {
+        return new RegionalDesigns(seed, numNations, kinship, perNation, 0f, true);
+    }
+
+    private RegionalDesigns(long seed, int numNations, NationKinship kinship, float perNation, float regions, boolean geographic) {
         this.kinship = kinship;
         Random rand = new Random(seed);
         poolSize = Math.max(2, Math.round(numNations / perNation));
@@ -56,13 +71,14 @@ public final class RegionalDesigns {
             List<Float> weights = new ArrayList<>();
             float total = 0f;
             for (int m = 1; m < n; m++) {
-                float w = kinship.kin(n, m) ? KIN : kinship.hostile(n, m) ? HOSTILE : kinship.bordering(n, m) ? NEIGHBOUR : 0f;
+                float w = geographic ? (kinship.bordering(n, m) ? NEIGHBOUR : 0f)
+                        : kinship.kin(n, m) ? KIN : kinship.hostile(n, m) ? HOSTILE : kinship.bordering(n, m) ? NEIGHBOUR : 0f;
                 if (w <= 0f) continue;
                 offered.add(main[m]);
                 weights.add(w);
                 total += w;
             }
-            if (total > 0f && rand.nextFloat() < total / (total + OWN_WAY)) {
+            if (total > 0f && rand.nextFloat() < total / (total + (geographic ? GEOGRAPHIC_OWN_WAY : OWN_WAY))) {
                 float roll = rand.nextFloat() * total;
                 int k = 0;
                 while (k < weights.size() - 1 && (roll -= weights.get(k)) > 0f) k++;
@@ -88,7 +104,7 @@ public final class RegionalDesigns {
                 boolean already = false;
                 for (int[] o : others) already |= o[0] == main[m];
                 if (already) continue;
-                float chance = kinship.kin(n, m) ? 0.4f : kinship.hostile(n, m) ? 0.05f : 0.2f;
+                float chance = geographic ? 0.4f : kinship.kin(n, m) ? 0.4f : kinship.hostile(n, m) ? 0.05f : 0.2f;
                 if (rand.nextFloat() >= chance) continue;
                 others.add(new int[] { main[m], m });
                 reaches.add(0.7f + rand.nextFloat() * 0.3f);
@@ -162,6 +178,8 @@ public final class RegionalDesigns {
     // How strongly a nation takes after a neighbour already dealt: kindred, any other bordering,
     // hostile; against how strongly it goes its own way
     private static final float KIN = 3f, NEIGHBOUR = 1f, HOSTILE = 0.15f, OWN_WAY = 1.2f;
+    // (dealt by geography, a nation's own way is rarer: one with a neighbour or two mostly copies one)
+    private static final float GEOGRAPHIC_OWN_WAY = 0.5f;
 
     /** How the designs went round, for the log: designs used of the pool, the nations, and those building more than one. */
     public String summary() {

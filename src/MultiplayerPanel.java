@@ -62,6 +62,13 @@ public class MultiplayerPanel extends JComponent {
     // Matchmaking's queue (remembered between games), and when the search began
     private boolean ranked = GameSettings.STORE.getBoolean("rankedQueue", false);
     private long searchStartedAt;
+    // The rounds to win a hosted game (the host's slider, remembered between games), and the
+    // slider's track as last painted, and whether it's being dragged
+    private int hostRounds = Math.max(MultiplayerScore.MIN_ROUNDS, Math.min(MultiplayerScore.MAX_ROUNDS,
+            GameSettings.STORE.getInt("hostRounds", MultiplayerScore.DEFAULT_ROUNDS)));
+    private final Rectangle roundsTrack = new Rectangle();
+    private boolean draggingRounds;
+    private int pressX;
     private String typed = "";
     private String errorTitle = "", errorText = "";
     private final long openedAt = System.currentTimeMillis();
@@ -93,8 +100,19 @@ public class MultiplayerPanel extends JComponent {
             public void mousePressed(MouseEvent e) {
                 requestFocusInWindow();
                 if (e.getButton() != MouseEvent.BUTTON1) return;
+                pressX = e.getX();
                 int b = buttonAt(e.getX(), e.getY());
                 if (b >= 0) actions.get(b).run();
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                if (draggingRounds) setRoundsAt(e.getX());
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                draggingRounds = false;
             }
 
             @Override
@@ -161,7 +179,7 @@ public class MultiplayerPanel extends JComponent {
     private void hostGame() {
         state = State.HOSTING;
         long seed = hostSeed.getAsLong();
-        session = Multiplayer.host(seed, GameMode.current(), MapKind.current(), sessionListener);
+        session = Multiplayer.host(seed, GameMode.current(), MapKind.current(), hostRounds, sessionListener);
         // The writing systems are made now, while the partner joins, and sent once they have (M18)
         WritingSystems.shareWhenReady(session, seed);
         repaint();
@@ -373,6 +391,7 @@ public class MultiplayerPanel extends JComponent {
         g.translate(px, py);
         paintContents(g, pw, pad, unit);
         for (Rectangle r : buttons) r.translate(Math.round(px), Math.round(py));
+        roundsTrack.translate(Math.round(px), Math.round(py));
         g.dispose();
     }
 
@@ -416,7 +435,8 @@ public class MultiplayerPanel extends JComponent {
                         m -> GameMode.choose(GameMode.values()[m]), x, y + 34 * unit, inner, unit);
                 y = choiceRow(g, "Map", mapLabels(), m -> MapKind.current().ordinal() == m, false,
                         m -> MapKind.choose(MapKind.values()[m]), x, y + 30 * unit, inner, unit);
-                y += 30 * unit;
+                y = roundsSlider(g, x, y + 30 * unit, inner, unit);
+                y += 26 * unit;
                 y = button(g, "Host game", true, true, this::hostGame, x, y, inner, unit);
                 y = backButton(g, "Back", () -> show(State.FRIEND), x, y + 10 * unit, unit);
             }
@@ -580,6 +600,57 @@ public class MultiplayerPanel extends JComponent {
             at += w + gap;
         }
         return top + h;
+    }
+
+    /** Sets the hosted game's rounds to win from where along the slider's track x is. */
+    private void setRoundsAt(int x) {
+        if (roundsTrack.width <= 0) return;
+        float t = Math.max(0f, Math.min(1f, (x - roundsTrack.x) / (float) roundsTrack.width));
+        int rounds = MultiplayerScore.MIN_ROUNDS + Math.round(t * (MultiplayerScore.MAX_ROUNDS - MultiplayerScore.MIN_ROUNDS));
+        if (rounds != hostRounds) {
+            hostRounds = rounds;
+            try {
+                GameSettings.STORE.putInt("hostRounds", rounds);
+            } catch (Exception e) {
+                // (not remembered, but still used for this game)
+            }
+        }
+        repaint();
+    }
+
+    /**
+     * The hosted game's length: "First to N rounds" over a slider from MIN_ROUNDS to MAX_ROUNDS,
+     * a tick at each, clicked or dragged. Its title's baseline at y; returns its bottom.
+     */
+    private float roundsSlider(Graphics2D g, float x, float y, float width, float unit) {
+        HudStyle.label(g, "First to " + hostRounds + " rounds", x + 2 * unit, y, 12 * unit, HudStyle.ACCENT);
+        float h = 40 * unit, top = y + 12 * unit, trackW = Math.min(width, 520 * unit) - 24 * unit;
+        float trackX = x + 12 * unit, cy = top + h / 2f;
+        Rectangle r = new Rectangle(Math.round(x), Math.round(top), Math.round(trackW + 24 * unit), Math.round(h));
+        roundsTrack.setBounds(Math.round(trackX), Math.round(top), Math.round(trackW), Math.round(h));
+        boolean over = addButton(r, true, () -> {
+            draggingRounds = true;
+            setRoundsAt(pressX);
+        });
+        int steps = MultiplayerScore.MAX_ROUNDS - MultiplayerScore.MIN_ROUNDS;
+        float t = (hostRounds - MultiplayerScore.MIN_ROUNDS) / (float) steps;
+        g.setColor(new Color(10, 14, 22, 230));
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(trackX, cy - 4 * unit, trackW, 8 * unit, 8 * unit, 8 * unit));
+        g.setColor(HudStyle.ACCENT);
+        g.fill(new java.awt.geom.RoundRectangle2D.Float(trackX, cy - 4 * unit, trackW * t, 8 * unit, 8 * unit, 8 * unit));
+        g.setFont(HudStyle.font(Font.PLAIN, 14 * unit));
+        FontMetrics fm = g.getFontMetrics();
+        for (int k = 0; k <= steps; k++) {
+            float tx = trackX + trackW * k / steps;
+            g.setColor(HudStyle.DIM);
+            g.fill(new java.awt.geom.Rectangle2D.Float(tx - 1 * unit, cy + 7 * unit, 2 * unit, 5 * unit));
+            String n = String.valueOf(MultiplayerScore.MIN_ROUNDS + k);
+            g.drawString(n, tx - fm.stringWidth(n) / 2f, cy + 16 * unit + fm.getAscent());
+        }
+        float knob = 22 * unit;
+        g.setColor(over || draggingRounds ? Color.WHITE : new Color(215, 222, 230));
+        g.fill(new java.awt.geom.Ellipse2D.Float(trackX + trackW * t - knob / 2f, cy - knob / 2f, knob, knob));
+        return top + h + 24 * unit;
     }
 
     private static String[] modeLabels() {

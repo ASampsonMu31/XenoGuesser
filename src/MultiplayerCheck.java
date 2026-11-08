@@ -49,6 +49,7 @@ public final class MultiplayerCheck {
                 System.out.println("[CHECK] Ready: " + session.localName() + " (" + session.role + ") with "
                         + session.remoteName() + " (" + session.suit(session.role.other()).label + "), world seed " + session.worldSeed()
                         + ", " + session.gameMode() + ", " + session.mapKind()
+                        + ", first to " + MultiplayerScore.roundsToWin()
                         + (session.isRanked() ? ", ranked: " + session.localRating() + " against " + session.remoteRating() : ""));
                 sendEverything(session);
             }
@@ -69,7 +70,7 @@ public final class MultiplayerCheck {
         session = matching
                 ? Multiplayer.matchmake(args[0].equalsIgnoreCase("ranked"), System.currentTimeMillis(), Expedition.ALL_MODES, Expedition.ALL_MAPS, listener)
                 : hosting
-                ? Multiplayer.host(System.currentTimeMillis(), GameMode.current(), MapKind.current(), listener)
+                ? Multiplayer.host(System.currentTimeMillis(), GameMode.current(), MapKind.current(), (int) Dev.longValue("xenoguesser.mpcheck.rounds", MultiplayerScore.DEFAULT_ROUNDS), listener)
                 : Multiplayer.join(args[1], listener);
 
         // Wait for the partner (hosting and matchmaking wait up to two minutes), then play for a few seconds

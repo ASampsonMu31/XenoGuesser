@@ -169,6 +169,13 @@ vec3 weather(vec3 c, vec3 world) {
             + cellNoise(p.xz * 0.33 - vec2(0.0, p.y * 0.3)) * 0.35);
     c = mix(c, vec3(0.16, 0.14, 0.1), 0.6 * w * grime);
     float lichen = smoothstep(0.62, 0.8, cellNoise(p.xz * 0.21 + vec2(p.y * 0.17, 3.0)));
+    // Cracks: jagged dark lines (where two octaves of noise cross the middle) wandering up and
+    // across the wall, only in patches, more and wider the worse the weathering
+    vec2 q = vec2(p.x + p.z, p.y) * 0.35;
+    // (a third, fine octave makes the line zigzag rather than curve smoothly; kept hairline thin)
+    float vein = abs(0.6 * cellNoise(q) + 0.28 * cellNoise(q * 3.1 + 7.0) + 0.12 * cellNoise(q * 11.0 + 3.0) - 0.5);
+    float patchy = smoothstep(0.75 - 0.35 * w, 0.95 - 0.2 * w, cellNoise(q * 0.18 + 41.0));
+    c *= 1.0 - 0.75 * patchy * (1.0 - smoothstep(0.0015 + 0.003 * w, 0.004 + 0.006 * w, vein));
     return mix(c, vec3(0.62, 0.66, 0.5), 0.55 * w * lichen);
 }
 
